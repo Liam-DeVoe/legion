@@ -19,7 +19,7 @@ your cluster, from one published worker image.
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
 | The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
-| Three GitHub Apps | An **implement** App (the implementer's and merger's identity, and the architect's while it does an implementer step of its own), a **review** App (the identity of Legion's other roles) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps), which also says which App a role a plan or the deployment defines works as). |
+| Three GitHub Apps | An **implement** App (the implementer's and merger's identity, and the architect's while it acts as the implementer), a **review** App (the identity of Legion's other roles) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps), which also says which App a role a plan or the deployment defines works as). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
 
@@ -120,7 +120,7 @@ that the App is installed.
 
 Legion uses three GitHub Apps, each installed on the owner of every repository Legion works: an
 implement App, a review App and an Envoy App. The daemon mints each agent's token from the App its
-slot works as, its role's App unless the architect does a step of its own (below), on one owner's
+slot works as, its role's App unless the architect acts as another role (below), on one owner's
 installation and with the permissions its work needs. A token reaches every
 repository that installation holds, which the account chooses when it installs the App, so the
 installation decides what Legion's agents reach and the implement and review Apps' permissions
@@ -135,19 +135,29 @@ A role a plan defines works as the implement App where its type is `implementati
 review App otherwise, and a role the deployment defines in `roles` works as the App its
 `github_app` names (`review` unless it names one). While the architect does a step of its own plan
 (a step whose key is `owner`), its slot works as the App of that step's role, the implement App at
-an implementer step, and as its own App again once the step ends. Where the step's App is not the
-architect's own (the implement App, say), the daemon writes the slot, judging its App as it writes,
-so a step that has ended by then leaves the architect's own App there; a step of the review App,
-the architect's own (its acceptance, a tester or reviewer step, the retro of a task with no
-implementation step), needs no write. The retro of a task whose last implementation step is the
-architect's own acts as the implement App, as that step did. Either
-way the daemon tells the architect the step only once the slot's gh files hold the step's App: the
-pane's files under tmux, and under Kubernetes the pod's, so it waits for the pod to carry a write
-back as well. Where the pod's launcher cannot say what its gh files hold (an image from before
-that check), a step of another App waits for the pod's update round, and a step of the architect's
-own App is told at once. The end of each step of its own writes the architect's own App back into
-the slot, unless its next step of another App already runs, and the next notice to the architect
-waits for that write.
+an implementer step. The retro of a task whose last implementation step is the architect's own
+acts as the implement App, as that step did. A merge forward is the implementer's act: where the
+task's implementer step is the architect's own (`implementer:owner`), the daemon asks the
+architect to merge the base forward, in any phase, and its slot works as the implement App until
+that ask ends. The ask ends when its merge lands, when a move into `implementing` or the issue's
+leave of the workflow clears it, when the pull request closes or merges, and when the issue is
+held or its task stopped. Everywhere else, and always while the issue is held, the architect's
+slot works as its own App, the review App. Where the App of the architect's act is not its own
+(the implement App, say), the daemon writes the slot, judging its App as it writes, so an act that
+has ended by then leaves the architect's own App there; a step of the review App, the architect's
+own (its acceptance, a tester or reviewer step, the retro of a task with no implementation step),
+needs no write. Either way the daemon tells the architect a step, or a merge-forward message that
+asks it an act, only once the slot's gh files hold that act's App: the pane's files under tmux, and
+under Kubernetes the pod's, so it waits for the pod to carry a write back as well. Where the pod's
+launcher cannot say what its gh files hold (an image from before that check), a step of another
+App waits for the pod's update round, and a step of the architect's own App is told at once. While
+the slot works as the implement App for a merge forward, the daemon tells the architect no step or
+retro of another App: its review step and its acceptance wait until the ask ends. So does the
+review a landed merge forward asks of a `reviewer:owner`, until the slot holds the review App
+again, after the architect's retro of its own implementation step or after the landing, since
+GitHub refuses an approval from the pull request's author. The end of each of these acts writes
+the architect's own App back into the slot, unless its next act of another App already runs, and
+the next notice to the architect waits for that write.
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -251,7 +261,7 @@ An install of a role App counts as every other installation of it does, because 
 keeps no list of owners.
 An account that installs the implement App gets a directory with that App's write token in the
 gh bundle of every role that works as that App, from the next bundle the daemon builds, and in
-the architect's slot while it works as that App in a step of its own.
+the architect's slot while it acts as a role of that App (above).
 An install of the review App gives every role that works as the review App that App's token the
 same way, and the controller its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in the
@@ -762,8 +772,8 @@ What each part is for:
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
   namespaces, runs before each start of its Oh My Pi. It runs in the role's working directory with
   the role's environment, and its `git` answers `https://github.com` from the role's gh bundle:
-  the token of the App its slot works as (the role's own, or, for the architect in a step of its
-  own plan, that step's role's App) on every owner that App is installed on, with that role's
+  the token of the App its slot works as (the role's own, or, for the architect while it acts as
+  another role, that role's App) on every owner that App is installed on, with that role's
   permissions, each reaching every repository that owner's installation holds, and the
   controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
   its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such

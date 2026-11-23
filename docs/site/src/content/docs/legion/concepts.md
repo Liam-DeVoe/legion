@@ -51,8 +51,12 @@ is installed on.
 Each token is minted on that owner's installation with the role's own permissions: the implement
 App's write set for the implementer and the merger, the review App's review set for every other
 role.
-While the architect does a step of its own plan (one whose key is `owner`), its bundle is the App
-of that step's role instead, and its own App again at the step's end.
+While the architect acts as another role, its bundle is that role's App instead: at a step of its
+own plan (one whose key is `owner`), the step's role; at its retro where the task's last
+implementation step is its own, that step's role; and while a merge forward the daemon asked of it
+has not ended, the implementer, since that merge is the implementer's act.
+Everywhere else, and always while the issue is held, it is the architect's own App, and the end of
+each such act writes that App back.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
