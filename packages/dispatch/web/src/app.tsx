@@ -538,6 +538,12 @@ function ShellProviders({
   );
 }
 
+/**
+ * The signed-in shell. On a phone its top bar's groups, in this order: Brand (the title), Counts
+ * (Peek, the Inbox and the new replies) and Menu, on the right. The title never shrinks and no
+ * count breaks its own words; when the counts do not fit beside the title they move to a second
+ * row of the bar together, never one count alone.
+ */
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -972,10 +978,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
-            {/* The bar's groups, in this order: Brand (the title), Counts (Peek, the Inbox and
-                the new replies) and Menu, on the right. The title never shrinks and no count
-                breaks its own words; when the counts do not fit beside the title they move to a
-                second row of the bar together, never one count alone. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
