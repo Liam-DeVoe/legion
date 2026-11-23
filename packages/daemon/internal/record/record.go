@@ -2836,8 +2836,9 @@ const (
 // or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
 // human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
 // except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
-// notice router ends the same walk at the same place (internal/daemon's owningArchitect), so the
-// architect the reviewer's phase-finished notice reaches is the one that may accept the issue. An
+// notice router ends the same walk at the same place (internal/daemon's noticeArchitect, for every
+// notice but an owner-step), so the architect the reviewer's phase-finished notice reaches is the
+// one that may sign the issue off where its acceptance is the owner's (OwnersPlace). An
 // architect this answers true for is an architect of the issue's tree (ArchitectOfTree), since the
 // walk stays in that tree. The route judges it on its own read and the fact again under the lock,
 // so the two never judge different rules.

@@ -21,8 +21,9 @@ const maxAgentName = 32
 // claim and session, as a new task's agent with no key takes the name of a stopped task's agent
 // of its role.
 //
-//  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
-//     tree and no name on the issue.
+//  1. A step of the key owner has no name: its agent is an architect, the issue's own
+//     (OwnerClaim) or one above that runs the step for it (workflow's ownerAgent), whose token
+//     names its issue and its role and no name of an agent.
 //  2. Each other key that an earlier row names takes the name of that row. Every such key is named
 //     before any other pass gives a name.
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role

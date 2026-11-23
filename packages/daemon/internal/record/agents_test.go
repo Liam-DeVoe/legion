@@ -9,7 +9,8 @@ import (
 
 // Each agent of a version gets one name, the last part of its claim token: the steps of one key
 // share it, a step with no key gets the role it is on, and the owner gets none, since its claim is
-// the tree's architect. A later version keeps the name a key already has, and an agent beside it
+// an architect's, the issue's own (OwnerClaim). A later version keeps the name a key already has,
+// and an agent beside it
 // that would take the same name gets a name of its own, `implementer-2`.
 func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 	steps := []PlanStep{
