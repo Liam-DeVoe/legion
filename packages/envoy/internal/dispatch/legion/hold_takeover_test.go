@@ -795,3 +795,93 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 			bStore, currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), named.served())
 	}
 }
+
+// TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet: R3 keeps a project
+// that goes quiet at most one minute behind while its reads succeed, and row 8.1 has a message past
+// the cap owe the read its position calls for, "which the read in flight does not clear, since its
+// events may be past that read's snapshot". The read in flight here is a gap read the cursor owed
+// before it began: its holder's redelivery makes it, so the cursor still owes gap while it is in
+// flight. A message past the cap that calls for gap then adds no reason (cursor.readFor adds a
+// reason only where the cursor does not owe it), and the read's record clears the reasons owed
+// when it was decided (recordWhole, owedSince), gap among them, and with them the holder. So
+// nothing owes the read that would take the events past its snapshot.
+//
+// INFRA's daemon serves 15 and INFRA's message at 12 makes a gap read of it. Near the end of that
+// read's minute, the message at 17 calls for a gap read that is not due: the cursor owes it and the
+// message holds it. Its redelivery, once the minute is out, makes that read, which the daemon
+// holds; the read serves 40. Meanwhile INFRA publishes messages at or below 40, which wait on the
+// runner behind the read, and 41 to 43, past the read's snapshot and past the cap, the last moving
+// INFRA-1 to reviewing. The read is let go, INFRA goes quiet, and a minute on, on the intake's
+// clock, INFRA-1 reaches reviewing within 75 s. At b4600876, and at d1e22ece, INFRA stays at 40's
+// testing with nothing owed.
+func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// A gap read made at once, which starts the minute the next one waits after.
+	daemon.serves(daemonState("INFRA", 15, inPhase("implementing")))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.lastSeq != nil && *c.lastSeq == 15
+	}, func() string {
+		return fmt.Sprintf("control: the gap read at 12 did not land at 15: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+
+	// Near the end of that minute, a gap the cursor owes and the message at 17 holds.
+	rig.clock.advance(ReadRetryAfter - 3*time.Second)
+	release := daemon.holds(t)
+	daemon.serves(daemonState("INFRA", 40, inPhase("testing")))
+	rig.publish("INFRA", change(17, "INFRA-1", moved("phase", "testing")))
+	rig.waitFor(20*time.Second, func() bool {
+		return slices.Equal(cursorOf(t, rig.database, "INFRA").readReasons, []string{ReadReasonGap})
+	}, func() string {
+		return fmt.Sprintf("control: INFRA's cursor does not owe the gap read: %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	rig.clock.advance(5 * time.Second)
+	rig.waitFor(30*time.Second, func() bool { return daemon.served() >= 3 }, func() string {
+		return fmt.Sprintf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonGap}) {
+		t.Fatalf("control: INFRA's cursor is %s while the owed gap read is in flight, want gap owed", c)
+	}
+
+	// Behind the read in flight: messages at or below its snapshot fill the runner, and three more
+	// arrive past the cap and past the snapshot, near the end of the read's minute.
+	daemon.serves(daemonState("INFRA", 43, inPhase("reviewing")))
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for seq := 18; seq < 18+stateMaxWaiting-1; seq++ {
+		rig.publishIn("INFRA", rigRun, rigStateID, at, false, change(seq, "INFRA-1", moved("phase", "testing")))
+	}
+	rig.waitFor(20*time.Second, func() bool {
+		info := rig.consumerInfo()
+		return info.NumPending == 0 && info.NumAckPending >= stateMaxWaiting
+	}, func() string {
+		return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
+	})
+	rig.clock.advance(ReadRetryAfter - 5*time.Second)
+	for i, phase := range []string{"merging", "accepting", "reviewing"} {
+		rig.publishIn("INFRA", rigRun, rigStateID, at, false, change(41+i, "INFRA-1", moved("phase", phase)))
+	}
+	rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+		return fmt.Sprintf("control: the messages past the cap were not delivered: %+v", rig.consumerInfo())
+	})
+	time.Sleep(time.Second)
+	release()
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.lastSeq != nil && *c.lastSeq >= 40
+	}, func() string {
+		return fmt.Sprintf("control: the owed gap read did not land at 40: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	rig.clock.advance(6 * time.Second)
+	if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
+	}) {
+		t.Errorf("75 s after the owed gap read at 40, with INFRA quiet, INFRA-1's phase is %s, INFRA's cursor is %s and the daemon served %d reads: the gap the messages past the cap owed was folded into the read in flight, whose record cleared it",
+			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
+	}
+}
