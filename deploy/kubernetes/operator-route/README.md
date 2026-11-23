@@ -1,8 +1,9 @@
 # The operator's model route
 
-Legion carries no model, provider or route knowledge. Everything a Legion pod needs to reach a model
-is the operator's, delivered through `runtime.kubernetes.pod` and `provider_keys`
-(`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
+Legion carries no provider or route knowledge. It names a model only where `legion.yaml` or an
+issue's plan names one: `models`, `roles.<name>.model` or a role block's `model`. Everything a
+Legion pod needs to reach a model is the operator's, delivered through `runtime.kubernetes.pod` and
+`provider_keys` (`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
 [`pod.yml`](pod.yml) is the pieces an operator supplies, in the shape the daemon loads, and
 [`models.yml`](models.yml) and [`overlay.yml`](overlay.yml) are the two files its ConfigMap holds,
 on the model names every other agent uses. The Go live harnesses run on all three.
@@ -60,10 +61,10 @@ pods mount `legion-operator-route` in that namespace reads the same copy.
 ## Changing a role's model
 
 The two files in that directory are the operator's, and `apply.sh` writes the ConfigMap from them.
-To change the model a role uses, edit that role's line under `modelRoles` in `overlay.yml` and run
-the same `apply.sh` command; nothing in this repository changes. Pods started after that read the
-new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
-both by `subPath`, which the kubelet never refreshes.
+To change the model an Oh My Pi role uses, edit that role's line under `modelRoles` in
+`overlay.yml` and run the same `apply.sh` command. Nothing in this repository changes. Pods
+started after that read the new file. A running pod keeps the files it started with until it
+restarts, because `pod.yml` mounts both by `subPath`, which the kubelet never refreshes.
 
 `modelRoles.default` is the model of every role's session that names no model of its own, a resumed
 session included: such a launch names `--model @default`, Oh My Pi's own name for that role, so the
@@ -79,9 +80,9 @@ family the new pin catalogues (`omp models anthropic` on the new build) and the 
 serves, never to another family, and adds that model to `enabledModels` and to `models.yml` and
 `models-key-file.yml`. A gateway serves only the ids it was set up for and answers any other with
 404, so on the gateway route run one `omp -p --model @<role> "Reply ok."` turn through the new
-`models.yml` for each new model id before applying. The older models stay in all three, because a
-resumed session restores its own model and the pinned Oh My Pi refuses to resume one the profile
-no longer has (`docs/kubernetes.md`).
+`models.yml` for each new model id before applying. The older models stay in all three. A role
+whose settings or plan name an older model still starts on it. The pinned Oh My Pi also refuses to
+resume a session whose last model the profile lacks (`docs/kubernetes.md`).
 
 `apply.sh` writes with a server-side apply under its own field manager,
 `legion-operator-route-apply`, and forces conflicts. When another tool wrote the ConfigMap before

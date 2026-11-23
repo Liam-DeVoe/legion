@@ -8027,7 +8027,7 @@ Four prerequisites and caveats the configuration cannot check for you:
 ### Operator configuration
 
 The Go coordinator's.
-Legion holds no model, provider or route.
+Legion holds no provider or route, and names a model only where `legion.yaml` or an issue's plan names one (`models`, `roles.<name>.model`, a role block's `model`).
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
@@ -8117,9 +8117,9 @@ each issue's pod (every role of it alike) and the image probe's.
   A tool that still declares the ConfigMap acts at its own next apply:
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
-  To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
-  That is the model of every role that names none of its own, whose launch names `--model @default`;
-  a role of `roles` with a `model`, and a role an issue's plan defines with a `model`, start on that model (`--model <model>`).
+  To change the model of an Oh My Pi role, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
+  `modelRoles.default` is the model of every Legion role that names none of its own, whose launch names `--model @default`.
+  A role of `roles` with a `model`, and a role an issue's plan defines with a `model`, start on that model (`--model <model>`).
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
@@ -8130,7 +8130,9 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`models`**, a top-level `legion.yaml` key, lists the models a role of an owner's plan may name, in the order the owner is told them: `models: [<model>, …]`.
   The listed models are `models`, then each model a role of `roles` names that `models` lacks, so a role of the deployment's model is listed whether or not `models` names it.
-  Every architect is told them after the roles of this deployment, `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where no model is named at all), and the served settings carry them as `settings.models`, absent where none is named.
+  Every architect is told them after Legion's roles and the deployment's.
+  `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where none is named).
+  The served settings carry them as `settings.models`, absent where none is named.
   The loader refuses a value that is not a list (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]`), an entry that is not a string (`models[<i>] must be a model's name`), an empty entry (`models[<i>] is empty`), an entry that holds white space (`models[<i>] is <m>, which holds white space: a model's name is one word`) and a model named twice (`models names <m> twice`), each index counted from 0.
   `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
   Give a role of the deployment its model in the settings, as `roles.<name>.model`: Legion lists that model, and compares the `model` of a role block with the listed models.

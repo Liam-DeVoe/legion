@@ -2573,7 +2573,7 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 
 Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionagents.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
-It widens and narrows nothing, so it rolls: the release before it writes only the six and reads a role as text.
+It narrows nothing, so it rolls: the release before it writes only the six and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
@@ -5016,8 +5016,8 @@ Each item below names a path with its method and identity, then its purpose.
   Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
   it is empty for a document that is not a spec.
 
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+  It never names a missing plan task, even for an issue that already holds a plan.
+  A spec with gaps still opens the request. A coverage read that failed answers `coverage_unread: true` with no lines.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 

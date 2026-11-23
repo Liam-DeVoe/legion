@@ -1092,13 +1092,17 @@ To stand it up:
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
-`slow`, and the rest the example names): the daemon refuses to boot when an agent's role has no
-model, or its model's key does not work, rather than let it run silently on another model. Set
-every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
+`slow`, and the rest the example names). The daemon refuses to boot when a subagent Legion's
+prompts dispatch has a role with no model, or a model whose key does not work. Nothing refuses a
+settings set without `default`. Each Legion role that names no model of its own then starts
+silently on Oh My Pi's built-in model, which your route may not serve. Set every variable your
+route depends on in `pod.env`, which outranks a repository's own `.env`.
 
-To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
-same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched.
+To change the model of an Oh My Pi role, edit its line under `modelRoles` in your `overlay.yml` and
+run the same `apply.sh` command. `modelRoles.default` is the model of every Legion role that names
+no model of its own. A role whose `roles.<name>.model` or whose plan's role block names a model
+starts on that model instead. Pods started after that use it; a running pod keeps its files until
+it is relaunched.
 
 ## Check and start the daemon
 
@@ -1119,11 +1123,12 @@ legion start --config legion.yaml
 
 The daemon runs in the foreground and logs JSON lines to standard error. At every boot it checks
 that Agent Sandbox is installed and runs the worker image's launch probes in a probe Sandbox
-(`legion-probe-<project>-<digest prefix>`): the image's Legion plugin must speak this daemon's contract
-and load with its Envoy plugin,
-every agent's model must resolve, and every model key must work. Nothing restarts the daemon on its
-own, so run it under a process supervisor you trust. `legion stop --config legion.yaml` stops it,
-and `legion legions` lists the daemons registered on the machine.
+(`legion-probe-<project>-<digest prefix>`). The image's Legion plugin must speak this daemon's
+contract and load with its Envoy plugin. Each subagent that Legion's role prompts dispatch and that
+names a model must resolve to it, with a key that works. A model only a role's settings or an
+issue's plan names is not resolved at boot. Nothing restarts the daemon on its own, so run it under
+a process supervisor you trust. `legion stop --config legion.yaml` stops it, and `legion legions`
+lists the daemons registered on the machine.
 
 The `legion` binary the daemon runs and the worker image must come from the same commit. The
 image carries that binary, which embeds Legion's role prompts, at `/opt/legion/bin/legion` and
@@ -1244,9 +1249,10 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers and resolves the bot's threads and pushes, and
-   the bot runs again; the reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
+   image pin (an empty list is refused too). A review bot's red is now CI like any other. The daemon
+   names each check and its conclusion to the implementer, the architect and the current phase's
+   worker, and moves nothing. The implementer answers and resolves the bot's threads and pushes,
+   and the bot runs again. The reviewer adjudicates nothing of it and re-runs nothing. Where the bot's
    threads must be closed before a merge, make that the repository's own rule (a ruleset's
    "Require conversation resolution before merging").
 

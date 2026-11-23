@@ -16,8 +16,9 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
-  and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
+  runtime each issue runs in a pod of its own, where every agent of that issue runs, from one
+  published worker image. Each agent talks to the daemon over a connection its pod dials back, and
+  a controller the daemon launches runs in a pod of its own. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
   work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -78,9 +79,10 @@ repositories alone.
 The controller is the one Legion agent a person talks to directly. By default (`controller:
 operator`) the operator starts it with `legion controller start` in a terminal on their own machine,
 and it runs there as an interactive Oh My Pi session; closing that terminal leaves the project
-without a controller until someone runs the command again. Under `controller: daemon` (Kubernetes
-only) the daemon launches it as a pod in the cluster and relaunches it when it dies; a person
-reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
+without a controller until someone runs the command again. Under `controller: daemon` the daemon
+launches it and relaunches it when it dies. It runs as a pod in the cluster under the Kubernetes
+runtime, or as a pane in a window of its own under tmux. A person reaches it through Dispatch.
+The daemon wakes it when something needs a judgment no tree owns:
 
 - a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
   person's label is queued by the daemon: the issue moves to `todo` without the controller);
@@ -117,13 +119,13 @@ admission to close. The architect:
 1. claims the issue in Dispatch, so no other session works it alongside Legion;
 2. extends your issue's spec in place, writing each open question as a decision block for you to
    answer;
-3. asks you to approve the spec (the [design gate](#the-design-gate));
-4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+3. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+4. asks you to approve the spec (the [design gate](#the-design-gate));
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
-The architect writes no code. A child issue runs the same phases as its root, with a pull request
-of its own, inside the same tree.
+The architect writes no code. A child issue runs the steps of its own plan, or the default steps,
+with a pull request of its own, inside the same tree.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
 Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
@@ -152,8 +154,8 @@ workflow, at a head that carries their merges.
 
 ## Phase workers
 
-The daemon starts each phase's worker itself, one phase at a time, in the order below, and runs
-only the phases of the steps the issue's [plan](#the-plan-of-an-issue) names. A role keeps
+The daemon starts each phase's worker itself, one phase at a time. It runs only the phases of the
+steps the issue's [plan](#the-plan-of-an-issue) names, in the order of those steps. Each agent keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
@@ -168,7 +170,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still in the workflow beneath it hold the acceptance: the daemon refuses the sign-off (`SIGNOFF_CHILD_IN_WORKFLOW`) until each has left the workflow. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -186,13 +188,14 @@ checks.
 
 ### The plan of an issue
 
-The table is the line of the **default steps**. Each architect of a tree, the root's or a
-sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which steps it runs: one task whose steps name roles of this table, roles of
-the deployment and roles the plan defines itself, each in a `plan_role` block such as
-`:::plan_role{#prober type="testing" model="<a listed model>"}` whose text is the role's prompt,
-with `implementer` among them and the tester, the reviewer and `acceptance:owner` after it, where
-`acceptance:owner` is the architect's own acceptance in `accepting`. It writes
+The table is the line of the **default steps**. Any architect of a tree, the root's or a
+sub-architect's, can give any issue of that tree a **plan** that picks which steps it runs. In this
+section, the issue's owner is the architect that gives it its plan. The plan holds one task. Its
+steps name roles of this table, roles of the deployment and roles the plan defines itself. The plan
+defines each of its roles in a `plan_role` block such as
+`:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
+The steps hold `implementer`, with the tester, the reviewer and `acceptance:owner`, the architect's
+own acceptance in `accepting`, after it. The owner writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
