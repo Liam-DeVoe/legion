@@ -277,10 +277,17 @@ func TestARestrictedMembersMintedTokenWritesNoAccessList(t *testing.T) {
 // one, each writing nothing. Seeing two projects, erin's mint naming none is refused and asks her
 // to name one; naming one she sees mints it, and an edit moves it to the other. A token of hers
 // listing none, which a mint before the rule made, is refused an edit that keeps its list, and is
-// held once an edit names one project.
+// held once an edit names one project. Taken off OTH's list, her edit that keeps the list of a
+// token naming OTH alone, stored holding person and approve, is 403 RESTRICTED_MEMBER saying its
+// project is no project she sees, and the token's row is as it was; the same edit of her token of
+// ACC, which she still sees, is made.
 //
-// Control: refuse nothing for a restricted member (tokenScopes and tokenProjects as before), and
-// the first refusal fails, erin's mint of person answering 201.
+// Controls: refuse nothing for a restricted member (tokenScopes and tokenProjects as before), and
+// the first refusal fails, erin's mint of person answering 201. Refuse no kept list naming a
+// project she does not see (restrictedKeptListRefusal's second case answering none), and the edit
+// of her OTH token, once she is off OTH's list, answers 200 and the row fails there; with
+// restrictedKeptListRefusal answering no refusal at all, the row fails earlier, the edit keeping a
+// list of no project answering 200.
 func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	before := r.tokensOf(t, accessErin)
@@ -337,6 +344,24 @@ func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing
 	}
 	if whoami := agentRequest(t, r.handler, http.MethodGet, "/api/v1/whoami", nil, unlisted); whoami.Code != http.StatusOK || !strings.Contains(whoami.Body.String(), `"project":"OTH"`) {
 		t.Fatalf("whoami under erin's token once it names OTH = %d %s, want 200 held to OTH", whoami.Code, whoami.Body.String())
+	}
+
+	stale := personalTokenListing(t, r.database, accessErin, []string{"OTH"}, model.ScopePerson, model.ScopeApprove)
+	staleID := r.tokenIDOf(t, stale)
+	if removed := dispatchRequest(t, r.handler, http.MethodDelete, "/api/v1/projects/OTH/access/people/"+accessErin, nil, "alice"); removed.Code != http.StatusOK {
+		t.Fatalf("alice takes erin off OTH's list: status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	wantRestrictedRefusal(t, edit(staleID, map[string]any{"scopes": []string{}}),
+		"erin at her browser, taken off OTH's list", "an edit keeping a list of OTH", "no project this request's credential sees")
+	if row := r.rowOf(t, staleID); !slices.Equal(row.Scopes, []string{model.ScopePerson, model.ScopeApprove}) || !slices.Equal(row.Projects, []string{"OTH"}) {
+		t.Fatalf("erin's OTH token after the refused edit holds %v listing %v, want it as stored, [person approve] listing [OTH]", row.Scopes, row.Projects)
+	}
+	kept := edit(token.ID, map[string]any{"scopes": []string{}})
+	if kept.Code != http.StatusOK {
+		t.Fatalf("erin's edit keeping the list of her ACC token, taken off OTH's list: status=%d body=%s, want 200", kept.Code, kept.Body.String())
+	}
+	if got := decodeBody[heldToken](t, kept); len(got.Scopes) != 0 || !slices.Equal(got.Projects, []string{"ACC"}) {
+		t.Fatalf("erin's edited ACC token holds %v listing %v, want no scope listing [ACC]", got.Scopes, got.Projects)
 	}
 }
 
