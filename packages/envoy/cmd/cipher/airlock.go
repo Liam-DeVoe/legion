@@ -466,6 +466,12 @@ func trustBundle(environ []string, caPEM string) []byte {
 // (readTrustSource): a pipe gives what its writer sends, and one with no writer is empty at once,
 // as /dev/null is, rather than waited on. Such a file that reads empty still counts as read, so
 // SSL_CERT_FILE=/dev/null adds nothing, not the system bundle.
+//
+// In a run, SSL_CERT_FILE reaches here second: agent-secrets' own connection to the broker reads
+// it first, before prepareAirlock runs, for the roots of Go's TLS client (crypto/x509's root.go
+// reads it with os.ReadFile). So, as before readTrustSource, a pipe it names arrives here drained
+// and adds nothing, a named pipe with no writer stalls that connection until its timeout, and a
+// device that never ends is read there with no bound. The other variables reach this read first.
 func readTrustFile(environ []string, key string) ([]byte, bool) {
 	var candidates []string
 	if named := envValue(environ, key); named != "" {

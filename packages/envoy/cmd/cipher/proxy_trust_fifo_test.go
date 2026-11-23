@@ -3,8 +3,8 @@
 // packages/envoy/cmd/cipher/proxy_trust_fifo_test.go
 //
 // A named pipe or a device that the command's settings name: opening a named pipe for reading
-// waits for a writer that may never come, so agent-secrets opens one without waiting, and reads
-// what a writer sends.
+// waits for a writer that may never come, so the bundle writer opens one without waiting, and
+// reads what a writer sends.
 package main
 
 import (
@@ -66,7 +66,9 @@ func runPrepareAirlock(t *testing.T, what string, environ []string, caPEM string
 // pipe that no process writes, for a command that otherwise needs no bundle. The decision does not
 // open the pipe, and the bundle writer opens it without waiting for a writer and reads it as
 // empty: prepareAirlock answers, and writes the bundle, since a file the decision will not read
-// cannot show that it holds the root.
+// cannot show that it holds the root. The SSL_CERT_FILE row holds for prepareAirlock alone: in a
+// run, agent-secrets' own connection to the broker reads SSL_CERT_FILE before prepareAirlock does,
+// and waits on such a pipe until its timeout (readTrustFile).
 func TestPrepareAirlockDoesNotWaitOnANamedPipeWithNoWriter(t *testing.T) {
 	root := proxyTestRoot(t, "test proxy root")
 	system := writeLoginFile(t, "ca-certificates.crt", root)
