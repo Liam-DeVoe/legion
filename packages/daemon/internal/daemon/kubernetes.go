@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -678,9 +681,39 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 // (runtime.SavedWorkspaceBundle). A bundle is project's only where project records its issue
 // (store.Store.TakeWorkspaceBundleForRestore): on a database shared with another project's
 // daemon, a bundle of that project's issue is that daemon's, whatever pod of this daemon asks.
+//
+// The pod is sent the working copy of each task whose branch a task of the plan the issue runs
+// now holds (record.PlanTask.BranchOf), and of no other: a task a later version of the plan
+// removed has no working copy to come back to, so its copy lives at most as long as the disk of
+// the pod that made it, which the daemon does not reach (the outbox's removeTaskCopy). Its commits
+// stay heads of the bundle with the rest of the saved work. The plan is read before the take, which
+// spends the bundle's one attempt, so a read that fails sends nothing and leaves the attempt.
 func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+	records := record.NewStore()
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+		held := map[string]bool{}
+		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+			recorded, err := records.Issue(ctx, tx, issue)
+			if err != nil || recorded == nil {
+				return err
+			}
+			stored, err := records.Plan(ctx, tx, issue, recorded.Generation)
+			if err != nil || stored == nil {
+				return err
+			}
+			for _, task := range stored.Tasks {
+				held[task.BranchOf(issue)] = true
+			}
+			return nil
+		}); err != nil {
+			return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the plan of %s for the restore of its saved work: %w", issue, err)
+		}
+		bundle, take, err := st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+		if err != nil {
+			return bundle, take, err
+		}
+		maps.DeleteFunc(bundle.WorkingCopies, func(branch, _ string) bool { return !held[branch] })
+		return bundle, take, nil
 	}
 }
 

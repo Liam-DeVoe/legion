@@ -2600,6 +2600,10 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
+	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
+	// stopped task's step may still run.
+	StepStopQueued(ctx context.Context, tx pgx.Tx, issue string, before int64) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)

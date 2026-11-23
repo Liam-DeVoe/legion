@@ -130,6 +130,87 @@ func TestTaskDirIsBesideTheIssuesWorkspace(t *testing.T) {
 	}
 }
 
+// The working copies of an issue's tasks are the ones beside the issue's own (TaskCopies), and
+// Remove takes one of them whole and nothing of the issue's or another task's: of an issue with
+// the working copies of legion/WIDGETS-42.b and legion/WIDGETS-42.c.2 beside its own, and the
+// directory of another issue's task (widgets-420.b), the two are listed, the issue's own and the
+// other issue's are not; Remove of b's deletes its directory, forgets its jj workspace and deletes
+// its git worktree entry, and c's working copy and the issue's own stand with their files, their
+// workspaces and their entries. A workspace that is not on its issue's own branch is refused.
+//
+// The fault it catches is the working copy of a task left on the host once its issue is removed,
+// and a removal that reaches past one working copy (its control: TaskCopies comparing the name
+// with the issue's key and no dot, which lists widgets-420.b too).
+func TestTheWorkingCopiesOfAnIssuesTasksAreListedAndEachIsRemovedAlone(t *testing.T) {
+	ctx := context.Background()
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	issue, err := Provision(ctx, run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	for _, task := range []struct{ branch, file string }{{"legion/WIDGETS-42.b", "b.txt"}, {"legion/WIDGETS-42.c.2", "c.txt"}} {
+		pushRemoteBranch(t, run.remote, task.branch, task.file)
+		if _, err := ProvisionTask(ctx, run, issue.Dir, task.branch, req.Log); err != nil {
+			t.Fatalf("ProvisionTask(%s): %v", task.branch, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(issue.Dir), "widgets-420.b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	names := func(copies []Workspace) []string {
+		var names []string
+		for _, working := range copies {
+			names = append(names, filepath.Base(working.Dir))
+		}
+		return names
+	}
+	copies, err := TaskCopies(issue)
+	if err != nil || !slices.Equal(names(copies), []string{"widgets-42.b", "widgets-42.c.2"}) {
+		t.Fatalf("TaskCopies = %v, %v; want widgets-42.b and widgets-42.c.2", names(copies), err)
+	}
+	if copies[0].Clone != issue.Clone || copies[0].Bookmark != "legion/WIDGETS-42.b" {
+		t.Fatalf("the working copy of b is listed as %+v, want a workspace of the issue's clone %s on legion/WIDGETS-42.b", copies[0], issue.Clone)
+	}
+
+	if err := Remove(ctx, run, copies[0], nil); err != nil {
+		t.Fatalf("Remove the working copy of b: %v", err)
+	}
+	if _, err := os.Lstat(copies[0].Dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the working copy of b after its removal = %v, want no directory", err)
+	}
+	listed := runSetup(t, issue.Clone, "jj", "workspace", "list", "--ignore-working-copy", "--color=never", "-R", issue.Clone)
+	var workspaces []string
+	for _, line := range nonEmptyLines(listed) {
+		name, _, _ := strings.Cut(line, ":")
+		workspaces = append(workspaces, name)
+	}
+	if slices.Contains(workspaces, "widgets-42.b") || !slices.Contains(workspaces, "widgets-42") || !slices.Contains(workspaces, "widgets-42.c.2") {
+		t.Errorf("the clone's workspaces after the removal of b's = %q, want widgets-42 and widgets-42.c.2 and not widgets-42.b", workspaces)
+	}
+	entries := gitWorktreeLocks(t, issue.Clone)
+	if _, registered := entries[copies[0].Dir]; registered {
+		t.Errorf("the clone's git worktree entries after the removal of b's = %v, want none of %s", entries, copies[0].Dir)
+	}
+	for _, dir := range []string{issue.Dir, copies[1].Dir} {
+		if _, registered := entries[dir]; !registered {
+			t.Errorf("the clone's git worktree entries after the removal of b's = %v, want %s's kept", entries, dir)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(copies[1].Dir, "c.txt")); err != nil {
+		t.Errorf("the working copy of c after the removal of b's: %v, want its checkout whole", err)
+	}
+	if again, err := TaskCopies(issue); err != nil || !slices.Equal(names(again), []string{"widgets-42.c.2"}) {
+		t.Errorf("TaskCopies after the removal of b's = %v, %v; want widgets-42.c.2 alone", names(again), err)
+	}
+
+	odd := issue
+	odd.Bookmark = "legion/WIDGETS-42.b"
+	if got, err := TaskCopies(odd); err == nil {
+		t.Errorf("TaskCopies of a workspace on a task's branch = %v, want a refusal", names(got))
+	}
+}
+
 // The variables TestHelperProvision reads: which of the two processes it is, and what it works on.
 // Each begins LEGION_TEST_, which the package's TestMain leaves to a child (fixtureenv.Guard).
 const (
