@@ -2,9 +2,12 @@ package tmux
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -59,6 +62,31 @@ func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 		f.refreshGitHubCredentials(ctx)
 		if got := held(); got != tick.want {
 			t.Fatalf("the architect's pane holds %q after a tick %s, want %q", got, tick.while, tick.want)
+		}
+	}
+}
+
+// The line a launch logs of the credential it wrote names the role whose App the pane holds, not
+// only the claim's: a spawn of the architect while its owner does the implementer step logs the
+// implementer with the implement App, and the claim's own role, the architect, beside it. A line
+// naming the architect with the implement App would tell an operator the architect works as an App
+// no architect holds.
+func TestTheOwnersLaunchLogsTheRoleItsPaneActsAs(t *testing.T) {
+	var logs strings.Builder
+	f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, nil)), func(o *Options) {
+		o.ActsAs = func(context.Context, claim.Token) (claim.Role, bool, error) { return claim.RoleImplementer, true, nil }
+	})
+	spec := f.spec(t, claim.RoleArchitect)
+	if _, err := f.Spawn(context.Background(), spec); err != nil {
+		t.Fatalf("Spawn of the architect: %v", err)
+	}
+	written := logLines(logs.String(), "github credential written")
+	if len(written) != 1 {
+		t.Fatalf("the launch logged %d written credentials %q, want one", len(written), written)
+	}
+	for _, want := range []string{"role=" + string(claim.RoleImplementer), "claimRole=" + string(claim.RoleArchitect), "app=" + string(appauth.Implement)} {
+		if !strings.Contains(written[0], want) {
+			t.Errorf("the launch logged %q, want %q in it", written[0], want)
 		}
 	}
 }

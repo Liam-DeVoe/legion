@@ -775,11 +775,12 @@ func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnS
 		r.log.Info("tmux runtime: no GitHub owner to act for; the controller's gh acts as nobody", "claim", spec.Claim)
 		return "", nil
 	}
-	bundle := credential.bundle
-	if credential.role != claim.RoleController {
+	bundle, role := credential.bundle, credential.role
+	if role != claim.RoleController {
 		now, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
-		if err == nil && now != credential.role {
-			bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.roleApps), spec.Issue, now, spec.Repository, "")
+		if err == nil && now != role {
+			role = now
+			bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.roleApps), spec.Issue, role, spec.Repository, "")
 		}
 		if err != nil {
 			return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
@@ -788,8 +789,10 @@ func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnS
 	if _, err := ghconfig.WriteBundle(credential.root, bundle); err != nil {
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
+	// The line names the role whose App the pane holds, the step's while the architect does a step
+	// of its own, and the claim's own role beside it, so the App it names reads as that role's.
 	written := bundle.Dirs[bundle.Default]
-	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", spec.Role, "app", written.App,
+	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", role, "claimRole", spec.Role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())
 	return bundle.Default, nil
 }
