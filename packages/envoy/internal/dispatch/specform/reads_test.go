@@ -8,6 +8,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -93,8 +94,9 @@ const chargePath = "github.com/sjawhar/envoy/internal/dispatch/specform/charge"
 // Answer an assignment or a declaration gives the blank name. A call keeps its Answer where a name
 // takes it, where the call is the whole of a return statement (its function hands the Answer on as
 // its own results), or, for a call of one result, where an expression reads it (as !w.load()). It
-// also returns how many calls keep an Answer, and how many of them are calls of charge.Texts.Read.
-func droppedAnswers(t *testing.T, dir, planted string) (faults []string, keptCalls, reads int) {
+// also returns how many calls keep an Answer, how many of them are calls of charge.Texts.Read, and
+// where each that is a call of a function, and no conversion to charge.Answer, stands (file:line).
+func droppedAnswers(t *testing.T, dir, planted string) (faults []string, keptCalls, reads int, calls []string) {
 	t.Helper()
 	fset := token.NewFileSet()
 	parsed := func(dir string, tests bool) []*ast.File {
@@ -236,10 +238,13 @@ func droppedAnswers(t *testing.T, dir, planted string) (faults []string, keptCal
 			if isRead(call) {
 				reads++
 			}
+			if function, ok := info.Types[call.Fun]; !ok || !function.IsType() {
+				calls = append(calls, filepath.Base(where.Filename)+":"+fmt.Sprint(where.Line))
+			}
 			return true
 		})
 	}
-	return faults, keptCalls, reads
+	return faults, keptCalls, reads, calls
 }
 
 // importerFunc is a types.Importer that a function is.
@@ -247,18 +252,19 @@ type importerFunc func(path string) (*types.Package, error)
 
 func (f importerFunc) Import(path string) (*types.Package, error) { return f(path) }
 
-// Each reading of a text of a judgment keeps the answer of its charge and acts on it: the judge
-// reads a sentence only through charge.Texts.Read, which the types hold, and each call whose
-// results hold a charge.Answer, Read's and each walk's that hands Read's answer on, binds it to a
-// name or hands it on whole, which the check holds by the type alone (droppedAnswers), so no code
-// reads on past a charge that refused it as though it said yes. Controls, each a file planted
-// beside the package's own: the blank answer of Read, Read as a statement, in a loop and after
-// defer, Read's results handed to another call, the blank answer of a walk that hands one on
-// (wholeText.other), and a walk of one Answer as a statement and given the blank name, are each
-// named; a call that keeps its answer is not; and with no plant, no fault, and the check finds the
-// package's calls of Read and of the walks.
+// Each reading of a text of a judgment keeps the answer of its charge: the judge reads a sentence
+// only through charge.Texts.Read, which the types hold, and each call whose results hold a
+// charge.Answer, Read's and each walk's that hands Read's answer on, binds it to a name or hands it
+// on whole, which the check holds by the type alone (droppedAnswers). What the code then does with
+// an answer that it bound, the refusal of each reading in turn holds
+// (TestEachRefusedReadingRefusesTheWayOutThatAskedIt). Controls, each a file planted beside the
+// package's own: the blank answer of Read, Read as a statement, in a loop and after defer, Read's
+// results handed to another call, the blank answer of a walk that hands one on (wholeText.other),
+// and a walk of one Answer as a statement and given the blank name, are each named; a call that
+// keeps its answer is not; and with no plant, no fault, and the check finds the package's calls of
+// Read and of the walks.
 func TestEachReadingOfATextKeepsTheAnswerOfItsCharge(t *testing.T) {
-	faults, keptCalls, reads := droppedAnswers(t, ".", "")
+	faults, keptCalls, reads, _ := droppedAnswers(t, ".", "")
 	if len(faults) > 0 || reads < 6 || keptCalls < 20 {
 		t.Errorf("the package's own files: faults %q, %d calls that keep an Answer and %d of them of Read, want none, 20 or more and 6 or more", faults, keptCalls, reads)
 	}
@@ -274,12 +280,153 @@ func TestEachReadingOfATextKeepsTheAnswerOfItsCharge(t *testing.T) {
 		{"a walk of one Answer given the blank name", "_ = j.whole.load()\n\treturn 0"},
 	} {
 		planted := "package specform\n\nimport (\n\t\"fmt\"\n\n\t\"" + chargePath + "\"\n)\n\nvar _ = fmt.Sprint\n\nfunc (j *wayJudge) planted(unit charge.Unit) int {\n\t" + plant.body + "\n}\n"
-		if faults, _, _ := droppedAnswers(t, ".", planted); !slices.ContainsFunc(faults, func(fault string) bool { return strings.HasPrefix(fault, "planted.go:") }) {
+		if faults, _, _, _ := droppedAnswers(t, ".", planted); !slices.ContainsFunc(faults, func(fault string) bool { return strings.HasPrefix(fault, "planted.go:") }) {
 			t.Errorf("the control, %s: the check gives the faults %q, want it named in planted.go", plant.name, faults)
 		}
 	}
 	kept := "package specform\n\nimport \"" + chargePath + "\"\n\nfunc (j *wayJudge) planted(unit charge.Unit) charge.Answer {\n\t_, _, charged := j.texts.Read(unit, false)\n\treturn charged\n}\n"
-	if faults, calls, read := droppedAnswers(t, ".", kept); len(faults) > 0 || calls != keptCalls+1 || read != reads+1 {
+	if faults, calls, read, _ := droppedAnswers(t, ".", kept); len(faults) > 0 || calls != keptCalls+1 || read != reads+1 {
 		t.Errorf("the control, a call that keeps its answer: faults %q, %d calls and %d of Read, want none, %d and %d", faults, calls, read, keptCalls+1, reads+1)
 	}
+}
+
+// refusalTexts is the documents whose judgments TestEachRefusedReadingRefusesTheWayOutThatAskedIt
+// refuses reading by reading: between them, a way out of their findings is judged through each call
+// of the judge that hands on a charge.Answer. They hold a stop with no space after it in a sentence
+// whose verb stands again after it, and beside two verbs of one group; a name that a sentence after
+// it holds in code font (holding); one finding in two sentences (two places of one way out); one
+// sentence written twice with an open sentence between (changedRuns); a text that ste-lint reads as
+// two lines (read whole); a long piece that runs on into the sentence of a finding; a footnote; two
+// instructions of a procedure; and a person's address in two sentences.
+var refusalTexts = []string{
+	":::check{#c}\nDispatch checks a1.B now. It checks the log.\n:::\n",
+	":::check{#c}\nDispatch checks a1.B now. It verifies the log.\n:::\n",
+	":::check{#c}\nIt reads Web.Config now. It logs `Web.Config` today.\n:::\n",
+	":::check{#c}\nIt reads a1.B now. It logs a1.B today.\n:::\n",
+	":::check{#c}\nHe said \"Run a1.B now.\" It waits. He said \"Run a1.B now.\"\n:::\n",
+	":::check{#c}\nDispatch reads it.\u2028Dispatch checks a1.B now.\n:::\n",
+	":::check{#c}\nIt runs in the U.S. and it said \"wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp.\" It keeps a1.B now. It ends.\n:::\n",
+	":::check{#c}\nDispatch keeps it[^1].\n:::\n\n[^1]: It checks Foo1.Validate at boot.\n",
+	":::check{#v run=\"Run the test and read the log.\"}\nDispatch keeps each record.\n:::\n",
+	":::check{#c}\nIt sends the log to ada@example.com now. Then it mails ada@example.com the report.\n:::\n",
+}
+
+// Each refused reading of a judgment ends in the refusal of a way out, which says so
+// (elsewhereNote), and changes no other answer: so the code acts on each charge.Answer that it binds
+// (TestEachReadingOfATextKeepsTheAnswerOfItsCharge holds the binding). For each document of
+// refusalTexts, the judgment (Check) runs once with no reading refused, which counts its readings,
+// and then once for each of them with that one refused (refuseReading): it holds each finding of the
+// first judgment, the same or with the note in its ways out, and more findings with the note than
+// the first. A judgment that fails names the refused reading by the file and line of each call of
+// the package that led to it, the call that does not act on its answer among them. And each call
+// whose results hold a charge.Answer (droppedAnswers) leads to some refused reading, so each answer
+// of the package is seen refused: a call that no document reaches so fails the test, which then
+// reads too little.
+func TestEachRefusedReadingRefusesTheWayOutThatAskedIt(t *testing.T) {
+	_, _, _, calls := droppedAnswers(t, ".", "")
+	context := planted("ada.lovelace@example.com")
+	// judged is the findings of document, or what stopped its judgment.
+	judged := func(document string) (found []Finding, stopped any) {
+		defer func() { stopped = recover() }()
+		read, err := ExtractDocument("spec.md", 1, document)
+		if err != nil {
+			return nil, err
+		}
+		return Check(context, Input{Texts: read.Texts, Proposed: read.Terms}), nil
+	}
+	defer func() { refuseReading = nil }()
+	passed := map[string]bool{}
+	refusals := 0
+	for _, document := range refusalTexts {
+		readings := 0
+		refuseReading = func() bool {
+			readings++
+			return false
+		}
+		want, stopped := judged(document)
+		if stopped != nil || readings == 0 {
+			t.Fatalf("%q: the judgment with no reading refused stops (%v) or reads no sentence (%d readings): %.300v", document, stopped, readings, want)
+		}
+		for refused := 1; refused <= readings; refused++ {
+			count, at := 0, ""
+			refuseReading = func() bool {
+				if count++; count != refused {
+					return false
+				}
+				at = readingAt(passed)
+				return true
+			}
+			got, stopped := judged(document)
+			if at == "" {
+				t.Errorf("%q: the judgment that refuses reading %d of %d makes %d readings", document, refused, readings, count)
+				continue
+			}
+			refusals++
+			if fault := refusalFault(want, got, stopped); fault != "" {
+				t.Errorf("%q: reading %d of %d refused, at %s: %s", document, refused, readings, at, fault)
+			}
+		}
+	}
+	var missed []string
+	for _, call := range calls {
+		if !passed[call] {
+			missed = append(missed, call)
+		}
+	}
+	t.Logf("%d documents, %d readings refused; %d calls that hand on a charge.Answer, %d of them on the way to no refused reading", len(refusalTexts), refusals, len(calls), len(missed))
+	if len(calls) < 20 || len(missed) > 0 {
+		t.Errorf("of the %d calls that hand on a charge.Answer, no refused reading passes through %q: the test reads too little", len(calls), missed)
+	}
+}
+
+// readingAt is where a reading of a judgment's texts stands: each call of the code of package
+// specform that led to it, innermost first, by its file and line and its function, each of which it
+// keeps in passed.
+func readingAt(passed map[string]bool) string {
+	pcs := make([]uintptr, 64)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(1, pcs)])
+	var at []string
+	for {
+		frame, more := frames.Next()
+		if filepath.Base(filepath.Dir(frame.File)) == "specform" && !strings.HasSuffix(frame.File, "_test.go") {
+			site := filepath.Base(frame.File) + ":" + fmt.Sprint(frame.Line)
+			passed[site] = true
+			at = append(at, site+" ("+strings.TrimPrefix(frame.Function[strings.LastIndex(frame.Function, "/")+1:], "specform.")+")")
+		}
+		if !more {
+			break
+		}
+	}
+	return strings.Join(at, " < ")
+}
+
+// refusalFault is what got, the findings of a judgment with one reading refused, or what stopped it,
+// holds that it should not, against want, the findings with none refused: each finding of want, the
+// same or with the note of a refused reading in its ways out (elsewhereNote), and more findings with
+// that note than want. It is "" where got holds that.
+func refusalFault(want, got []Finding, stopped any) string {
+	if stopped != nil {
+		return fmt.Sprintf("the judgment stops: %v", stopped)
+	}
+	if len(got) != len(want) {
+		return fmt.Sprintf("%d findings, want the %d of the judgment with no reading refused: %.300v", len(got), len(want), got)
+	}
+	noted := 0
+	for index := range want {
+		each, was := got[index], want[index]
+		if strings.Contains(each.Ways, elsewhereNote) && !strings.Contains(was.Ways, elsewhereNote) {
+			noted++
+		}
+		if each == was {
+			continue
+		}
+		each.Ways, was.Ways = "", ""
+		if each != was || !strings.Contains(got[index].Ways, elsewhereNote) {
+			return fmt.Sprintf("finding %d (%s, %q) says %q, want %q or the note of a refused reading", index, want[index].Rule, want[index].Detail, got[index].Ways, want[index].Ways)
+		}
+	}
+	if noted == 0 {
+		return "no finding says that a reading was refused: the refusal changed no answer"
+	}
+	return ""
 }

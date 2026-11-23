@@ -16,11 +16,16 @@ package charge
 import "fmt"
 
 // Answer is whether a charge let a reading go ahead (Read), or whether each charge that a walk asked
-// let it: a walk of the judge that reads through Read hands its answer on as an Answer. A value of
-// this type is never dropped: each call whose results hold one binds it to a name, or hands it on
-// whole as its own results, which the tests of package specform hold for each call of that package
-// by the type alone (TestEachReadingOfATextKeepsTheAnswerOfItsCharge). So no code reads on past a
-// charge that refused it as though the charge had said yes.
+// let it: a walk of the judge that reads through Read hands its answer on as an Answer. Each call of
+// package specform whose results hold one binds it to a name, or hands it on whole as its own
+// results, which the tests of that package hold for each call by the type alone
+// (TestEachReadingOfATextKeepsTheAnswerOfItsCharge). No rule over the form of the code can hold what
+// the code then does with an answer it bound (an answer read in a test that is always true acts on
+// nothing), so those tests hold that by what the judgment answers: each reading of a judgment of
+// their texts, refused in turn (Refuse), ends in the refusal of the way out that asked it or changes
+// no answer, and each such call is on the way to a refused reading
+// (TestEachRefusedReadingRefusesTheWayOutThatAskedIt). So no code of the judge that those texts
+// reach reads on past a charge that refused it as though the charge had said yes.
 type Answer bool
 
 // Unit names one text of a judgment: a sentence of the judged text, a sentence of a title of it
@@ -57,9 +62,11 @@ func (u Unit) Title() bool {
 // for a finding that stands in it (own) and for one that does not, apart. Each count stays within
 // limit: a reading past it is refused (Read), and one for a finding that stands in the text stops
 // the program where loud is set, as a walk that breaks the bounds that the limit is derived from.
+// A reading within the limit is refused too where refuse says so (Refuse).
 type Texts[K any] struct {
 	limit   int
 	loud    bool
+	refuse  func() bool
 	entries []entry[K]
 	named   map[name]int32
 }
@@ -81,6 +88,14 @@ type name struct {
 // New is the texts of one judgment, whose readings of each text stay within limit (Texts).
 func New[K any](limit int, loud bool) *Texts[K] {
 	return &Texts[K]{limit: limit, loud: loud, named: map[name]int32{}}
+}
+
+// Refuse makes Read ask refuse before each reading that the count lets, and refuse each that refuse
+// says yes to, as it refuses one past the limit but with no loud stop and nothing counted; nil asks
+// nothing. The tests of package specform refuse each reading of a judgment in turn, so that each
+// refusal is seen to end in the refusal of the way out that asked it (Answer).
+func (t *Texts[K]) Refuse(refuse func() bool) {
+	t.refuse = refuse
 }
 
 // Name is the unit of text, a sentence of the judged text, of a title (title) or an address of a
@@ -108,13 +123,13 @@ func (t *Texts[K]) Keep(u Unit, kept K) int {
 }
 
 // Read is one reading of the text that u names, for a finding that stands in it (own) or for one
-// that does not: where the text's count of such readings is under its limit, it counts the reading
-// and gives the text and what the judgment keeps of each of its places, in the order of Keep, with
-// the answer yes (ok true); elsewhere it counts nothing and gives nothing, with the answer no, so the
-// reader reads nothing of it. A reading past the limit for a finding that stands in the text stops
-// the program where loud is set. A unit that names no text gives nothing. The kept values may be
-// changed in place, as the judge's one reading of each text for no finding fills in what it reads
-// of each place.
+// that does not: where the text's count of such readings is under its limit, and Refuse's function
+// does not refuse it, it counts the reading and gives the text and what the judgment keeps of each
+// of its places, in the order of Keep, with the answer yes (ok true); elsewhere it counts nothing
+// and gives nothing, with the answer no, so the reader reads nothing of it. A reading past the limit
+// for a finding that stands in the text stops the program where loud is set. A unit that names no
+// text gives nothing. The kept values may be changed in place, as the judge's one reading of each
+// text for no finding fills in what it reads of each place.
 func (t *Texts[K]) Read(u Unit, own bool) (text string, kept []K, ok Answer) {
 	if !u.Named() {
 		return "", nil, false
@@ -129,6 +144,9 @@ func (t *Texts[K]) Read(u Unit, own bool) (text string, kept []K, ok Answer) {
 			panic(fmt.Sprintf("charge: a judgment reads the text %.80q a %dth time for the findings that stand in it, past its limit of %d: a walk breaks the bounds that the limit is derived from",
 				at.text, t.limit+1, t.limit))
 		}
+		return "", nil, false
+	}
+	if t.refuse != nil && t.refuse() {
 		return "", nil, false
 	}
 	*count++

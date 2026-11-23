@@ -337,11 +337,9 @@ func (w *wholeText) load() charge.Answer {
 			runs += at.after
 		}
 	}
-	// The text as it stands changes no sentence, so this reads none through a charge.
-	if w.before, w.verbs, charged = w.rotations(nil, nil); !charged {
-		w.refused = true
-		return false
-	}
+	// The text as it stands changes no sentence, so its findings of synonym-rotation are those of its
+	// own first places, which this read, and no sentence is read again through a charge.
+	w.before, w.verbs = w.rotationsOf(w.firsts)
 	if count > 0 {
 		spread := func(index int) ste.Spread { return records[index].spread }
 		pieces(0, count-1, spread, records[0].left, records[count-1].after, false, func(words int) { addLong(w.before, words, 1) })
@@ -548,10 +546,8 @@ func noneNew(after, before map[findingKey]int) bool {
 }
 
 // rotations is the findings of the rule synonym-rotation of the text with the sentences of changed
-// in place of its own, and its verbs: of its own words, each member of a group after the first one
-// to stand in it, at its first place, in the order of ste.LintVerbs; and of its words with those of
-// its footnotes (ste.Held.Rotations, held); and whether the charge of each sentence that it read
-// let it read it. A member whose first place is in a sentence of changed first stands, beside
+// in place of its own, and its verbs (rotationsOf), and whether the charge of each sentence that it
+// read let it read it. A member whose first place is in a sentence of changed first stands, beside
 // changed, in the next sentence of stands that changed does not hold, which it reads through its
 // charge (read).
 func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.Unit][]sentenceAt) (map[findingKey]int, ste.Verbs, charge.Answer) {
@@ -581,6 +577,15 @@ func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.U
 			}
 		}
 	}
+	found, verbs := w.rotationsOf(firsts)
+	return found, verbs, true
+}
+
+// rotationsOf is the findings of the rule synonym-rotation of a text whose members of the synonym
+// groups first stand at firsts, and its verbs: of its own words, each member of a group after the
+// first one to stand in it, at its first place, in the order of ste.LintVerbs; and of its words with
+// those of its footnotes (ste.Held.Rotations, held). It reads no sentence.
+func (w *wholeText) rotationsOf(firsts map[[2]int]sentenceHit) (map[findingKey]int, ste.Verbs) {
 	groups := map[int][]sentenceHit{}
 	var verbs ste.Verbs
 	for _, first := range firsts {
@@ -604,7 +609,7 @@ func (w *wholeText) rotations(changed map[int]writtenSentence, read map[charge.U
 	for _, each := range rotationBreaks(w.held.Rotations(verbs), "its footnotes") {
 		found[findingKeyOf(each)]++
 	}
-	return found, verbs, true
+	return found, verbs
 }
 
 // changedRuns is the sentences of changed as runs, each from the first to the last of the sentences

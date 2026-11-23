@@ -52,9 +52,17 @@ var elsewhereNote = fmt.Sprintf("Dispatch reads one sentence at most %d times fo
 // refuses such a reading, as it refuses any other past its charge.
 var loudReads = false
 
+// refuseReading, where the tests set it, is asked before each reading of a judgment's texts that
+// the charge lets, and refuses each that it says yes to (charge.Texts.Refuse): the tests refuse each
+// reading of a judgment in turn, so that each refusal is seen to end in the refusal of the way out
+// that asked it (charge.Answer). It is nil outside the tests.
+var refuseReading func() bool
+
 // newTexts is the texts of one judgment of the ways out, each sentence's readings charged within
 // ownReads for the findings that stand in it and as many for the others (charge.Texts), with what
 // the whole text keeps of each place of a sentence (sentenceAt).
 func newTexts() *charge.Texts[sentenceAt] {
-	return charge.New[sentenceAt](ownReads, loudReads)
+	texts := charge.New[sentenceAt](ownReads, loudReads)
+	texts.Refuse(refuseReading)
+	return texts
 }
