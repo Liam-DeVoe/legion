@@ -387,29 +387,38 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
 // it is the task's join branch, which the join of its needs makes (join true): the one rule the
-// join's executor, the opener of a task's pull request and the task text read. It is issue's
-// default branch for the task that merges (the one task no task needs, plan.Sinks), for a task that
-// needs none and for a task none of whose steps is of the type implementation, whose pull request
-// shows the joined work of its needs, which its steps read. A task with one need is based on that
-// need's branch (BranchOf). A task with several is based on its join branch, its own branch and
-// claim.JoinBranchSuffix, where the work of its needs is joined and from which its branch starts,
-// so its pull request shows its own work alone. It is read for a task its first start gave a branch
-// (AssignTaskBranch). A task p does not hold, and a need it does not hold, answer the default
-// branch.
-func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool) {
+// join's executor, the opener of a task's pull request, the task text and the judgement of a later
+// version of the plan read. It is issue's default branch for the task that merges (the one task no
+// task needs, plan.Sinks), for a task that needs none and for a task none of whose steps is of the
+// type implementation, whose pull request shows the joined work of its needs, which its steps
+// read. A task with one need is based on that need's branch (BranchOf). A task with several is
+// based on its join branch, its own branch and claim.JoinBranchSuffix, where the work of its needs
+// is joined and from which its branch starts, so its pull request shows its own work alone. It is
+// read for a task its first start gave a branch (AssignTaskBranch). A task p does not hold, and a
+// need it does not hold, are an error naming it: plan.Validate refuses such a plan, so p holding one
+// is a defect, which no base would answer truly.
+func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
 	at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == task })
-	if at < 0 || len(p.Tasks[at].Needs) == 0 || p.merges(task) || !p.Implements(task) {
-		return issue.DefaultBranch, false
+	if at < 0 {
+		return "", false, fmt.Errorf("the base of task %s of %s: its plan holds no such task", task, issue.Key)
 	}
-	of := p.Tasks[at]
-	if len(of.Needs) > 1 {
-		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true
+	of, first := p.Tasks[at], -1
+	for _, id := range of.Needs {
+		need := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == id })
+		if need < 0 {
+			return "", false, fmt.Errorf("the base of task %s of %s: it needs %s, which its plan holds no task of", task, issue.Key, id)
+		}
+		if first < 0 {
+			first = need
+		}
 	}
-	need := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == of.Needs[0] })
-	if need < 0 {
-		return issue.DefaultBranch, false
+	switch {
+	case len(of.Needs) == 0 || p.merges(task) || !p.Implements(task):
+		return issue.DefaultBranch, false, nil
+	case len(of.Needs) > 1:
+		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
 	}
-	return p.Tasks[need].BranchOf(issue.Key), false
+	return p.Tasks[first].BranchOf(issue.Key), false, nil
 }
 
 // Implements says whether a step of task of p is of the type implementation: the step that opens

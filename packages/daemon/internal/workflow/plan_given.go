@@ -126,7 +126,11 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		}
 		refused = append(refused, needsOfMerging(given.stored, fact.Plan, given.changed)...)
 		if issue != nil {
-			refused = append(refused, startedBasesMoved(*issue, given.stored, nextPlan(given.stored, given.tasks, given.steps), given.changed)...)
+			moved, err := startedBasesMoved(*issue, given.stored, nextPlan(given.stored, given.version, given.tasks, given.steps), given.changed)
+			if err != nil {
+				return givenVersion{}, nil, err
+			}
+			refused = append(refused, moved...)
 		}
 		if len(refused) > 0 {
 			return givenVersion{}, intake.PlanRefused(refused), nil
@@ -385,28 +389,36 @@ func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string)
 // the version through. needsOfMerging is not a case of this rule: it also refuses a need of the
 // task that merges once it is done, and a need of one at its retro or its merge whose base the need
 // does not move (a task that needs none, or none of whose steps is of the type implementation,
-// based on the default branch either way).
-func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next record.StoredPlan, changed []string) []plan.Refusal {
+// based on the default branch either way). A plan that holds no task or no need a base reads is an
+// error (record.StoredPlan.BaseOf), which plan.Validate leaves no version to reach.
+func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next record.StoredPlan, changed []string) ([]plan.Refusal, error) {
 	var refused []plan.Refusal
 	for _, task := range stored.Tasks {
 		if task.State != record.TaskRunning && task.State != record.TaskHeld || slices.Contains(changed, task.Task) ||
 			task.Place.Kind == record.PlaceRetro || task.Place.Kind == record.PlaceMerge {
 			continue
 		}
-		base, _ := stored.BaseOf(issue, task.Task)
-		if moved, _ := next.BaseOf(issue, task.Task); moved != base {
+		base, _, err := stored.BaseOf(issue, task.Task)
+		if err != nil {
+			return nil, err
+		}
+		moved, _, err := next.BaseOf(issue, task.Task)
+		if err != nil {
+			return nil, fmt.Errorf("version %d of the plan of %s: %w", next.Version.Version, issue.Key, err)
+		}
+		if moved != base {
 			refused = append(refused, intake.StartedTaskBaseMoved(task.Task, base, moved))
 		}
 	}
-	return refused
+	return refused, nil
 }
 
 // nextPlan is the plan stored becomes once the rows of a version given over it (givenRows) are
-// written (record.Store.PutPlan): each of tasks, with the branch stored holds for a task the
-// generation holds already, which the write keeps (a task new to the generation holds none until
-// its first start gives it one, record.Store.AssignTaskBranch), and the steps of each task.
-func nextPlan(stored *record.StoredPlan, tasks []record.PlanTask, steps []record.PlanStep) record.StoredPlan {
-	next := record.StoredPlan{Tasks: make([]record.PlanTask, 0, len(tasks)), Steps: map[string][]record.PlanStep{}}
+// written (record.Store.PutPlan): version, and each of tasks, with the branch stored holds for a
+// task the generation holds already, which the write keeps (a task new to the generation holds none
+// until its first start gives it one, record.Store.AssignTaskBranch), and the steps of each task.
+func nextPlan(stored *record.StoredPlan, version record.PlanVersion, tasks []record.PlanTask, steps []record.PlanStep) record.StoredPlan {
+	next := record.StoredPlan{Version: version, Tasks: make([]record.PlanTask, 0, len(tasks)), Steps: map[string][]record.PlanStep{}}
 	for _, task := range tasks {
 		if at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task.Task }); at >= 0 {
 			task.Branch = stored.Tasks[at].Branch
