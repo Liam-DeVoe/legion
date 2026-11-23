@@ -70,10 +70,10 @@ type givenVersion struct {
 // but over the default steps, and so is a version at or below it (laterVersionRefusal). A task the
 // version changes or removes must wait or be stopped: a running task is refused, and so is a held
 // task, one reason for each, and so is a task that is done or left the workflow. A version that
-// adds a need of the task that merges is refused while that task stands at its retro or its merge
-// or is done (needsOfMerging). A version that moves the base of a task that has started and is not
-// stopped is refused too, so a task's later steps are never told a base its start did not make
-// (startedBasesMoved). A plan given in a lingering tree is refused too.
+// changes whether the work of a task it leaves as it is merges by itself is refused only where that
+// task stands at its retro or its merge (mergeChangeRefusals). A version that moves the base of a
+// task that has started and is not stopped is refused too, so a task's later steps are never told
+// a base its start did not make (startedBasesMoved). A plan given in a lingering tree is refused too.
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
@@ -124,9 +124,10 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 				refused = append(refused, intake.HeldTaskChanged(id, heldAt(given.stored, task)))
 			}
 		}
-		refused = append(refused, needsOfMerging(given.stored, fact.Plan, given.changed)...)
+		next := nextPlan(given.stored, given.version, given.tasks, given.steps)
+		refused = append(refused, mergeChangeRefusals(*given.stored, next, given.changed)...)
 		if issue != nil {
-			moved, err := startedBasesMoved(*issue, given.stored, nextPlan(given.stored, given.version, given.tasks, given.steps), given.changed)
+			moved, err := startedBasesMoved(*issue, given.stored, next, given.changed)
 			if err != nil {
 				return givenVersion{}, nil, err
 			}
@@ -419,29 +420,27 @@ func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
 	return fmt.Sprintf("step %d (%s)", task.Place.Position, role)
 }
 
-// needsOfMerging is one refusal (intake.NeedOfMergingTask) for each task next adds or changes
-// (changed) that needs the task of stored that merges (record.StoredPlan.MergingTask) where that
-// task stands at its retro or its merge, or is done: the work of the issue merges there, and this
-// release carries out no need of it then. None while that task stands at a step or waits.
-func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string) []plan.Refusal {
-	merging, merges := stored.MergingTask()
-	row, ok := stored.TaskOf(merging)
-	if !merges || !ok {
-		return nil
-	}
-	var stands string
-	switch {
-	case row.Place.Kind == record.PlaceRetro:
-		stands = "retro"
-	case row.Place.Kind == record.PlaceMerge || row.State == record.TaskDone:
-		stands = "merge"
-	default:
-		return nil
-	}
+// mergeChangeRefusals is one refusal for each task of before, the plan in force, that the version
+// leaves as it is and whose work after, the plan the version makes (nextPlan), merges by itself
+// where before's does not, or the other way (record.StoredPlan.Merging): the rule each walk reads
+// (walksOf). Where the task stands decides. A task that waits or is stopped, and a task running or
+// held at a step, its last included, take the version: its line goes on to its retro and its merge,
+// or ends at its last step, by the answer in force when that step passes (plan.Line). A task
+// running or held at its retro or its merge is refused (intake.MergeOfStartedActChanged): that act
+// has started, or a hold keeps it back, and neither a retro whose task would no longer merge nor a
+// task past its last step that would now merge can be carried out. A task the version changes or
+// removes (changed) is left to the refusal that names it already (intake.RunningTaskChanged,
+// intake.HeldTaskChanged, intake.FinishedTask), so no task is named twice.
+func mergeChangeRefusals(before, after record.StoredPlan, changed []string) []plan.Refusal {
+	was, will := before.Merging(), after.Merging()
 	var refused []plan.Refusal
-	for _, task := range next.Tasks {
-		if task.ID != merging && slices.Contains(changed, task.ID) && slices.Contains(task.Needs, merging) {
-			refused = append(refused, intake.NeedOfMergingTask(task.ID, merging, stands))
+	for _, task := range before.Tasks {
+		if slices.Contains(changed, task.Task) || slices.Contains(was, task.Task) == slices.Contains(will, task.Task) {
+			continue
+		}
+		atAct := task.Place.Kind == record.PlaceRetro || task.Place.Kind == record.PlaceMerge
+		if atAct && (task.State == record.TaskRunning || task.State == record.TaskHeld) {
+			refused = append(refused, intake.MergeOfStartedActChanged(task.Task, task.Place.Kind, task.State == record.TaskHeld))
 		}
 	}
 	return refused
@@ -458,14 +457,11 @@ func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string)
 // stopped task when it starts again, joins its needs on the base the plan gives at its start
 // (startTaskCopy), so neither is refused.
 //
-// Two tasks are left to the refusal that names them already, so no task is named twice: a task the
-// version changes (intake.RunningTaskChanged, intake.HeldTaskChanged), and the task that merges at
-// its retro or its merge, whose base only a need of it moves (needsOfMerging), where no stop lets
-// the version through. needsOfMerging is not a case of this rule: it also refuses a need of the
-// task that merges once it is done, and a need of one at its retro or its merge whose base the need
-// does not move (a task that needs none, or none of whose steps is of the type implementation,
-// based on the default branch either way). A plan that holds no task or no need a base reads is an
-// error (record.StoredPlan.BaseOf), which plan.Validate leaves no version to reach.
+// A task the version changes is left to the refusal that names it already, so no task is named
+// twice (intake.RunningTaskChanged, intake.HeldTaskChanged), and so is a task at its retro or its
+// merge, a change of whose merge mergeChangeRefusals refuses. A plan that holds no task or no need
+// a base reads is an error (record.StoredPlan.BaseOf), which plan.Validate leaves no version to
+// reach.
 func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next record.StoredPlan, changed []string) ([]plan.Refusal, error) {
 	var refused []plan.Refusal
 	for _, task := range stored.Tasks {
@@ -489,14 +485,18 @@ func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next recor
 }
 
 // nextPlan is the plan stored becomes once the rows of a version given over it (givenRows) are
-// written (record.Store.PutPlan): version, and each of tasks, with the branch stored holds for a
-// task the generation holds already, which the write keeps (a task new to the generation holds none
-// until its first start gives it one, record.Store.AssignTaskBranch), and the steps of each task.
+// written (record.Store.PutPlan): version, each of tasks, and the steps of each task. A task the
+// generation holds already takes its block's columns from tasks and keeps the rest of its row as
+// stored holds it, as the write keeps it: where it stands, its branch, its counts and its waits. A
+// task new to the generation waits at no act and holds no branch until its first start gives it
+// one (record.Store.AssignTaskBranch).
 func nextPlan(stored *record.StoredPlan, version record.PlanVersion, tasks []record.PlanTask, steps []record.PlanStep) record.StoredPlan {
 	next := record.StoredPlan{Version: version, Tasks: make([]record.PlanTask, 0, len(tasks)), Steps: map[string][]record.PlanStep{}}
 	for _, task := range tasks {
-		if at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task.Task }); at >= 0 {
-			task.Branch = stored.Tasks[at].Branch
+		if kept, ok := stored.TaskOf(task.Task); ok {
+			kept.PlanVersion, kept.BlockText, kept.Needs, kept.PartOf, kept.OwnerRole, kept.Merges, kept.StepsByDefault =
+				task.PlanVersion, task.BlockText, task.Needs, task.PartOf, task.OwnerRole, task.Merges, task.StepsByDefault
+			task = kept
 		}
 		next.Tasks = append(next.Tasks, task)
 	}

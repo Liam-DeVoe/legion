@@ -65,8 +65,7 @@ func scopeOn(issue record.Issue, stored *record.StoredPlan, task string) (TaskSc
 	if !ok {
 		return TaskScope{}, false
 	}
-	merging, _ := stored.MergingTask()
-	w := walkOfTask(issue.Key, stored, row, merging)
+	w := walkOfTask(issue.Key, stored, row, stored.Merging())
 	issue.Phase, issue.Hold = scopeStanding(issue, w, stored)
 	issue.ViewTask = task
 	return TaskScope{issue: issue, walk: w, plan: stored}, true

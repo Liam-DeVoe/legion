@@ -1853,10 +1853,10 @@ type Refusal struct {
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
 // the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
-// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), one
-// that moves the base of a running or held task (StartedTaskBaseMoved), or one whose agent this
-// release cannot name (AgentUnnamed). The message holds every reason in its order, so a reader of
-// the sentence alone reads every cause.
+// HeldTaskChanged), one that changes whether the work of a task merges once its retro or its merge
+// has started or is held (MergeOfStartedActChanged), one that moves the base of a running or held
+// task (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The
+// message holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1879,13 +1879,19 @@ func HeldTaskChanged(task, at string) plan.Refusal {
 		"task %s is held at %s: retry or escalate its hold with retry_or_escalate, or stop it with stop_task, before you change it.", task, at)}
 }
 
-// NeedOfMergingTask is the reason a later version of the plan is refused when it gives task a
-// need of merging, the task whose work is the issue's that merges, which stands at its at (retro
-// or merge) or is done: the work of the issue merges there, and this release does not carry out
-// a need of it then.
-func NeedOfMergingTask(task, merging, at string) plan.Refusal {
+// MergeOfStartedActChanged is the reason a later version of the plan is refused when it changes
+// whether the work of task merges by itself (record.StoredPlan.Merging) while task stands at act,
+// its retro or its merge, which has started, or which a hold keeps back (held): a retro whose task
+// would no longer merge, and a task past its last step that would now merge, cannot be carried out.
+// The owner keeps the needs on the task until it is done.
+func MergeOfStartedActChanged(task, act string, held bool) plan.Refusal {
+	stands := "has started"
+	if held {
+		stands = "is held"
+	}
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
-		"task %s needs task %s, which stands at its %s, where the work of the issue merges. This release of Legion does not carry it out yet.", task, merging, at)}
+		"task %s stands at its %s, which %s, so this version cannot change whether its work merges. Keep each need on task %s as it is until it is done.",
+		task, act, stands, task)}
 }
 
 // StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the
