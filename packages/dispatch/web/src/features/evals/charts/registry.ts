@@ -6,11 +6,13 @@ import { bandKind } from "./band";
 import { barKind } from "./bar";
 import { intervalKind } from "./interval";
 import type { ChartKind } from "./kind";
+import { stackedBarKind } from "./stacked-bar";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
   bar: barKind,
   interval: intervalKind,
+  "stacked-bar": stackedBarKind,
   xy: xyKind,
 };
