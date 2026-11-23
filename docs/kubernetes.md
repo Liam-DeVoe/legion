@@ -5300,8 +5300,9 @@ The `legion` in the helper resolves on the PATH of whichever process runs git.
 No container is told `LEGION_GIT_PATH` or `LEGION_JJ_PATH` (for the credential helper and the grant file, see the table above), and nothing is installed under the issue's volume for a pod to run:
 a pod's `git` and `jj` are the image's, resolved on its PATH.
 The daemon renders the gh keys when it writes the role Secret at the pod's start, logging `sandbox runtime: github credential
-written` with the sandbox, role, App, `expiresAt` and directories, and a refresher walks every live slot each minute, re-rendering its bundle — of the App of the role its process was launched as, else of the role its stored claim holds, and of its own name's App where no stored claim runs in it — for the pod's own repository, which its `workspace-fetch` argument names (for the controller, which works none, the owner its `github-default` records), from the daemon's cached leases and updating the Secret only for the directories whose `hosts.yml` changed (`sandbox runtime:
+written` with the sandbox, role, App, `expiresAt` and directories, and a refresher walks every live slot each minute, re-rendering its bundle — of the App of the role its process was launched as, else of the role its stored claim holds, and of its own name's App where no stored claim runs in the slot of a role — for the pod's own repository, which its `workspace-fetch` argument names (for the controller, which works none, the owner its `github-default` records), from the daemon's cached leases and updating the Secret only for the directories whose `hosts.yml` changed (`sandbox runtime:
 github credential refreshed`, the same fields); the kubelet rewrites the projection in place, so the next `gh` runs with the new token.
+The refresher passes over the slot of an agent of the plan whose name no role has, such as `implementer-2`, while no stored claim runs in it: no process reads it, and it keeps the bundle the pod's build wrote, of the App of the role of that agent's first step, until the claim's first launch writes its own (`refreshGitHubCredentials`, `internal/runtime/sandbox/ghcredential.go`).
 The `appauth` lease re-mints 20 minutes before its token expires, so a new token lands at least 15 minutes before the old one lapses, and GitHub keeps the old token valid until its own expiry.
 `gh config set`, `gh alias set` and `gh auth login` cannot write the read-only directory, and `gh auth status` reports the account as `x-access-token`.
 A `task` subagent inherits the environment of the agent that starts it, `GH_CONFIG_DIR` among it, so its `gh` acts as the same App.
@@ -6726,8 +6727,10 @@ A microVM issue pod's record also holds the sandbox it runs in, with `keep_volum
 The orphan sweep compares that record with what the runtime would build now, and adds the three facets of the live pod whose worker can still be reached
 — the operator's volume and mount holding the role's overlays, the secrets broker's enrollment, and the session store (`PodDrift`).
 Quantities are compared as amounts, so a disk written `1024Mi` and one written `1Gi` are no drift.
-**A Sandbox whose template carries no such annotation was built before this release and is compared by image alone**, never by its reservation, volumes, mounts or disk:
+**A Sandbox whose template carries no such annotation was built before this release, and of its record the image alone is compared**, never its reservation, volumes, mounts or disk:
 nothing recorded what that pod was built from, and a guess would replace pods the operator never changed.
+Whatever the annotation, an issue's pod also drifts where the issue's plan in force names an agent whose name no role has, such as `implementer-2`, and the pod's template binds slots but none of that name: `slots <the template's>, now <the slots a launch binds now>` (`PodSlotsDrift`, `internal/runtime/sandbox/drift.go`).
+The sweep reads each issue's plan once for this, skips the reason where that read fails, and asks it of no Sandbox set `Suspended`; a start of such an agent waits for the round this opens.
 
 What the sweep then opens is one round per issue, since every role of an issue shares its one pod (`reconcilePodUpdates`, `packages/daemon/internal/daemon/podupdate.go`).
 Every claim of the issue that has a session and has not retired is asked, since its agent has run and may hold unpushed work.
@@ -7210,6 +7213,7 @@ There are four such starts.
 An operator's `legion claims retry` of a failed claim resumes the session that claim recorded from the session database, or starts a new one once supervise's `forgetSession` has dropped it.
 The same retry with `--fresh-session` forgets that session first and starts a new one.
 A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
+But a start of another agent than the one whose session the claim records, such as a new agent a later version of the plan gave a stopped task's name, leaves that session behind and starts the new agent in a session of its own (`supervise.Claim.SessionAgent`).
 A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, and each later phase start of the child queues one for an architect that failed, the move into `accepting` among them (`childArchitectStart` and `reviveArchitect`, `internal/workflow`).
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
@@ -7736,7 +7740,7 @@ A stop the runtime refused sends nothing, because that process may still be runn
 No wake acts on a claim the daemon or an operator suspended ([Idle release](#idle-release)).
 After its stop, an Envoy direct message to that session is stored for the stopped session, and a person's targeted Dispatch message to it is recorded `queued`: the listener stores it, or Dispatch publishes it on the session's agent subject itself when no store of the listener's holds the session.
 The session reads either message if the claim is resumed within the stream's 72 hours.
-The delete names the ended process's own registration rather than a moment alone, because the claim is relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume:
+The delete names the ended process's own registration rather than a moment alone, because the claim can be relaunched under the same session id, after a death by the very decision that asks for the stop and after a suspension by a later wake or resume of the same agent (a start of another agent leaves the session behind and starts one of its own):
 the listener deletes only while the stored entry carries that client instance id, or none, and was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept, with the listener's own reason — rather than taking a working session's registration away.
 Each condition is there to make the other's weakness bearable, and the listener keeps the entry whenever either refuses it (dispatch://INFRA-2064).
 A registration's `UpdatedAt` is stamped by the listener's own clock at every write, not by the registering process, so on clocks that agree the dead pane's last heartbeat is stamped before the probe; a stop dated earlier than the probe's own moment reads that heartbeat as a registration written since and refuses the stop that is owed, and carrying the probe's moment undated is what deletes it.

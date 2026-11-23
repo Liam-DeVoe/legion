@@ -1324,9 +1324,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    its session, a root agent's report of its own exit and the release of an idle
    issue pod (`runtime.kubernetes.idle_release`), the daemon suspends or ends claims only when an
    issue leaves the workflow, when a claim moves to another tree, for a production check after the
-   issue is done, or when an agent's next step is of another role than the one its claim holds:
-   the start of that step suspends the claim at the end of its turn, keeping its session, gives
-   it the step's role and resumes it on the same session. That session can hold a GitHub token of
+   issue is done, when an agent's next step is of another role than the one its claim holds, or
+   when the next step of a claim's name is another agent's than the one whose session it holds: the
+   start of that step suspends the claim at the end of its turn. For another role it keeps the
+   session, gives the claim the step's role and resumes it on the same session; for another agent
+   it leaves the session behind and starts that agent in a session of its own. A session the claim
+   keeps can hold a GitHub token of
    the earlier role's App that the agent printed, which GitHub accepts until it expires, so the
    first prompt the agent takes in the new role tells it that any GitHub token it saw in an
    earlier role is no longer its to use and that its `gh` and `git` now act as the new role's App;
