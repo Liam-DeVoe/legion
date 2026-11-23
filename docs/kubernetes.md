@@ -3297,6 +3297,7 @@ The migrations recorded above this one are these.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261117201743_plan_roles adds the table `plan_roles`, the roles an owner's plan defines, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too, `drop table if exists plan_roles;` and `delete from schema_version where version = 20261117201743;` in one transaction (its header carries the whole block), so that the roll-forward creates the table again empty, and a rollback that also goes past the issue plans' tables runs it first, since the table's foreign key stands on `issue_plans`.
 That way back takes away every role a plan defines.
+Before you pin the release before, remove the `models` key from `legion.yaml` where the file sets it: that release refuses the whole file at load (`unknown key models`), and the models the key lists are the models a role of a plan may name, which the way back takes away.
 At its boot, the release before stops each task that still has a step of such a role to run.
 The reason it gives is `step <n> names the role <role>, which the deployment no longer defines`.
 Two kinds of task are not stopped at boot.
@@ -8133,8 +8134,16 @@ each issue's pod (every role of it alike) and the image probe's.
   Every architect is told them after Legion's roles and the deployment's.
   `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where none is named).
   The served settings carry them as `settings.models`, absent where none is named.
-  The loader refuses a value that is not a list (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]`), an entry that is not a string (`models[<i>] must be a model's name`), an empty entry (`models[<i>] is empty`), an entry that holds white space (`models[<i>] is <m>, which holds white space: a model's name is one word`) and a model named twice (`models names <m> twice`), each index counted from 0.
+  This release takes a value `models` cannot hold with one warning, which boot logs and `legion config check` prints right after its OK line, naming the key and the entry, each index counted from 0; the next release refuses each of them at load.
+  A value that is not a list lists no model (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]: this release lists no model from it, and the next release refuses it; write models as a list in legion.yaml`).
+  An entry that is not a string (`models[<i>] must be a model's name: …`), an empty entry (`models[<i>] is empty: …`) and an entry that holds white space (`models[<i>] is "<m>", which holds white space, and a model's name is one word: …`) are left out of the listed models, each warning ending `this release leaves it out of the listed models, and the next release refuses it; remove it from legion.yaml`.
+  A model named twice is listed once (`models[<i>] names <m>, which models[<j>] names already: this release lists it once, and the next release refuses it; remove it from legion.yaml`).
   `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
+  A role of a plan keeps its model with the version that defines it, into each later generation of its issue, so a model you take out of the listed models stops, at the daemon's next boot, each task whose remaining steps name a role of the issue's plan on that model, running or waiting:
+  the task stops where it stands, as `stop_task` stops it, a running step's worker is stopped, the issue is held `task-stopped`, and the owner is told once, in a `task-stopped` notice that names the role, with the reason `task <t> of <KEY> was stopped: step <n> names the role <role>, whose model <m> the deployment no longer lists; it lists <m1>, <m2>` (or `it lists none`).
+  A root that waits on a person before its first step is stopped when it moves into a step of such a role.
+  The owner's next version of the plan, on a listed model, starts the task again, as listing the model again and setting the root back to `todo` does.
+  A rollback past the release that adds `models` removes the key from `legion.yaml` first: the release before refuses it at load (`unknown key models`; [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
   Give a role of the deployment its model in the settings, as `roles.<name>.model`: Legion lists that model, and compares the `model` of a role block with the listed models.
   A model that only a role's Oh My Pi overlay names is neither compared nor listed; the step record shows the model that each session ran.
 
