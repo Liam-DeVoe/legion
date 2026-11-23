@@ -34,15 +34,20 @@ packages/envoy/**/*_test.go
 packages/envoy/internal/integration/
 packages/envoy/internal/smoke/
 packages/envoy/deploy/
-# The envoy-infra module: what `go build ./cmd/envoy-infra` reads and nothing else - no test data,
-# docs, scripts or the held-port wrapper's Dockerfile.
-packages/envoy/infra/**
-!packages/envoy/infra/go.mod
-!packages/envoy/infra/go.sum
-!packages/envoy/infra/go.work
-!packages/envoy/infra/go.work.sum
-!packages/envoy/infra/**/*.go
-packages/envoy/infra/**/*_test.go
+# The envoy-infra module: what `go build ./cmd/envoy-infra` reads and nothing else, its module and
+# workspace files and its Go sources but tests (packages/envoy/**/*_test.go above). Each of its
+# other files is left out by name - its guides, docs, scripts, test data and the held-port
+# wrapper's Dockerfile - rather than the module left out and its Go sources taken back: a `!` line
+# with a wildcard makes BuildKit walk every directory this file leaves out (.git, each
+# node_modules) to look for a match, where it skips them while every `!` line is a plain path.
+# A pull request that adds another file here fails check-image-trigger-paths.sh, since
+# release-envoy-listener.yaml's push paths take only the files this lets in.
+packages/envoy/infra/*.md
+packages/envoy/infra/docs/
+packages/envoy/infra/scripts/
+packages/envoy/infra/**/testdata/
+packages/envoy/infra/host/heldportwrapper/Dockerfile
+packages/envoy/infra/host/heldportwrapper/Dockerfile.dockerignore
 
 # Every package's changelog fragments, which no build reads.
 packages/*/.changes/

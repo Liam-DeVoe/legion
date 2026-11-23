@@ -103,7 +103,10 @@ env:
   # version) and release_publish (which confirms it, --expect, inside the concurrency group):
   # every notices script changes an artifact this release publishes, and the target lists decide
   # the archives, so they take a patch release; packages/envoy/infra is excluded, since
-  # release-envoy-infra.yaml releases it and nothing published here compiles it in.
+  # release-envoy-infra.yaml releases it and no archive released here compiles it in. The image
+  # does, as /usr/local/bin/envoy-infra: a push that changes only the module's files the image
+  # builds from publishes the image under its commit and moves `latest`, as every push matching the
+  # paths above does, and cuts no legion-envoy-v release.
   LEGION_ENVOY_VERSION_ARGS: >-
     --patch-path scripts/third-party-notices.ts --patch-path scripts/go-third-party-notices.sh
     --patch-path scripts/assemble-third-party-notices.sh --patch-path .github/go-release-targets.json

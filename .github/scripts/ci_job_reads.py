@@ -3805,9 +3805,9 @@ GATES = [
         # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
         # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
         # compiles that one), deploy and the changelog fragments, and for the first, of infra, all
-        # but its module and workspace files and Go sources, which build envoy-infra (:104 and
-        # :156). No go
-        # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
+        # but its module and workspace files and Go sources, which build envoy-infra (:127 and
+        # :156). No go command of this gate reaches most of those files, so rule 9 of
+        # check-ci-filters.sh reads
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
         # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is

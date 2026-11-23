@@ -98,11 +98,11 @@ COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /
 RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
-# The envoy-infra module's own dependencies (the Pulumi SDKs among them), downloaded in a layer of
-# their own like the envoy module's above. The module is built in its workspace (infra/go.work, which
-# binds it and the envoy module at /src), as the envoy-infra release builds it.
-COPY packages/envoy/infra/go.mod packages/envoy/infra/go.sum ./infra/
-RUN cd infra && GOWORK=off go mod download
+# No download of the envoy-infra module's own dependencies here: its go.mod requires the Pulumi
+# SDKs and the rest of the Pulumi plugin's, 0.8 GB of module cache that /usr/local/bin/envoy-infra
+# never compiles, so `go build` and the notices step below fetch only the modules its packages import.
+# The module is built in its workspace (infra/go.work, which binds it and the envoy module at
+# /src), as the envoy-infra release builds it.
 
 # The whole module, so a binary that imports a new package of it builds here with no edit to this
 # file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. This
@@ -132,10 +132,10 @@ RUN mkdir -p /out \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
-# `commit`, and which every binary below that connects to NATS names after its connection's name
-# (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the hub's census of
-# connections). The release workflow passes its own github.sha, for the image it publishes and for
-# the smoke image it tests first. Left empty — a local compose or hand build, and the
+# `commit`, and which every binary below that connects to NATS, envoy-infra among them, names after
+# its connection's name (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the
+# hub's census of connections). The release workflow passes its own github.sha, for the image it
+# publishes and for the smoke image it tests first. Left empty — a local compose or hand build, and the
 # pull-request lane's smoke image, which publishes nothing to match — the binary reports null and
 # names no build; anything else must be a full commit sha, so no placeholder is ever reported as a
 # commit.
@@ -153,7 +153,7 @@ RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher \
     && cd infra && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-infra ./cmd/envoy-infra
+    go build -ldflags "$build" -o /out/envoy-infra ./cmd/envoy-infra
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.
