@@ -28,8 +28,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 # shellcheck source=.github/scripts/ci-retry.sh
 . .github/scripts/ci-retry.sh
 
-# The `--limit` is 100 because the queue builds up to 20 groups at once and this pull
-# request's own groups are among them: gh's default of 20 runs could leave an older
+# The `--limit` is 100, well above the number of groups main's merge queue builds at once, and
+# this pull request's own groups are among those: gh's default of 20 runs could leave an older
 # group of it out of the list, and so out of the act. It retries at the same 30 s an
 # attempt as the force-cancel below: a refused list names no group at all, and every
 # removed group's run then keeps its runners.

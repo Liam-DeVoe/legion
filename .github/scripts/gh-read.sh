@@ -16,13 +16,14 @@
 # GitHub's rate limits, it works out when GitHub will answer again and, when that time plus the
 # command's margin (below) falls before the job's limit (or the step's, below), logs one
 # ::warning:: line naming the wait and the limit, sleeps until then and runs the command once
-# more. When it falls later, or no limit can be read, it runs nothing more and fails by name at
-# once, without sleeping. Any other failure is the command's own: its stdout, its stderr and its
-# exit status reach the caller as a bare call's would. It returns the status of the run it ended
-# on, or 75 when it failed by name: a wait past the limit, no limit to wait within, a reset it
-# could not read, or a refusal again after the wait. Every line of its own goes to stderr; stdout
-# holds the stdout of the run it ended on and nothing else, so a run it repeats leaves no half
-# page in the caller's hands.
+# more; when that time has passed by the moment it would sleep (a slow host), it runs the command
+# once more at once and logs no wait. When it falls later, or no limit can be read, it runs
+# nothing more and fails by name at once, without sleeping. Any other failure is the command's
+# own: its stdout, its stderr and its exit status reach the caller as a bare call's would. It
+# returns the status of the run it ended on, or 75 when it failed by name: a wait past the limit,
+# no limit to wait within, a reset it could not read, or a refusal again after the wait. Every
+# line of its own goes to stderr; stdout holds the stdout of the run it ended on and nothing else,
+# so a run it repeats leaves no half page in the caller's hands.
 #
 # The margin is what the run after the wait, and the step after that run, may still take. For
 # `retry_fetch <what> <bound> -- ...` it is that ladder's whole, five attempts of <bound> seconds
@@ -93,10 +94,11 @@
 # namespace, or a run outside Actions), the helper has no deadline and does not wait.
 #
 # Its callers: every GitHub call of cancel-started-act.sh, check-pr-text.sh, find-pr-payload.sh,
-# ci-ok-report.sh's tip read, dispatch-browser-run-reads.sh's jobs read, and the steps of
-# ci-caches.yaml, dequeued.yaml and main-bypass-check.yaml, each in the form above; and, with no
-# ladder, the release calls of release-push.sh, which R2's exception (d) leaves unretried in the
-# credentialed publish jobs, and check-daemon-api-contract.sh's reads.
+# ci-ok-report.sh's tip read, ci-ok-hold.sh's run read and `git ls-remote` ref reads,
+# dispatch-browser-run-reads.sh's jobs read, and the steps of ci-caches.yaml, dequeued.yaml and
+# main-bypass-check.yaml, each in the form above; and, with no ladder, the release calls of
+# release-push.sh, which R2's exception (d) leaves unretried in the credentialed publish jobs, and
+# check-daemon-api-contract.sh's reads.
 
 if ! command -v ci_log_block_open > /dev/null 2>&1; then
   if [ -r "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh" ]; then
@@ -154,7 +156,9 @@ gh_wait_reset() {
       else
         seconds=60 named="GitHub's documented minimum, as the answer named no retry-after"
       fi
-      wake=$((now + seconds))
+      # A second past it, as for a reset: `now` is whole seconds, up to one behind the clock, so
+      # now + seconds can fall up to a second short of the wait GitHub asked for.
+      wake=$((now + seconds + 1))
       until="GitHub's secondary rate limit asks this call to wait $seconds s ($named), until $(_gh_read_utc "$wake")"
     fi
     # A ladder is held to the limit even where there is nothing to wait for: run again at once, it

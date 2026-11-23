@@ -149,9 +149,11 @@ fi
 # `gh cache delete`, `crane copy`, `curl --silent --output`). Second, a caller that captures an
 # answer and prints a value out of it prints it outside any block: check-pr-text.sh:255, :278
 # and :280 (the base branch's name), :335 (the release read's status line), :346 and :353 (a
-# release's published_at) and :362 (the pull request's created_at); ci-ok-reconcile.sh:131,
-# :135, :141, :149 and :152 (a ci-ok check run's status, conclusion and external_id);
-# ci-ok-report.sh:160 (the tip of the queue's branch, main's #4983); dequeued.yaml:168 (the
+# release's published_at) and :362 (the pull request's created_at); ci-ok-reconcile.sh:133,
+# :137, :143, :151 and :154 (a ci-ok check run's status, conclusion and external_id);
+# ci-ok-report.sh:165 (the tip of the queue's branch, main's #4983); ci-ok-hold.sh:125 (this run's
+# creation time), :153 (the group branch's commit) and :157 (the tip of the queue's branch, main's
+# #5186); dequeued.yaml:168 (the
 # removal's createdAt and reason) and :185 (the group head's runs, as jq's compact JSON);
 # mirror-ci-images.sh:165 and :168 (the GOLANG_VERSION an image's config holds) and :215 (the
 # digest crane read); post-check-run.sh:100 (the check run's html_url); browser-image.yaml:255

@@ -34,16 +34,17 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget added up part by part, and where its ceiling came from: .github/ci-budgets.md,
     # "The pi-legion job's ceiling". Its two terms, in the shape ci-budgets.md's Budgets note
-    # asks for: 804 s, the slowest run that section adds up, which is above both the 600 s this
-    # job carried and its 374 s measured maximum, plus its slowest retried step alone -
-    # install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
-    # 3416 + 450 = 3866 s, above setup-bun's 3416 s and the workspace install's 1050 s.
-    # 804 + 3866 = 4670 s -> 78 min. It carried 61 from 600 + 3012 until round 35 read the
-    # section's own sum against it, and 64 from 804 + 3012 until main's #4214 gave each
-    # `ci_tools_fetch` a fourth ladder.
-    timeout-minutes: 78
+    # asks for: 396 s, the slowest run that section adds up since main's #5096 runs the test
+    # files in parallel, which is above its 374 s measured maximum, plus its slowest retried step
+    # alone - install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
+    # 3416 + 450 = 3866 s, above setup-bun's 3416 s, the ci-ok report's 2460 s and the workspace
+    # install's 1050 s. 396 + 3866 = 4262 s -> 72 min. It carried 78 from 804 + 3866 until #5096
+    # took the test step from 708 s to 300, 61 from 600 + 3012 until round 35 read the section's
+    # own sum against it, and 64 from 804 + 3012 until main's #4214 gave each `ci_tools_fetch` a
+    # fourth ladder.
+    timeout-minutes: 72
     env:
-      JOB_TIMEOUT_MINUTES: 78 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:

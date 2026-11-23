@@ -418,21 +418,17 @@ The last step's tally of what the proxy passed through is where every other host
 ## The pi-legion job's ceiling
 
 The budget, added up part by part from the slowest run the pi-legion job can have rather than copied from another job:
-the job's set-up with the NATS service started and the checkout (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the workspace install and contracts' build (14), the lint and the typecheck (16), the test step (708), the pack, the upload and the ci-ok report (4), the post steps with the containers stopped (5), and the seconds the job's own clock holds over the sum of its steps (5).
-That is 804 s, 13 m 24 s, the floor a ceiling here has to clear.
-The test step is added up from its rows at their slowest over the four most recent runs of the whole suite rather than from one total:
-legion-stall-watchdog 232 s, controller-start 123 s, legion-model-fallback 106 s, legion-phase-stall 99 s, legion-commit-trailers 62 s, legion-session-activity 28 s, daemon-pane 21 s and legion-role-tools 11 s are 682 of the 708, and the 25 rows left the other 26.
-The 62 s of legion-commit-trailers is the slowest of three runs of the file in a Legion pod on 2026-11-14 (26 s, 30 s and 62 s, the last with other work on the pod), before a CI run measured it.
-The stall watchdog's suites among them are cybermonklabs/legion#2922's, merged 2026-11-08T18:46:47Z, and the 10 minutes that stood on the job's key came from #2512 (a limit above each job's slowest green run, 2026-10-30), which is before them.
-A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job concluded `success`.
-A ceiling a little above today's sum is back inside the test step's own spread at the next file that lands:
-five stall-watchdog files and two model-fallback files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
-The key carried 43 rather than the next minute above today's sum: #2918 (dispatch://INFRA-1545) makes install-jj retry on a 3866 s ladder and gates a job's ceiling above its slowest retried step, so that ladder and not this suite is what decides the key.
+the job's set-up with the NATS service started and the checkout (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the workspace install and contracts' build (14), the lint and the typecheck (16), the test step (300), the pack, the upload and the ci-ok report (4), the post steps with the containers stopped (5), and the seconds the job's own clock holds over the sum of its steps (5).
+That is 396 s, 6 m 36 s, the floor a ceiling here has to clear.
+The test step runs the package's files in one worker per CPU (`bun test --parallel`, package.json, main's #5096), so it lasts as long as its slowest worker, which runs legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and 137361573250 (2026-11-22), the 300 above being the slowest rounded up.
+Three runs are no worst case. Run one after another, the files took a median 774 s that day.
+Until #5096 the files ran one after another, and the test step was added up from its rows at their slowest over the four most recent runs of the whole suite, 708 s, for a sum of 804 s.
+A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job concluded `success`, when the files still ran one after another under a 10-minute limit.
+The key is not the next minute above that sum: #2918 (dispatch://INFRA-1545) makes install-jj retry on a 3866 s ladder and gates a job's ceiling above its slowest retried step, so that ladder and not this suite is what decides the key, 396 + 3866 = 4262 s -> 72 min.
 The 2 s above is a cold-Bun figure, measured before this branch:
 it is the release asset setup-bun downloaded when its own cache was the only one and no-cache held it off every ref but main.
 This branch restores ~/.bun/bin from a key of its own on every ref, so a pull request's run and a merge group's both start from a hit where main saved one, which moves that term down rather than up.
-dispatch://INFRA-2125 shortens the suite and is the fix; the job's key is the stopgap.
-The two terms that key carries are derived in the comment above it in `.github/workflows/ci.yaml`.
+The two terms that key carries are derived in the comment above it in `.github/workflows/ci-job-pi-legion.yaml`.
 
 ## The size a workflow file may be
 

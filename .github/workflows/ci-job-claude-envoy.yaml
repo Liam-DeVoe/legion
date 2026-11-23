@@ -77,6 +77,21 @@ jobs:
         env:
           STEP_TIMEOUT_MINUTES: 46 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      - name: Pre-pull the NATS image the reply-grant row runs
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), as the
+        # envoy-client job pulls it: tests/agent-stream-reply-grant.test.ts starts it with an
+        # authorization of its own (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The
+        # registry is this repository's own, so a failed pull is a fault of this repository. It
+        # retries all the same: .github/scripts/check-download-retry.sh exempts envoy-client's
+        # pull by that step's name alone, so this one takes the one retry (dispatch://INFRA-1545,
+        # R1), at 60 s an attempt, the bound of a download of tens of megabytes (ci-budgets.md's
+        # Retries note), and each refused attempt still prints the registry's own error.
+        # Its own retry arithmetic: 5 x 60 + 150 = 450 s -> 8 min.
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the NATS image the reply-grant row runs" 60 -- \
+            docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f >&2
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
       # zsh is missing; the runner image has no zsh.
@@ -98,6 +113,8 @@ jobs:
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy
+        env:
+          LEGION_E2E: "1"
       - name: Pack Claude Envoy plugin
         run: bun pm pack --destination ../../out/pr-artifacts
         working-directory: packages/claude-envoy
