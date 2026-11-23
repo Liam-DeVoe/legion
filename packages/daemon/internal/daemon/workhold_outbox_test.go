@@ -3662,3 +3662,47 @@ func TestWorkHoldTellsAMergerTheCloseAfterARestartIntoMerge(t *testing.T) {
 		t.Fatalf("the merger is %s by %q, held %v, a stop held %v; want it running and not stopped", c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
 	}
 }
+
+// The work hold's stop that a close message's publish queues (postHoldStop) is a supervise row the
+// outbox writes in a transaction of its own, outside any fact, so that transaction opens the commit
+// scope itself (outbox.committing), as every writer of a row must (projectRecords.wakeOnCommit).
+// Without the scope the records wake the supervise lane at the write, inside the transaction: the
+// lane looks before the stop's row is there, finds nothing, and the stop waits for the outbox's
+// sweep. The tester of INFRA-4528 saw the whole daemon log "outbox row written outside a commit
+// scope" from postHoldStop at every close of its drive.
+func TestWorkHoldStopRowWakesItsLaneOnlyOnceItCommits(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	logs := &testlog.Buffer{}
+	var mu sync.Mutex
+	var seen []int
+	r.runner.records = projectRecords{Store: r.records, project: r.tree.project, log: slog.New(slog.NewJSONHandler(logs, nil)),
+		wake: func(_ string, kind record.OutboxKind) {
+			if kind != record.OutboxKindSupervise {
+				return
+			}
+			visible := len(r.holdStops(claim.RoleImplementer))
+			mu.Lock()
+			seen = append(seen, visible)
+			mu.Unlock()
+		}}
+	r.working(claim.RoleImplementer)
+	r.close(4)
+	r.runOnce()
+
+	if stops := r.holdStops(claim.RoleImplementer); len(stops) != 1 {
+		t.Fatalf("the implementer's stops are %+v, want the one the close message's publish queued", stops)
+	}
+	if lines := loggedLines(t, logs.String(), "outbox row written outside a commit scope; its lane is woken at once"); len(lines) != 0 {
+		t.Errorf("the hold's stop was written outside a commit scope: %v", lines)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no wake of the supervise lane followed the stop's write")
+	}
+	for _, visible := range seen {
+		if visible != 1 {
+			t.Fatalf("the supervise lane was woken with %v stops visible, want each wake to find the committed stop", seen)
+		}
+	}
+}
