@@ -760,7 +760,10 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
   );
   expect(merger).toMatch(
-    /Steps line names no reviewer step[^.]*base's rules require an approving review/
+    /base's rules require an approving review that no step of this task gave, do not merge/
+  );
+  expect(merger).toMatch(
+    /review can be missing where your task's Steps line names no reviewer step[^.]*`reviewer:owner`/
   );
   expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
