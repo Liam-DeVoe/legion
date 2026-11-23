@@ -632,6 +632,10 @@ test("Tab inside an IME composition moves no chip, where a plain Tab would", asy
   const chip = () => screen.getByTestId("search-scope").textContent;
 
   try {
+    // A composition goes on in the box the reader types into, so the box holds the focus first:
+    // the bar takes the focus on itself as it opens and hands it to the box a frame later, and
+    // until then a Tab is the dialog's own, to its first control (`useDialog`).
+    await user.click(box);
     // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
     // each key it spends. user-event has no form for this: it cannot mark a key as an IME
     // composition.
@@ -640,7 +644,6 @@ test("Tab inside an IME composition moves no chip, where a plain Tab would", asy
     expect(chip()).toContain("Acting on LEGION-2");
 
     // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
-    await user.click(box);
     await user.keyboard("{Tab}");
     expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
   } finally {
