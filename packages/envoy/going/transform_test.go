@@ -128,7 +128,7 @@ func TestEachTransformMakesItsNumber(t *testing.T) {
 			t.Fatalf("the spec with no number drew %s, %v; want the server's count of 5", got, err)
 		}
 		for name, spec := range map[string]string{
-			"a number in the chain": strings.Replace(counted, `"is":"done"`, `"is":5`, 1),
+			"a number in the chain": strings.Replace(counted, `{"op":"count"}`, `{"op":"count","as":5}`, 1),
 			"a number of its own":   strings.Replace(counted, `"field":"count"}`, `"field":"count","rows":[{"count":42}]}`, 1),
 			"a number in its title": strings.Replace(counted, `"title":"Issues closed"`, `"title":"42 issues closed"`, 1),
 		} {

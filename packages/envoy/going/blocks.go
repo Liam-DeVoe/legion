@@ -410,7 +410,9 @@ func project(rows []map[string]any, fields []string, max int, numeric []string) 
 	return drawn, nil
 }
 
-// fillChart is one series: x along the axis, y a number, at least chartPointMin points.
+// fillChart is one series: x along the axis, y a number, at least chartPointMin points. Fewer is
+// refused with what to draw instead, so the model's next call draws a block and does not give up
+// on it (chart-17 of the eval was refused one point and wrote no chart).
 func fillChart(spec blockSpec, rows []map[string]any) ([]map[string]any, error) {
 	drawn, err := project(rows, []string{spec.X, spec.Y}, chartPointMax, []string{spec.Y})
 	if err != nil {
@@ -424,7 +426,12 @@ func fillChart(spec blockSpec, rows []map[string]any) ([]map[string]any, error) 
 		return true
 	})
 	if len(drawn) < chartPointMin {
-		return nil, fmt.Errorf("going: the chart's read holds %d point(s), and a chart plots at least %d", len(drawn), chartPointMin)
+		points := "points"
+		if len(drawn) == 1 {
+			points = "point"
+		}
+		return nil, fmt.Errorf("going: the chart holds %d %s, and a chart plots at least %d: draw one number as a metric, "+
+			"or chart a field with more values, such as a filter that keeps several values and then a group", len(drawn), points, chartPointMin)
 	}
 	return drawn, nil
 }
@@ -523,11 +530,13 @@ type StepRef struct {
 var standaloneNumber = regexp.MustCompile(`(^|[^\p{L}\p{N}_])[+-]?\p{Nd}[\p{Nd},.]*%?($|[^\p{L}\p{N}_])`)
 
 // ParseRunBlock holds the spec a run's model wrote to RunBlock's schema. A spec that holds a
-// number is refused - a JSON number anywhere but a step and a call naming a saved result (numberIn),
-// or a number written on its own in the title or a label - so every number the block shows is the
-// server's. So is a spec of a kind no block of a run is, one naming a field RunBlock has not, which
-// is told every argument draw_block takes (runBlockArguments), one that names no step or the same
-// step twice, one whose chain refuses a step, and one that names no column to draw.
+// number is refused - a JSON number anywhere but a step and a call naming a saved result and a
+// filter's value, which picks rows and is never drawn (numberIn), or a number written on its own
+// in the title or a label - so every number the block shows is the server's. So is a spec of a
+// kind no block of a run is, one naming a field RunBlock has not, which is told every argument
+// draw_block takes (RunBlockArguments), one that names no step or the same step twice, one whose
+// chain refuses a step, and one that leaves a column to draw unnamed where its chain does not
+// name it (fillColumns).
 func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	decoder := json.NewDecoder(bytes.NewReader(spec))
 	decoder.UseNumber()
@@ -536,13 +545,13 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 		return RunBlock{}, errors.New("going: a block spec is one JSON object")
 	}
 	if at, number, held := numberIn(fields); held {
-		return RunBlock{}, fmt.Errorf("going: a block spec holds no number, and its %s holds %s: every number a block shows is one the server's chain makes from the run's saved results, so name the steps and the chain that make it", at, number)
+		return RunBlock{}, fmt.Errorf("going: a block spec holds no number but a step's step and call and a filter's value, and its %s holds %s: every number a block shows is one the server's chain makes from the run's saved results, so name the steps and the chain that make it", at, number)
 	}
 	var block RunBlock
 	strict := json.NewDecoder(bytes.NewReader(spec))
 	strict.DisallowUnknownFields()
 	if err := strict.Decode(&block); err != nil {
-		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v. %s", err, runBlockArguments)
+		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v. %s", err, RunBlockArguments)
 	}
 	block.Title = strings.TrimSpace(block.Title)
 	for _, drawn := range []struct{ name, text string }{{"title", block.Title}, {"label", block.Label}, {"compare_label", block.CompareLabel}} {
@@ -569,6 +578,9 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	if err := block.Chain.check(); err != nil {
 		return RunBlock{}, err
 	}
+	if err := block.fillColumns(); err != nil {
+		return RunBlock{}, err
+	}
 	// The chain's answer is the table a block of a run draws, so the spec settle checks names it;
 	// settle fills the chart's mark and the metric's labels as it does for an answer's block.
 	settled := blockSpec{Table: "the chain's answer", X: block.X, Y: block.Y, Mark: block.Mark, Columns: block.Columns,
@@ -580,34 +592,48 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	return block, nil
 }
 
-// runBlockArguments is what a spec that does not fit RunBlock's shape is told of it: each of
-// draw_block's arguments, so the model can write the spec again in one call.
-const runBlockArguments = "draw_block takes kind (chart, table or metric), title, steps - each {step, call, rows} naming a saved tool result of this run - " +
+// RunBlockArguments is each of draw_block's arguments, which a spec that does not fit RunBlock's
+// shape is told, so the model can write the spec again in one call, and which the agent's system
+// prompt gives, so the model calls draw_block without looking it up first.
+const RunBlockArguments = "draw_block takes kind (chart, table or metric), title, steps - each {step, call, rows} naming a saved tool result of this run - " +
 	"and chain - each {op, ...} of filter (field and one of is, is_not, in, has, since, before or present), group (field, per, as), count (as), sum, mean, min and max (field, as) and sort (field, order) - " +
 	"then x, y and mark for a chart, columns for a table, or field, label, compare and compare_label for a metric"
 
+// filterOperands is the fields of a filter step that hold its condition: values the rows' field is
+// compared with, which pick the rows the chain reads and are never drawn, so a number there, such
+// as the priorities in [0, 1], is no number a block shows.
+var filterOperands = []string{"is", "is_not", "in", "has", "since", "before", "present"}
+
 // numberIn is the first JSON number of a spec, in its fields' order, with where it is, outside
-// the places a spec writes one: a step's step and call. A step or a call under any other name is
-// still a result the model names, not a number it writes, so it is left to the strict decode,
-// which names the field it is under (a spec whose steps are under data is refused for data).
+// the places a spec writes one: a step's step and call, and the condition of a filter of its chain
+// (filterOperands). A step or a call under any other name is still a result the model names, not
+// a number it writes, so it is left to the strict decode, which names the field it is under (a
+// spec whose steps are under data is refused for data); so is a number in a filter's since,
+// before or present, which take no number.
 func numberIn(spec map[string]any) (string, json.Number, bool) {
-	var walk func(value any, at string) (string, json.Number, bool)
-	walk = func(value any, at string) (string, json.Number, bool) {
+	// walk is the first number of value; step says value is a step of the spec's chain, whose
+	// condition is passed over where it is a filter.
+	var walk func(value any, at string, step bool) (string, json.Number, bool)
+	walk = func(value any, at string, step bool) (string, json.Number, bool) {
 		switch value := value.(type) {
 		case json.Number:
 			return at, value, true
 		case []any:
 			for index, element := range value {
-				if where, number, held := walk(element, fmt.Sprintf("%s[%d]", at, index)); held {
+				if where, number, held := walk(element, fmt.Sprintf("%s[%d]", at, index), false); held {
 					return where, number, true
 				}
 			}
 		case map[string]any:
+			filter := step && value["op"] == TransformFilter
 			for _, name := range slices.Sorted(maps.Keys(value)) {
 				if _, isNumber := value[name].(json.Number); isNumber && (name == "step" || name == "call") {
 					continue
 				}
-				if where, number, held := walk(value[name], at+"."+name); held {
+				if filter && slices.Contains(filterOperands, name) {
+					continue
+				}
+				if where, number, held := walk(value[name], at+"."+name, false); held {
 					return where, number, true
 				}
 			}
@@ -618,11 +644,60 @@ func numberIn(spec map[string]any) (string, json.Number, bool) {
 		if _, isNumber := spec[name].(json.Number); isNumber && (name == "step" || name == "call") {
 			continue
 		}
-		if where, number, held := walk(spec[name], name); held {
+		if steps, isList := spec[name].([]any); isList && name == "chain" {
+			for index, step := range steps {
+				if where, number, held := walk(step, fmt.Sprintf("chain[%d]", index), true); held {
+					return where, number, true
+				}
+			}
+			continue
+		}
+		if where, number, held := walk(spec[name], name, false); held {
 			return where, number, true
 		}
 	}
 	return "", "", false
+}
+
+// fillColumns names what a chart or a table leaves unnamed where the chain's answer has one
+// choice for it (Chain.columns): a chart's x is the column of the chain's group, its y the one
+// column a count, sum, mean, min or max writes, and a table's columns are the group's and then
+// those, in the chain's order. Anything else left unnamed is refused, naming the columns the
+// chain's answer holds, so the model can write them in its next call: a chart's spec that named
+// no x or y was refused on the eval's second-to-last call of a run, whose last could write only
+// prose (chart-08).
+func (b *RunBlock) fillColumns() error {
+	group, aggregates, made := b.Chain.columns()
+	answer := aggregates
+	if group != "" {
+		answer = append([]string{group}, aggregates...)
+	}
+	held := "the rows it reads, each with its own fields, since it has no group, count, sum, mean, min or max"
+	if made {
+		held = "the columns " + strings.Join(answer, ", ")
+	}
+	switch b.Kind {
+	case BlockChart:
+		if strings.TrimSpace(b.X) == "" {
+			b.X = group
+		}
+		if strings.TrimSpace(b.Y) == "" && len(aggregates) == 1 {
+			b.Y = aggregates[0]
+		}
+		for _, axis := range []struct{ name, value, what string }{{"x", b.X, "the column along the axis"}, {"y", b.Y, "the column of numbers it plots"}} {
+			if strings.TrimSpace(axis.value) == "" {
+				return fmt.Errorf("going: a chart block's spec names no %s, and its chain's answer holds %s: name %s, %s", axis.name, held, axis.name, axis.what)
+			}
+		}
+	case BlockTable:
+		if len(b.Columns) == 0 && made {
+			b.Columns = answer
+		}
+		if len(b.Columns) == 0 {
+			return fmt.Errorf("going: a table's spec names no columns, and its chain's answer holds %s: name the columns it shows", held)
+		}
+	}
+	return nil
 }
 
 // StepNumbers is the number of each step the block reads.

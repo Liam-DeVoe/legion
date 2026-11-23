@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -1230,12 +1231,12 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"without saying what you read or how",
 		"a priority as P0, P1, P2 or P3",
 		"The reads give each priority and each time also as the page shows it, in the field after it named for it with _shown",
-		"write that form, never the raw value beside it",
+		"write that form whole, never the raw value beside it",
 		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
 		`never as the result's raw value, and never in parentheses: "an ask of medium urgency", not "(medium)"`,
-		`"2 days ago"`,
+		`"last seen at 09:40 UTC, 2 hours ago"`,
 		"never as a result writes it, such as 2026-11-12T09:00:00Z",
-		"Name an agent session by its title or its role",
+		"Name an agent session by its title as the roster gives it",
 		"never in backticks",
 		"call ask_person with the question in place of an answer: the question is all the person reads",
 	} {
@@ -1303,6 +1304,93 @@ func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
 		"Where the words ask for a change and you can propose no plan for it, say what stops it.",
 		"ask the person which changes to make with ask_person, and propose no plan",
 		"- ask_person: ask the person something you need before you can go on",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+}
+
+// TestThePromptGivesDrawBlocksArguments: chart-08 and chart-17 of the eval each spent a model
+// call of a fast run's six asking find_tools for draw_block, which the prompt named but did not
+// describe. The system prompt's rule for a block gives every argument draw_block takes, in the
+// words the server's refusal of a spec of another shape gives them (going.RunBlockArguments), and
+// says to call it at once; it says a filter's value may be a number, and that the chain reads a
+// result as the server answered it, with no _shown field (chart-08 grouped by priority_shown).
+func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
+	for _, said := range []string{
+		"only through draw_block, called with call_tool at once, never looked up with find_tools: " + going.RunBlockArguments + ".",
+		"write no number in its arguments but those and a filter's values",
+		"with no _shown field: group by priority, not priority_shown",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+	if strings.Contains(systemPrompt, "need draw_block") || strings.Contains(systemPrompt, "(github_read and web_read) and draw_block") {
+		t.Error("the system prompt sends the model to find_tools for draw_block")
+	}
+}
+
+// TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote: the eval's plans proposed
+// dispatch_send_to_agent with text in place of body (handoff-07), answered the planner's ask with a
+// comment whose ask id Dispatch refused (document-03), quoted "Back-link" where a heading and a
+// line hold it (document-01, handoff-03), and quoted a whole list to add an item to it
+// (document-08). The system prompt names each argument those changes take, each one the tool's
+// spec holds, says a quote matches one place, by a heading's #s, more of its block or occurrence,
+// and that a list written into an item's replacement nests under it, as the server's splice puts
+// it (internal/dispatch/docs edits_test.go, TestApplyOperationReplaceOverAListItemsWholeText).
+func TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote(t *testing.T) {
+	for _, said := range []string{
+		`dispatch_send_to_agent with {"session": its id, or role:<name> for the session that holds a role, "body": the whole text the person asks to send, "delivery": "btw"}`,
+		`dispatch_answer_ask with {"ask": the id its read or reference gives, never a label, "expected_edited_at": its edited_at, "selected": [the labels of the options chosen]}, or "text"`,
+		`a heading is quoted with its #s, such as "## Rollout", which matches only a heading of that whole text`,
+		"words that stand in more than one place take more of their block's text, or occurrence, counted from 0",
+		"so a list written there nests under it: a new point of a list is written into the item it belongs with",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+	for tool, arguments := range map[string][]string{
+		"dispatch_send_to_agent": {"session", "body", "delivery"},
+		"dispatch_answer_ask":    {"ask", "expected_edited_at", "selected", "text"},
+		"dispatch_suggest":       {"quote", "occurrence"},
+	} {
+		spec, known := dispatchTool(tool)
+		if !known {
+			t.Fatalf("Dispatch has no tool %s", tool)
+		}
+		for _, argument := range arguments {
+			if !slices.ContainsFunc(spec.Arguments, func(field contracts.ToolField) bool { return field.Name == argument }) {
+				t.Errorf("the system prompt names %s's argument %s, which its spec does not take", tool, argument)
+			}
+		}
+	}
+}
+
+// TestThePromptSaysWhatAnAnswerAndAStatusGive: the judge failed the eval's answers and status
+// reports (c13 at 584ef0d2) for a count with none of its items or another number than the list
+// beside it, "this one" for the page's issue, a time with no zone, a postmortem's follow-ups left
+// out, a session named by its id or its role though the roster gives its title, words with no
+// author or cut mid-clause, a document's words with no read or link of it, an epic's done children
+// left out, a gone holder left out, and an open ask with nothing of what it asks. Each is a clause
+// of the rule it belongs to.
+func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
+	for _, said := range []string{
+		`a count with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
+		"a cause with its effect, its times and each follow-up or action it names",
+		"all of an issue's children, the done ones too, by status, unless the words ask for some",
+		"each empty field that bears on the words, such as no priority or no assignee",
+		"a count beside a list is the number of its items",
+		`the page's own too, never as "this one" or "here"`,
+		"a person by the login the reads give, never by a name of your own",
+		`a time of day a text writes with its zone, such as "11:30 UTC"`,
+		"by its role only where it has no title, and never by its id where the roster gives its title",
+		"an open ask with what it asks, not only whom it waits on",
+		"say each holder's state, a gone one too",
+		"read in this run (dispatch_doc_read for a document or a file), not only from the issue that lists it, and the answer links it",
+		"are given with their author, by login or a session's title, and in whole clauses",
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)

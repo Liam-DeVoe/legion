@@ -99,7 +99,7 @@ var drawBlockTool = contracts.DispatchTool{
 	Label: contracts.ToolLabel{Kind: kindChart, Verb: "draw", Present: "Drawing a {kind} of {title}", Past: "Drew a {kind} of {title}"},
 	Description: "Draw a table, a chart or one number (a metric) beside your answer. The server makes every number in it: name the tool results of this run it reads, " +
 		"each by the step and call it names (\"step 4, call 1\"), and a chain of steps the server runs over their rows - filter, group, count, sum, mean, min, max and sort - " +
-		"then the columns of the chain's answer the block draws. Write no number in these arguments but those steps and calls. A result that was cut, or a list whose later pages you did not read " +
+		"then the columns of the chain's answer the block draws. Write no number in these arguments but those steps and calls and a filter's values. A result that was cut, or a list whose later pages you did not read " +
 		"and name, is refused as not whole: read the rest and call draw_block again.",
 	Arguments: []contracts.ToolField{
 		{Name: "kind", Kind: contracts.ToolFieldEnum, Required: true, Values: going.RunBlockKinds, Description: "What the block is drawn as."},
@@ -119,10 +119,10 @@ var drawBlockTool = contracts.DispatchTool{
 						"count, sum, mean, min and max write how many rows each group holds, or that of field's numbers, in a column named as, else the step (before a group, of all rows); " +
 						"sort orders the rows by field."},
 				{Name: "field", Kind: contracts.ToolFieldString, Description: "The field the step reads; count takes none."},
-				{Name: "is", Kind: contracts.ToolFieldString, Description: "filter: the field's value, as text, is this."},
-				{Name: "is_not", Kind: contracts.ToolFieldString, Description: "filter: the field's value is not this."},
-				{Name: "in", Kind: contracts.ToolFieldArray, Item: &contracts.ToolField{Kind: contracts.ToolFieldString}, Description: "filter: the field's value is one of these."},
-				{Name: "has", Kind: contracts.ToolFieldString, Description: "filter: the field is a list holding this."},
+				{Name: "is", Kind: contracts.ToolFieldString, Description: "filter: the field's value, as text, is this; a number is written as one, such as 0."},
+				{Name: "is_not", Kind: contracts.ToolFieldString, Description: "filter: the field's value is not this, text or a number."},
+				{Name: "in", Kind: contracts.ToolFieldArray, Item: &contracts.ToolField{Kind: contracts.ToolFieldString}, Description: "filter: the field's value is one of these, text or numbers, such as [0, 1]."},
+				{Name: "has", Kind: contracts.ToolFieldString, Description: "filter: the field is a list holding this, text or a number."},
 				{Name: "since", Kind: contracts.ToolFieldString, Description: "filter: the field is a time at or after this one, such as 2026-11-16."},
 				{Name: "before", Kind: contracts.ToolFieldString, Description: "filter: the field is a time before this one."},
 				{Name: "present", Kind: contracts.ToolFieldBoolean, Description: "filter: the field holds a value (true), or is null or missing (false)."},

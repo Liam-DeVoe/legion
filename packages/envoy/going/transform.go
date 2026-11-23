@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -50,8 +51,9 @@ var Periods = []string{PerDay, PerWeek, PerMonth, PerYear}
 const GroupNone = "none"
 
 // Transform is one step of a chain as a block spec writes it: Op names the step, and only the
-// fields that step takes are set. Every value a step is given is text, so a spec carries no
-// number (RunBlock).
+// fields that step takes are set. A filter's value may be a number (Operand): it picks the rows
+// the chain reads and is never drawn. Every other value a step is given is text, so a spec
+// carries no number a block shows (RunBlock).
 //
 //   - filter keeps the rows whose Field meets exactly one condition: Is (its value, as text, is
 //     this), IsNot (it is not), In (it is one of these), Has (it is a list holding this), Since
@@ -67,22 +69,62 @@ const GroupNone = "none"
 //     they read every row as one group.
 //   - sort orders the rows by Field, asc by default or desc (Order), a row with no value last.
 type Transform struct {
-	Op      string   `json:"op"`
-	Field   string   `json:"field,omitempty"`
-	Is      *string  `json:"is,omitempty"`
-	IsNot   *string  `json:"is_not,omitempty"`
-	In      []string `json:"in,omitempty"`
-	Has     *string  `json:"has,omitempty"`
-	Since   string   `json:"since,omitempty"`
-	Before  string   `json:"before,omitempty"`
-	Present *bool    `json:"present,omitempty"`
-	Per     string   `json:"per,omitempty"`
-	As      string   `json:"as,omitempty"`
-	Order   string   `json:"order,omitempty"`
+	Op      string    `json:"op"`
+	Field   string    `json:"field,omitempty"`
+	Is      *Operand  `json:"is,omitempty"`
+	IsNot   *Operand  `json:"is_not,omitempty"`
+	In      []Operand `json:"in,omitempty"`
+	Has     *Operand  `json:"has,omitempty"`
+	Since   string    `json:"since,omitempty"`
+	Before  string    `json:"before,omitempty"`
+	Present *bool     `json:"present,omitempty"`
+	Per     string    `json:"per,omitempty"`
+	As      string    `json:"as,omitempty"`
+	Order   string    `json:"order,omitempty"`
+}
+
+// Operand is a filter's value, compared with a row's value as text (valueText). A spec writes it
+// as text, a number or true or false, each kept as JSON writes it, so a filter of priority in
+// [0, 1] keeps the rows whose priority is 0 or 1.
+type Operand string
+
+// UnmarshalJSON reads an operand written as text, a number, or true or false.
+func (o *Operand) UnmarshalJSON(data []byte) error {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	text, isText := valueText(value)
+	if !isText {
+		return fmt.Errorf("a filter's value is text, a number, or true or false, not %s", valueShown(value))
+	}
+	*o = Operand(text)
+	return nil
 }
 
 // Chain is the steps a block runs over its rows, in order.
 type Chain []Transform
+
+// columns is the columns of the rows the chain answers, where its steps write them: the column of
+// its group, "" where it groups none, and the column each count, sum, mean, min and max writes,
+// each once, in the chain's order. made is false where the chain neither groups nor aggregates:
+// its answer is the rows it reads, each with its own fields.
+func (c Chain) columns() (group string, aggregates []string, made bool) {
+	for _, step := range c {
+		switch step.Op {
+		case TransformGroup:
+			group, made = cmp.Or(step.As, step.Per, step.Field), true
+		case TransformCount, TransformSum, TransformMean, TransformMin, TransformMax:
+			if column := cmp.Or(step.As, step.Op); !slices.Contains(aggregates, column) {
+				aggregates = append(aggregates, column)
+			}
+			made = true
+		}
+	}
+	return group, aggregates, made
+}
 
 // check refuses a step that is none of the eight, or that is not given what it takes: a field
 // where it reads one, one condition for a filter, a period, a time or an order it knows, and
@@ -207,20 +249,21 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 func (t Transform) keeps(row map[string]any, bound time.Time) bool {
 	value, _ := fieldValue(row, t.Field)
 	text, isText := valueText(value)
+	operand := Operand(text)
 	switch {
 	case t.Present != nil:
 		return (value != nil) == *t.Present
 	case t.Is != nil:
-		return isText && text == *t.Is
+		return isText && operand == *t.Is
 	case t.IsNot != nil:
-		return !isText || text != *t.IsNot
+		return !isText || operand != *t.IsNot
 	case len(t.In) > 0:
-		return isText && slices.Contains(t.In, text)
+		return isText && slices.Contains(t.In, operand)
 	case t.Has != nil:
 		list, isList := value.([]any)
 		return isList && slices.ContainsFunc(list, func(element any) bool {
 			text, isText := valueText(element)
-			return isText && text == *t.Has
+			return isText && Operand(text) == *t.Has
 		})
 	case t.Since != "":
 		at, isTime := valueTime(value)
@@ -235,8 +278,14 @@ func (t Transform) keeps(row map[string]any, bound time.Time) bool {
 // group makes one row of each value of the step's field across table, in the order each value
 // first comes. A group's key is its value as text, the text a filter's is compares (valueText),
 // so a 1 and a "1" are one group as a filter on "1" keeps both; and a row is a member of each of
-// its groups once, whatever a list of it holds twice.
+// its groups once, whatever a list of it holds twice. A field no row holds is refused, since it
+// would put every row in the group none: the eval's model grouped by priority_shown, the words
+// the agent gives it beside each priority, which no saved result holds, and was refused a chart of
+// one point.
 func (t Transform) group(table []chainRow) ([]chainRow, error) {
+	if len(table) > 0 && !slices.ContainsFunc(table, func(row chainRow) bool { _, held := fieldValue(row.columns, t.Field); return held }) {
+		return nil, t.unheldField(table)
+	}
 	column := cmp.Or(t.As, t.Per, t.Field)
 	var groups []chainRow
 	at := map[string]int{}
@@ -263,6 +312,17 @@ func (t Transform) group(table []chainRow) ([]chainRow, error) {
 		}
 	}
 	return groups, nil
+}
+
+// unheldField is the refusal of a group by a field no row of table holds. Where the field is a
+// value's words (the agent's _shown field, packages/envoy/going/agent/shown.go) and the rows hold
+// that value, it names the value's field to group by.
+func (t Transform) unheldField(table []chainRow) error {
+	refusal := fmt.Sprintf("no row holds %s, so every row would be in the group none: group by a field the rows hold", t.Field)
+	if value, isWords := strings.CutSuffix(t.Field, "_shown"); isWords && slices.ContainsFunc(table, func(row chainRow) bool { _, held := fieldValue(row.columns, value); return held }) {
+		refusal += fmt.Sprintf(", such as %s: a saved result holds each value as the server answered it, without the words given beside it", value)
+	}
+	return errors.New(refusal)
 }
 
 // groupKeys is each group row belongs to: GroupNone for no value and for an empty list, each

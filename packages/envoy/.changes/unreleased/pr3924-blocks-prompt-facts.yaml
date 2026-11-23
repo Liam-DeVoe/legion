@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The command bar's `draw_block` no longer refuses what a chart request needs. A filter's value
+  may be a number, such as `priority` `in` `[0, 1]`: it picks rows and is never drawn, and a number
+  anywhere a block shows one is still refused. A chart that names no `x` or `y` takes its chain's
+  group and its one count, sum, mean, min or max, and a table that names no `columns` takes the
+  chain's columns; a chain that leaves one open is refused naming the columns it makes. A group by
+  a field no row holds, such as `priority_shown`, is refused naming `priority`, and a chart of one
+  point is told to draw a metric or chart a field with more values. The system prompt gives
+  `draw_block`'s whole argument list, so the model no longer looks it up with `find_tools`. It also
+  names the arguments of a message to a session (`body`) and of an answer to an ask (its id as its
+  read gives it), says a suggestion's quote matches one place and a list written into an item nests
+  under it, and says what an answer gives: a count's items, the page's item by its link, a
+  session's title, the author of quoted words, every child and every holder asked about. Each time
+  the agent gives its model is now its clock time in UTC beside the relative words, such as
+  "09:40 UTC, 2 hours ago", so an answer states the time itself. The eval's facts name each person
+  by login, as Dispatch shows them.

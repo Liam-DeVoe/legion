@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/going"
@@ -193,4 +194,148 @@ func mustParse(t *testing.T, kind, spec string) going.Block {
 		t.Fatalf("ParseBlock(%s %s): %v", kind, spec, err)
 	}
 	return block
+}
+
+// issueList is the saved result of step, call 1: a read of every issue of a project at once
+// (dispatch_issues with all), whose answer is the list of its issues.
+func issueList(t *testing.T, step int, project string, issues []map[string]any) going.Result {
+	t.Helper()
+	body, err := json.Marshal(issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments, _ := json.Marshal(map[string]any{"project": project, "all": true})
+	return going.Result{Step: step, Call: 1, Tool: "dispatch_issues", Arguments: arguments, Status: 200, Body: body}
+}
+
+// issuesOf is count issues of project, each with status and priority, nil for none.
+func issuesOf(project string, count int, status string, priority any) []map[string]any {
+	issues := make([]map[string]any, count)
+	for index := range issues {
+		issues[index] = map[string]any{"project": project, "status": status, "priority": priority}
+	}
+	return issues
+}
+
+// openIssues is the saved lists of DEMO (step 4) and OPS (step 5): 10 open issues of DEMO at P0
+// or P1 and 6 of OPS, beside open issues at other priorities and done ones at P0 and P1.
+func openIssues(t *testing.T) []going.Result {
+	demo := slices.Concat(issuesOf("DEMO", 4, "todo", 0), issuesOf("DEMO", 6, "in_progress", 1), issuesOf("DEMO", 3, "todo", 2),
+		issuesOf("DEMO", 2, "done", 0), issuesOf("DEMO", 1, "triage", nil))
+	ops := slices.Concat(issuesOf("OPS", 2, "in_progress", 0), issuesOf("OPS", 4, "todo", 1), issuesOf("OPS", 3, "done", 1), issuesOf("OPS", 2, "todo", 3))
+	return []going.Result{issueList(t, 4, "DEMO", demo), issueList(t, 5, "OPS", ops)}
+}
+
+// TestAFiltersValueMayBeANumber: a filter's value picks the rows the chain reads and is never
+// drawn, so a number there is no number of the model's that a block shows. chart-17 of the eval
+// filtered priority in [0, 1] and was refused for the 0, and wrote no chart; that chain draws the
+// open P0 and P1 issues of each project, and is, is_not and has take a number too. A number
+// anywhere a block could show it - its title, a group's or a count's as, any field other than a
+// filter's condition - is still refused.
+func TestAFiltersValueMayBeANumber(t *testing.T) {
+	const chart = `{"kind":"chart","title":"Open P0 and P1 issues by project","steps":[{"step":4,"call":1,"rows":""},{"step":5,"call":1,"rows":""}],` +
+		`"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"filter","field":"priority","in":[0,1]},{"op":"group","field":"project"},{"op":"count"}],"x":"project","y":"count"}`
+	got, err := draw(t, chart, openIssues(t)...)
+	if err != nil || got != `[{"count":10,"project":"DEMO"},{"count":6,"project":"OPS"}]` {
+		t.Fatalf("the chart of open P0 and P1 issues drew %s, %v; want DEMO's 10 and OPS's 6", got, err)
+	}
+	for _, row := range []struct{ filter, want string }{
+		{`{"op":"filter","field":"priority","is":0}`, `[{"count":6}]`},
+		{`{"op":"filter","field":"priority","is_not":1}`, `[{"count":12}]`},
+	} {
+		spec := `{"kind":"metric","title":"Issues","steps":[{"step":4,"call":1},{"step":5,"call":1}],"chain":[{"op":"filter","field":"status","is_not":"done"},` + row.filter + `,{"op":"count"}],"field":"count"}`
+		if got, err := draw(t, spec, openIssues(t)...); err != nil || got != row.want {
+			t.Errorf("the metric over the filter %s drew %s, %v; want %s", row.filter, got, err, row.want)
+		}
+	}
+	labelled := issueList(t, 2, "DEMO", []map[string]any{{"key": "DEMO-1", "sizes": []any{1, 3}}, {"key": "DEMO-2", "sizes": []any{2}}})
+	if got, err := draw(t, `{"kind":"table","title":"Issues of that size","steps":[{"step":2,"call":1}],"chain":[{"op":"filter","field":"sizes","has":3}],"columns":["key"]}`, labelled); err != nil || got != `[{"key":"DEMO-1"}]` {
+		t.Errorf("the table of the issues whose sizes hold 3 drew %s, %v; want DEMO-1", got, err)
+	}
+
+	for name, spec := range map[string]string{
+		"a number in its title":        strings.Replace(chart, `"title":"Open P0 and P1 issues by project"`, `"title":"Top 5 projects"`, 1),
+		"a number as a group's as":     strings.Replace(chart, `{"op":"group","field":"project"}`, `{"op":"group","field":"project","as":7}`, 1),
+		"a number as a count's as":     strings.Replace(chart, `{"op":"count"}`, `{"op":"count","as":16}`, 1),
+		"a number as a filter's field": strings.Replace(chart, `"field":"priority","in"`, `"field":3,"in"`, 1),
+		"a number as its x":            strings.Replace(chart, `"x":"project"`, `"x":10`, 1),
+	} {
+		if _, err := going.ParseRunBlock(json.RawMessage(spec)); err == nil || !strings.Contains(err.Error(), "holds no number") {
+			t.Errorf("a spec with %s was answered %v, want it refused for holding a number", name, err)
+		}
+	}
+	if _, err := going.ParseRunBlock(json.RawMessage(strings.Replace(chart, `"in":[0,1]`, `"in":[{"p":0}]`, 1))); err == nil || !strings.Contains(err.Error(), "a filter's value is text, a number, or true or false") {
+		t.Errorf("a filter whose value is an object was answered %v, want it refused, saying what a filter's value is", err)
+	}
+}
+
+// TestAChartOrATableTakesTheColumnsItsChainMakes: chart-08 of the eval wrote a chart's chain of
+// a group by priority and a count, with no x and no y, and was refused on its run's second-to-last
+// call, whose last could write only prose. A chart that names no x takes the column of its chain's
+// group, and one that names no y the one column a count, sum, mean, min or max writes; a table that
+// names no columns takes the group's and then those, in the chain's order. A chain that leaves
+// either open - no group, or two counts - is refused, naming the columns its answer holds.
+func TestAChartOrATableTakesTheColumnsItsChainMakes(t *testing.T) {
+	const chain = `"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"group","field":"priority"},{"op":"count","as":"issues"},{"op":"sort","field":"priority"}]`
+	const steps = `"steps":[{"step":4,"call":1,"rows":""},{"step":5,"call":1,"rows":""}]`
+	block, err := going.ParseRunBlock(json.RawMessage(`{"kind":"chart","title":"Open issues by priority",` + steps + `,` + chain + `}`))
+	if err != nil {
+		t.Fatalf("the chart that names no x and no y was refused: %v", err)
+	}
+	if block.X != "priority" || block.Y != "issues" {
+		t.Errorf("the chart draws x %q and y %q, want the chain's group priority and its count issues", block.X, block.Y)
+	}
+	data, err := block.Draw(openIssues(t))
+	if err != nil {
+		t.Fatalf("the chart was refused: %v", err)
+	}
+	rows, _ := json.Marshal(data.Rows)
+	if want := `[{"issues":6,"priority":0},{"issues":10,"priority":1},{"issues":3,"priority":2},{"issues":2,"priority":3},{"issues":1,"priority":"none"}]`; string(rows) != want {
+		t.Errorf("the chart draws %s, want %s", rows, want)
+	}
+	var spec map[string]any
+	if json.Unmarshal(data.Spec, &spec) != nil || spec["x"] != "priority" || spec["y"] != "issues" {
+		t.Errorf("the chart's spec is %s, want the x and y it was drawn with", data.Spec)
+	}
+
+	table, err := going.ParseRunBlock(json.RawMessage(`{"kind":"table","title":"Open issues by priority",` + steps + `,` +
+		`"chain":[{"op":"group","field":"priority"},{"op":"count","as":"issues"},{"op":"max","field":"priority","as":"highest"}]}`))
+	if err != nil || !slices.Equal(table.Columns, []string{"priority", "issues", "highest"}) {
+		t.Errorf("the table that names no columns draws %v (%v), want the chain's group and its columns in their order", table.Columns, err)
+	}
+
+	for _, row := range []struct{ name, spec, says string }{
+		{"no group", `{"kind":"chart","title":"Open issues",` + steps + `,"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"count","as":"issues"}]}`,
+			"names no x, and its chain's answer holds the columns issues: name x"},
+		{"two counts", `{"kind":"chart","title":"Issues by status",` + steps + `,"chain":[{"op":"group","field":"status"},{"op":"count","as":"issues"},{"op":"sum","field":"priority","as":"points"}]}`,
+			"names no y, and its chain's answer holds the columns status, issues, points: name y"},
+		{"a table of the rows themselves", `{"kind":"table","title":"Open issues",` + steps + `,"chain":[{"op":"filter","field":"status","is_not":"done"}]}`,
+			"names no columns, and its chain's answer holds the rows it reads, each with its own fields"},
+	} {
+		if _, err := going.ParseRunBlock(json.RawMessage(row.spec)); err == nil || !strings.Contains(err.Error(), row.says) {
+			t.Errorf("the spec with %s was answered %v, want it refused saying %q", row.name, err, row.says)
+		}
+	}
+
+	// The saved results hold each priority as the server answered it, and no priority_shown,
+	// which the agent gives its model beside it: a group by it is refused, naming priority.
+	shown := `{"kind":"chart","title":"Open issues by priority",` + steps + `,"chain":[{"op":"group","field":"priority_shown"},{"op":"count","as":"issues"}]}`
+	if _, err := draw(t, shown, openIssues(t)...); err == nil || !strings.Contains(err.Error(), "no row holds priority_shown") || !strings.Contains(err.Error(), "such as priority") {
+		t.Errorf("the chart grouped by priority_shown was answered %v, want it refused, naming priority", err)
+	}
+}
+
+// TestAOnePointChartIsToldWhatToDrawInstead: chart-17 of the eval drew open P0 issues by project,
+// which one project held, and was refused a chart of one point with no word of what to draw. The
+// refusal says to draw one number as a metric, or a chart over more values; the minimum of two
+// points stays (R9).
+func TestAOnePointChartIsToldWhatToDrawInstead(t *testing.T) {
+	results := openIssues(t)
+	results[0] = issueList(t, 4, "DEMO", issuesOf("DEMO", 3, "todo", 2))
+	_, err := draw(t, `{"kind":"chart","title":"Open P0 issues by project","steps":[{"step":4,"call":1},{"step":5,"call":1}],`+
+		`"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"filter","field":"priority","is":0},{"op":"group","field":"project"},{"op":"count"}]}`, results...)
+	if err == nil || !strings.Contains(err.Error(), "the chart holds 1 point, and a chart plots at least 2: draw one number as a metric, "+
+		"or chart a field with more values, such as a filter that keeps several values and then a group") {
+		t.Errorf("the chart of one point was answered %v, want it refused, saying what to draw instead", err)
+	}
 }
