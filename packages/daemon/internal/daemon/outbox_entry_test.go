@@ -376,8 +376,9 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
 // is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
 // which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries handed on the role's row of this issue, numbered across the rows that name
-// the same claim, and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
+// counts the entries handed on the role's row of this issue, raised above every row of the role,
+// every row of the same claim and the entry that claim was given, and nothing of a re-admission
+// unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the

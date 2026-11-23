@@ -75,8 +75,8 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest 
 // raise that does not say it clears it.
 //
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
-// was, because the record counts the entries handed on each row, numbered across the rows that
-// name the same claim, and the architect's claim is no worker's.
+// was, because a raise writes the one row it raises, the architect's counting from its own row
+// alone, and the architect's claim is no worker's.
 func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *testing.T) {
 	pool := migratedPool(t)
 	root := architectEntryRoot()
