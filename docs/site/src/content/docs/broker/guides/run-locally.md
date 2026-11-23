@@ -724,19 +724,21 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its profiles file
-says who decides each human-tier secret, in each profile's proxy block:
+server, where the broker mints the identity token it presents to the model. Its fake store says
+who decides each human-tier secret, in each secret's own tags:
 
-| Secret | Its proxy block and tags | Who decides a request for it |
+| Secret | Its tags | Who decides a request for it |
 | --- | --- | --- |
-| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
-| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 900` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance. |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance, for up to 900 seconds. |
+| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 600` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance, for up to 600 seconds; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance, for the shorter of the two. |
 | `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
 | `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
 | `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
 
-Every proxy block binds at least one host, so no profile releases its value under a judge: the
-broker refuses a profiles file with a proxy block that names none.
+Each of them is a profile with a proxy block that binds a host, so no value the judge grants
+leaves the airlock. To give the judge another key, or change what it may grant, tag the key:
+`agent-secrets secret retag <NAME> --judge 900 --guidance 'grant k14-grant'`, then ask with
+`--ttl 15m`.
 
 `agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
 judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it

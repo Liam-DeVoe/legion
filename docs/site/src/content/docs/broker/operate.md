@@ -584,6 +584,15 @@ a rules file that gives an entry `guidance` or no `hosts` (`unknown field "guida
 entry's `no host`) and does not start with one. Put the rules file back to one without either
 before you roll the broker back past this release.
 
+Rolling the broker back past the release in which a key's judge and guidance became its own tags
+gives the judge nothing: an older broker reads them from the profiles file's `proxy` blocks, and
+ignores the `judge` and `guidance` tags, so every request goes to its person until the file sets
+them again. A broker of this release refuses a profiles file whose `proxy` block still sets
+`judge` or `guidance`, naming the tag to write instead, and does not start with one: tag the keys
+(`agent-secrets secret retag <NAME> --judge <seconds> --guidance '<text>'`) and take the two
+fields out of the file before you roll this release out. A profile's own fingerprint is the same
+with or without them, so taking them out ends no grant.
+
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
@@ -1369,12 +1378,12 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   without which `agent-secrets` writes no typed secret
   ([People who manage secrets](#people-who-manage-secrets)).
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
-  machine could register a session under it. When the profiles' proxy blocks give the model judge
-  seconds of any profile it also answers `judge_keys`: each such name with its judge seconds and its
-  `guidance` — the profiles file's own words, never a value. It is the profiles file's answer, the
+  machine could register a session under it. When a key's `judge` tag gives the model judge
+  seconds of it it also answers `judge_keys`: each such name with its judge seconds and its
+  `guidance` tag — the key owner's own words, never a value. It is the live policy's answer, the
   same on a broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a
   request for a secret and what the judge looks for. An administrator's secret is listed there when
-  a proxy block gives it seconds, and its person decides it all the same; `secret show` reads its tag and
+  its `judge` tag gives it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
   the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
   caller of the broker may not read.

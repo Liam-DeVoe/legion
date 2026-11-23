@@ -241,8 +241,22 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
-  secret, so no proxy block's `judge` seconds can move one of its requests off the person who approves it
+  secret, so no `--judge` can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--judge SECONDS`** is optional. It lets the model judge, where the deployment runs one,
+  decide a request for the secret in its owner's place, granting at most that many seconds, from
+  1 to 900 (`--judge 900` is 15 minutes); a request that names no `--ttl` gets that long. Any
+  other value is refused before anything is written, as the broker refuses it
+  (`judge-out-of-range`). Without it a person decides every request that needs a decision. A
+  profile is decided by its source's tag, so tag the stored secret. `retag --judge none` gives
+  the decision back to a person, and ends each live grant the judge made of the secret at its
+  next release.
+- **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
+  request for the secret, in at most 2000 characters, for example
+  `--guidance 'grant for the release job when the reason names its run'`. The judge shows it to
+  its model with each request, and anyone who can reach the broker can read it
+  (`GET /v1/settings`), so write nothing in it you would not show them. `retag --guidance none`
+  removes it; writing it ends no grant.
 - **`--project`** is optional. It names the one Dispatch project the secret belongs to, by its
   key as Dispatch writes it: `--project PRIV`. A secret of a **private** project goes only to a
   session or pod whose credential names that project; every other one is denied
