@@ -27,8 +27,10 @@ const capturedStderrs = "testdata/jj-stderr"
 // capturedStderrReleases are the releases the captures are of, one directory each.
 var capturedStderrReleases = []string{"0.38.0", "0.45.1-sami", "0.46.0"}
 
-// capturedStderr is one capture's command, standard error and exit status.
-func capturedStderr(t *testing.T, path string) (command, stderr string, code int) {
+// capturedRun is one capture's frame, which capturedStderrs and capturedConfigLists
+// (jj_expand_read_test.go) share: its command, on its first line, what the command printed, up to
+// its last line `--- exit <status>`, and that status.
+func capturedRun(t *testing.T, path string) (command, printed string, code int) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -37,7 +39,7 @@ func capturedStderr(t *testing.T, path string) (command, stderr string, code int
 	command, rest, _ := strings.Cut(string(data), "\n")
 	at := strings.LastIndex(rest, "--- exit ")
 	if at < 0 || (at > 0 && rest[at-1] != '\n') {
-		t.Fatalf("%s holds no line `--- exit <status>` after its standard error", path)
+		t.Fatalf("%s holds no line `--- exit <status>` after what its command printed", path)
 	}
 	code, err = strconv.Atoi(strings.TrimSpace(rest[at+len("--- exit "):]))
 	if err != nil {
@@ -65,7 +67,8 @@ const (
 )
 
 // want is what jjOnceOnly gives of stderr, a capture of a shape that keeps k, where the caller
-// asks for jj's error (withError) or not.
+// asks for jj's error (withError) or not. It is "" for a capture of capturedRebased that holds no
+// line that starts `Rebased ` after its first, which capturedStderrCases fails.
 func (k capturedKeeps) want(stderr string, withError bool) string {
 	switch {
 	case k == capturedKept, k == capturedFailure && withError:
@@ -74,7 +77,6 @@ func (k capturedKeeps) want(stderr string, withError bool) string {
 		if at := strings.Index(stderr, "\nRebased "); at >= 0 {
 			return stderr[at+1:]
 		}
-		return "a line that starts `Rebased ` after the first"
 	}
 	return ""
 }
@@ -90,8 +92,10 @@ type capturedStderrShape struct {
 // prints on standard error for the commands legion jj and the pod's wrapper run, each kept or
 // dropped. Each capture is of the pane's read of the repository's configuration before a push
 // (`config list -T '""'`), of the step's snapshot (`log --no-graph -r root() -T commit_id` with no
-// --ignore-working-copy), or of a read the pod's wrapper makes; a shape a read does not print is
-// of the snapshot.
+// --ignore-working-copy), or of a read the pod's wrapper makes, but two: aliases-from-args, of a
+// role's `jj --config 'aliases.st=…' st`, the command jj prints it for, and error, of a `log` with
+// --ignore-working-copy whose revset does not parse. Any other shape a read does not print is of
+// the snapshot.
 //
 // Kept, the warnings jj prints once and the lines of a snapshot: a copy made with `cp -a` of a
 // repository with a configuration of its own (copied); a repository whose configuration jj's
@@ -140,8 +144,9 @@ var capturedStderrShapes = map[string]capturedStderrShape{
 // and with it, wanting what its shape's entry says (capturedStderrShapes). A release directory
 // that is not one of capturedStderrReleases, a capture of no shape the table names or of a release
 // the shape's entry does not name, a shape a release prints that it holds no capture of, a
-// capture with no standard error, and a capture whose exit status is not its shape's (non-zero
-// for jj's error alone) fail the test: the table is the inventory of the shapes.
+// capture with no standard error, a capture whose exit status is not its shape's (non-zero for
+// jj's error alone), and a capture of capturedRebased with no line that starts `Rebased ` after
+// its first fail the test: the table is the inventory of the shapes.
 func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 	t.Helper()
 	releases, err := os.ReadDir(capturedStderrs)
@@ -173,7 +178,7 @@ func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 			if shape.releases != nil && !slices.Contains(shape.releases, release) {
 				t.Errorf("%s is a capture of jj %s, which capturedStderrShapes says does not print %s", path, release, name)
 			}
-			command, stderr, code := capturedStderr(t, path)
+			command, stderr, code := capturedRun(t, path)
 			switch failure := shape.kept == capturedFailure; {
 			case !strings.HasPrefix(command, "jj "):
 				t.Errorf("%s's first line is %q, want the jj command that made it", path, command)
@@ -183,6 +188,8 @@ func capturedStderrCases(t *testing.T) []jjOnceOnlyCase {
 				t.Errorf("%s exited 0, want non-zero, after jj's error", path)
 			case !failure && code != 0:
 				t.Errorf("%s exited %d, want 0", path, code)
+			case shape.kept == capturedRebased && !strings.Contains(stderr, "\nRebased "):
+				t.Errorf("%s holds no line that starts `Rebased ` after its first", path)
 			}
 			for _, withError := range []bool{false, true} {
 				cases = append(cases, jjOnceOnlyCase{path, stderr, withError, shape.kept.want(stderr, withError)})

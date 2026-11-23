@@ -27,6 +27,9 @@ type jjPush struct {
 	// (readJJPush): what every command of the step carries first, in front of its subcommand, so
 	// it reads the repository and the configuration the push reads.
 	options []string
+	// repository is whether the push names its repository by -R or --repository, which the read
+	// of the aliases (jjAliasRead) leaves out: that read loads the working directory's repository.
+	repository bool
 	// end is the index of the first `--`, which ends the options, as clap reads each word after it
 	// as a positional argument, or the number of words where there is none: readJJPush reads no
 	// word from it on, and the dry run's own words go in front of it (jjStep.dryRun).
@@ -168,7 +171,10 @@ func readJJPush(args []string) jjPush {
 		switch name {
 		case "-R", "--repository", "--config", "--config-file", "--config-toml":
 			occurrences = append(occurrences, jjOccurrence{name: name, level: len(pair), first: first, last: at})
-			if name == "--config" {
+			switch name {
+			case "-R", "--repository":
+				p.repository = true
+			case "--config":
 				configLevel = len(pair)
 			}
 		case "--at-operation", "--at-op":

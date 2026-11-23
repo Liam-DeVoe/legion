@@ -31,21 +31,31 @@ const rolePushOverridesWarning = "Cannot define an alias that overrides the buil
 // always.
 var rolePushSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
+// aloneLine is the line jj alone runs for args, the line the form runs: under the pod's form, the
+// git wrapper's first layer in front of args, a podForces word then `--config-file=/dev/null`, as
+// the pod's jj puts that layer on every line it runs; under the tmux form, args as written.
+func (f *rolePushFixture) aloneLine(args []string) []string {
+	if f.form == rolePushPod {
+		return slices.Concat([]string{f.podForces[0], "--config-file=/dev/null"}, args)
+	}
+	return args
+}
+
 // A warning that jj prints once reaches the role once: in a copy, made with `cp -a`, of a
 // repository with a configuration of its own, which jj's secure configuration needs to tell that
 // the repository was copied, the first command through the form's jj prints "Your repo appears to
-// have been copied" once, as jj alone prints it for the line the form runs, built as the
-// every-command test builds it, as its first command in another such copy, and a second command
-// in the copy prints it no more. `jj st` and `jj status`, each its own second command: `st` is
-// jj's alias of `status`, which the pod's wrapper and the pane's legion jj each read first, and
-// that read is the first command in the copy, which takes the warning; `status` is a built-in
-// command, which neither reads. `jj git push -b b`, a push of C, a commit the other role made and
-// the implementer described with its own trailer, then `jj st`: the push sends C with the
-// implementer's author, so the step runs, and its first command in the copy takes the warning
-// where the pod's wrapper's read of git.executable-path has not taken it first. `jj -R <copy> git
-// push -b b` from the directory above the copy, then `jj -R <copy> st` there: the same push, of a
-// repository that the working directory is not in. jj alone makes its push in a repository of its
-// own, made the same way, with a remote of its own.
+// have been copied" once, as jj alone prints it for the line the form runs (aloneLine), as its
+// first command in another such copy, and a second command in the copy prints it no more. `jj st`
+// and `jj status`, each its own second command: `st` is jj's alias of `status`, which the pod's
+// wrapper and the pane's legion jj each read first, and that read is the first command in the
+// copy, which takes the warning; `status` is a built-in command, which neither reads. `jj git push
+// -b b`, a push of C, a commit the other role made and the implementer described with its own
+// trailer, then `jj st`: the push sends C with the implementer's author, so the step runs, and its
+// first command in the copy takes the warning where the pod's wrapper's read of
+// git.executable-path has not taken it first. `jj -R <copy> git push -b b` from the directory
+// above the copy, then `jj -R <copy> st` there: the same push, of a repository that the working
+// directory is not in. jj alone makes its push in a repository of its own, made the same way, with
+// a remote of its own.
 func TestAWarningJJPrintsOnceReachesTheRoleOnce(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
@@ -96,20 +106,21 @@ func TestAWarningJJPrintsOnceReachesTheRoleOnce(t *testing.T) {
 					}
 					return words
 				}
-				twin := newRolePushFixture(t, form, "")
-				made(twin)
-				aloneDir, aloneWhere := copyOf(twin, "alone")
-				line := in(row.args, aloneDir)
-				if form == rolePushPod {
-					line = slices.Concat([]string{twin.podForces[0], "--config-file=/dev/null"}, line)
+				f := newRolePushFixture(t, form, rolePushRecords)
+				c := made(f)
+				twin := f
+				var divergent map[string]int
+				if row.push {
+					twin = newRolePushFixture(t, form, "")
+					made(twin)
+					divergent = f.divergence()
 				}
+				aloneDir, aloneWhere := copyOf(twin, "alone")
+				line := twin.aloneLine(in(row.args, aloneDir))
 				code, _, stderr := twin.aloneIn(aloneWhere, impl, nil, line...)
 				if n := strings.Count(stderr, rolePushCopiedWarning); code != 0 || n != 1 {
 					t.Fatalf("jj alone's first %q in a copy exited %d and printed %q %d times, want 0 and once:\n%s", line, code, rolePushCopiedWarning, n, stderr)
 				}
-				f := newRolePushFixture(t, form, rolePushRecords)
-				c := made(f)
-				divergent := f.divergence()
 				dir, where := copyOf(f, "copy")
 				args, next := in(row.args, dir), in(row.next, dir)
 				code, _, stderr = f.runIn(f.path, where, impl, nil, args...)
@@ -140,18 +151,18 @@ func TestAWarningJJPrintsOnceReachesTheRoleOnce(t *testing.T) {
 // path --user` names under the fixture's own HOME), `jj st`, `jj status` and `jj git push -b b`,
 // a push of C, a commit the other role made and the implementer described with its own trailer,
 // print "Cannot define an alias that overrides the built-in command" as many times as jj alone
-// prints it in a repository made the same way: with the git wrapper's first layer in front of the
-// line under the pod's form, which puts that layer on every line it runs, and on which jj prints
-// such a warning twice (warn_if_args_mismatch), and on the line as written under the tmux form.
-// The push sends C with the implementer's author after the step's one snapshot, so the step's
-// snapshot is among the commands that print nothing of that warning, and so, under the pod's
-// form, is the wrapper's read of git.executable-path; under both forms, the read of `st`. Each of
-// the three prints it so with ui.color = "always" in the repository's configuration as well, under
-// which jj prints the warning in its colours on every command, a read's --color=never
-// notwithstanding, since jj prints it before it reads --color. The test sets ui.color after the
-// setup's reads, and unsets the alias and ui.color after the push, so that its own reads of what
-// the push left, which read jj's standard error with its standard output, read no warning and no
-// colour.
+// prints it in a repository made the same way, for the line the form runs (aloneLine): with the
+// git wrapper's first layer in front of the line under the pod's form, which puts that layer on
+// every line it runs, and on which jj prints such a warning twice (warn_if_args_mismatch), and on
+// the line as written under the tmux form. The push sends C with the implementer's author after
+// the step's one snapshot, so the step's snapshot is among the commands that print nothing of that
+// warning, and so, under the pod's form, is the wrapper's read of git.executable-path; under both
+// forms, the read of `st`. Each of the three prints it so with ui.color = "always" in the
+// repository's configuration as well, under which jj prints the warning in its colours on every
+// command, a read's --color=never notwithstanding, since jj prints it before it reads --color. The
+// test sets ui.color after the setup's reads, and unsets the alias and ui.color after the push, so
+// that its own reads of what the push left, which read jj's standard error with its standard
+// output, read no warning and no colour.
 func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
@@ -181,10 +192,7 @@ func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing
 				twin.configureIn("--user", toml)
 				twin.workAndB()
 				colour(twin)
-				line := row.args
-				if form == rolePushPod {
-					line = slices.Concat([]string{twin.podForces[0], "--config-file=/dev/null"}, row.args)
-				}
+				line := twin.aloneLine(row.args)
 				code, _, aloneErr := twin.alone(impl, line...)
 				alone := strings.Count(aloneErr, rolePushOverridesWarning)
 				if code != 0 || alone == 0 {
@@ -228,11 +236,10 @@ func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing
 // A command whose reads find no key prints no warning that jj alone does not print: a bare `jj`,
 // where no configuration sets ui.default-command, and `jj nosuch`, which no configuration names an
 // alias, print each line that starts `Warning:`, read with jj's colours left out (rolePushSGR), as
-// many times as jj alone prints it for the line the form runs, built as the every-command test
-// builds it, and exit as jj alone exits. The pod's wrapper reads ui.default-command for the one and
-// aliases.nosuch for the other, keys no configuration sets, of which jj notes `No matching config
-// key for`; the pane's legion jj reads every alias and ui.default-command in one read that names
-// no key.
+// many times as jj alone prints it for the line the form runs (aloneLine), and exit as jj alone
+// exits. The pod's wrapper reads ui.default-command for the one and aliases.nosuch for the other,
+// keys no configuration sets, of which jj notes `No matching config key for`; the pane's legion jj
+// reads every alias and ui.default-command in one read that names no key.
 func TestACommandWhoseReadsFindNoKeyPrintsNoWarningJJAloneDoesNotPrint(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
@@ -256,10 +263,7 @@ func TestACommandWhoseReadsFindNoKeyPrintsNoWarningJJAloneDoesNotPrint(t *testin
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, "")
-				line := row.args
-				if form == rolePushPod {
-					line = slices.Concat([]string{f.podForces[0], "--config-file=/dev/null"}, row.args)
-				}
+				line := f.aloneLine(row.args)
 				aloneCode, _, aloneErr := f.alone(impl, line...)
 				code, _, stderr := f.push(impl, row.args...)
 				alone, got := warnings(aloneErr), warnings(stderr)

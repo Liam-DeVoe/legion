@@ -153,7 +153,7 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	}
 	step := &jjStep{push: push, next: next, env: env, table: table, stderr: stderr}
 	var err error
-	if args[0] == "--after" && (!read || push.namesRepository()) {
+	if args[0] == "--after" && (!read || push.repository) {
 		err = step.readConfiguration()
 	}
 	if err == nil {
@@ -328,27 +328,19 @@ var jjConfigurationRead = []string{"--ignore-working-copy", "--color=never", "co
 // a jjStepFailure, which runJJ prints whole, and the push does not run: jj alone fails on the
 // same configuration.
 func (s *jjStep) readConfiguration() error {
-	_, stderr, err := s.output(s.env, slices.Concat(s.push.options, jjConfigurationRead))
-	if err != nil {
-		return err
-	}
-	fmt.Fprint(s.stderr, jjOnceOnly(stderr, true))
-	return nil
+	return s.passOn(slices.Concat(s.push.options, jjConfigurationRead))
 }
 
-// namesRepository is whether the push names its repository by -R or --repository, which the read
-// of the aliases leaves out (jjAliasRead): that read loads the working directory's repository.
-func (p jjPush) namesRepository() bool {
-	for i := 0; i < len(p.options); i++ {
-		name, offset, _ := jjOption(p.options[i], jjGlobalValues)
-		if name == "-R" || name == "--repository" {
-			return true
-		}
-		if offset < 0 {
-			i++
-		}
+// passOn runs one of the two commands of the step whose standard error it prints,
+// readConfiguration and snapshot: next with args, in env (output), and prints what it printed on
+// standard error but the warnings jj prints on every command (jjOnceOnly). A command that cannot
+// start or exits non-zero is output's jjStepFailure, of which passOn prints nothing.
+func (s *jjStep) passOn(args []string) error {
+	_, stderr, err := s.output(s.env, args)
+	if err == nil {
+		fmt.Fprint(s.stderr, jjOnceOnly(stderr, true))
 	}
-	return false
+	return err
 }
 
 // rewrite runs the step's reads and rewrites (once) one time or two. The first run reads with
@@ -403,13 +395,14 @@ func (s *jjStep) once() error {
 // own (jjPush.quiet), and no --ignore-working-copy, in env, a read of the root commit's id, which
 // needs no working-copy commit, before which jj 0.38 and 0.45 alike snapshot the working copy (`jj
 // util snapshot` exists on 0.45 alone). It prints what that command prints on standard error, as
-// the push's snapshot would print it: jj's warning of a file it refuses to snapshot, its line of
-// the descendants of @ it rebased, which --quiet silences, its lines of an import of what git
-// changed, or a warning jj prints once that no command before it took (one such as `Your repo
-// appears to have been copied` the read of the configuration before the step takes first, the
-// pod's wrapper's in a pod and readConfiguration under tmux); but not the warnings jj prints on
-// every command (jjOnceOnly), which the real push prints itself. A snapshot that finds nothing new
-// adds no operation. Once it has run, the real push runs as snapshotted says.
+// the push's snapshot would print it (passOn): jj's warning of a file it refuses to snapshot, its
+// line of the descendants of @ it rebased, which --quiet silences, its lines of an import of what
+// git changed, or a warning jj prints once that no command before it took; but not the warnings
+// jj prints on every command (jjOnceOnly), which the real push prints itself. A read before the
+// step takes a one-time warning such as `Your repo appears to have been copied` first: the pod's
+// wrapper's in a pod, and under tmux the read of the aliases (readJJAliases) or
+// readConfiguration. A snapshot that finds nothing new adds no operation. Once it has run, the
+// real push runs as snapshotted says.
 // A command that cannot start or exits non-zero is a jjStepFailure, with what it printed on
 // standard error (output), which runJJ prints whole: the push would fail at the same snapshot.
 func (s *jjStep) snapshot() error {
@@ -417,11 +410,9 @@ func (s *jjStep) snapshot() error {
 	if s.push.quiet {
 		flags = append(flags, "--quiet")
 	}
-	_, stderr, err := s.output(s.env, slices.Concat(s.push.options, flags, []string{"log", "--no-graph", "-r", "root()", "-T", "commit_id"}))
-	if err != nil {
+	if err := s.passOn(slices.Concat(s.push.options, flags, []string{"log", "--no-graph", "-r", "root()", "-T", "commit_id"})); err != nil {
 		return err
 	}
-	fmt.Fprint(s.stderr, jjOnceOnly(stderr, true))
 	s.snapshotted = true
 	return nil
 }

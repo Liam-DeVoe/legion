@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,24 +24,16 @@ import (
 // line `--- exit <status>`.
 const capturedConfigLists = "testdata/jj-config-list"
 
-// capturedConfigList is one capture's command, standard output, standard error and exit status.
+// capturedConfigList is one capture's command, standard output, standard error and exit status:
+// what the command printed (capturedRun), cut at its line `--- stderr`.
 func capturedConfigList(t *testing.T, path string) (command, stdout, stderr string, code int) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	command, printed, code := capturedRun(t, path)
+	stdout, stderr, ok := strings.Cut(printed, "--- stderr\n")
+	if !ok {
+		t.Fatalf("%s holds no line `--- stderr` before its standard error", path)
 	}
-	command, rest, _ := strings.Cut(string(data), "\n")
-	stdout, rest, ok := strings.Cut(rest, "--- stderr\n")
-	at := strings.LastIndex(rest, "--- exit ")
-	if !ok || at < 0 || (at > 0 && rest[at-1] != '\n') {
-		t.Fatalf("%s holds no `--- stderr` line, or no `--- exit <status>` line after it", path)
-	}
-	code, err = strconv.Atoi(strings.TrimSpace(rest[at+len("--- exit "):]))
-	if err != nil {
-		t.Fatalf("%s: %v", path, err)
-	}
-	return command, stdout, rest[:at], code
+	return command, stdout, stderr, code
 }
 
 // capturedAliases is what the parser must give of every capture that it reads without an error:
