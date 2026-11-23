@@ -763,7 +763,8 @@ func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullReq
 		}
 		return RoundRefusal{}
 	}
-	switch head := review.LegionHead(); {
+	head := review.LegionHead()
+	switch {
 	case head == "":
 		return RoundRefusal{Reason: "footer names no head", Lasts: RefusedAtThisHead}
 	case head == pr.HeadSHA || head == besideFix:
