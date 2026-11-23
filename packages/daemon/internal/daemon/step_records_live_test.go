@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -338,6 +339,11 @@ type stepLine struct {
 	startCommit, endCommit, fixOf        string
 }
 
+// stepTailPattern reads what a run's line prints after its twelve columns: nothing, or ` at
+// <start>..<end>`, each commit its first ten characters or `-`, then, for a fix, ` fix of <check>`,
+// the check the rest of the line.
+var stepTailPattern = regexp.MustCompile(`^(?: at ([0-9a-f]{10}|-)\.\.([0-9a-f]{10}|-))?(?: fix of (.+))?$`)
+
 // parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
 // tasks`, then exactly n lines of runs.
 func parseSteps(key, out string) (stepsPrinted, error) {
@@ -351,8 +357,15 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
 	for _, text := range lines[1:] {
-		fields := strings.Fields(text)
-		if len(fields) != 12 || fields[5] != "attempt" {
+		// steps.ts joins the columns with one space each, and a check may hold a space, so the
+		// twelfth space ends the columns and the rest of the line is what follows the result.
+		fields := strings.SplitN(text, " ", 13)
+		var tail string
+		if len(fields) == 13 {
+			tail = " " + fields[12]
+		}
+		after := stepTailPattern.FindStringSubmatch(tail)
+		if len(fields) < 12 || slices.Contains(fields[:12], "") || fields[5] != "attempt" || after == nil {
 			return printed, fmt.Errorf("the line %q is no run", text)
 		}
 		step, err := strconv.Atoi(fields[1])
@@ -366,6 +379,7 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		printed.lines = append(printed.lines, stepLine{
 			text: text, task: fields[0], step: step, kind: fields[2], role: fields[3], typ: fields[4], attempt: attempt,
 			agent: fields[7], model: fields[8], started: fields[9], ended: fields[10], result: fields[11],
+			startCommit: after[1], endCommit: after[2], fixOf: after[3],
 		})
 	}
 	if len(printed.lines) != printed.steps {

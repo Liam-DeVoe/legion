@@ -65,8 +65,8 @@ func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
 }
 
 // planLine is one finished issue as `dispatch plans` prints it: `<ISSUE> closed <closed_at> plan
-// <plan> ratings <ratings> time <time> failed steps <n>` (envoy-client's plans.ts). printedRatings
-// is the ratings' text as printed, and ratings is that text read.
+// <plan> ratings <ratings> time <time> failed steps <n> fixes <n>` (envoy-client's plans.ts).
+// printedRatings is the ratings' text as printed, and ratings is that text read.
 type planLine struct {
 	text, issue, closed, plan, printedRatings, time string
 	ratings                                         []printedRating
@@ -85,8 +85,9 @@ type printedRating struct {
 // plan-ratings-read.sh's awk anchors it.
 var planHeaderPattern = regexp.MustCompile(`^(\S+): (\d+) finished issues$`)
 
-// planLinePattern reads one finished issue's line; the ratings are read apart (parseRatings).
-var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+)$`)
+// planLinePattern reads one finished issue's line; the ratings are read apart (parseRatings). The
+// count of fixes ends the line, and no check of the driver reads it.
+var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+) fixes \d+$`)
 
 // parsePlans reads the output of `dispatch plans --project project`: the header `<project>: <n>
 // finished issues`, then exactly n lines of issues.
