@@ -46,9 +46,8 @@ import {
   type LegionFacts,
   type LegionPhaseColumn,
   legionFactsOf,
-  legionPhaseTitle,
-  OTHER_PHASE,
   WORK_PHASES,
+  workPhaseTitle,
 } from "./issues-legion";
 
 /** An issue's card on the Legion board: the card, and the board column it is in, by its id and
@@ -328,19 +327,18 @@ export const waitingReasonWords = wordsOf({
 export const workerName = (role: string): string =>
   role === NONE_PICK ? NONE_WORD : `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
 
-/** A phase of `hours_by_phase` that Time per phase draws (`WORK_PHASES`) by its name: a Legion
- *  phase's title, or Other. */
-export const workPhaseTitle = (phase: string): string =>
-  phase === OTHER_PHASE ? "Other" : legionPhaseTitle(phase);
-
 /**
  * The Legion phase filter over `phases`, the board's columns: the board column a row's card is
  * in, None with no card, every phase offered in the board's order under its title whatever the
  * rows hold, then None. The registry's is over today's phases (`LEGION_PHASES`), which the page
  * draws until the board answers; the Issues tab draws the board's own (`IssueTableMode`).
+ * `picks` are those phases' picks (`legionPhasePicks`), which a caller that has built them hands
+ * in.
  */
-export function legionPhaseFilter(phases: readonly LegionPhaseColumn[]): ColumnFilterSpec {
-  const picks = legionPhasePicks(phases);
+export function legionPhaseFilter(
+  phases: readonly LegionPhaseColumn[],
+  picks: readonly string[] = legionPhasePicks(phases)
+): ColumnFilterSpec {
   const titles = new Map(phases.map(({ id, title }) => [id, title]));
   return one((item) => phaseColumnPick(item.card?.column), {
     order: picks,

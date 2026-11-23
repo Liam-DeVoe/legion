@@ -2,8 +2,8 @@
 // k12 to k14 and k19): ACME as the rows seed it, the live socket's board frames held, changed or
 // counted with `page.routeWebSocket`, the requests a page makes, the tabs, the rows, a column's
 // filter and the Board's columns as the page draws them, Open's Queue order, an issue's Legion
-// facts and the words the page writes a span or hours in, a saved view, and a whole-card drag on
-// the Board, whose two waits `board.e2e.ts` uses too.
+// facts and the words the page writes a span or hours in, the lines of Time per phase's tooltip,
+// a saved view, and a whole-card drag on the Board, whose two waits `board.e2e.ts` uses too.
 //
 // ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, and
 // with `seedLegionMetricsCorpus`. The fake daemon answers 404 to every route, so every pass of
@@ -277,6 +277,25 @@ export const workWords = (hours: number): string => spanWords(Math.floor(Math.ma
 /** Hours as Time per phase writes them: one decimal under 10 hours, whole above. */
 export const hoursWords = (hours: number): string =>
   `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+
+/** The open tooltip's lines of Time per phase: each phase's name, hours, share and swatch fill. */
+export function tooltipLines(
+  page: Page
+): Promise<{ phase: string; name: string; hours: string; share: string; swatch: string }[]> {
+  return page.getByRole("tooltip").evaluate((tooltip) =>
+    [...tooltip.querySelectorAll("[data-phase-hours-line]")].map((line) => {
+      const parts = [...line.children].map((part) => (part.textContent ?? "").trim());
+      const swatch = line.querySelector("[data-phase-swatch]");
+      return {
+        phase: line.getAttribute("data-phase-hours-line") ?? "",
+        name: parts[1] ?? "",
+        hours: parts[2] ?? "",
+        share: parts[3] ?? "",
+        swatch: swatch === null ? "" : getComputedStyle(swatch).backgroundColor,
+      };
+    })
+  );
+}
 
 /** One filter's options as its list draws them: each option's words and count, in order. */
 export interface FilterRead {

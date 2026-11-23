@@ -12,8 +12,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
-import { type LegionFacts, WORK_PHASES } from "./issues-legion";
-import { workPhaseTitle } from "./issues-table-model";
+import { type LegionFacts, OTHER_PHASE, WORK_PHASES, workPhaseTitle } from "./issues-legion";
 
 /** How Time per phase draws its bars: each phase's part of that row's own total (Share), or each
  *  bar against the longest total on the current page, with the total written beside it (Hours). */
@@ -47,7 +46,7 @@ function phaseHours(facts: Pick<LegionFacts, "hours_by_phase">): {
   const hours = new Map<DrawnPhase, number>();
   for (const [key, value] of Object.entries(facts.hours_by_phase ?? {})) {
     if (!(value > 0)) continue;
-    const phase: DrawnPhase = isDrawn(key) ? key : "other";
+    const phase: DrawnPhase = isDrawn(key) ? key : OTHER_PHASE;
     hours.set(phase, (hours.get(phase) ?? 0) + value);
   }
   const phases = DRAWN_PHASES.flatMap((phase) => {

@@ -33,7 +33,6 @@ export interface BoardToggles {
 export function IssuesTabBoard({
   address,
   allItems,
-  clear,
   excluded,
   flags,
   hasLegion,
@@ -43,6 +42,7 @@ export function IssuesTabBoard({
   loaded,
   name,
   notices,
+  onClear,
   own,
   phases,
   project,
@@ -56,8 +56,6 @@ export function IssuesTabBoard({
   address: TableAddress<View>;
   /** Every row the view has read, whose labels the Labels picker offers. */
   allItems: readonly Item[];
-  /** Clear filters, while the view's narrowings differ from its own. */
-  clear: (() => void) | undefined;
   /** The trees the view leaves out (`exclude_tree`), each a chip and a line of the Filters panel. */
   excluded: readonly FilterChip[];
   flags: IssueFiltersState;
@@ -69,6 +67,8 @@ export function IssuesTabBoard({
   loaded: boolean;
   name: string;
   notices: ReactNode;
+  /** Clear filters, while the view's narrowings differ from its own. */
+  onClear: (() => void) | undefined;
   own: OwnNarrowings;
   /** The board's columns, in its order and under its labels (`legionPhasesOf`). */
   phases: readonly LegionPhaseColumn[];
@@ -137,7 +137,7 @@ export function IssuesTabBoard({
         }
         labelOptions={labelOptions}
         narrowings={excluded}
-        onClear={clear}
+        onClear={onClear}
         onSearch={setSearch}
         search={search}
         selection={state.pickedChip}

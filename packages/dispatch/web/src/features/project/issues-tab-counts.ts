@@ -68,13 +68,7 @@ function openListingCount(query: URLSearchParams, reads: TabReads): number | und
   if (listingsOf(picksOf(own.filters, "status")).done) return undefined;
   if (!reads.boardIn && narrowsByBoard(own.filters, own.excluded)) return undefined;
   if (own.unread && reads.userState === undefined) return undefined;
-  const narrowings: Narrowings = {
-    selection: own.selection,
-    needsYou: own.needsYou,
-    unread: own.unread,
-    userState: reads.userState,
-    excluded: own.excluded,
-  };
+  const narrowings: Narrowings = { ...own, userState: reads.userState };
   return reads.items.filter(
     (item) =>
       matchesFilters(item, own.filters) &&

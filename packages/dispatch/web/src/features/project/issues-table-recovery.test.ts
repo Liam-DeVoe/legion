@@ -316,6 +316,51 @@ test("a tab that finishes a record left behind holds its lock, and the other tab
   await waitFor(() => expect(second.current.leftBehind?.id).toBe(left.id));
 });
 
+// A tab's own begin holds the listing's lock while it reads the store. A record another tab left
+// behind reaches this tab while its Start next confirm is open, and this tab offers to Finish or
+// Dismiss it. The confirm's begin is refused for that record, and the offer stays: this tab looks
+// at the lock only once its begin lets the lock go, so it does not find the lock held, by itself.
+// The browser here answers no wait for the lock, so an offer this tab withdrew to wait for its
+// own lock would stay withdrawn.
+test("a begin refused for a record another tab left behind keeps offering to Finish or Dismiss it", async () => {
+  const client = new QueryClient();
+  undraws.push(() => client.clear());
+  const browser = browserLocks();
+  const locks = {
+    query: () => browser.query(),
+    request: (name: string, options: LockOptions, granted: LockGrantedCallback<unknown>) =>
+      options.signal === undefined
+        ? browser.request(name, options, granted)
+        : new Promise<never>(() => {}),
+  } as unknown as LockManager;
+  const table = tableIn("tab-one", client, locks);
+  const left: TableAction = {
+    id: "left-behind",
+    kind: "startNext",
+    project: "CORE",
+    keys: ["CORE-1"],
+    tab: "tab-closed",
+    startedAt: Date.now() - 60_000,
+    writes: {},
+  };
+  const key = tableStorageKey("CORE");
+  localStorage.setItem(key, JSON.stringify({ ...LAYOUT, action: left }));
+  act(() => {
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue: localStorage.getItem(key) }));
+  });
+  await waitFor(() => expect(table.current.leftBehind).toEqual(left));
+
+  let begun: Begun<void> | undefined;
+  await act(async () => {
+    begun = await table.current.begin({ kind: "startNext", keys: ["CORE-2"] }, async () => {});
+  });
+  // Every lock request and query the browser answers is answered and drawn before the reading.
+  await act(settle);
+  expect(begun).toEqual({ kind: "refused", text: OTHER_TAB_ACTION });
+  expect(readTableAction("CORE")).toEqual(left);
+  expect(table.current.leftBehind).toEqual(left);
+});
+
 // D12: the table hears another tab's record, and its end, through the window's `storage` event,
 // which reaches every tab but the one that wrote.
 test("a storage event brings another tab's record into the table, and then its end", () => {

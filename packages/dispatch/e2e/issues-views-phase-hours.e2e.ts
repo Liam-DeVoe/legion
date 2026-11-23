@@ -18,6 +18,7 @@ import {
   issuesTable,
   routeLive,
   rowKeys,
+  tooltipLines,
 } from "./issues-views-shared";
 import {
   LEGION_FACTS_PROJECT,
@@ -32,7 +33,7 @@ import {
   writeEventsForFacts,
 } from "./legion-seed";
 import { sql } from "./psql";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 const WIDGETS = LEGION_FACTS_PROJECT;
@@ -193,25 +194,6 @@ async function seedPhases(daemonUrl: string): Promise<string[]> {
 
 /** P's Time per phase cell, its row and the cell's button. */
 const phaseCell = (table: Locator) => table.locator(`tr[data-issue-row="${P}"] [data-phase-hours]`);
-
-/** The open tooltip's lines: each phase's name, hours, share and swatch fill. */
-function tooltipLines(
-  page: Page
-): Promise<{ phase: string; name: string; hours: string; share: string; swatch: string }[]> {
-  return page.getByRole("tooltip").evaluate((tooltip) =>
-    [...tooltip.querySelectorAll("[data-phase-hours-line]")].map((line) => {
-      const parts = [...line.children].map((part) => (part.textContent ?? "").trim());
-      const swatch = line.querySelector("[data-phase-swatch]");
-      return {
-        phase: line.getAttribute("data-phase-hours-line") ?? "",
-        name: parts[1] ?? "",
-        hours: parts[2] ?? "",
-        share: parts[3] ?? "",
-        swatch: swatch === null ? "" : getComputedStyle(swatch).backgroundColor,
-      };
-    })
-  );
-}
 
 /** The boxes of P's cell, the open tooltip and the window. */
 function boxes(cell: Locator) {

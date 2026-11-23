@@ -12,6 +12,7 @@
 // close) is a row of its own (the plan's D16). A row that measures a position on ACME seeds a
 // failed read of its daemon first and holds every board frame after the first
 // (`seedMeasuredAcme`).
+import type { EvalItemsResponse } from "../web/src/api/types";
 import {
   createIssue,
   createPriority,
@@ -930,14 +931,14 @@ function issueItems(at: number) {
  *  after the close is answered from that earlier read, which lacks the issue, so only a later
  *  read can show it: the page's read 60 s after that answer (`CLOSE_ITEMS_AGAIN_MS`). */
 async function closeUnseen(page: Page, title: string): Promise<{ key: string; closedAt: number }> {
-  let earlier: string | undefined;
+  let earlier: EvalItemsResponse | undefined;
   await page.route(
     `**/api/v1/projects/${WIDGETS}/evals/${legionWorkTimeEval}/items?**`,
     (route) => {
-      const body = earlier;
-      if (body === undefined) return route.fallback();
+      const json = earlier;
+      if (json === undefined) return route.fallback();
       earlier = undefined;
-      return route.fulfill({ body, contentType: "application/json" });
+      return route.fulfill({ json });
     }
   );
   const issue = await createIssue({ project: WIDGETS, title }, B);
@@ -946,7 +947,7 @@ async function closeUnseen(page: Page, title: string): Promise<{ key: string; cl
   await sql(`UPDATE issues SET created_at = now() - interval '2 hours' WHERE key = '${issue.key}'`);
   await writeRoleEvent(issue.key, "implementer", "70 minutes");
   await waitForIssueFacts([issue.key]);
-  earlier = JSON.stringify(await issueItems(Date.now()));
+  earlier = await issueItems(Date.now());
   await patchIssue(issue.key, { status: "done" }, B);
   return { key: issue.key, closedAt: Date.now() };
 }

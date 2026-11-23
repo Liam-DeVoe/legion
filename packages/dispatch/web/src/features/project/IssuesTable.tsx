@@ -317,8 +317,6 @@ function IssuesTabView({
     viewer,
   });
   const { board, done, doneRead, doneTotal, issues, items: factsRead, readsOpen } = reads;
-  // The Legion phases are the board's columns once it answers, today's until then and in a
-  // project with no daemon, which reads no board.
   const phases = legionPhasesOf(board.data);
   const state = useIssueTable({
     actions,
@@ -470,7 +468,6 @@ function IssuesTabView({
       <IssuesTabBoard
         address={address}
         allItems={reads.allItems}
-        clear={narrowed ? clearView : undefined}
         excluded={excludedChips}
         flags={flags}
         hasLegion={hasLegion}
@@ -480,6 +477,7 @@ function IssuesTabView({
         loaded={reads.loaded}
         name={NAME}
         notices={notices}
+        onClear={narrowed ? clearView : undefined}
         own={own}
         phases={phases}
         project={project}

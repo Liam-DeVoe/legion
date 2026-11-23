@@ -8,13 +8,7 @@ import { LEGION_ROLES } from "@legion/contracts";
 import type { Actor } from "../../api/types";
 import { HOUR_MS } from "../../lib/closed-window";
 import { isViewer } from "../refs/actor";
-import {
-  type LegionFacts,
-  type LegionPhaseColumn,
-  OTHER_PHASE,
-  sinceMs,
-  WORK_PHASES,
-} from "./issues-legion";
+import { type LegionFacts, type LegionPhaseColumn, sinceMs, workPhaseOf } from "./issues-legion";
 
 /** Whether `a` and `b` hold as many values, each value of `a` one of `b`'s: the same set of
  *  picks, in any order. */
@@ -140,7 +134,7 @@ export function phaseHoursPicks(
 ): readonly string[] {
   const picks = new Set<string>();
   for (const [phase, spent] of Object.entries(hours ?? {}))
-    if (spent > 0) picks.add(WORK_PHASES.includes(phase) ? phase : OTHER_PHASE);
+    if (spent > 0) picks.add(workPhaseOf(phase));
   return [...picks];
 }
 

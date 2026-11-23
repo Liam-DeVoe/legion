@@ -920,15 +920,16 @@ export function useIssueTableColumns(
   const phases = mode.kind === "tab" ? mode.phases : LEGION_PHASES;
   return useMemo<ColumnDef<Item>[]>(() => {
     const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
+    const phasePicks = legionPhasePicks(phases);
     const rendering = renderings(
       userState,
       onMark,
       phaseMode,
       setPhaseMode,
       descending,
-      legionPhasePicks(phases)
+      phasePicks
     );
-    const phaseFilter = legionPhaseFilter(phases);
+    const phaseFilter = legionPhaseFilter(phases, phasePicks);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
     const embeddedRendering = embedded ? embeddedRenderings(descending) : undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {

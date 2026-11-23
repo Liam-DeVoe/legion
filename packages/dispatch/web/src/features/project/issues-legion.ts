@@ -1,9 +1,11 @@
-// The Legion parts of the Issues tab that hold no React and no cache: the board's phase order,
-// the time formats a cell and a card write, where each listed row takes its Legion facts from
-// (the board's `issues` map, grown to the page's clock, else the items route of
+// The Legion parts of the Issues tab that hold no React and no query cache: the board's phase
+// order, the phases of a board's own columns (`legionPhasesOf`, which keeps the last list it
+// answered), the time formats a cell and a card write, where each listed row takes its Legion
+// facts from (the board's `issues` map, grown to the page's clock, else the items route of
 // `legion-work-time`), the windows and pages that items read spans, and the rule that keeps an
 // older server's Done answer off the page. The page reads what these name (`api/queries.ts`);
 // the tests read the rules here rather than through the markup.
+import { replaceEqualDeep } from "@tanstack/react-query";
 import type {
   EvalItemRow,
   EvalItemsResponse,
@@ -58,24 +60,24 @@ export interface LegionPhaseColumn {
   readonly title: string;
 }
 
-/** Each list `legionPhasesOf` made, by its ids and titles: every frame of one board's columns is
- *  the same list, so what the page draws from it is drawn again only when the columns change. */
-const phaseLists = new Map<string, readonly LegionPhaseColumn[]>();
+/** The list `legionPhasesOf` answered last, `LEGION_PHASES` until it answers one. */
+let lastPhases: readonly LegionPhaseColumn[] = LEGION_PHASES;
 
 /** The Legion phases of `board`: its columns, in its order and under its labels, a column a newer
  *  server adds among them. Until the board answers, and in a project with no daemon, which reads
- *  none, they are the phases of today's route (`LEGION_PHASES`). */
+ *  none, they are the phases of today's route (`LEGION_PHASES`). Where the columns are the same
+ *  as last time, the answer is the list it answered last (`replaceEqualDeep`), which starts as
+ *  `LEGION_PHASES`: what the page draws from the phases is drawn again only when the columns
+ *  change, and not when the board first answers with today's columns. */
 export function legionPhasesOf(
   board: Pick<LegionBoardResponse, "columns"> | undefined
 ): readonly LegionPhaseColumn[] {
   if (board === undefined) return LEGION_PHASES;
-  const columns = board.columns ?? [];
-  const key = JSON.stringify(columns.map(({ id, label }) => [id, label]));
-  const held = phaseLists.get(key);
-  if (held !== undefined) return held;
-  const phases = columns.map(({ id, label }) => ({ id, title: label }));
-  phaseLists.set(key, phases);
-  return phases;
+  lastPhases = replaceEqualDeep(
+    lastPhases,
+    (board.columns ?? []).map(({ id, label }) => ({ id, title: label }))
+  );
+  return lastPhases;
 }
 
 const phaseTitles: ReadonlyMap<string, string> = new Map(
@@ -98,6 +100,15 @@ export const WORK_PHASES: readonly string[] = [
   ...LEGION_PHASES.flatMap((phase) => (phase.id === "queue" ? [] : [phase.id])),
   OTHER_PHASE,
 ];
+
+/** The phase of Time per phase that a key of `hours_by_phase` counts under: the key where it is
+ *  one of `WORK_PHASES`, else Other. */
+export const workPhaseOf = (key: string): string => (WORK_PHASES.includes(key) ? key : OTHER_PHASE);
+
+/** A phase of `hours_by_phase` that Time per phase draws (`WORK_PHASES`) by its name: a Legion
+ *  phase's title, or Other. */
+export const workPhaseTitle = (phase: string): string =>
+  phase === OTHER_PHASE ? "Other" : legionPhaseTitle(phase);
 
 /** How long the issue has been in its phase, from the moment the daemon's state first showed it
  *  there: minutes under an hour, hours and minutes under a day, then days and hours. An issue

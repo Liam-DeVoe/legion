@@ -3488,25 +3488,20 @@ test("a column the board route adds after Held is a Legion phase pick, cell and 
     {},
     Promise.resolve(DAEMON)
   );
-  const placed = (key: string, phase: string): LegionBoardCard => ({
-    ...waitingCard(key),
-    phase,
-    waiting: null,
-    waiting_place: null,
-  });
   await answerBoard(sockets, {
     ...legionBoard(),
     columns: [
       ...LEGION_PHASES.map(({ id, title }) => ({
         id,
         label: title,
-        cards: id === "held" ? [placed("CORE-1", "held")] : [],
+        cards:
+          id === "held" ? [{ ...phaseCard("CORE-1", "2026-11-17T07:00:00Z"), phase: "held" }] : [],
       })),
       {
         // The generated column ids name today's eleven: a newer server's column is none of them.
         id: "x_phase" as string as LegionBoardColumn["id"],
         label: "X phase",
-        cards: [placed("CORE-2", "x_phase")],
+        cards: [{ ...phaseCard("CORE-2", "2026-11-17T07:00:00Z"), phase: "x_phase" }],
       },
     ],
   });

@@ -144,11 +144,13 @@ export function useTableRecovery(
   /** Calls off this tab's wait for the listing's lock, which it waits on for the record it looked
    *  at last. */
   const waiting = useRef<AbortController | undefined>(undefined);
-  /** Looks at whether a tab holds the listing's lock, which the tab that runs the move of
-   *  `record`, the record in hand, holds. A lock held is waited on: the request is granted once
-   *  the tab that holds it lets it go - its move ended, or the tab closed or crashed - and this
-   *  tab lets it go again at once. Called again whenever the record changes in the store, since
-   *  another tab can take up its move. */
+  /** Looks at whether a tab holds the listing's lock. The tab that runs the move of `record`, the
+   *  record in hand, holds it, and so does any tab, this one too, while its `begin`, `resume` or
+   *  `dismiss` reads the store. So a look while this tab holds the lock finds it held, and draws
+   *  no offer until the lock goes: `begin` looks only once it lets the lock go. A lock held is
+   *  waited on: the request is granted once the tab that holds it lets it go - its move ended, or
+   *  the tab closed or crashed - and this tab lets it go again at once. Called again whenever the
+   *  record changes in the store, since another tab can take up its move. */
   const look = useCallback(
     (record: TableAction | undefined) => {
       waiting.current?.abort();
@@ -296,20 +298,34 @@ export function useTableRecovery(
     }
     look(stored);
   };
-  /** Why a bulk action may not begin now, or `undefined` where it may. The store is read again
-   *  here, since another tab can have begun an action after the last `storage` event. A record
+  /** Why a bulk action may not begin now, or `undefined` where it may, with the record the store
+   *  holds now where it is another tab's. The store is read again here, since another tab can
+   *  have begun an action after the last `storage` event. */
+  const readRefusal = (): { readonly text?: string; readonly other?: TableAction } => {
+    const stored = readTableAction(project);
+    if (stored !== undefined && stored.tab !== (tab ?? thisTab()))
+      return { text: isLeftBehind(stored) ? OTHER_TAB_ACTION : MOVING_ACTION, other: stored };
+    const own = stored ?? current.current;
+    if (own === undefined) return {};
+    return { text: isLeftBehind(own) ? OWN_ACTION : MOVING_ACTION };
+  };
+  /** Why a bulk action may not begin now, or `undefined` where it may (`readRefusal`). A record
    *  of another tab's is taken into this table, so its offer to finish it shows here too once
    *  that record is left behind. */
   const refusal = (): string | undefined => {
-    const stored = readTableAction(project);
-    if (stored !== undefined && stored.tab !== (tab ?? thisTab())) {
-      adopt(stored);
-      return isLeftBehind(stored) ? OTHER_TAB_ACTION : MOVING_ACTION;
-    }
-    const own = stored ?? current.current;
-    if (own === undefined) return undefined;
-    return isLeftBehind(own) ? OWN_ACTION : MOVING_ACTION;
+    const { text, other } = readRefusal();
+    if (other !== undefined) adopt(other);
+    return text;
   };
+  /** Runs `run` with `free` true while this tab holds the listing's lock, which it takes only
+   *  where no tab holds it, and with `free` false where one does. A browser with no lock manager
+   *  runs it as free. */
+  const withListingLock = async <R>(run: (free: boolean) => R | Promise<R>): Promise<R> =>
+    locks === undefined
+      ? run(true)
+      : await locks.request(actionLockName(project), { ifAvailable: true }, (lock) =>
+          run(lock !== null)
+        );
   return {
     action,
     /** The record in hand where it is a move left behind, which this tab offers to Finish or
@@ -320,21 +336,25 @@ export function useTableRecovery(
     refusal,
     /** Begins a bulk action. This tab takes the listing's lock only where no tab holds it, and
      *  refuses where one does: that tab runs a move, or a Finish of one, whatever this tab's copy
-     *  of the store says. Under the lock it reads the store too (`refusal`), for a record left
+     *  of the store says. Under the lock it reads the store too (`readRefusal`), for a record left
      *  behind and for this tab's own, keeps the new record only where nothing refuses it, and
      *  runs `move` on it while the lock is held. So of two tabs that begin at once, the second
      *  finds the lock held and is refused, also where the first's record has not reached its
      *  store. A tab that reads the record finds its lock held from the start, so no tab offers to
-     *  end the move while it runs. A browser with no lock manager reads the store alone, so there
+     *  end the move while it runs. Another tab's record found in the store is taken into this
+     *  table once the lock goes. A browser with no lock manager reads the store alone, so there
      *  two tabs that begin at once can both begin. */
     begin: async <T>(
       record: Omit<TableAction, "id" | "project" | "tab" | "writes" | "startedAt">,
       move: (record: TableAction) => Promise<T>
     ): Promise<Begun<T>> => {
+      /** Another tab's record, which the store held when this tab read it under the lock. */
+      let other: TableAction | undefined;
       /** Keeps the new record and runs `move` on it, or answers the text that refuses it. */
       const keepAndMove = async (): Promise<Begun<T>> => {
-        const refused = refusal();
-        if (refused !== undefined) return { kind: "refused", text: refused };
+        const refused = readRefusal();
+        other = refused.other;
+        if (refused.text !== undefined) return { kind: "refused", text: refused.text };
         const next = {
           ...record,
           id: newSendKey(),
@@ -346,13 +366,13 @@ export function useTableRecovery(
         remember(next);
         return { kind: "begun", moved: await move(next) };
       };
-      if (locks === undefined) return keepAndMove();
-      return await locks.request(
-        actionLockName(project),
-        { ifAvailable: true },
-        (lock): Promise<Begun<T>> | Begun<T> =>
-          lock === null ? { kind: "refused", text: MOVING_ACTION } : keepAndMove()
+      const begun = await withListingLock((free): Promise<Begun<T>> | Begun<T> =>
+        free ? keepAndMove() : { kind: "refused", text: MOVING_ACTION }
       );
+      // Taken in once the lock is let go: under it, `look` finds the lock held, by this tab, and
+      // withdraws the offer to Finish or Dismiss that record until the lock goes.
+      if (other !== undefined) adopt(other);
+      return begun;
     },
     /** Runs `move`, a Finish of the record `id` left behind, while this tab holds the listing's
      *  lock. The record is stamped as taken up now, so every other tab hears of it (`storage`)
@@ -371,11 +391,7 @@ export function useTableRecovery(
         look(stored);
         return move();
       };
-      return locks === undefined
-        ? run(true)
-        : await locks.request(actionLockName(project), { ifAvailable: true }, (lock) =>
-            run(lock !== null)
-          );
+      return withListingLock(run);
     },
     /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
      *  a resume can wait on them. One storage write and one render for the whole batch: a

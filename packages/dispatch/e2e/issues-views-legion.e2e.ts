@@ -51,6 +51,7 @@ import {
   seedAcme,
   spanWords,
   tabNames,
+  tooltipLines,
   workWords,
 } from "./issues-views-shared";
 import {
@@ -601,16 +602,15 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
       `Time per phase, ${hoursWords(X_PHASE_HOURS)}`
     );
     await cHours.hover();
-    const lines = routed.getByRole("tooltip").locator("[data-phase-hours-line]");
-    await expect(lines).toHaveCount(1);
+    await expect(routed.getByRole("tooltip").locator("[data-phase-hours-line]")).toHaveCount(1);
     // The count wait above drew the one line this read takes.
     expect(
-      await lines.evaluateAll((drawn) =>
-        drawn.map((line) => [
-          line.getAttribute("data-phase-hours-line"),
-          ...[...line.children].slice(1).map((part) => (part.textContent ?? "").trim()),
-        ])
-      )
+      (await tooltipLines(routed)).map(({ phase, name, hours, share }) => [
+        phase,
+        name,
+        hours,
+        share,
+      ])
     ).toEqual([["other", "Other", hoursWords(X_PHASE_HOURS), "100%"]]);
     await routed.mouse.move(5, 5);
     await expect(routed.getByRole("tooltip")).toHaveCount(0);
