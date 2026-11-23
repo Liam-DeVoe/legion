@@ -6,6 +6,7 @@ import type { EvalListResponse } from "../../api/types";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
+import { TargetCards } from "./TargetCards";
 import { useEvalsScope } from "./useEvalsScope";
 import type { EvalsScope } from "./useEvalsViews";
 
@@ -85,6 +86,9 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   const [state, setState] = useEvalsUrlState();
   const daemon = useQuery(legionDaemonQuery(project));
   const legion = daemon.data !== null;
+  // Whether the project's delivery is on, which draws the delivery cards: every project's until
+  // the tab reads the project's delivery settings (plan T24).
+  const delivery = true;
   const scope = useEvalsScope(project, state);
   const sections = sectionsOf(legion);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
@@ -98,7 +102,11 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
           kinds={section.kinds}
           scope={scope}
           title={section.title}
-        />
+        >
+          {section.id === "cards"
+            ? (views) => <TargetCards delivery={delivery} project={project} views={views} />
+            : undefined}
+        </EvalsSection>
       ))}
     </div>
   );

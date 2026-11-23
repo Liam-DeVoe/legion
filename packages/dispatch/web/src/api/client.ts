@@ -1744,6 +1744,17 @@ export class DispatchApiClient {
     return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
+  /** One page of the rows behind an eval's numbers over a window and a compare range, `{items,
+   *  total, limit, offset}`: each row's `row_key`, `row_kind`, `cols` and `href`. `row_kind` keeps
+   *  one kind (`issue` for unowned-p0's open P0 issues with no owner); `limit` is 1 to 200. */
+  listEvalItems(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}/items", { key: project, slug }, query);
+  }
+
   /** One page of the project's deploys and failed changes, newest first, `{items, total, limit,
    *  offset}`: a deploy by its `finished_at` and a failure by its `detected_at` within
    *  `[from, to)` (the last 7 days by default, at most 84). `kind` and `state` narrow it, and

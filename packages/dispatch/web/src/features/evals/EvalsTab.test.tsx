@@ -365,7 +365,21 @@ const stateRows: [string, () => Promise<void>][] = [
         expect(screen.queryByRole("region", { name: "Legion measures" })).toBeNull()
       );
       await answerView(socket, "delivery");
-      expect(listed("Target cards")).toEqual(["deploy-frequency"]);
+      // The delivery cards, and neither Legion card.
+      expect(
+        [...region("Target cards").querySelectorAll("[data-card]")].map((card) =>
+          card.getAttribute("data-card")
+        )
+      ).toEqual([
+        "deploy-frequency",
+        "change-fail-rate",
+        "merge-to-production",
+        "pr-open-to-merge",
+        "deploy-run-success",
+        "unowned-p0",
+        "failed-deploy-recovery",
+        "deployment-rework-rate",
+      ]);
       expect(
         heldViews(socket)
           .map((frame) => queryOf(frame).get("kind"))
