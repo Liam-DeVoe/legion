@@ -120,9 +120,6 @@ async function headerOnTop(page: Page): Promise<void> {
   await expect(page.getByTestId("issue-header")).toBeInViewport({ ratio: 1 });
 }
 
-/** Opens the issue header's Details, where the issue's pull requests are a row, and waits for the
- *  pull request's link there wholly on screen. Details is closed on a page its viewer has never
- *  opened it on, and each shot is a fresh viewer. */
 async function pullRequestInDetails(page: Page): Promise<void> {
   const header = page.getByTestId("issue-header");
   const details = header.getByRole("button", { exact: true, name: "Details" });
@@ -220,8 +217,6 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "status-events",
-      // The pull request's link is a row of the header's Details, which the next shot opens:
-      // opened here, Details would push the Activity rows this shot is of below the screen.
       alt: "The issue after the phases ran: Retro in its header, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
       route: activity,
       viewport: "desktop",

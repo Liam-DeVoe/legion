@@ -97,8 +97,6 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
   return [...newest.values()];
 }
 
-/** A GitHub issue's or pull request's address, as `GitHubLink` reads one: the owner, the
- *  repository, `issues` or `pull`, and the number. */
 const GITHUB_REFERENCE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/;
 
 /** Whether `link` is a GitHub pull request, read from its address as `GitHubLink` draws it: the

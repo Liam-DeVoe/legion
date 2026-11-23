@@ -38,8 +38,6 @@ export function ChildrenTab({ issue }: { issue: IssueDetails }): ReactNode {
             <span
               className={`flex shrink-0 items-center gap-x-3 text-sm whitespace-nowrap ${textSecondaryOnSurface}`}
             >
-              {/* The same pill the issue header shows, with the same lifecycle label: a reader
-                  two inches below `In progress` must not meet `in_progress`. */}
               <StatusPill>{statusText(child.status)}</StatusPill>
               <span>
                 {child.subtree_done}/{child.subtree_total} done

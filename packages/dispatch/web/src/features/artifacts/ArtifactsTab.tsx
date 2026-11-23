@@ -327,8 +327,6 @@ function ArtifactRow({
   const versions = versionsNewestFirst(artifact.versions);
   const latestVersion = versions[0];
 
-  // The name keeps at least 8 rem; on a phone the state and the actions wrap under it rather than
-  // squeezing the name to nothing.
   return (
     <li
       className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b py-3 last:border-b-0 ${borderDefault} ${
@@ -355,10 +353,6 @@ function ArtifactRow({
           >
             <TruncatedText title={artifact.name}>{artifact.name}</TruncatedText>
           </Link>
-          {/* The name truncates; its facts wrap, each fact whole. Truncating them hid the update
-              time on a row with room to spare. The size is the latest version's as stored (a
-              document's markdown), so a document near the size cap shows here without being
-              opened. */}
           <p className={`text-xs ${textMutedOnSurface}`}>
             <span className="whitespace-nowrap">{artifact.kind}</span>
             {" · "}

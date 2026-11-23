@@ -341,19 +341,10 @@ export function RepoControl({
       focusHeld.current = true;
     },
   };
-  // The place the box is drawn in, its width and its flow: in today's Details as wide as its row;
-  // inside `NoTooltips` nothing keeps its width, the box at most 200 px and narrowing to its
-  // line, and in a row of Details as wide as the row, or the repository's text as wide as its
-  // words. In a row of Details the place wraps, so the box's clear control, drawn after the box at
-  // the place's full width, goes onto the line under it.
-  const placeLayout =
-    page === null
-      ? "inline-flex w-full min-w-0"
-      : showsText
-        ? "inline-flex min-w-0 max-w-full"
-        : inDetails
-          ? "flex w-full min-w-0 max-w-full flex-wrap gap-y-1"
-          : "inline-flex w-[200px] min-w-0 max-w-full";
+  let placeLayout = "inline-flex w-[200px] min-w-0 max-w-full";
+  if (page === null) placeLayout = "inline-flex w-full min-w-0";
+  else if (showsText) placeLayout = "inline-flex min-w-0 max-w-full";
+  else if (inDetails) placeLayout = "flex w-full min-w-0 max-w-full flex-wrap gap-y-1";
   // The line's layout: as wide as its row in today's Details; inside `NoTooltips` it narrows to
   // its row and wraps, and in a row of Details it is as wide as the row's value as well. That
   // value is a flex row, in which a line of no width of its own is only as wide as what it holds,
@@ -380,14 +371,6 @@ export function RepoControl({
       : inDetails
         ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
         : "w-full min-w-0";
-  // Where the clear control is drawn: in today's Details, and outside a row of the new page's
-  // Details, over the box's right end, 32 px wide and as tall as the box. In a row of the new
-  // page's Details it is in the flow after the box, on the line under it at the line's start:
-  // below 1280 px `styles.css` sets every input in 16 px and gives every button a 44 px minimum
-  // width, so a control over the box takes 44 px of a row's box and leaves a name that fits the
-  // row's value no room beside it. There it keeps a 44 px target below `md`, as that minimum
-  // makes it anyway, and from `md` the size it has over the box: 32 px wide and the box's 28 px
-  // tall where that minimum no longer holds.
   const clearPlace = inDetails
     ? "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8"
     : "absolute inset-y-0 right-0 inline-flex w-8";

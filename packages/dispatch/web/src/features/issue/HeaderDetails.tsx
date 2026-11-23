@@ -18,8 +18,6 @@ export interface HeaderDetailsRow {
   readonly value: ReactNode;
 }
 
-// Module-level, so the preference's write keeps one identity across renders: `useUserPreference`
-// lists `write` among its callback's dependencies.
 const readOpen = (stored: string | null) => stored === "open";
 const writeOpen = (open: boolean) => (open ? "open" : "closed");
 
@@ -67,25 +65,23 @@ export function HeaderDetails({
   const panelId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const [hiddenRefusals, setHiddenRefusals] = useState<readonly string[]>([]);
-  // The rows' own alerts, read from the hidden panel while Details is closed: each control keeps
-  // its refusal in its own state, so the panel is where it is told.
   useEffect(() => {
     const panel = panelRef.current;
     if (open || panel === null) {
-      setHiddenRefusals([]);
+      setHiddenRefusals((current) => (current.length === 0 ? current : []));
       return;
     }
-    const read = () => {
+    const syncHiddenRefusals = () => {
       const found = [...panel.querySelectorAll('[role="alert"]')].flatMap((alert) => {
         const text = alert.textContent?.trim() ?? "";
-        const row = alert.closest('[data-testid^="issue-details-"]');
+        const row = alert.closest("[data-issue-details-row]");
         const name = row?.querySelector("dt")?.textContent?.trim();
         return text === "" ? [] : [name === undefined ? text : `${name}: ${text}`];
       });
       setHiddenRefusals((current) => (current.join("\n") === found.join("\n") ? current : found));
     };
-    read();
-    const observer = new MutationObserver(read);
+    syncHiddenRefusals();
+    const observer = new MutationObserver(syncHiddenRefusals);
     observer.observe(panel, { characterData: true, childList: true, subtree: true });
     return () => observer.disconnect();
   }, [open]);
@@ -133,6 +129,7 @@ export function HeaderDetails({
           {rows.map((row) => (
             <div
               className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"
+              data-issue-details-row=""
               data-testid={`issue-details-${row.id}`}
               key={row.id}
             >

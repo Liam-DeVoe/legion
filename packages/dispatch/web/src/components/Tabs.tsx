@@ -83,7 +83,6 @@ export function Tabs<Id extends string>({
   };
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
-  // Compact tabs sit tighter on phones. Every tab keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
   const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
 

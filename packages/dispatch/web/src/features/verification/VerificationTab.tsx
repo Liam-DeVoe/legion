@@ -104,8 +104,6 @@ function Fact({
   return (
     <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
       <dt className={`text-xs font-medium ${textMutedOnSurface}`}>{label}</dt>
-      {/* A value wraps inside its own cell, breaking a long run command anywhere, so it never
-          widens the page. */}
       <dd
         className={`min-w-0 text-sm [overflow-wrap:anywhere] ${textSecondaryOnSurface}`}
         data-testid={testId}
@@ -330,8 +328,6 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
             </span>
           )}
         </span>
-        {/* A check's words can hold a long path with no space; they break inside it rather than
-            widen the page. */}
         <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{check.text}</span>
       </div>
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">

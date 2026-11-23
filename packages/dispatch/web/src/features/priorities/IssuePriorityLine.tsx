@@ -247,11 +247,6 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
-  // Nothing of the line keeps its width, on either page: a priority's title and a refusal's
-  // reason are values, which break anywhere and stay within their line - the title with
-  // `min-w-0`, a flex item that shrinks beside the mark after it, the reason with `max-w-full` -
-  // rather than push the line past its row.
-
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (picked === "" || write.isPending) return;
@@ -273,8 +268,6 @@ export function IssuePriorityLine({
         const label = labels.get(entry.id) ?? entry.id;
         return (
           <span className="flex min-w-0 items-center gap-1" key={entry.id}>
-            {/* The priority's title wraps inside its line rather than widening it; its words
-                are the person's who wrote it. */}
             <Link
               className={`dispatch-inline-link min-w-0 [overflow-wrap:anywhere] underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}

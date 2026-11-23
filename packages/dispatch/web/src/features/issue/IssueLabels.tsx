@@ -202,10 +202,6 @@ export function IssueLabels({
   };
   const chips = displayLabels.map((label) => (
     <span
-      // A chip is never cut and never widens its line: it stays within its line and breaks a long
-      // label anywhere, so the longest label the server takes (40 letters, no space) wraps inside
-      // the header at 360 px, or inside Details, rather than running past it. A host's own chip
-      // class (`chipClassName`) outside `NoTooltips` keeps its label whole.
       className={
         page === null
           ? chipClassName === undefined
@@ -225,8 +221,6 @@ export function IssueLabels({
   return (
     <>
       <div
-        // The rail's labels (the new issue page's Details) wrap: a label is a value, and a line
-        // that keeps its width pushes a long one past its row.
         className={
           variant === "rail"
             ? "relative flex min-w-0 flex-wrap items-center gap-1"
@@ -234,8 +228,6 @@ export function IssueLabels({
         }
         data-testid="issue-labels"
       >
-        {/* Outside `NoTooltips` (today's issue header) at most 10 labels show, then a "+N" that
-            shows the rest in place (`CappedGroup`); its chips flow in this line as the others. */}
         {page === null ? (
           <CappedGroup className="contents" label="labels" name="labels">
             {chips}

@@ -120,9 +120,6 @@ export function IssueComponentsLine({
     inDetails
       ? ((tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id)
       : id;
-  // Nothing of the line stops its wrap, on either page: the words break between themselves, and
-  // a long name breaks inside its chip only where no break between words is left, since a
-  // component, the issue it is inherited from and a reason are values.
   const part = "min-w-0 [overflow-wrap:anywhere]";
   const value = "max-w-full [overflow-wrap:anywhere]";
   // Inside `NoTooltips` each colour is one of the new issue page's: the line is the ink in a row
@@ -145,7 +142,6 @@ export function IssueComponentsLine({
         </Link>
       </span>
     );
-  // An explicit set's chips: each live component, then each id a re-import retired.
   const chips = [
     ...(components.ids ?? []).map((id) => (
       <span
@@ -204,8 +200,6 @@ export function IssueComponentsLine({
           )}
         </span>
       ) : page === null ? (
-        // At most 10 components, then a "+N" that shows the rest in place; the chips flow in the
-        // line as the others do.
         <CappedGroup className="contents" label="components" name="components">
           {chips}
         </CappedGroup>

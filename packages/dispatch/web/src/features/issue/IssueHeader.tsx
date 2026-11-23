@@ -23,7 +23,13 @@ import {
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import type {
+  Artifact,
+  ExternalLink,
+  IssueDetails,
+  UserIssueState,
+  UserState,
+} from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -108,9 +114,6 @@ function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
   return input.status === undefined ? `${key}: ${field} saved` : `${key} set to ${input.status}`;
 }
 
-/** One group of the header's row: its elements stay on one line while the group fits the
- *  header, and the group moves to the next line whole when it does not fit beside the one
- *  before it. A group wider than the header itself wraps inside its own box. */
 const headerGroup = "flex min-w-0 max-w-full flex-wrap items-center gap-2";
 
 /**
@@ -267,6 +270,7 @@ export function IssueHeader({
     })),
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
+  const routeSaving = updateIssue.isPending && updateIssue.variables?.route !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
@@ -404,14 +408,21 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
-  // A pull request is told by its address, as `GitHubLink` draws it: a link sent with no kind is
-  // stored as `url` whatever it names.
-  const pullRequests = (issue.external_links ?? []).filter(isPullRequestLink);
-  const otherLinks = (issue.external_links ?? []).filter((link) => !isPullRequestLink(link));
-  // Details, in this order: what the issue advances, who opened it, where its messages go, who is
-  // subscribed, what references it, its parent, its repository, its components, its pull
-  // requests and its other links. Each row's own control edits it there, as it did in the rail
-  // these rows replace.
+  const pullRequests: ExternalLink[] = [];
+  const otherLinks: ExternalLink[] = [];
+  for (const link of issue.external_links ?? []) {
+    (isPullRequestLink(link) ? pullRequests : otherLinks).push(link);
+  }
+  const discardUnsavedDetailsEdits = () => {
+    if (routeEditing) {
+      drafts.discardRoute();
+      setRouteEditing(false);
+    }
+    if (parentEditing) {
+      drafts.discardParent();
+      setParentEditing(false);
+    }
+  };
   const detailsRows: HeaderDetailsRow[] = [
     {
       id: "advances",
@@ -499,8 +510,6 @@ export function IssueHeader({
     {
       id: "subscribers",
       label: "Subscribers",
-      // The count is the button's words, and its name says what it counts; a read that has not
-      // answered counts nothing, so the button then says what it opens.
       value: (
         <button
           aria-expanded={subscribersOpen}
@@ -516,8 +525,6 @@ export function IssueHeader({
     {
       id: "referenced-by",
       label: "Referenced by",
-      // The row names the property, so the control draws the count alone; its name keeps the
-      // words, the count in them. A count of none is a fact, not a control.
       value:
         issue.referenced_by_count === 0 ? (
           <span className={textMutedOnSurface}>0</span>
@@ -606,8 +613,6 @@ export function IssueHeader({
       ),
     },
     {
-      // Every issue has a repository row: an issue resolves to its own repository, an
-      // ancestor's, or its project's default, and any issue can take one of its own.
       id: "repository",
       label: "Repository",
       value: (
@@ -810,7 +815,6 @@ export function IssueHeader({
               <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
             )}
           </div>
-          {/* A group with nothing in it draws nothing (`empty:hidden`), so it leaves no gap. */}
           <div className={`${headerGroup} empty:hidden`} data-testid="issue-attention">
             {whoseTurn === null ? null : (
               <span
@@ -820,10 +824,7 @@ export function IssueHeader({
                 {whoseTurn}
               </span>
             )}
-            {/* The route's warnings speak for the saved route, so they hide only while a route
-                save is in flight; a draft or a refused save leaves the saved route, and its
-                warnings, as they are. */}
-            {!(updateIssue.isPending && updateIssue.variables?.route !== undefined) ? (
+            {!routeSaving ? (
               <>
                 <UnreachableRouteMarker issue={issue} showRoute />
                 <UnresponsiveRouteMarker issue={issue} showRoute />
@@ -843,9 +844,6 @@ export function IssueHeader({
               </>
             ) : null}
             {issue.claim === null ? null : (
-              // The claim and its Release stay on one line: the chip's holder ellipsizes first.
-              // It asks 16 rem of the line, not its whole name's width, so it stays beside whose
-              // turn it is wherever 16 rem is left, and grows into the rest of the line.
               <span className="flex min-w-0 max-w-full grow basis-64 items-center gap-2">
                 <ClaimChip claim={issue.claim} liveness={issue} />
                 <button
@@ -883,9 +881,6 @@ export function IssueHeader({
           </>
         }
         leading={
-          // The labels keep their own width while Close and Details fit beside them, and take the
-          // whole line, wrapping inside it, when they do not; Close and Details then take the
-          // next line, at its right end.
           <div className="min-w-0 max-w-full" data-testid="issue-labels-group">
             <IssueLabels
               disabled={isClosed}
@@ -896,19 +891,7 @@ export function IssueHeader({
             />
           </div>
         }
-        // The route and parent editors live in Details: closing it gives up an edit not saved, as
-        // Cancel does, so the header never hides the route's warnings behind a draft the reader
-        // can no longer see. A saved edit has closed its editor already and is not touched.
-        onClose={() => {
-          if (routeEditing) {
-            drafts.discardRoute();
-            setRouteEditing(false);
-          }
-          if (parentEditing) {
-            drafts.discardParent();
-            setParentEditing(false);
-          }
-        }}
+        onClose={discardUnsavedDetailsEdits}
         trailing={
           isClosed ? null : (
             <div className={headerGroup} data-testid="issue-actions">
