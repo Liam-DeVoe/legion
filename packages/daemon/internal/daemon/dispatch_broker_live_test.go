@@ -1621,6 +1621,7 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("Approval", true, func() error { _, err := client.Approval(ctx, refs.document); return err })
 	call("ApprovedVersionBefore", true, func() error { _, err := client.ApprovedVersionBefore(ctx, refs.document, 2); return err })
 	call("ArtifactChanges", true, func() error { _, err := client.ArtifactChanges(ctx, refs.edited, 1, 2); return err })
+	call("PlanDocument", true, func() error { _, err := client.PlanDocument(ctx, refs.document, 1); return err })
 	call("Handoff", true, func() error { _, err := client.Handoff(ctx, refs.handoff); return err })
 	return writes
 }
