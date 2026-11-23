@@ -1033,9 +1033,10 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir, stateHome := "", roleStateHome(slotOf(l.spec.Claim))
+	slot, _ := l.spec.Claim.Slot()
+	claudeDir, stateHome := "", roleStateHome(slot)
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(slotOf(l.spec.Claim))
+		claudeDir = claudeConfigDir(slot)
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agent := l.agentArgv(r.agent)

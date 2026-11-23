@@ -176,10 +176,10 @@ func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error
 	// of one agent of the spec's issue (claim.AgentToken), whose name need not be the spec's role,
 	// since an agent runs the steps of each role its key names. A spec whose token is another
 	// issue's would run this issue's work under that claim's name, on its workspace and beside its
-	// credentials. A token that names no agent is held to the token of the role's own agent.
-	name := claim.Agent(spec.Role)
-	if _, agent, ok := spec.Claim.Cut(); ok {
-		name = agent
+	// credentials. A token that names no agent of an issue (claim.Token.Cut) is refused.
+	_, name, ok := spec.Claim.Cut()
+	if !ok {
+		return refuse("the claim token names no agent of an issue")
 	}
 	token, err := claim.AgentToken(spec.Project, spec.Issue, name)
 	if err != nil {

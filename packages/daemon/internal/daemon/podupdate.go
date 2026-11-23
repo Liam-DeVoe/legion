@@ -2037,14 +2037,15 @@ func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 	return hold
 }
 
-// heldName is how the background hold names c: its agent's name, the last part of its token,
-// which is the name of its role for the role's own claim and stays the agent's when a step of
-// another role re-roles it; a token that names no agent of an issue is named by its role.
+// heldName is how the background hold names c: the slot its process runs in (claim.Token.Slot),
+// its agent's name, which is the name of its role for the role's own claim and stays the agent's
+// when a step of another role re-roles it. A token that names no slot, which no claim in a pod
+// holds, is named by the token itself, never by a role it does not end in.
 func heldName(c supervise.Claim) string {
-	if _, agent, ok := c.Token.Cut(); ok {
-		return string(agent)
+	if slot, ok := c.Token.Slot(); ok {
+		return string(slot)
 	}
-	return string(c.Role)
+	return string(c.Token)
 }
 
 // podProcess is the process the round's pod is ended through: the first claim of the group that

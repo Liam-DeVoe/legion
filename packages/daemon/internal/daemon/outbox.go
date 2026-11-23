@@ -2552,10 +2552,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
 		// would replace it with the issue's disk, and only the pod's update round or its release may
-		// (ruling 18). The claim runs in the slot of its agent (claim.Token.Cut), which is the role's
+		// (ruling 18). The claim runs in the slot of its agent (claim.Token.Slot), which is the role's
 		// own for a claim named by its role, and the slot of a keyed agent's first step for a step of
-		// another role, whose own resources the launch needs too.
-		if err := r.roleWaitsForItsPod(ctx, row, issue, slotOfToken(token, payload.Role), payload.Role); err != nil {
+		// another role, whose own resources the launch needs too. A token that names no slot runs in
+		// no pod, and the start is refused.
+		slot, ok := token.Slot()
+		if !ok {
+			return fmt.Errorf("start %s of %s: its claim token %s names no slot of a pod", payload.Role, issue.Key, token)
+		}
+		if err := r.roleWaitsForItsPod(ctx, row, issue, slot, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -3948,12 +3953,13 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 }
 
 // roleWaitsForItsPod is the fence a start carries where the issue's live pod was built before the
-// deployment defined slot, the slot the start's claim runs in (slotOfToken), or role, the role of
-// the start's step (runtime.IssuePodRoles, whose PodLacksRole answers both, since a slot is named
-// for a role): a launch needs the slot's launcher, Secret and volumes and the role's own pod
-// resources, its role_config_files overlays among them, and a launch into a pod that lacks either
-// would replace it, ending every role in it and taking the issue's disk with everything they did
-// not push. A keyed agent's slot and its step's role can be two names. It answers a wait, whose
+// deployment defined slot, the slot the start's claim runs in (claim.Token.Slot), or role, the role
+// of the start's step (runtime.IssuePodRoles, whose PodLacksRole answers both, since the pod's
+// launcher of a role serves the slot of that role's name): a launch needs the slot's launcher,
+// Secret and volumes and the role's own pod resources, its role_config_files overlays among them,
+// and a launch into a pod that lacks either would replace it, ending every role in it and taking
+// the issue's disk with everything they did not push. A keyed agent's slot and its step's role can
+// be two names. It answers a wait, whose
 // text begins with pods.StartWaitsForPodPrefix, names what the pod lacks (runtime.PodLacks), and is
 // runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is
 // gone — released, or replaced by its update round — the start creates the claim, whose launch
@@ -3971,7 +3977,7 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // between two waits replaces the last error, and the next wait that finds no process tells it
 // again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
 // suspension that holds the pod (releaseUnownedPod).
-func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, slot, role claim.Role) error {
+func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, slot claim.Agent, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
@@ -4022,15 +4028,6 @@ func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue,
 		return "", err
 	}
 	return startWaitToldPrefix, nil
-}
-
-// slotOfToken is the slot of the pod that token's claim runs in: its agent's name
-// (claim.Token.Cut), and role for a token that names no agent.
-func slotOfToken(token claim.Token, role claim.Role) claim.Role {
-	if _, agent, named := token.Cut(); named {
-		return claim.Role(agent)
-	}
-	return role
 }
 
 // startWaitToldPrefix begins the last error of a start that waits for its pod once the controller

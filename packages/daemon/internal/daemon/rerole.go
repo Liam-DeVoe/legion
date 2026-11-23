@@ -87,13 +87,22 @@ func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload r
 // launcher connected answers that it waits, which is what a daemon that has just restarted reads of
 // every slot: the launch then judges the launcher it reaches, and refuses a start of another App
 // into one that does not wait with the same runtime.ErrAwaitsPodUpdate, which the supervisor
-// charges nothing (the sandbox runtime's relaunch).
+// charges nothing (the sandbox runtime's relaunch). A claim whose token names no slot
+// (claim.Token.Slot), and a slot the runtime refuses, is refused: no launcher serves it, so no
+// answer that it waits can stand.
 func (r *outbox) reroleWaitsForCredential(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
 	}
-	pod, waits := podRoles.SlotWaitsForCredential(issue.Key, slotOfToken(token, role))
+	slot, ok := token.Slot()
+	if !ok {
+		return fmt.Errorf("the re-role of %s into %s: its claim token names no slot of a pod", token, role)
+	}
+	pod, waits, err := podRoles.SlotWaitsForCredential(issue.Key, slot)
+	if err != nil {
+		return fmt.Errorf("the re-role of %s into %s: %w", token, role, err)
+	}
 	if waits {
 		return nil
 	}

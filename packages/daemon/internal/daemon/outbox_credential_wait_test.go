@@ -23,17 +23,17 @@ import (
 // (runtime.IssuePodRoles). A slot not in waits has no live launcher, and answers that it waits.
 type credentialWaitRuntime struct {
 	*fake.Runtime
-	waits map[claim.Role]bool
+	waits map[claim.Agent]bool
 }
 
 func (credentialWaitRuntime) PodLacksRole(string, claim.Role) (string, bool) { return "", false }
 
-func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Role) (string, bool) {
+func (r credentialWaitRuntime) SlotWaitsForCredential(_ string, slot claim.Agent) (string, bool, error) {
 	waits, live := r.waits[slot]
 	if !live {
-		return "", true
+		return "", true, nil
 	}
-	return "pod-1", waits
+	return "pod-1", waits, nil
 }
 
 // A re-role writes the new role's credential into its claim's slot of the live pod and starts the
@@ -79,7 +79,7 @@ func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T)
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: implementerEntry})
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-			sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Role]bool{claim.RoleImplementer: tc.waits}}
+			sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Agent]bool{claim.Agent(claim.RoleImplementer): tc.waits}}
 			machine, _, err := sup.Create(ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 				Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
 			if err != nil {
@@ -169,7 +169,7 @@ func TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce(t *testing.T) {
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
 			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-			sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Role]bool{claim.RoleImplementer: false}}
+			sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Agent]bool{claim.Agent(claim.RoleImplementer): false}}
 			// The claims are stored as the daemon stores them, where the wait reads every claim of
 			// the issue for a process recorded in the pod.
 			st := outboxTreeStore(t, pool, issue.Tree)
@@ -266,7 +266,7 @@ func TestAStartWhoseLaunchItsPodRefusedWaitsForThePod(t *testing.T) {
 	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
 	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Role]bool{claim.RoleImplementer: true}}
+	sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Agent]bool{claim.Agent(claim.RoleImplementer): true}}
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
 	if err != nil {

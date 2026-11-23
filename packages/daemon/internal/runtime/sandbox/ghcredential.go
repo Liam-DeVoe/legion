@@ -140,11 +140,12 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// not the runtime's now: a pod built before a role of the deployment has no Secret of it,
 		// and asking for one would fail at every tick for a role no process of the pod runs.
 		repo, named := fetchRepository(pod)
-		for _, slot := range builtRoles(pod.Spec) {
-			if heldErr != nil && slot != claim.RoleController {
+		for _, role := range builtRoles(pod.Spec) {
+			if heldErr != nil && role != claim.RoleController {
 				continue
 			}
-			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)
+			// The pod's launcher of each role serves the slot of that role's name.
+			r.refreshGitHubCredential(ctx, pod, owner.UID, claim.Agent(role), held, repo, bundles)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {
 			continue
@@ -286,7 +287,7 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // that run as one App and for one repository are one bundle, built by the first of them. The
 // controller's is asked for by owner and memoised by nothing, a controller pod holding the one
 // role.
-func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Role, held map[slotKey]slotHolder, repo ghrepo.Repository, bundles *appauth.Bundles) {
+func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Agent, held map[slotKey]slotHolder, repo ghrepo.Repository, bundles *appauth.Bundles) {
 	var role claim.Role
 	judge := func(ctx context.Context, secret *corev1.Secret) (claim.Role, error) {
 		var err error
@@ -422,9 +423,9 @@ func readLaunched(record string) (uint64, claim.Role, bool) {
 // once more on a fresh read, so that write is kept and its record read. A refresh's update is
 // made only while no launch into the slot is in flight (refreshUpdate), and answers
 // errSlotLaunching otherwise.
-func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Role, repo ghrepo.Repository, bundles *appauth.Bundles, write slotWrite) (slotCredential, error) {
+func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Agent, repo ghrepo.Repository, bundles *appauth.Bundles, write slotWrite) (slotCredential, error) {
 	sandbox := pod.Name
-	name := roleSecretName(sandbox, slot)
+	name := roleSecretName(sandbox, launcherOf(slot))
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	for retried := false; ; retried = true {
 		secret, err := secrets.Get(ctx, name, metav1.GetOptions{})
@@ -448,7 +449,7 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 		}
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
-		if slot == claim.RoleController {
+		if slot == claim.Agent(claim.RoleController) {
 			bundle, err = r.controllerCredential(minting, owner)
 		} else {
 			bundle, err = bundles.Bundle(minting, role, repo)
@@ -544,7 +545,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 	if owner == nil {
 		return nil, fmt.Errorf("pod %s names no Sandbox that owns it", pod.Name)
 	}
-	slot := slotOf(spec.Claim)
+	slot, _ := spec.Claim.Slot()
 	role, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role)
 	if err != nil {
 		return nil, err
@@ -592,12 +593,12 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 	if err != nil {
 		return false, err
 	}
-	slot := slotOf(spec.Claim)
-	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(pod.Name, slot), metav1.GetOptions{})
+	slot, _ := spec.Claim.Slot()
+	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(pod.Name, launcherOf(slot)), metav1.GetOptions{})
 	if err != nil {
 		return false, err
 	}
-	held := []claim.Role{slot}
+	held := []claim.Role{launcherOf(slot)}
 	if _, launched, ok := readLaunched(secret.Annotations[launchedRoleAnnotation]); ok {
 		held = append(held, launched)
 	}
@@ -612,7 +613,7 @@ func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runt
 // slotKey names one slot of one pod: the Sandbox the pod is named for, and the slot.
 type slotKey struct {
 	sandbox string
-	slot    claim.Role
+	slot    claim.Agent
 }
 
 // slotHolder is the stored claim that runs in a slot: its token, its stored role, the role of the
@@ -624,7 +625,7 @@ type slotHolder struct {
 }
 
 // slotHolders is every stored claim by the Sandbox its issue names (SandboxName) and the slot it
-// runs in (slotOf), read in one call of the store.
+// runs in (claim.Token.Slot), read in one call of the store.
 func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
@@ -634,7 +635,7 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 	for _, c := range claims {
 		// A claim the store holds no role for (a row written before claims recorded one) names no
 		// slot's App, so its slot keeps its own.
-		if slot := slotOf(c.Token); slot != "" && c.Role != "" {
+		if slot, ok := c.Token.Slot(); ok && c.Role != "" {
 			held[slotKey{sandbox: SandboxName(c.Token), slot: slot}] = slotHolder{token: c.Token, role: c.Role, generation: c.Generation}
 		}
 	}
@@ -650,10 +651,10 @@ func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, erro
 // process a later launch replaced, by a release that leaves no record, whose role the stored claim
 // holds. SlotRole gives the claim's role unless the runtime's ActsAs gives another. It is never the
 // slot's name for a claim that holds another role: a keyed agent's slot is named by its agent.
-func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Role, launched string) (claim.Role, error) {
+func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Agent, launched string) (claim.Role, error) {
 	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
 	if !ok {
-		return slot, nil
+		return launcherOf(slot), nil
 	}
 	if generation, role, ok := readLaunched(launched); ok && generation >= h.generation {
 		h.role = role
@@ -678,8 +679,8 @@ func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, 
 // other directories are, where the key left as its launch wrote it would expire within the hour
 // while the pod still reads it. A directory whose lease the bundle does not hold is not written,
 // and keeps what it holds, as any directory the render no longer holds does.
-func servedLayout(pod *corev1.Pod, slot claim.Role, repo ghrepo.Repository, bundle ghconfig.Bundle) map[string]ghconfig.Rendered {
-	projected, _ := ghProjectionOf(pod, slot)
+func servedLayout(pod *corev1.Pod, slot claim.Agent, repo ghrepo.Repository, bundle ghconfig.Bundle) map[string]ghconfig.Rendered {
+	projected, _ := ghProjectionOf(pod, launcherOf(slot))
 	layout := bundle
 	if projected.secret && !projected.pairs {
 		layout = bundle.RoutedByOwner(repo)

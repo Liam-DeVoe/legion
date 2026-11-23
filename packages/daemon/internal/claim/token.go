@@ -139,6 +139,19 @@ func (t Token) Project() (project string, ok bool) {
 	return project, true
 }
 
+// Slot is the slot of its pod that the process of t's claim runs in: the name of the agent a claim
+// of an issue ends in (Cut), which can be no role (`implementer-2`), and the controller's name for
+// the controller's token, whose pod has that one slot. It is the one rule of a slot, and it reads
+// no role: a claim's role is the role of the step its agent runs now, which changes as the agent
+// re-roles, and its slot does not. ok is false for a token that is neither, which has no slot.
+func (t Token) Slot() (Agent, bool) {
+	if t.IsController() {
+		return Agent(RoleController), true
+	}
+	_, agent, ok := t.Cut()
+	return agent, ok
+}
+
 // ControllerToken is the project controller's role token, `legion-<project>-controller`
 // (legion-roles.ts:66-69). project is already a ProjectToken.
 func ControllerToken(project string) Token { return Token("legion-" + project + "-controller") }

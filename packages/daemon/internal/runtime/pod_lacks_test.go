@@ -15,16 +15,17 @@ func TestWhatAPodLacksNamesTheSlotAndTheRoleOfALaunch(t *testing.T) {
 	built := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}
 	lacks := func(name claim.Role) bool { return !slices.Contains(built, name) }
 	for _, tc := range []struct {
-		name       string
-		slot, role claim.Role
-		want       string
+		name string
+		slot claim.Agent
+		role claim.Role
+		want string
 	}{
 		{"a claim named for a role the pod lacks", "checker", "checker", "checker"},
-		{"a claim named for a role the pod holds", claim.RoleTester, claim.RoleTester, ""},
-		{"a keyed agent on a step of a role the pod lacks", claim.RoleImplementer, "checker", "checker, the role of its step"},
+		{"a claim named for a role the pod holds", claim.Agent(claim.RoleTester), claim.RoleTester, ""},
+		{"a keyed agent on a step of a role the pod lacks", claim.Agent(claim.RoleImplementer), "checker", "checker, the role of its step"},
 		{"a keyed agent in a slot the pod lacks", "alpha", claim.RoleTester, "alpha, the slot of the claim's agent"},
 		{"a keyed agent in a slot and on a role the pod lacks", "alpha", "checker", "alpha, the slot of the claim's agent, and checker, the role of its step"},
-		{"a keyed agent whose slot and role the pod holds", claim.RoleImplementer, claim.RoleTester, ""},
+		{"a keyed agent whose slot and role the pod holds", claim.Agent(claim.RoleImplementer), claim.RoleTester, ""},
 		{"a token that names no agent, on a role the pod lacks", "", "checker", "checker, the role of its step"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

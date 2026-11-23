@@ -475,7 +475,7 @@ func claudeWorkerSpec(t *testing.T) runtime.SpawnSpec {
 const claudeTranscriptID = "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f"
 
 func claudeTranscript(role claim.Role) string {
-	return claudeConfigDir(role) + "/projects/--legion-workspaces-sjawhar-legion-smoke-legion-208--/" + claudeTranscriptID + ".jsonl"
+	return claudeConfigDir(claim.Agent(role)) + "/projects/--legion-workspaces-sjawhar-legion-smoke-legion-208--/" + claudeTranscriptID + ".jsonl"
 }
 
 // claudeResumeSpec is claudeWorkerSpec relaunched on the transcript a replaced pod's role
@@ -1497,15 +1497,15 @@ func claimLabels(_ claim.Role) map[string]string {
 
 // sandboxLocator is a recorded process locator in its claim's pod's one container.
 func sandboxLocator(token claim.Token, uid string) runtime.Locator {
-	slot := slotOf(token)
-	if slot == "" {
+	slot, ok := token.Slot()
+	if !ok {
 		panic("test token names no slot")
 	}
 	return runtime.Locator{
 		Runtime:     runtime.RuntimeSandbox,
 		Claim:       token,
 		Incarnation: runtime.SandboxIncarnation(uid, 1),
-		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(slot), Generation: 1},
+		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(launcherOf(slot)), Generation: 1},
 	}
 }
 

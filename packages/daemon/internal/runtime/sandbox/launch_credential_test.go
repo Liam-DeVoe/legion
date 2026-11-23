@@ -196,10 +196,10 @@ func TestARefreshLeavesTheSlotOfAKeptPodsLaunchOnTheStartsToken(t *testing.T) {
 			}))
 			g.spawn(rootSpec(t))
 			issue := SandboxName(rootToken)
-			slot := slotOf(spec.Claim)
+			slot, _ := spec.Claim.Slot()
 			held := func() string {
 				t.Helper()
-				token, err := ghconfig.TokenFromHosts(g.secret(roleSecretName(issue, slot)).Data[GitHubHostsKey("sjawhar")])
+				token, err := ghconfig.TokenFromHosts(g.secret(roleSecretName(issue, launcherOf(slot))).Data[GitHubHostsKey("sjawhar")])
 				if err != nil {
 					t.Fatalf("the %s slot's hosts.yml: %v", slot, err)
 				}
@@ -217,7 +217,7 @@ func TestARefreshLeavesTheSlotOfAKeptPodsLaunchOnTheStartsToken(t *testing.T) {
 			refreshing.Store(true)
 			g.r.refreshGitHubCredentials(g.ctx)
 			refreshing.Store(false)
-			if tc.early && landedIn != slot {
+			if tc.early && landedIn != launcherOf(slot) {
 				t.Fatalf("the launch landed in the refresh's build for the %q slot, want its own slot %s's: the case's premise", landedIn, slot)
 			}
 			sum := sha256.Sum256([]byte(first))

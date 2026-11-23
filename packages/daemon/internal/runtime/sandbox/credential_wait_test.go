@@ -109,10 +109,10 @@ func TestASlotNoTokenCarriesIsRefusedRatherThanLetThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pod, waits := r.SlotWaitsForCredential(testTree, "implementer"); pod != "" || !waits {
-		t.Fatalf("the slot implementer with no launcher connected = %q, %t; want none, waits", pod, waits)
+	if pod, waits, err := r.SlotWaitsForCredential(testTree, "implementer"); err != nil || pod != "" || !waits {
+		t.Fatalf("the slot implementer with no launcher connected = %q, %t, %v; want none, waits", pod, waits, err)
 	}
-	if pod, waits := r.SlotWaitsForCredential(testTree, "Implementer"); waits {
-		t.Fatalf("the slot Implementer, a name no claim token carries = %q, waits: a re-role into it would start with no credential wait; want a refusal", pod)
+	if pod, waits, err := r.SlotWaitsForCredential(testTree, "Implementer"); err == nil {
+		t.Fatalf("the slot Implementer, a name no claim token carries = %q, %t: a re-role into it would start with no credential wait; want a refusal", pod, waits)
 	}
 }

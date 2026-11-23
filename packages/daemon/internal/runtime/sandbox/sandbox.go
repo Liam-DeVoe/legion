@@ -931,18 +931,12 @@ func podContainer(role claim.Role) string {
 	return runtime.IssuePodContainer
 }
 
-// slotOf is the slot of its pod that token's process runs in, named in the type the pod's code
-// names a slot by (roleVolume, roleDir, roleSecretName): the name of the agent a claim of an issue
-// ends in (claim.Token.Cut), which can be no role, and RoleController for the controller's token.
-// It is the one place that picks a slot, and it reads no role off the token: a claim's role is
-// the one its record holds. A token that is neither has no slot, "".
-func slotOf(token claim.Token) claim.Role {
-	if token.IsController() {
-		return claim.RoleController
-	}
-	_, agent, _ := token.Cut()
-	return claim.Role(agent)
-}
+// launcherOf is the role of the pod's launcher that serves slot, the slot a claim's process runs in
+// (claim.Token.Slot): a pod runs one launcher of each role of its kind (podKind.roles), and the
+// launcher of a role serves the slot of that role's name, with that role's Secret, volumes and
+// address record. A slot no role of the pod is named for is one the pod was built without
+// (runtime.PodLacks).
+func launcherOf(slot claim.Agent) claim.Role { return claim.Role(slot) }
 
 // checkLocator refuses a locator this runtime did not mint.
 func (r *Runtime) checkLocator(loc runtime.Locator) error {
