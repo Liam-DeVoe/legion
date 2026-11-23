@@ -202,6 +202,17 @@ var runtimeProjectionWrites = map[string][]string{
 	"internal/dispatch/refs/refs.go#queueStamp: update": nil,
 	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
 	"internal/dispatch/refs/rebuild.go#settleOwedStatement: delete from": nil,
+	// The boot's rename pass (store.RewriteRenamedRepositories) over the stored repository fields
+	// repoRenameLines lists. Of the tables nameWrite is given, two are projections, at a column the
+	// store does not state: issues.repo and check_results.commit_repo. The case "the boot's rename
+	// pass" drives it and reads graph_nodes and graph_tuples unchanged.
+	"internal/dispatch/store/repo_rename_pass.go#nameWrite: update": {"issues", "check_results"},
+	// urlWrite's URL columns and collisions' keyed tables are of no projection. collisions' delete of
+	// an architecture_sources twin takes that source's components and component_depends rows with
+	// it, through components_source_fkey's cascade, which this scan follows for no writer: the case
+	// "the boot's rename pass" drives that delete and reads the census of those components.
+	"internal/dispatch/store/repo_rename_pass.go#urlWrite: update":        nil,
+	"internal/dispatch/store/repo_rename_pass.go#collisions: delete from": nil,
 	// A migration runner's version table.
 	"internal/pgmigrate/identity.go#writeFixes: update":  nil,
 	"internal/pgmigrate/identity.go#Record: insert into": nil,
@@ -1108,10 +1119,19 @@ type writerCase struct {
 	// projection write exists, so its runs inject the failure at the store write's commit alone,
 	// and its plain run must write the store.
 	storeOnly bool
+	// storeUnwritten says the writer writes no node and no tuple, and of a projection only columns
+	// the store does not state: no store write stands for an injected failure to undo, so its runs
+	// inject none, and its plain run must leave graph_nodes and graph_tuples as they were, the same
+	// rows counted and digested. A projection row it writes stands beside no store write, which
+	// fails it.
+	storeUnwritten bool
 	// drives are the writers, by their inventory key, whose statement names its table with a
 	// runtime value, so neither a stack nor a statement's text names them: the case drives each,
 	// which its run's write of the writer's table stands for.
 	drives []string
+	// check reads what the plain run left once it is recorded, and fails the case on what it finds;
+	// nil for a case the reads above hold whole.
+	check func(t *testing.T, r *oneWriterRig, database *store.Store)
 }
 
 // caseRun is what one case's plain run left: its traced writes and the log of what its
@@ -1275,7 +1295,9 @@ func runOnce(t *testing.T, r *oneWriterRig, c writerCase, database *store.Store,
 // it reads that nothing the write would have written stands - no node, no tuple, no projection
 // row and no event but one that reports the failure - and that no event's notification arrived;
 // for a writer that commits in batches, that each batch it committed holds its store write beside
-// every projection row it wrote and the census reads no difference the batches did not find.
+// every projection row it wrote and the census reads no difference the batches did not find. A
+// writer that writes no node and no tuple (storeUnwritten) has no failure injected, and its plain
+// run must leave the store's rows as they were. The case's own check reads the plain run last.
 func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 	t.Helper()
 	run := caseRun{name: c.name, process: c.process, application: r.application, own: c.on != "", drives: c.drives}
@@ -1300,6 +1322,10 @@ func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 		{"between", "a failure between the store write and the projection write"},
 		{"after", "a failure after the projection write"},
 	} {
+		if c.storeUnwritten {
+			t.Logf("%s writes no node and no tuple, so no store write stands for %s to undo, and none is injected", c.name, injection.what)
+			continue
+		}
 		if c.storeOnly && injection.point == "between" {
 			t.Logf("%s writes a kind no table projects, so no failure between its store write and a projection write exists to inject", c.name)
 			continue
@@ -1360,6 +1386,10 @@ func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 	written := database("plain")
 	ready(written)
 	top := logTop(t, written)
+	var stored map[string]string
+	if c.storeUnwritten {
+		stored = r.digest(t, written)
+	}
 	run.record = r.trace.start()
 	err := runOnce(t, r, c, written, 60*time.Second)
 	settleAll(t, written)
@@ -1371,6 +1401,22 @@ func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 	r.requireEveryProjectionWriteBesideAStoreWrite(t, c.name, run.log, c.tables)
 	if c.storeOnly && !slices.ContainsFunc(run.log, func(row loggedWrite) bool { return slices.Contains(storeTables, row.table) }) {
 		t.Errorf("%s wrote no node and no tuple", c.name)
+	}
+	if c.storeUnwritten {
+		left := r.digest(t, written)
+		for _, table := range storeTables {
+			if left[table] != stored[table] {
+				t.Errorf("%s changed %s: %s before the run, %s after it", c.name, table, stored[table], left[table])
+				continue
+			}
+			t.Logf("%s left %s as it was: %s", c.name, table, left[table])
+		}
+		if slices.ContainsFunc(run.log, func(row loggedWrite) bool { return slices.Contains(storeTables, row.table) }) {
+			t.Errorf("%s wrote a node or a tuple", c.name)
+		}
+	}
+	if c.check != nil {
+		c.check(t, r, written)
 	}
 	return run
 }

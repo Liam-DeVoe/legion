@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -31,8 +32,8 @@ import (
 
 // This file holds the writers TestEveryGraphKindHasOneWriter drives (one_writer_test.go), grouped by
 // the package whose writers each group runs: the API's routes, the document service, the reference
-// rebuild and the architecture importer over the rig's own database, and the backfill, the seed and
-// the test corpus over databases of their own.
+// rebuild and the architecture importer over the rig's own database, and the backfill, the seed,
+// the test corpus and the boot's rename pass over databases of their own.
 
 // oneWriterState is what the cases leave for the cases after them.
 type oneWriterState struct {
@@ -819,11 +820,56 @@ var releaseBeforeRows = []string{
 	`insert into issue_component_members (issue_key, project_key, component_id) values ('OLD-1', 'OLD', 'census')`,
 }
 
+// oneWriterRenamedFrom is the name renamedRows seed under, which their pair renames to
+// one-writer/renamed-to.
+const oneWriterRenamedFrom = "one-writer/renamed-from"
+
+// renamedRows are the rows the boot's rename pass rewrites, as cmd/dispatch's test of the pass
+// seeds them: the rename pair, a repo_projects row, and under its old name project RENAME's
+// default repository, an issue's repository, a result's commit repository, and a delivery pull
+// request with its URL and the issue URL it cites.
+var renamedRows = []string{
+	`insert into projects (key, name, default_assignee, default_repo) values ('RENAME', 'Rename', 'alice', 'one-writer/renamed-from')`,
+	`insert into repo_projects (repo, project, created_by, renamed_to)
+		values ('one-writer/renamed-from', 'RENAME', '{"kind":"user","id":"alice"}', 'one-writer/renamed-to')`,
+	`insert into issues (key, project_key, number, title, created_by, rank, repo)
+		values ('RENAME-1', 'RENAME', 1, 'One', '{"kind":"user","id":"alice"}', 'U', 'one-writer/renamed-from')`,
+	`insert into artifacts (id, issue_key, project_key, slug, name, kind, created_by)
+		values ('00000000-0000-4000-8000-00000000e001', 'RENAME-1', 'RENAME', 'verification', 'verification.md', 'doc', '{"kind":"user","id":"alice"}')`,
+	`insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, role, commit_sha, verdict, actor, commit_repo)
+		values ('RENAME-1', 'RENAME-1', '00000000-0000-4000-8000-00000000e001', 'c1', 1, 'digest', 'tester', repeat('a', 40), 'pass',
+			'{"kind":"user","id":"alice"}', 'one-writer/renamed-from')`,
+	`insert into delivery_pull_requests (repo, number, title, url, author,
+			attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys)
+		values ('one-writer/renamed-from', 11, 'Eleven', 'https://github.com/one-writer/renamed-from/pull/11', 'octocat',
+			'{}', '{https://github.com/one-writer/renamed-from/issues/1}', '{}', '{}')`,
+}
+
+// componentCensus is the store census of each kind that components or component_depends projects
+// on database, by its name.
+func componentCensus(t *testing.T, database *store.Store) map[string]graphcensus.KindReport {
+	t.Helper()
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, nil)
+	if err != nil {
+		t.Fatalf("run the census: %v", err)
+	}
+	kinds := map[string]graphcensus.KindReport{}
+	for _, kind := range report.Kinds {
+		if table, _, _ := strings.Cut(kind.Table, "."); table == "components" || table == "component_depends" {
+			kinds[kind.Kind] = kind
+		}
+	}
+	return kinds
+}
+
 // ownDatabaseCases are the writers that run over a database of their own: the backfill of what a
-// build before the store wrote, the seed command, and the test corpus's loader.
+// build before the store wrote, the seed command, the test corpus's loader and the boot's rename
+// pass.
 func ownDatabaseCases() []writerCase {
 	ctx := context.Background()
 	var seed string
+	var components map[string]graphcensus.KindReport
 	return []writerCase{{
 		name: "the backfill of what a build before the store wrote", on: "backfill", batches: true,
 		tables: []string{"artifacts", "issues", "document_blocks", "block_refs", "comments", "asks", "ask_followers",
@@ -862,6 +908,76 @@ func ownDatabaseCases() []writerCase {
 			}
 			_, err = seedcorpus.Seed(ctx, database, seedcorpus.Options{Fixtures: fixtures, TestCopy: true})
 			return err
+		},
+	}, {
+		// The pass writes no node and no tuple, and of a projection only issues.repo and
+		// check_results.commit_repo, which the store does not state. Its collision delete of an
+		// architecture_sources twin is read against the census of the components that source held.
+		name: "the boot's rename pass", on: "rename", storeUnwritten: true,
+		drives: []string{"internal/dispatch/store/repo_rename_pass.go#nameWrite"},
+		ready: func(t *testing.T, r *oneWriterRig, database *store.Store) {
+			for _, statement := range renamedRows {
+				if _, err := database.Pool.Exec(ctx, statement); err != nil {
+					t.Fatalf("write the rows under the old name: %v\n%s", err, statement)
+				}
+			}
+			// Project RENAME's components, imported from its source under the old name with their
+			// nodes and tuples, and then the source's twin under the new name, which the pass's
+			// collision delete finds.
+			const source = `insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
+				values ('RENAME', $1, 'main', $2, '{"kind":"user","id":"alice"}')`
+			if _, err := database.Pool.Exec(ctx, source, oneWriterRenamedFrom, oneWriterInstallation); err != nil {
+				t.Fatalf("write project RENAME's source under the old name: %v", err)
+			}
+			if _, err := graphcensus.OneWriterImporter(t, database, oneWriterInstallation).Sync(ctx, "RENAME", oneWriterRenamedFrom); err != nil {
+				t.Fatalf("import project RENAME's components from its source under the old name: %v", err)
+			}
+			if _, err := database.Pool.Exec(ctx, source, "one-writer/renamed-to", oneWriterInstallation); err != nil {
+				t.Fatalf("write the source's twin under the new name: %v", err)
+			}
+			components = componentCensus(t, database)
+			if len(components) == 0 {
+				t.Fatal("the census names no kind that components or component_depends projects")
+			}
+			for name, kind := range components {
+				if kind.Rows == 0 {
+					t.Fatalf("the census of %s reads no row of the imported components, so the collision delete takes none", name)
+				}
+			}
+		},
+		// As the boot runs it (cmd/dispatch's renameRepositories): the pairs read once, and the
+		// pass over them under the boot's bound.
+		drive: func(t *testing.T, r *oneWriterRig, database *store.Store) error {
+			pairs, err := store.ReadRepoRenames(ctx, database.Pool)
+			if err != nil {
+				return fmt.Errorf("read the rename pairs: %w", err)
+			}
+			bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			pass := store.RewriteRenamedRepositories(bounded, database.Pool, pairs)
+			if err := pass.Err(); err != nil {
+				return err
+			}
+			// Err is nil only where the pass left no row on the old name, so every seeded field holds
+			// the new name. The one deletion is the source under the old name.
+			if pass.Pairs != 1 || pass.Deleted != 1 {
+				return fmt.Errorf("the pass did %+v, want one pair and one row deleted", pass)
+			}
+			return nil
+		},
+		check: func(t *testing.T, r *oneWriterRig, database *store.Store) {
+			census := componentCensus(t, database)
+			for _, name := range slices.Sorted(maps.Keys(census)) {
+				kind, was := census[name], components[name]
+				if kind.RowDifferences+kind.NodeDifferences > was.RowDifferences+was.NodeDifferences {
+					t.Errorf("the boot's rename pass deleted the architecture_sources row under the old name for its twin under the new name (store.RewriteRenamedRepositories' collisions), "+
+						"which took the row's components and component_depends rows with it through components_source_fkey's cascade and wrote no node and no tuple: "+
+						"the census of %s reads %d rows and %d of the store's, %d row and %d node differences, where it read %d rows, %d row and %d node differences before the pass: %v %v",
+						name, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, was.Rows, was.RowDifferences, was.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+					continue
+				}
+				t.Logf("the census of %s reads %d rows and %d of the store's, %d differences, after the pass", name, kind.Rows, kind.Nodes, kind.RowDifferences+kind.NodeDifferences)
+			}
 		},
 	}}
 }
