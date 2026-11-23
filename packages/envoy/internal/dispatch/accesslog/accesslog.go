@@ -71,14 +71,18 @@ type callerKey struct{}
 // copy.
 type recorder struct {
 	http.ResponseWriter
-	// mu guards kind, id and credential alone: Note may run on another goroutine than the
+	// mu guards kind, id, hash and credential alone: Note may run on another goroutine than the
 	// handler's while the handler is still writing.
 	mu   sync.Mutex
 	kind string
 	id   string
+	// hash is id's login hash (model.LoginHash) when kind is a person's (personKind), made by Note
+	// from the id it was handed, and empty otherwise.
+	hash string
 	// credential is the owner or subject a bearer's credential proved, kept when the bearer then
 	// names a session (which is text the caller wrote), so the line still says whose credential
-	// acted. Empty when the caller is that credential itself, a person, or the shared token.
+	// acted: a person's by their login's hash. Empty when the caller is that credential itself, a
+	// person, or the shared token.
 	credential string
 	status     int
 	written    int64
@@ -177,18 +181,22 @@ func Note(ctx context.Context, kind, id string) {
 	if rec == nil {
 		return
 	}
+	hash := ""
+	if personKind(kind) {
+		hash = model.LoginHash(id)
+	}
 	rec.mu.Lock()
 	switch {
 	case kind == KindSession && rec.kind == KindSharedToken:
 		rec.credential = KindSharedToken
 	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindBrokerToken):
-		rec.credential = rec.kind + ":" + model.LoginHash(rec.id)
+		rec.credential = rec.kind + ":" + rec.hash
 	case kind == KindSession && rec.kind == KindService:
 		rec.credential = rec.kind + ":" + rec.id
 	case kind != KindSession:
 		rec.credential = ""
 	}
-	rec.kind, rec.id = kind, id
+	rec.kind, rec.id, rec.hash = kind, id, hash
 	rec.mu.Unlock()
 }
 
@@ -209,7 +217,7 @@ func Detached(ctx context.Context) context.Context {
 
 func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
-	kind, id, credential := rec.kind, rec.id, rec.credential
+	kind, id, hash, credential := rec.kind, rec.id, rec.hash, rec.credential
 	rec.mu.Unlock()
 	status := rec.status
 	if status == 0 {
@@ -223,7 +231,7 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 	}
 	who := []any{"caller", clip(id)}
 	if personKind(kind) {
-		who = []any{"login_hash", model.LoginHash(id)}
+		who = []any{"login_hash", hash}
 	}
 	attrs := append([]any{
 		"method", clip(r.Method),
