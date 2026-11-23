@@ -335,10 +335,13 @@ describe.skipIf(!envoyStackEnabled)(
       // 2026-11-22T18:21Z to 20:50Z; 116 398.78 ms in the Job infra-1580-krows-kc-g4zvc (120
       // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z; 90 893.78 ms at 2712deb2 in
       // the Job infra-1580-krows-kc-pw59w (145 busy loops, row A at 33.4 s), 2026-11-23T06:44Z
-      // to 08:35Z. Six times the worst is 725 s, past the room above, so the room decides: 847 s
-      // less the stack's slowest start (249 s, the `beforeAll` above), the other row's worst
-      // (177 s) and the 30 s kept is 390.5 s, and 390_000 is 3.2 times the worst.
-    }, 390_000)
+      // to 08:35Z; at b5a8b94f, in the Job infra-1580-t25-ce1-ww769 (189 busy loops, row A at
+      // 36.8 s), 2026-11-23T17:50Z to 20:58Z, a run whose slower row took 189 698 ms and its
+      // other 182 403 ms, so each row's worst is taken as 189 698 ms. Six times that is 1 138 s,
+      // past the room above, so the room decides: 847 s less the stack's slowest start (249 s,
+      // the `beforeAll` above), the other row's worst (189.7 s) and the 30 s kept is 378.3 s, and
+      // 375_000 is 2.0 times the worst.
+    }, 375_000)
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
@@ -393,9 +396,12 @@ describe.skipIf(!envoyStackEnabled)(
       // 2026-11-22T18:21Z to 20:50Z; 118 302.75 ms in the Job infra-1580-krows-kc-g4zvc (120
       // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z; 111 289.38 ms at 2712deb2 in
       // the Job infra-1580-krows-kc-pw59w (145 busy loops, row A at 33.4 s), 2026-11-23T06:44Z
-      // to 08:35Z. Six times the worst is 1 064 s, past the room above, so the room decides:
-      // 847 s less the stack's slowest start (249 s, the `beforeAll` above), the other row's
-      // worst (121 s) and the 30 s kept is 446.9 s, and 440_000 is 2.5 times the worst.
-    }, 440_000)
+      // to 08:35Z; at b5a8b94f, in the Job infra-1580-t25-ce1-ww769 (189 busy loops, row A at
+      // 36.8 s), 2026-11-23T17:50Z to 20:58Z, a run whose slower row took 189 698 ms and its
+      // other 182 403 ms, so each row's worst is taken as 189 698 ms. Six times that is 1 138 s,
+      // past the room above, so the room decides: 847 s less the stack's slowest start (249 s,
+      // the `beforeAll` above), the other row's worst (189.7 s) and the 30 s kept is 378.3 s, and
+      // 375_000 is 2.0 times the worst.
+    }, 375_000)
   },
 )

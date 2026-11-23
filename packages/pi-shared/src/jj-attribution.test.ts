@@ -735,9 +735,11 @@ describe("userConfigChain", () => {
     // nothing to collect, so this row never waits on a pidfile that may not come.
     const pid = await pidIn(pidFile);
     if (pid !== undefined) await reaped(row, pidFile, pid);
-    // A hang guard, not a measurement: a resolve that waits the whole 300 s sleep out hangs the
-    // row, and a real jj subprocess leaves a loaded machine far more room than bun's 5 s default.
-  }, 60_000);
+    // A hang guard: what can hang is a resolve that waits the whole 300 s sleep out. Worst measured
+    // cost: 16 109 ms at the 240 rung in the Job infra-1580-t25-j1-gtjcb of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (555 busy loops for the 240 rung, row A 39.5 s), at b5a8b94f.
+    // 100_000 is 6.2 times that.
+  }, 100_000);
 
   it("kills a wrapper's forked child when jj times out", async () => {
     const row = rowGeneration;
@@ -767,10 +769,12 @@ describe("userConfigChain", () => {
     // collects the child.
     await reaped(row, pidFile, pid);
     // A hang guard: what can hang is an unbounded wait on the wrapper, a pidfile that is never
-    // written, or a forked child the kill misses. 60_000. Worst measured cost, with the earlier
-    // script in which the wrapper wrote `$!`: 12515.71 ms at 96 busy loops (48 per CPU), this row's
-    // acceptance rung, on a two-CPU pod.
-  }, 60_000);
+    // written, or a forked child the kill misses. Worst measured cost, with the earlier script in
+    // which the wrapper wrote `$!`: 12515.71 ms at 96 busy loops (48 per CPU), this row's
+    // acceptance rung, on a two-CPU pod; with this script, 15 692 ms at the 240 rung in the Job
+    // infra-1580-t25-j1-gtjcb of the cluster's `builds` namespace, two CPUs and 8 GiB (555 busy
+    // loops for the 240 rung, row A 39.5 s), at b5a8b94f. 100_000 is 6.4 times that.
+  }, 100_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const row = rowGeneration;
