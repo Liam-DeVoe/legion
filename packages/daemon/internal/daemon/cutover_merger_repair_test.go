@@ -41,18 +41,20 @@ import (
 // cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release the
 // deployments ran when the cutover began: migrations.txt, the name of every migration the tag
 // embeds (jj file list -r legion-v19.57.3 packages/daemon/internal/store/migrations), and the
-// tag's own text of the four migrations of that list whose text main has changed since
+// tag's own text of the five migrations of that list whose text main has changed since
 // (cutoverReleaseText).
 const cutoverRelease = "testdata/legion-v19.57.3"
 
-// cutoverReleaseText names the four migrations legion-v19.57.3 shares with this head whose text
+// cutoverReleaseText names the five migrations legion-v19.57.3 shares with this head whose text
 // this head has changed, which the record is built from at the tag's own text (jj file show -r
-// legion-v19.57.3 <path>). Two of them changed only in their comments (0067_phase_assignment and
-// 20261109191929_outbox_write_mark), and they are kept at the tag's text all the same, so the
-// record is built from the tag's own text of every migration it embeds. Every other migration of
-// the tag is applied from the embedded set, whose text for those versions is the tag's.
-var cutoverReleaseText = []string{"0067_phase_assignment", "20261109191929_outbox_write_mark",
-	"20261110225246_backward_moves_and_cap_told", "20261110235320_design_gates_publish"}
+// legion-v19.57.3 <path>). Three of them changed only in their comments (0052_dispatch_issues,
+// 0067_phase_assignment and 20261109191929_outbox_write_mark), and they are kept at the tag's text
+// all the same, so the record is built from the tag's own text of every migration it embeds.
+// Every other migration of the tag is applied from the embedded set, whose text for those versions
+// is the tag's.
+var cutoverReleaseText = []string{"0052_dispatch_issues", "0067_phase_assignment",
+	"20261109191929_outbox_write_mark", "20261110225246_backward_moves_and_cap_told",
+	"20261110235320_design_gates_publish"}
 
 // The daemon's own lines this test reads: the repair's one record per boot (workflow's
 // cutoverMergerRepair, and the daemon's repairCutoverMergers for a boot that finds the repair
@@ -107,7 +109,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //
 // The record is built as legion-v19.57.3 leaves it, not as this head would write it. The test
 // applies by hand exactly the migrations the tag embeds (cutoverRelease's migrations.txt), in
-// version order: the four whose text main has changed since at the tag's own text, and the rest
+// version order: the five whose text main has changed since at the tag's own text, and the rest
 // from the embedded set. A cut of the embedded set at the tag's newest version would be wrong:
 // this head embeds migrations below that version which the tag does not, because a version is the
 // moment its migration was written and not the moment it merged. The list internal/store's
@@ -197,8 +199,11 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
 //     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
-//   - E's merger is not started while its gate is closed, and gets exactly one task once the test
-//     opens the gate.
+//   - E's merger is not started while its gate is closed, and gets exactly one merging task once
+//     the test opens the gate. The opening approves version 2 of the spec over the version 1 the
+//     upgrade recorded the merger's phase as having taken (20261119203047_design_news), so the
+//     merger also gets the news of that version once (dispatch://INFRA-175), and its start waits
+//     until what changed is recorded (mergerWaitsForTheDesignGate).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
 //     resumed and gets exactly one task, the same merging task. That is the architect's case,
 //     decision D8 of the plan: no start the boot makes gives either a second merging task. The
@@ -299,7 +304,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		}
 	}
 
-	// E: the gate holds the start the repair owed, and the start goes on once the gate opens.
+	// E: the gate holds the start the repair owed, and the start goes on once the gate opens and
+	// what changed in the version it approved is recorded.
 	rig.await(t, "E's merger start held by its tree's closed design gate", func() bool {
 		return strings.Contains(rig.startWaits(t, rig.e.key), "design gate")
 	})
@@ -316,7 +322,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	}
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 
 	// D's merger, every role of G and E but the merger, and T's tester: nothing starts them.
 	rig.notStarted(t, rig.d.merger, "D's merger has nothing to do: its pull request merged")
@@ -338,10 +344,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.releaseAgain(t, rig.g)
 	rig.matchesTheSelection(t, rig.g)
 	// The whole first boot gave each merger one task: the release that stopped G's merger, and
-	// everything this daemon did after the counts above, gave none.
+	// everything this daemon did after the counts above, gave none. E's merger was told the news
+	// of the version its opening approved besides, once.
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
-	rig.toldOnce(t, rig.e)
+	rig.toldOnceWithNews(t, rig.e, 2)
 	rig.toldTheQueuedTask(t, rig.s)
 	rig.keptItsReady(t, rig.s, "S's merger: the start the old record queued for it already covers it (StartFor)")
 	rig.daemon.stop()
@@ -540,7 +547,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 }
 
 // cutoverReleaseStore is a database of this test's own carrying exactly the migrations
-// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the four of
+// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the five of
 // cutoverReleaseText at the tag's own text, and every other one from the embedded set. Each name
 // the list holds must be the embedded migration of its version, so a migration renamed or
 // renumbered since the tag is named here rather than applied as something else.
@@ -887,6 +894,38 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	want := workflow.ResumePhaseTask(*stands)
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
+	}
+}
+
+// toldOnceWithNews holds that issue's merger was given exactly two tasks over its whole life in
+// this test, in either order: its merging task once, as toldOnce reads it, and once the news of
+// the approved design its phase is owed, which names the command that reads version of the
+// issue's spec. The start the repair owed hands the merger work it was already on, so it carries
+// no news (record.SuperviseRequest.Entry); the reconcile's news-only start
+// (record.SuperviseRequest.News) is what tells it, and the two run in whichever order the
+// outbox's backoff gives them. The daemon's own delivery of a relaunch's record is no task and is
+// not counted (cutoverAgent.told); a news-only start that takes its place carries the record's
+// sentence in front of the news, and is counted as the news.
+func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
+	t.Helper()
+	stands := readIssue(t, r.pool, issue.key)
+	if stands == nil {
+		t.Fatalf("read %s: the record does not hold it", issue.key)
+	}
+	task := workflow.ResumePhaseTask(*stands)
+	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
+	told := r.tasks(issue.merger)
+	merging, news := 0, 0
+	for _, given := range told {
+		switch {
+		case given == task:
+			merging++
+		case strings.Contains(given, read):
+			news++
+		}
+	}
+	if len(told) != 2 || merging != 1 || news != 1 {
+		t.Fatalf("%s's merger was given the tasks %q, want its merging task %q once and once the news that names %q", issue.key, told, task, read)
 	}
 }
 

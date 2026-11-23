@@ -6,6 +6,8 @@ Read the handoffs already on the issue with `dispatch handoff-read --issue <issu
 
 The plan lives in your `plan` handoff and the issue's `plan.md` document (`dispatch artifact` on the issue, with `--force` once `plan.md` exists, which is what writes a new version of a document the issue already holds), never in the issue's primary document, which is its spec. Write each task of the plan as a `plan_task` block of `plan.md`, with `serves` naming the `requirement` blocks of the spec it serves and `needs` naming the tasks of this plan that come before it; a pointer to a block no document of this issue or of an issue above it holds is refused. Read the issue's checks with `dispatch results --issue <issue>`: a check marked `after_merge` that could be run before the merge is a defect of the plan, and the plan review sends it back. Legion sets no rule on whether a plan or spec goes in the repository: commit a plan, a spec or spec code when the issue, its spec or the repository asks for it. Otherwise, a skill step that says "save the plan to a file" is satisfied by the plan handoff below.
 
+An upload of `plan.md` over a plan the issue already holds replaces every word of it, so name the text you are replacing: read the plan with `dispatch doc-read --issue <issue> --artifact plan.md`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`. A token behind the live plan is refused `409 PRECONDITION_FAILED`: read the plan again, decide what the new version says, and upload again. Changing part of a plan the issue already holds is a `dispatch doc-edit`, not an upload.
+
 ## A departure from the spec
 
 When what you measure or read makes the plan build something differently from the spec's design, the plan departs from the spec; never edit the issue's spec document and never change its Verification document. Record each departure in `plan.md` and in the handoff's `specDepartures` (below), and name each one in your completion summary: the architect decides whether the spec changes.
@@ -13,8 +15,11 @@ When what you measure or read makes the plan build something differently from th
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` holds only your own
-resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
+When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise read
+`jj -R "$LEGION_WORKSPACE" diff -r @`: if you wrote every change in it, run
+`jj -R "$LEGION_WORKSPACE" new`, then `jj -R "$LEGION_WORKSPACE" squash --from @- --into @`;
+if not, or if you are not sure, run `jj -R "$LEGION_WORKSPACE" new @-`, which sets that change
+aside. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not move a bookmark you do
 not own. Put only your logical paths in `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 Push any commits you make as the daemon part below says; your handoff is never a commit.

@@ -107,7 +107,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// the words: LEGION-171 dispatch_blocker, LEGION-172 at_work, LEGION-173 accepted_ancestor and
 	// LEGION-174 unclassified. LEGION-172, in merging, is an ancestor the daemon has accepted
 	// (record.Accepted) and holds no slot, since its work is past its review (record.KeepsSlot);
-	// nothing of LEGION-173 under it starts before that close. LEGION-174 is the issue at work in
+	// nothing of LEGION-173 under it starts while it stands in merging. LEGION-174 is the issue at work in
 	// a phase up to its review that holds no row and that the line does not place, and LEGION-175,
 	// at work holding one, is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
@@ -159,7 +159,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 // runs and the issues that hold it (heldRow).
 func wordFor(t *testing.T, store projectionStore, key string) api.HeldIssue {
 	t.Helper()
-	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

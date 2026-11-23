@@ -291,10 +291,13 @@ func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, err
 func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
+func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *tickDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
 }
-func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *tickDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
@@ -374,8 +377,8 @@ func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: "CAPTURE", Status: status, Blockers: blocked, Seq: seq})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(blocked)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}

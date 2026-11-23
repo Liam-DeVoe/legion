@@ -118,12 +118,15 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
+ * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
+ * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
+ * sends both. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -656,7 +659,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1625-1653` and `:2693-2703`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -665,7 +668,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3117-3126` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -902,6 +905,15 @@ export interface LegionPaneOptions {
   readonly quietMs?: number;
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a settled Legion pane left behind. */
@@ -914,8 +926,22 @@ export interface LegionPane {
   readonly selfChecks: () => Request[];
   /** Every `tool_result` the host sent back to the gateway, in conversation order. */
   readonly toolResults: () => ToolResult[];
+  /** Every entry of the persisted transcript, each life's file in turn, in the order omp wrote
+   * them, each parsed whole: its `type`, its `timestamp` by the omp process's own clock, and the
+   * rest of what omp wrote. */
+  readonly transcript: () => Promise<unknown[]>;
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
+  /**
+   * Replaces the `data` of the newest persisted transcript entry of `customType` with what `edit`
+   * returns for it, and throws when the transcript holds none. Only between lives, while no omp
+   * process holds the file: a case sets a recorded value the next life reads with it, for example
+   * a due time that runs on the omp process's own clock, which no test can move.
+   */
+  readonly editTranscriptEntry: (
+    customType: string,
+    edit: (data: unknown) => unknown
+  ) => Promise<void>;
   /**
    * Runs omp again over this pane's own transcript (`--resume <session>`), in the same scratch
    * root and against the same stand-in, and settles it as the first life settled: what the
@@ -1033,10 +1059,15 @@ export async function runLegionPane(
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    // A session takes its messages from its own consumer, relayed on its own deliver subject: a
-    // registration answered without one leaves the session deaf, which the plugin refuses rather
-    // than accept, and with it every claim the pane makes (INFRA-771).
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A case that needs another route, Dispatch's among them,
+    // serves it from `answer`. A session takes its messages from its own consumer, relayed on its
+    // own deliver subject: a registration answered without one leaves the session deaf, which the
+    // plugin refuses rather than accept, and with it every claim the pane makes (INFRA-771).
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sessionID = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
       session_id: sessionID,
@@ -1056,7 +1087,11 @@ export async function runLegionPane(
    * the extension sends from `agent_end` instead starts its continuation after that frame, so
    * `quietMs` waits for the gateway to fall silent rather than for the frame.
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly string[],
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
       binary,
@@ -1091,6 +1126,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1127,15 +1163,28 @@ export async function runLegionPane(
         ]);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   const turns = (): Request[] =>
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
     );
+  // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
+  // so nothing is still appending and a trailing fragment is a defect that must throw rather
+  // than be withheld (dispatch://INFRA-2188).
+  const transcript = async (): Promise<unknown[]> => {
+    const entries: unknown[] = [];
+    for (const file of await transcripts(sessions)) {
+      for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+        entries.push(JSON.parse(line));
+      }
+    }
+    return entries;
+  };
   return {
     requests,
     turns,
@@ -1157,20 +1206,36 @@ export async function runLegionPane(
       }
       return results;
     },
-    // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
-    // so nothing is still appending and a trailing fragment is a defect that must throw rather
-    // than be withheld (dispatch://INFRA-2188).
-    transcriptEntries: async (customType) => {
-      const entries: unknown[] = [];
-      for (const file of await transcripts(sessions)) {
-        for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
+    transcript,
+    transcriptEntries: async (customType) =>
+      (await transcript()).flatMap((entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        "customType" in entry &&
+        entry.customType === customType
+          ? ["data" in entry ? entry.data : undefined]
+          : []
+      ),
+    editTranscriptEntry: async (customType, edit) => {
+      for (const file of (await transcripts(sessions)).reverse()) {
+        const lines = (await readFile(file, "utf8")).split("\n");
+        const at = lines.findLastIndex((line) => {
+          if (line === "") return false;
           const entry: unknown = JSON.parse(line);
-          if (typeof entry !== "object" || entry === null) continue;
-          if (!("customType" in entry) || entry.customType !== customType) continue;
-          entries.push("data" in entry ? entry.data : undefined);
-        }
+          return (
+            typeof entry === "object" &&
+            entry !== null &&
+            "customType" in entry &&
+            entry.customType === customType
+          );
+        });
+        if (at === -1) continue;
+        const entry: Record<string, unknown> = JSON.parse(lines[at] ?? "");
+        lines[at] = JSON.stringify({ ...entry, data: edit(entry.data) });
+        await writeFile(file, lines.join("\n"));
+        return;
       }
-      return entries;
+      throw new Error(`no transcript entry of ${customType} under ${sessions}`);
     },
     resume: async (more, prompt) => {
       scripted.push(...more);

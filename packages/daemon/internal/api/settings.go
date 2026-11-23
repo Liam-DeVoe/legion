@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"net/url"
 	"slices"
@@ -77,9 +78,10 @@ type Settings struct {
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
-	// a pod's update round waits for its roles after it opens. An answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
-	// drive the bound inside one run.
+	// a pod's update round waits for its roles after it opens. An answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal so a live proof can drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
@@ -131,6 +133,31 @@ type Settings struct {
 	// one default hook for a file that names no key. It carries no hook's words: see
 	// HookSettings.
 	Hooks []HookSettings `json:"hooks"`
+	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
+	// shaping.go's fixAttemptsContract). Such a reader types `max_fix_attempts` as a positive
+	// integer and refuses the whole body without the key (answers.go's typedSettings), and the
+	// stand-in is what it reads there. It is a flag of the block's own and the stand-in is a
+	// constant, as PullRequestView.fixAttemptsShown is.
+	maxFixAttemptsShown bool
+}
+
+// MarshalJSON writes the stand-in on the one body that carries it and leaves the key off every
+// other, as PullRequestView.MarshalJSON writes `fixAttempts`: the key is written by a pointer of
+// the outer value rather than by a field of the block, so no body this contract writes can carry
+// it.
+func (s Settings) MarshalJSON() ([]byte, error) {
+	type wire Settings
+	type standIn struct {
+		wire
+		MaxFixAttempts *int `json:"max_fix_attempts,omitempty"`
+	}
+	out := standIn{wire: wire(s)}
+	if s.maxFixAttemptsShown {
+		maxFixAttempts := maxFixAttemptsStandIn
+		out.MaxFixAttempts = &maxFixAttempts
+	}
+	return json.Marshal(out)
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the
@@ -182,9 +209,9 @@ type KubernetesSettings struct {
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
 	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
-	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
-	// credential, and a role reads it to know when a process of its own may be ended under it, so
-	// every pod may read it.
+	// launcher, and the launcher of the controller's pod, runs a memory guard, and the shares, wait
+	// and interval each runs by. None of it is a credential, and a role reads it to know when a
+	// process of its own may be ended under it, so every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
 	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
@@ -192,9 +219,10 @@ type KubernetesSettings struct {
 	// out from under a build it left running, so every pod may read it.
 	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
-	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
-	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
-	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	// pods and of its controller's pod, which follows `type` alone, the issues whose pods run in
+	// the other one, and where a microVM pod runs. Every member is a word, an issue key, a class
+	// name, or the cluster's Workload Identity pool and identity provider, which name the cluster
+	// and grant nothing, so no member is a credential.
 	Sandbox SandboxSettings `json:"sandbox"`
 }
 
@@ -208,12 +236,15 @@ type SandboxSettings struct {
 }
 
 // MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
-// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
-// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
-// members, absent while the block names none.
+// nodes, absent in a block no issue pod uses that names none; the microVM issue pods' workspace
+// volume's class, `runtime.kubernetes.storage_class` when the block names none, which the
+// controller's disk is on in either sandbox; whether a microVM issue pod keeps that volume, false
+// when the block names none; and the metadata endpoint's two members, absent while the block names
+// none.
 type MicroVMSettings struct {
 	ComputeClass string            `json:"compute_class,omitempty"`
 	StorageClass string            `json:"storage_class"`
+	KeepVolume   bool              `json:"keep_volume"`
 	Metadata     *MetadataSettings `json:"metadata,omitempty"`
 }
 
@@ -231,9 +262,10 @@ type IdleReleaseSettings struct {
 }
 
 // MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
-// guard runs in.
+// guard runs in: every issue pod's, and the project controller's pod's.
 type MemoryGuardSettings struct {
-	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+	IssuePods     MemoryGuardPodSettings `json:"issue_pods"`
+	ControllerPod MemoryGuardPodSettings `json:"controller_pod"`
 }
 
 // MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
@@ -290,8 +322,8 @@ type ReservationSettings struct {
 }
 
 // RepositoryCacheSettings is the settled `runtime.kubernetes.repository_cache`: each repository
-// cache's volume, its fetch period, how long an unmapped repository's cache is kept, and its one
-// container's reservation in a pod's shape.
+// cache's volume, its fetch period, how long the cache of a repository no live record names is
+// kept, and its one container's reservation in a pod's shape.
 type RepositoryCacheSettings struct {
 	Volume         string              `json:"volume"`
 	RefreshMinutes int                 `json:"refresh_minutes"`
@@ -315,8 +347,9 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
-// which the state's `repositories` shows, and this file holds none of it.
+// ProjectSettings is one `projects.<KEY>` entry. It names no repository the project works in: an
+// issue's repository is Dispatch's resolution of it, and the state's `repositories` shows the
+// repositories the live records name.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
@@ -665,13 +698,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Type:         string(block.Sandbox.Type),
 			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
 		},
-		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
-			Enabled:              block.MemoryGuard.IssuePods.Enabled,
-			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
-			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
-			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
-			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
-		}},
+		MemoryGuard: MemoryGuardSettings{
+			IssuePods:     memoryGuardPodSettingsOf(block.MemoryGuard.IssuePods),
+			ControllerPod: memoryGuardPodSettingsOf(block.MemoryGuard.ControllerPod),
+		},
 		VolumeTrim: VolumeTrimSettings{
 			Enabled:         block.VolumeTrim.Enabled,
 			HighPercent:     block.VolumeTrim.HighPercent,
@@ -691,7 +721,7 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
 	}
 	if microVM := block.Sandbox.MicroVM; microVM != nil {
-		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass, KeepVolume: microVM.KeepVolume}
 		if metadata := microVM.Metadata; metadata != nil {
 			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
 		}
@@ -705,6 +735,14 @@ func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
 		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
 		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
 		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// memoryGuardPodSettingsOf is one pod kind's settled memory guard as the state shows it.
+func memoryGuardPodSettingsOf(guard config.MemoryGuardPodConfig) MemoryGuardPodSettings {
+	return MemoryGuardPodSettings{
+		Enabled: guard.Enabled, ActPercent: guard.ActPercent, FloorPercent: guard.FloorPercent,
+		WaitSeconds: guard.WaitSeconds, IntervalMilliseconds: guard.IntervalMilliseconds,
 	}
 }
 
