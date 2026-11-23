@@ -1,4 +1,4 @@
-package graphcensus_test
+package graphcensus
 
 import (
 	"bytes"
@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -26,11 +25,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// This file is the package's external test: its drives reach the API and the document service,
-// which no test of the package's own imports, through the routes and the calls cmd/dispatch
-// serves them by. It hands its drives to TestTheSizingCountsEveryTupleTheWritersAppend as the
-// test binary starts.
-func init() { graphcensus.ImportedDrives = importedDrives }
+// The drives below reach the API and the document service through the routes and the calls
+// cmd/dispatch serves them by, and writeTheStore runs them beside the package's own drives.
 
 // writersServerURL is the public origin the writers' server serves under.
 const writersServerURL = "https://dispatch.sizing.invalid"
@@ -261,14 +257,14 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // session wrote as a block, and the tick indexing a version a build without the block index
 // wrote. The comment path's drives name the sites the path runs in turn (comment): the path
 // itself, which writes the comment's node and its tuples under its event, and who wrote it.
-func importedDrives(t *testing.T) []graphcensus.StoreDrive {
+func importedDrives(t *testing.T) []storeDrive {
 	t.Helper()
 	r := newWritersRig(t)
 	ctx := context.Background()
 	comment := func(name string, sites ...string) []string {
 		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
-	return []graphcensus.StoreDrive{{
+	return []storeDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
 		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
@@ -311,7 +307,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		// The comment, the first alice writes, and alice: her node is made by the write that first
 		// records her.
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
@@ -335,7 +331,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				t.Fatalf("the mention of %s sent nothing to the listener within 30s", heldSession)
 			}
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
@@ -371,7 +367,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// The reply, its author's node, the first write that records the session, and the
 		// delivered_to of the attempt the reply makes a delivery, which the term delivery counts
 		// once for each attempt the listener took or an answer flipped to sent.
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
@@ -513,13 +509,13 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 // session's node with its two base attributes, made by the first write that records the session,
 // which the term session counts.
 var (
-	newBlockCounted = map[graphcensus.StoredKind][]string{
+	newBlockCounted = map[storedKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 		{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
 	}
-	sessionNodeCounted = map[graphcensus.StoredKind][]string{
+	sessionNodeCounted = map[storedKind][]string{
 		{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 		{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 	}

@@ -606,7 +606,7 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 }
 
 // writtenKind is one kind of tuple a drive of the store's writers appended: the drive, as its
-// StoreDrive names it, the kind of the node the tuple is out of, and the tuple's own kind.
+// storeDrive names it, the kind of the node the tuple is out of, and the tuple's own kind.
 type writtenKind struct{ writer, from, kind string }
 
 func compareWritten(a, b writtenKind) int {
@@ -639,7 +639,7 @@ const (
 // The terms each drive's tuples are counted by are the one thing about the writers this test
 // states rather than reads: which term counts a tuple is what that term's driver says of the
 // writer, and no writer says it.
-func seededDrives(database *store.Store) []StoreDrive {
+func seededDrives(database *store.Store) []storeDrive {
 	ctx := context.Background()
 	backfill := func(pass func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
 		return func(t *testing.T) {
@@ -649,7 +649,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			}
 		}
 	}
-	return []StoreDrive{{
+	return []storeDrive{{
 		// A version's blocks, as the index states them over the archive's three versions: the
 		// blocks it inserts afresh, each with its node's base attributes, its in_document and its
 		// part_of; the paragraph the second version drops, stated gone; the paragraph it moves out
@@ -658,7 +658,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// restore moved; and the added paragraph's reference to CORE-1.
 		Name: archiveIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Database: database, Drive: func(t *testing.T) { indexTheArchive(t, database) },
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block", "block_restored", "block_gone"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block", "block_restored"},
@@ -676,7 +676,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		Database: database, Drive: backfill(func(ctx context.Context, database *store.Store) (KindBackfill, error) {
 			return backfillBlocks(ctx, database, refs.BlockIndexMarkingRule)
 		}),
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
@@ -684,11 +684,11 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill_block_refs.go#writeBlockRefBatch", "graphstore/write.go#Write"},
 		Database: database, Drive: backfill(backfillBlockRefs),
-		Counts: map[StoredKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
+		Counts: map[storedKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
 	}, {
 		Name: commentBatchDrive, Sites: []string{"refs/comment_nodes.go#Queue"},
 		Database: database, Drive: backfill(backfillComments),
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
@@ -701,7 +701,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		Name: roleBatchDrive, Sites: []string{"graphcensus/backfill_roles.go#writeRoleBatch"},
 		Database: database, Drive: backfill(backfillRoles),
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindRole, graphstore.AttributeVisibility}: {graphstore.KindRole},
 			{graphstore.KindRole, graphstore.AttributeState}:      {graphstore.KindRole},
 			{graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindPage},
@@ -711,7 +711,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		Name: sessionBatchDrive, Sites: []string{"graphcensus/backfill_sessions.go#writeSessionBatch"},
 		Database: database, Drive: backfill(backfillSessions),
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
@@ -721,7 +721,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// role, whose held_by and whose part_of the role the session term counts.
 		Name: busDeliveryDrive, Sites: []string{"outbox/publisher.go#recordBatch"},
 		Database: database, Drive: func(t *testing.T) { publishTheLog(t, database) },
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}: {"bus_delivery"},
 			{graphstore.KindRole, graphstore.TupleHeldBy}:         {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.TuplePartOf}:      {graphstore.KindSession},
@@ -733,7 +733,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		Name: receiptDrive, Sites: []string{"outbox/publisher.go#recordBatch"},
 		Database: database, Ready: func(t *testing.T) { appendTheMentionReceipt(t, database) },
 		Drive: func(t *testing.T) { publishTheLog(t, database) },
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}: {"delivery"},
 			{graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindPage, graphstore.AttributeState}:      {graphstore.KindSession},
@@ -744,7 +744,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// session's node, which the copy's row is the first to name.
 		Name: fallbackDrive, Sites: []string{"outbox/mentions.go#recordFallbackCopies"},
 		Database: database, Drive: func(t *testing.T) { publishAFallbackCopy(t, database) },
-		Counts: map[StoredKind][]string{
+		Counts: map[storedKind][]string{
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"fallback_delivery"},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
@@ -754,22 +754,16 @@ func seededDrives(database *store.Store) []StoreDrive {
 
 // writeTheStore runs every drive of the store's writers: the ones over the history
 // seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
-// (graphstoreDrives), the seed (seedRunDrives), and the drives of the sites whose packages import
-// this one, which this package's external test registers (ImportedDrives). It holds them to
-// driving every site the register of the store's writers lists (requireEveryListedSiteDriven).
-// Each drive is the writer itself and not a copy of what it writes. It answers how many tuples of
-// each kind each drive appended, read off graph_tuples by the sequences the drive's tuples took,
-// and the terms each drive says count each kind it appends; and it logs, for every listed site,
-// what each drive that runs it appended.
+// (graphstoreDrives), the seed (seedRunDrives), and the API's and the document service's sites
+// (importedDrives). It holds them to driving every site the register of the store's writers
+// lists (requireEveryListedSiteDriven). Each drive is the writer itself and not a copy of what it
+// writes. It answers how many tuples of each kind each drive appended, read off graph_tuples by
+// the sequences the drive's tuples took, and the terms each drive says count each kind it
+// appends; and it logs, for every listed site, what each drive that runs it appended.
 func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
 	t.Helper()
 	ctx := context.Background()
-	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), seedRunDrives(t))
-	if ImportedDrives == nil {
-		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
-	} else {
-		drives = append(drives, ImportedDrives(t)...)
-	}
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), seedRunDrives(t), importedDrives(t))
 	requireEveryListedSiteDriven(t, drives)
 	appended, counted := map[writtenKind]int64{}, map[writtenKind][]string{}
 	wrote := map[string]string{}

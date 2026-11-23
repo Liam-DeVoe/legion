@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
 // The field an ask waits on a person by, and who may write it: PUT /api/v1/asks/{id}/asked-of.
@@ -123,32 +124,6 @@ func askEventCensus(t *testing.T) []string {
 		t.Fatal("api/events.go names no ask event type; the census this test reads is gone")
 	}
 	return census
-}
-
-// sqlWithoutComments is one migration file's SQL with its `--` comments taken off, so the
-// statements can be counted and read.
-func sqlWithoutComments(text string) string {
-	lines := []string{}
-	for _, line := range strings.Split(text, "\n") {
-		if comment := strings.Index(line, "--"); comment >= 0 {
-			line = line[:comment]
-		}
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-// sqlStatementsOf splits comment-free SQL into its statements, the trailing semicolon dropped.
-func sqlStatementsOf(text string) []string {
-	statements := []string{}
-	for _, statement := range strings.Split(sqlWithoutComments(text), ";") {
-		if trimmed := strings.TrimSpace(statement); trimmed != "" {
-			statements = append(statements, trimmed)
-		}
-	}
-	return statements
 }
 
 // rowWritingStatement matches a statement that writes a row, which the migration must not hold.
@@ -471,7 +446,7 @@ func TestAskAskedOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", censusPath, err)
 		}
-		statements := sqlStatementsOf(string(censusText))
+		statements := sqlscan.Statements(string(censusText))
 		if len(statements) != 1 {
 			t.Fatalf("the census holds %d statements (%v), want one", len(statements), statements)
 		}
@@ -487,7 +462,7 @@ func TestAskAskedOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", upPath, err)
 		}
-		up := sqlStatementsOf(string(upText))
+		up := sqlscan.Statements(string(upText))
 		if len(up) != 1 {
 			t.Fatalf("the up holds %d statements (%v), want the one alter", len(up), up)
 		}

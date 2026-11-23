@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
 // personNodesRoute is the one route the node and tuple store adds to the table: a person's own
@@ -346,7 +347,7 @@ func routesBeforeThisChild(t *testing.T, testHooks bool) []apiRoute {
 // the table answers. A field dropped from a Go type, or a module left stale beside a table that
 // moved, breaks one of the three.
 func declaredShapesUnchanged(t *testing.T) {
-	root := repositoryRoot(t)
+	root := sqlscan.Root(t)
 	document := committedDocument(t, root)
 	module := readRepositoryFile(t, root, contractsModule)
 	if !strings.Contains(module, `export * from "./dispatch-api.generated";`) {
@@ -1338,7 +1339,7 @@ func readsUnchanged(t *testing.T) {
 	}
 	settledCommentDeliveries(t, database, comment.ID)
 
-	root := repositoryRoot(t)
+	root := sqlscan.Root(t)
 	declared := schemasOfGeneratedModule(t, readRepositoryFile(t, root, contractsGenerated))
 	document := committedDocument(t, root)
 	for _, read := range []struct{ name, target string }{
