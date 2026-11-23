@@ -144,6 +144,27 @@ func (i DispatchIssue) LabelledTriageRoot() bool {
 	return i.Status == "triage" && i.Parent == "" && i.HandedOver
 }
 
+// AdmissionBound says whether the fact is an event admission records an unrecorded issue from: in
+// todo, handed to Legion or a child of a tree. The daemon's preparation of an event and of its
+// boot listing, and a replay's stand-in for it, read an unrecorded issue's repository and its
+// view in Dispatch only for such an event.
+func (i DispatchIssue) AdmissionBound() bool {
+	return i.Status == "todo" && (i.HandedOver || i.Parent != "")
+}
+
+// QueuesUnderParent says whether the fact's issue, recorded as recorded (nil when the workflow does
+// not record it), is a root the waiting line may hold under an unreleased child of an ancestor's
+// tree (the ancestry hold): a labelled todo under a Dispatch parent, unrecorded or recorded as a
+// root. Its preparation reads its Dispatch parent chain (Ancestry) for such a fact alone.
+func (i DispatchIssue) QueuesUnderParent(recorded *record.Issue) bool {
+	return i.Status == "todo" && i.HandedOver && i.Parent != "" &&
+		(recorded == nil || claim.IsTreeRoot(recorded.Key, recorded.Tree))
+}
+
+// ParentKey is the key a Dispatch parent names, as Dispatch's issue and listing and the record
+// hold one (nil for none), "" for none.
+func ParentKey(parent *string) string { return deref(parent) }
+
 // LabelSetByPerson says whether a person set the label (LabelSetter), by the one rule the daemon
 // has for who is a person (dispatch.Actor.Person): a session's or Dispatch's own label is not,
 // and neither is a setter nothing read.

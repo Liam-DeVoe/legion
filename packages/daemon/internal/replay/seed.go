@@ -865,8 +865,8 @@ func (s *seeder) owedStarts() error {
 // pullRequests writes a synthetic open pull request for each placed issue in the workflow the trace
 // has seen one of before the start, on the issue's own repository and branch against its default
 // branch, at the number a run gives the issue's record in that repository (pullRequestNumbers),
-// its head arrived when the trace first saw the pull request: the record the daemon's guards read
-// (review Q2, item 1). An issue that stands at the start in a visit to merging whose merge came
+// its head arrived when the trace first saw the pull request: the record the daemon's guards
+// read. An issue that stands at the start in a visit to merging whose merge came
 // before it, its close waiting for the issues beneath it (Visit.Merge), holds its pull request
 // merged, as the replay's own merge leaves it, so the engine closes it at the last one's leave as
 // it closed it in the record.

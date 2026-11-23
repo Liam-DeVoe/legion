@@ -192,12 +192,14 @@ func (e *githubUnanswered) Error() string { return "GitHub gave no answer: " + e
 func (e *githubUnanswered) Unwrap() error { return e.err }
 
 // retryableGitHub says whether GitHub refused a read for now: it answered 429 or a 5xx, or gave no
-// whole answer.
+// whole answer, the client's own timeout among them (net/http reports it as a deadline exceeded).
+// A read the caller cancelled is no refusal of GitHub's, and is not tried again; a caller's
+// deadline that passed ends the wait before the next attempt (retry).
 func retryableGitHub(err error) bool {
 	var refusal *githubRefusal
 	if errors.As(err, &refusal) {
 		return refusal.status == http.StatusTooManyRequests || refusal.status >= 500
 	}
 	var unanswered *githubUnanswered
-	return errors.As(err, &unanswered) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+	return errors.As(err, &unanswered) && !errors.Is(err, context.Canceled)
 }

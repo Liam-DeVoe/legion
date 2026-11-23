@@ -164,7 +164,7 @@ type IssueTrace struct {
 	// PullRequest is when the trace first sees the issue's pull request: its first move by
 	// implementation_ready, its first visit past implementing, or the first line that names its
 	// pull request, whichever is first; zero for none. A replay keeps a synthetic open pull
-	// request record from then on, since a guard of the daemon reads one (review Q2, item 1).
+	// request record from then on, since a guard of the daemon reads one.
 	// PullRequestNumber is the number a line names, 0 where none does.
 	PullRequest       time.Time
 	PullRequestNumber int
@@ -307,7 +307,8 @@ const (
 
 // WorkSegment is one visit's work: from its worker start to its end (zero while open), with each
 // turn of the issue's workers and each child the issue filed in it, at their offsets from its
-// start, which is how a replay places them at its own start of the segment.
+// start. A replay places neither from here: it places each turn from the issue's own
+// (IssueTrace.Turns, placeTurns) and each child's filing from the recorded event that made it.
 type WorkSegment struct {
 	Start, End time.Time
 	EndedBy    SegmentEnd
@@ -1066,7 +1067,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.backKind[l.Issue] = record.LineWaitingOnIssue.String()
 	case WaitsOnIssues:
 		// The per-pass wait lines are left: a link wait is built from the issue's and its
-		// blockers' events, which every window holds whole (review Q1).
+		// blockers' events, which every window holds whole.
 		b.issue(l.Issue)
 	case WaitsForChildren:
 		// The daemon tells each issue's children wait once for its generation, so each line is a

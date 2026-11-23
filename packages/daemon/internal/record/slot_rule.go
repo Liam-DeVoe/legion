@@ -165,6 +165,15 @@ func (r SlotRule) PhaseKeepsSlot(at phase.Phase) bool {
 	return slices.Contains(r.OrMain().KeepsSlotIn, at)
 }
 
+// ReadsReadyMark says whether r reads the merger's ready mark (LineFacts.Ready): it gives a slot
+// back there (ReleaseAtReady) and keeps one in merging, where the mark is made. The read of the
+// line's facts reads the mark under such a rule alone (ReadLineFactsUnder), and so do a replay's
+// own tables, which keep the mark of a release that made it by a move.
+func (r SlotRule) ReadsReadyMark() bool {
+	r = r.OrMain()
+	return r.ReleaseAtReady && r.PhaseKeepsSlot(phase.Merging)
+}
+
 // GraceOver says whether a wait on another issue that began at since has lasted r's grace by now
 // (WaitGrace), so that it gives the slot back: at once under a rule with no grace, and from since
 // plus the grace on under one with a grace. The pass that gives the slot back is the first at or

@@ -2,6 +2,7 @@ package blockers
 
 import (
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -81,8 +82,8 @@ type SlotsInputs struct {
 // SlotsReading is the project's slots reading (record.SlotsReadingOf) over what in holds, and
 // each holder by its key, with the state it is in and the time it entered it: the reading the
 // state serves as `admission.slots` and the tick notice carries as `slots`, and the state and time
-// each holder's `slot` carries. Each holder's facts are gathered here and named by
-// record.HolderStateOf, so the two callers read one holder alike.
+// each holder's `slot` carries. Each holder is read by SlotHolderState, so the two callers read
+// one holder alike.
 func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHolder) {
 	byKey := make(map[string]record.Issue, len(in.Issues))
 	for _, issue := range in.Issues {
@@ -112,20 +113,7 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 		if !own {
 			continue
 		}
-		facts := record.HolderFacts{Issue: issue, AdmittedAt: slot.AdmittedAt, WaitSince: slot.WaitsSince}
-		record.HolderClaimFacts(&facts, claimsOf[issue.Key], stranded)
-		if owed, owes := in.Facts.Owed[issue.Key]; owes {
-			facts.Starting = append(facts.Starting, owed.CreatedAt)
-		}
-		if issue.Hold != nil {
-			facts.HeldSince = issue.Hold.Since
-		}
-		if issue.AwaitingPerson() && !issue.Answered() && claim.IsTreeRoot(issue.Key, issue.Tree) {
-			facts.Person = true
-			facts.PersonSince = record.KnownTime(issue.Awaiting.Since.At)
-		}
-		facts.WaitsOnIssue = len(KeptWaits(in.Rows, issue, in.Facts)) > 0
-		state, since := record.HolderStateOf(facts)
+		state, since := SlotHolderState(issue, slot, claimsOf[issue.Key], stranded, in.Rows, in.Facts)
 		holder := record.SlotHolder{Issue: issue, RootRank: rootRank(issue), State: state, Since: since}
 		holders = append(holders, holder)
 		byHolder[issue.Key] = holder
@@ -145,4 +133,29 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 			HeldBack: len(LineWaitsOn(in.Rows, entry)) > 0, Blocked: blocked[entry.Issue.Key], Held: held[entry.Issue.Key]}
 	}
 	return record.SlotsReadingOf(in.Cap, holders, members), byHolder
+}
+
+// SlotHolderState is the state issue, holding slot, stands in as the slots reading reads a holder,
+// and the time it entered it (record.HolderStateOf), from the facts gathered here: its claims
+// (claims, its issue's own, record.HolderClaimFacts, with the tokens nothing will wake in
+// stranded), the start it is owed (record.LineFacts.Owed), its hold, its root's wait on a person
+// that nobody has answered, and the waits it keeps its slot through (KeptWaits, over rows and
+// facts). The slots reading reads each holder by it, and so does a replay's snapshot of the state.
+func SlotHolderState(issue record.Issue, slot record.Slot, claims []record.HolderClaim, stranded map[claim.Token]bool,
+	rows map[string]Row, facts record.LineFacts,
+) (record.HolderState, *time.Time) {
+	holder := record.HolderFacts{Issue: issue, AdmittedAt: slot.AdmittedAt, WaitSince: slot.WaitsSince}
+	record.HolderClaimFacts(&holder, claims, stranded)
+	if owed, owes := facts.Owed[issue.Key]; owes {
+		holder.Starting = append(holder.Starting, owed.CreatedAt)
+	}
+	if issue.Hold != nil {
+		holder.HeldSince = issue.Hold.Since
+	}
+	if issue.AwaitingPerson() && !issue.Answered() && claim.IsTreeRoot(issue.Key, issue.Tree) {
+		holder.Person = true
+		holder.PersonSince = record.KnownTime(issue.Awaiting.Since.At)
+	}
+	holder.WaitsOnIssue = len(KeptWaits(rows, issue, facts)) > 0
+	return record.HolderStateOf(holder)
 }

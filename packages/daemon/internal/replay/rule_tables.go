@@ -26,13 +26,6 @@ type ruleTables struct{}
 
 var _ admit.RuleTables = ruleTables{}
 
-// readsReadyMarks says whether rule reads the merger's ready mark: it keeps a slot in merging and
-// gives it back there (record.SlotRule.ReleaseAtReady), as record.ReadLineFactsUnder reads it.
-func readsReadyMarks(rule record.SlotRule) bool {
-	rule = rule.OrMain()
-	return rule.ReleaseAtReady && rule.PhaseKeepsSlot(phase.Merging)
-}
-
 // readsFirstSlots says whether rule places the line's returned part by each issue's first slot
 // in its current generation (record.LineReturnedByFirstSlot), which the replay keeps in a table of
 // its own (replay_first_slots), since the daemon keeps no slot's moment once the slot goes back.
@@ -55,7 +48,7 @@ func readsFirstSlots(rule record.SlotRule) bool {
 // replay runs one project.
 func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts *record.LineFacts) error {
 	rule := facts.Rule.OrMain()
-	if readsReadyMarks(rule) {
+	if rule.ReadsReadyMark() {
 		ready, err := readMarks(ctx, tx, `select m.issue, m.generation from replay_ready_marks m
 			left join phases p on p.issue = m.issue and p.role = $2
 			where m.issue = any($1) and m.entry = coalesce(p.entry, 0)`, standingIn(issues, phase.Merging), string(claim.RoleMerger))

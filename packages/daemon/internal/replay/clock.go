@@ -107,7 +107,7 @@ func (l tappedLine) str(key string) string {
 }
 
 // unwritten is the msgs of the lines the daemon writes inside a transaction once a pass for each
-// candidate it passes over, which a replay leaves out of its log (review Q4, item 6): about a
+// candidate it passes over, which a replay leaves out of its log: about a
 // million lines a run, which no measure reads, since the trace builds a link wait from events.
 var unwritten = map[string]bool{
 	"admission waits for what this issue waits on": true,

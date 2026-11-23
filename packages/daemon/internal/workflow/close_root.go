@@ -47,7 +47,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. "+
+		return refused(SignOffChildInWorkflow, fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. "+
 			"Closing it would linger the tree and stop them mid-turn. Close the tree again when each of them has left the workflow.",
 			root.Key, strings.Join(open, ", "))+" "+endChildrenFirst("close")), nil
 	}

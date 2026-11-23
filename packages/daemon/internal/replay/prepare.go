@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -70,7 +68,7 @@ func (d *driver) prepareIssue(issue intake.DispatchIssue, recorded *record.Issue
 		}
 		return d.withAncestry(issue, recorded)
 	}
-	if !admissionBound(issue) {
+	if !issue.AdmissionBound() {
 		if issue.LabelledTriageRoot() {
 			setter, err := d.shadow.labelSetter(issue.Key)
 			if err != nil {
@@ -82,7 +80,7 @@ func (d *driver) prepareIssue(issue intake.DispatchIssue, recorded *record.Issue
 	}
 	if iss, ok := d.shadow.issues[issue.Key]; ok && iss.payload != nil {
 		event := issue
-		issue = d.shadow.observedIssue(iss)
+		issue = intake.ObservedIssue(d.shadow.detail(iss))
 		issue.Seq, issue.Delivered = max(event.Seq, issue.Seq), &event
 	}
 	return d.withAncestry(d.prepareUnrecorded(issue), nil)
@@ -90,8 +88,9 @@ func (d *driver) prepareIssue(issue intake.DispatchIssue, recorded *record.Issue
 
 // prepareListed readies one issue of a boot's listing, as the daemon's prepareListed does: a
 // recorded issue takes the record's repository where it names none, an unrecorded one the shadow's,
-// and a labelled todo under a parent reads its Dispatch parent chain; no other root's chain is read
-// again, since the listing holds every queued root's own todo.
+// and a labelled todo under a parent reads its Dispatch parent chain (intake.DispatchIssue's
+// QueuesUnderParent); no other root's chain is read again, since the listing holds every queued
+// root's own todo.
 func (d *driver) prepareListed(issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	recorded, err := d.recorded(issue.Key)
 	if err != nil {
@@ -104,7 +103,7 @@ func (d *driver) prepareListed(issue intake.DispatchIssue) (intake.DispatchIssue
 	} else {
 		issue = d.prepareUnrecorded(issue)
 	}
-	if queuesUnderParent(issue, recorded) {
+	if issue.QueuesUnderParent(recorded) {
 		issue.Ancestry = d.shadow.chain(issue.Key, issue.Parent)
 	}
 	return issue, nil
@@ -125,15 +124,16 @@ func (d *driver) prepareUnrecorded(issue intake.DispatchIssue) intake.DispatchIs
 
 // withAncestry is issue, recorded as recorded, with what the daemon's preparation reads up
 // Dispatch's parent chains (internal/daemon's withAncestry), from the shadow: its own chain where it
-// is a labelled todo under a parent, unrecorded or recorded as a root (queuesUnderParent); and, for
-// an event of an issue the workflow does not record or a fresh event of a recorded issue whose parent
-// is not its record's, the chain of every queued root whose recorded chain holds the issue, carried
-// as Reread where it differs from the record's.
+// is a labelled todo under a parent, unrecorded or recorded as a root
+// (intake.DispatchIssue.QueuesUnderParent); and, for an event of an issue the workflow does not
+// record or a fresh event of a recorded issue whose parent is not its record's, the chain of every
+// queued root whose recorded chain holds the issue, carried as Reread where it differs from the
+// record's.
 func (d *driver) withAncestry(issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
-	if queuesUnderParent(issue, recorded) {
+	if issue.QueuesUnderParent(recorded) {
 		issue.Ancestry = d.shadow.chain(issue.Key, issue.Parent)
 	}
-	if recorded != nil && (storetext.Text(issue.Parent) == parentOf(recorded) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	if recorded != nil && (storetext.Text(issue.Parent) == intake.ParentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
 	var roots []record.Issue
@@ -145,7 +145,7 @@ func (d *driver) withAncestry(issue intake.DispatchIssue, recorded *record.Issue
 		return issue, fmt.Errorf("read the queued roots whose chain holds %s: %w", issue.Key, err)
 	}
 	for _, root := range roots {
-		chain := d.shadow.chain(root.Key, parentOf(&root))
+		chain := d.shadow.chain(root.Key, intake.ParentKey(root.Parent))
 		if slices.Equal(storetext.Strings(chain), root.Ancestry) {
 			continue
 		}
@@ -157,54 +157,13 @@ func (d *driver) withAncestry(issue intake.DispatchIssue, recorded *record.Issue
 	return issue, nil
 }
 
-// admissionBound says whether issue is an event admission would record (internal/daemon's
-// admissionBound): a todo handed to Legion, or one under a parent.
-func admissionBound(issue intake.DispatchIssue) bool {
-	return issue.Status == "todo" && (issue.HandedOver || issue.Parent != "")
-}
-
-// queuesUnderParent says whether issue, recorded as recorded (nil for none), is a root the waiting
-// line may hold under an unreleased child of an ancestor's tree (internal/daemon's
-// queuesUnderParent): a labelled todo under a Dispatch parent, unrecorded or recorded as a root.
-func queuesUnderParent(issue intake.DispatchIssue, recorded *record.Issue) bool {
-	return issue.Status == "todo" && issue.HandedOver && issue.Parent != "" &&
-		(recorded == nil || claim.IsTreeRoot(recorded.Key, recorded.Tree))
-}
-
-// parentOf is the Dispatch parent issue's record keeps, "" for none.
-func parentOf(issue *record.Issue) string {
-	if issue == nil || issue.Parent == nil {
-		return ""
-	}
-	return *issue.Parent
-}
-
-// observedIssue is iss as Dispatch's detail shows it now, as an Observed fact at the sequence the
-// shadow has run to (intake.ObservedIssue).
-func (s *shadow) observedIssue(iss *shadowIssue) intake.DispatchIssue {
-	claimed, known := iss.claimedBy()
-	labels := iss.labels()
-	return intake.DispatchIssue{Key: iss.key, Seq: iss.seq, Status: iss.status(), Title: iss.str("title"), Parent: iss.parent(),
-		Rank: s.rank(iss), HandedOver: dispatch.CarriesLegionLabel(labels), Labels: labels, ResolvedRepo: iss.str("resolved_repo"),
-		Blockers: iss.blockers(), ClaimedBy: claimed, ClaimKnown: known, Observed: true}
-}
-
 // detail is iss as Dispatch's issue detail serves it (dispatch.Issue), at the rank the replay shows
-// it at.
+// it at: what its listing shows (summary, dispatch.IssueSummary.Issue) with its project and its
+// primary artifact, which the detail serves beside it.
 func (s *shadow) detail(iss *shadowIssue) dispatch.Issue {
-	var parent *string
-	if p := iss.parent(); p != "" {
-		parent = &p
-	}
-	claimed, known := iss.claimedBy()
-	var held *dispatch.Claim
-	if kind, id, ok := strings.Cut(claimed, ":"); ok {
-		held = &dispatch.Claim{Kind: kind, ID: id}
-	}
-	labels := iss.labels()
-	return dispatch.Issue{Key: iss.key, Project: iss.project, Title: iss.str("title"), Status: iss.status(), Parent: parent,
-		Rank: s.rank(iss), Labels: labels, HandedOver: dispatch.CarriesLegionLabel(labels), PrimaryArtifactID: iss.str("primary_artifact_id"),
-		LastSeq: iss.seq, ResolvedRepo: iss.str("resolved_repo"), BlockedBy: iss.blockers(), Claim: held, ClaimUnread: !known}
+	detail := s.summary(iss).Issue()
+	detail.Project, detail.PrimaryArtifactID = iss.project, iss.str("primary_artifact_id")
+	return detail
 }
 
 // labelSetter is who added the legion label to key, read from the events the replay applied of it

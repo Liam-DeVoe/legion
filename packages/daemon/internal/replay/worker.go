@@ -241,19 +241,22 @@ func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
 }
 
 // wake queues the stub's next run at the earliest next_at of the project's rows that come due
-// after now, as a lane sleeps until its next row is due (record.Postgres.NextDue): a linger's
-// close, a start backing off; at its millisecond, which the slack reads it due at (dueSlack).
-// Nothing is queued where a wake at that moment or earlier already is.
+// after now, as a lane sleeps until its next row is due (record.Postgres.NextDue, asked of every
+// issue of the project, since the stub runs every lane): a linger's close, a start backing off; at
+// its millisecond, which the slack reads it due at (dueSlack). Nothing is queued where a wake at
+// that moment or earlier already is.
 func (d *driver) wake() error {
-	var next *time.Time
+	var next time.Time
+	var due bool
 	now := d.dueNow()
 	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select min(next_at) from outbox where split_part(issue, '-', 1) = $1 and next_at > $2
-			and (lease_until is null or lease_until <= $2)`, d.window.Project, now).Scan(&next)
+		var err error
+		next, due, err = d.records.NextDue(ctx, tx, d.window.Project, "", nil, now)
+		return err
 	}); err != nil {
 		return fmt.Errorf("replay: read when the outbox is next due after %s: %w", stamp(now), err)
 	}
-	if next == nil {
+	if !due {
 		return nil
 	}
 	at := next.UTC().Truncate(time.Millisecond)
@@ -498,9 +501,9 @@ func (d *driver) handOverRow(row record.OutboxRow, payload record.StatusWrite, r
 }
 
 // handOverHolds says whether a hand-over's fence still holds, as the daemon's executor reads it
-// (internal/daemon's handOverHolds): the child still in the tree the row names, its hand-over
-// record of that tree and linger uncancelled, and the tree's root lingering at that generation. A
-// cancelled record is dropped on the way.
+// (internal/daemon's handOverHolds, by record.HandOverHolds): the child still in the tree the row
+// names, its hand-over record of that tree and linger uncancelled, and the tree's root lingering at
+// that generation. A cancelled record is dropped on the way.
 func (d *driver) handOverHolds(row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
@@ -523,10 +526,8 @@ func (d *driver) handOverHolds(row record.OutboxRow, payload record.StatusWrite)
 		}); err != nil {
 			return false, err
 		}
-		return false, nil
 	}
-	return issue != nil && handover != nil && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
-		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation), nil
+	return record.HandOverHolds(issue, root, handover, payload), nil
 }
 
 // writeStatus is the daemon's write of key's status to Dispatch, made in the shadow, and the event
@@ -828,8 +829,9 @@ func (d *driver) launch(c *supervise.Claim, resumed bool) {
 }
 
 // retired is c with its pending task retired as the end of the turn that worked it retires it
-// (supervise's retirePending): the run and entry it served recorded where the task was
-// confirmed, and the entry it was given put back to the one it served where it was not.
+// (supervise's retirePending): what it was left serving read by supervise's own rule where the task
+// was confirmed (supervise.Claim's ServingRun, ServingEntry and ServingCheck), and the entry it was
+// given put back to the one it served where it was not.
 func retired(c supervise.Claim) supervise.Claim {
 	p := c.Pending
 	if p == nil {
@@ -837,10 +839,7 @@ func retired(c supervise.Claim) supervise.Claim {
 	}
 	switch {
 	case !p.ConfirmedAt.IsZero():
-		c.ServingGeneration = p.Generation
-		if p.Entry > 0 {
-			c.ServedEntry = p.Entry
-		}
+		c.ServingGeneration, c.ServedEntry, c.ServingCheckLook = c.ServingRun(), c.ServingEntry(), c.ServingCheck()
 	case p.Entry != 0 && p.Entry == c.GivenEntry:
 		c.GivenEntry = c.ServedEntry
 	}
@@ -1010,15 +1009,13 @@ func (d *driver) retireClaim(row record.OutboxRow, token claim.Token) error {
 	return d.finish(row)
 }
 
-// writeClaim writes c, and retires the delivery pending was where c no longer holds it.
+// writeClaim writes c, and retires the delivery pending was where c no longer holds it; where it
+// still holds one, or there was none, it writes c as putClaim does.
 func (d *driver) writeClaim(c supervise.Claim, pending *supervise.Delivery) error {
-	var err error
-	if pending != nil && c.Pending == nil {
-		err = d.st.RetireDelivery(d.ctx, c, pending.ID)
-	} else {
-		err = d.putClaim(c)
+	if pending == nil || c.Pending != nil {
+		return d.putClaim(c)
 	}
-	if err != nil {
+	if err := d.st.RetireDelivery(d.ctx, c, pending.ID); err != nil {
 		return fmt.Errorf("write the claim %s: %w", c.Token, err)
 	}
 	d.claims[c.Token] = c
@@ -1165,7 +1162,7 @@ func (d *driver) writeTurnEnd(key string, role claim.Role) error {
 // settled applies Settled where the claim the stub just changed is a root architect's and its root
 // has handed work to a person (record.Issue.DeclaredSeq), so the pass that enters the root's wait
 // on that person runs at the moment the claim settled, as supervision's own facts make it run in a
-// daemon (review Q2, item 15).
+// daemon.
 func (d *driver) settled(key string, role claim.Role) error {
 	if role != claim.RoleArchitect {
 		return nil

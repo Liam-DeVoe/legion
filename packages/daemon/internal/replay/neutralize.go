@@ -40,8 +40,10 @@ type NeutralizeConfig struct {
 	// rather than written over.
 	Map string
 	// Deny is words no file of the neutral window may hold in any case, a private name no rule of
-	// the neutralizer knows to be one (an organization's): each is replaced wherever it stands in a
-	// value, and one left anywhere, a member's name included, fails the neutralization.
+	// the neutralizer knows to be one (an organization's): each is replaced with "withheld"
+	// wherever it stands in a value, and one left anywhere, a member's name included, fails the
+	// neutralization. A word that is part of "withheld" is refused, since its replacement would
+	// hold it again.
 	Deny []string
 }
 
@@ -81,9 +83,10 @@ type NeutralMap struct {
 // every line is the record's, so the neutral window is read by the same readers. The daemon's
 // msgs, document names, ranks, statuses and times are kept, and so are the daemon's own words in
 // its lines, their names renamed. It writes the map to cfg.Map and returns it. It refuses a map
-// inside cfg.Out or already there, an Out that is In or holds files, a window holding more IPv4
-// addresses than the documentation ranges hold, and a neutral window that still holds a deny word
-// or a key of a project it renamed.
+// inside cfg.Out or already there, an Out that is In or holds files, a deny word that is part of
+// withheld, the word every deny word is replaced with, whose replacement would put it back, a
+// window holding more IPv4 addresses than the documentation ranges hold, and a neutral window that
+// still holds a deny word or a key of a project it renamed.
 func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	if !claim.IsIssueKey(cfg.Project + "-1") {
 		return NeutralMap{}, fmt.Errorf("replay: neutralize: %q is no Dispatch project key", cfg.Project)
@@ -91,11 +94,14 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	if err := checkNeutralPaths(cfg); err != nil {
 		return NeutralMap{}, err
 	}
+	n, err := newNeutralizer(cfg)
+	if err != nil {
+		return NeutralMap{}, err
+	}
 	w, err := ReadWindow(cfg.In)
 	if err != nil {
 		return NeutralMap{}, fmt.Errorf("replay: neutralize: %w", err)
 	}
-	n := newNeutralizer(cfg)
 	parsed, err := parseWindow(w)
 	if err != nil {
 		return NeutralMap{}, fmt.Errorf("replay: neutralize: %w", err)
@@ -132,7 +138,8 @@ func Neutralize(cfg NeutralizeConfig) (NeutralMap, error) {
 	for _, repo := range slices.Sorted(maps.Keys(w.Merges)) {
 		renamed := make([]Merge, len(w.Merges[repo]))
 		for i, merge := range w.Merges[repo] {
-			renamed[i] = Merge{SHA: merge.SHA, At: merge.At, Branch: n.visit(merge.Branch, field{source: sourceMerges, key: "branch"})}
+			merge.Branch = n.visit(merge.Branch, field{source: sourceMerges, key: "branch"})
+			renamed[i] = merge
 		}
 		out.Merges[n.repo(repo)] = renamed
 	}
@@ -328,7 +335,13 @@ type neutralizer struct {
 	err        error
 }
 
-func newNeutralizer(cfg NeutralizeConfig) *neutralizer {
+// withheld is what every deny word is replaced with wherever it stands in a value (visit).
+const withheld = "withheld"
+
+// newNeutralizer is the neutralizer of cfg, before any name is registered. It refuses a deny word
+// that withheld holds, in any case: such a word's replacement would hold the word again, and the
+// check of the bytes written (checkWritten) would refuse every window that holds it.
+func newNeutralizer(cfg NeutralizeConfig) (*neutralizer, error) {
 	n := &neutralizer{project: cfg.Project, keys: make(map[string]map[int]bool), counters: make(map[string]int),
 		documented: make(map[netip.Addr]bool), m: NeutralMap{
 			Projects: map[string]string{}, Keys: map[string]string{}, Repos: map[string]string{}, People: map[string]string{},
@@ -338,10 +351,14 @@ func newNeutralizer(cfg NeutralizeConfig) *neutralizer {
 		}}
 	for _, word := range cfg.Deny {
 		if word = strings.TrimSpace(word); word != "" {
-			n.deny = append(n.deny, regexp.MustCompile(`(?i)`+regexp.QuoteMeta(word)))
+			deny := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(word))
+			if deny.MatchString(withheld) {
+				return nil, fmt.Errorf("replay: neutralize: the deny word %q is part of %q, the word every deny word is replaced with, so its replacement would hold it again", word, withheld)
+			}
+			n.deny = append(n.deny, deny)
 		}
 	}
-	return n
+	return n, nil
 }
 
 // The patterns of the names the neutralizer finds by their shape.
@@ -569,7 +586,8 @@ func letters(n int) string {
 // alternation so a string is read once, left to right, and a name already renamed is never read
 // again: a link, an email, a uuid, a network address, a registered repository, a host name of
 // three labels or more, the daemon's Dispatch session of a registered project, a claim token's or
-// a machine's legion-<project token>-, and a key of a registered project in either case.
+// a machine's legion-<project token>-, a key of a registered project in either case, and a
+// registered project's own key standing alone.
 func (n *neutralizer) namesPattern() *regexp.Regexp {
 	var repos, upper, lower []string
 	for _, repo := range slices.SortedFunc(slices.Values(n.repos), func(a, b string) int { return len(b) - len(a) }) {
@@ -609,7 +627,7 @@ func (n *neutralizer) visit(s string, f field) string {
 	}
 	renamed := n.byMember(s, f)
 	for _, word := range n.deny {
-		renamed = word.ReplaceAllString(renamed, "withheld")
+		renamed = word.ReplaceAllString(renamed, withheld)
 	}
 	return renamed
 }

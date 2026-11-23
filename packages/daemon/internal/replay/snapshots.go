@@ -249,24 +249,12 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 	}
 }
 
-// holderState is the state of the slots reading issue, holding slot, stands in
-// (record.HolderStateOf), gathered from the view and claims, the stub's claims of its issue, as
-// the slots reading gathers a holder's facts (blockers.SlotsReading): its claims, the start it is
-// owed, its hold, its wait on a person and the waits it keeps its slot through. The stub's claims
-// are none that nothing will wake, since a replay's worker is never stranded.
+// holderState is the state of the slots reading issue, holding slot, stands in, read by the slots
+// reading's own reading of a holder (blockers.SlotHolderState) over the view and claims, the stub's
+// claims of its issue. The stub's claims are none that nothing will wake, since a replay's worker is
+// never stranded.
 func (s *snapshots) holderState(issue record.Issue, slot record.Slot, claims []supervise.Claim) record.HolderState {
-	v := s.view
-	facts := record.HolderFacts{Issue: issue, AdmittedAt: slot.AdmittedAt, WaitSince: slot.WaitsSince}
-	record.HolderClaimFacts(&facts, record.HolderClaimsOf(claims), nil)
-	if owed, owes := v.Facts.Owed[issue.Key]; owes {
-		facts.Starting = append(facts.Starting, owed.CreatedAt)
-	}
-	if issue.Hold != nil {
-		facts.HeldSince = issue.Hold.Since
-	}
-	facts.Person = issue.AwaitingPerson() && !issue.Answered() && claim.IsTreeRoot(issue.Key, issue.Tree)
-	facts.WaitsOnIssue = len(blockers.KeptWaits(v.Rows, issue, v.Facts)) > 0
-	state, _ := record.HolderStateOf(facts)
+	state, _ := blockers.SlotHolderState(issue, slot, record.HolderClaimsOf(claims), nil, s.view.Rows, s.view.Facts)
 	return state
 }
 

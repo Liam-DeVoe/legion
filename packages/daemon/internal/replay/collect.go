@@ -55,8 +55,10 @@ type Settings struct {
 }
 
 // DaemonSettings is the settings a daemon runs with where its legion.yaml names none: each read
-// from the default the configuration's key table gives its key (config.ConfigReference), which is
-// the value the daemon resolves, so the two cannot differ; the design gate is the single step spec
+// from the default the configuration's key table writes for its key (config.ConfigReference). The
+// tick interval's row derives that text from the value the daemon resolves; every other row's text
+// is written by hand beside its value, so the collect test holds each one to the daemon's default
+// (TestCollectDefaultsToTheDaemonsSettings). The design gate is the single step spec
 // (config.DesignGateRootIssues).
 func DaemonSettings() (Settings, error) {
 	defaults := make(map[string]string)
@@ -137,7 +139,7 @@ type CollectConfig struct {
 type Collected struct {
 	Window Window
 	// Read is how many daemon lines the log files held, and Kept how many the window holds: the
-	// lines of a kind the trace reads (TraceReads), written in the span, each once.
+	// lines of a kind the trace reads (TraceReads), written in [From − Before, To), each once.
 	Read, Kept int
 	// Duplicates is how many lines were left out as a line already kept, which two log files that
 	// cover the same time give.
@@ -489,7 +491,8 @@ func lineIdentity(line []byte) ([sha256.Size]byte, error) {
 }
 
 // keysOfLine is every issue key a line names: its issue, its tree, the blockers it waits on, the
-// issue its claim token names.
+// issue its claim token names, the issues a pass's slots and candidates name, and the issues a
+// merged issue's close waits for.
 func keysOfLine(line LogLine) []string {
 	switch l := line.(type) {
 	case PhaseChanged:
@@ -538,6 +541,30 @@ func keysOfLine(line LogLine) []string {
 		return []string{l.Issue}
 	case QueueLeftReadOnce:
 		return []string{l.Issue}
+	case PassMovedSlots:
+		keys := make([]string, 0, len(l.Given)+len(l.Taken)+len(l.Passed))
+		for _, given := range l.Given {
+			keys = append(keys, given.Issue)
+		}
+		for _, taken := range l.Taken {
+			keys = append(keys, taken.Issue)
+		}
+		for _, passed := range l.Passed {
+			keys = append(keys, passed.Issue)
+		}
+		return keys
+	case PhaseHeld:
+		return []string{l.Issue, l.Tree}
+	case RootJoined:
+		return []string{l.Issue, l.Tree}
+	case CheckClosed:
+		return []string{l.Issue}
+	case MergeForwardAsked:
+		return []string{l.Issue}
+	case MergeForwardLanded:
+		return []string{l.Issue}
+	case MergedCloseWaits:
+		return append([]string{l.Issue, l.Tree}, l.WaitingFor...)
 	}
 	return nil
 }
@@ -616,10 +643,13 @@ func (r *eventReader) read(ctx context.Context, keys []string) error {
 			var before []json.RawMessage
 			for _, event := range events {
 				var at struct {
-					CreatedAt time.Time `json:"created_at"`
+					CreatedAt *time.Time `json:"created_at"`
 				}
 				if err := json.Unmarshal(event, &at); err != nil {
-					return fmt.Errorf("replay: collect: an event of %s carries no created_at: %w", key, err)
+					return fmt.Errorf("replay: collect: an event of %s does not read: %w", key, err)
+				}
+				if at.CreatedAt == nil {
+					return fmt.Errorf("replay: collect: an event of %s carries no created_at", key)
 				}
 				if at.CreatedAt.Before(r.to) {
 					before = append(before, event)

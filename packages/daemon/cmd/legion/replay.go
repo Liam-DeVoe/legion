@@ -220,8 +220,9 @@ ranges hold is refused.
 
 The map of every name replaced is written to --map, which must be outside --out and not there
 yet: it holds every private name, so it is never committed. --deny names a word no file may
-hold in any case (an organization's name): it is replaced wherever it stands, and one left
-anywhere fails the run.`,
+hold in any case (an organization's name): it is replaced with "withheld" wherever it stands,
+and one left anywhere fails the run. A word that is part of "withheld" is refused, since its
+replacement would hold it again.`,
 		Args: noArguments,
 	}
 	flags := cmd.Flags()

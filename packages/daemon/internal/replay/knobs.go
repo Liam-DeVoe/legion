@@ -49,8 +49,9 @@ func neverStartedIn(t Trace, key string) bool {
 	return !slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return visit.Segment != nil })
 }
 
-// startedIn says whether the record started iss inside t's window: its first slot, or where it
-// held none its first work segment, begins at or after the window's start and before its end.
+// startedIn says whether the record started iss inside t's window: the earlier of its first slot
+// and its first work segment begins at or after the window's start and before its end. An issue
+// whose first slot it held from before the window's reach (SlotSpan.Before) did not start in it.
 func startedIn(t Trace, iss *IssueTrace) bool {
 	var first time.Time
 	if len(iss.Slots) > 0 {

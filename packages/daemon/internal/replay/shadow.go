@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -35,9 +34,10 @@ type shadow struct {
 	// FirstStarts (firstStartRanks), as the replay's first slots have moved them (rankWrite);
 	// empty where the branch keeps Dispatch's ranks.
 	ranks map[string]string
-	// nextID is the id of the next event the replay makes itself (an echo), past every recorded
-	// one, so each fact's id (dispatch-<id>) is the replay's own.
-	nextID int64
+	// lastID is the id of the last event the replay made itself (an echo), echoIDBase before the
+	// first: each next one takes the id after it, past every recorded one, so each fact's id
+	// (dispatch-<id>) is the replay's own.
+	lastID int64
 }
 
 // shadowIssue is one issue of the shadow.
@@ -96,7 +96,7 @@ var bookkeeping = map[string]bool{"last_seq": true, "updated_at": true}
 
 // newShadow is the empty copy of project's Dispatch.
 func newShadow(project string, ranks map[string]string) *shadow {
-	return &shadow{project: project, issues: map[string]*shadowIssue{}, ranks: ranks, nextID: echoIDBase}
+	return &shadow{project: project, issues: map[string]*shadowIssue{}, ranks: ranks, lastID: echoIDBase}
 }
 
 // issue is key's shadow, made where none is yet.
@@ -439,9 +439,9 @@ func (s *shadow) rankWrite(key, rank string, shown bool, at time.Time) (json.Raw
 // made is an event the replay makes itself of iss at at, past every recorded one: of kind, by
 // actor, carrying payload, at the sequence iss stands at, and kept in its log.
 func (s *shadow) made(iss *shadowIssue, kind string, actor jsonActor, payload json.RawMessage, at time.Time) (json.RawMessage, error) {
-	s.nextID++
+	s.lastID++
 	return iss.event(map[string]json.RawMessage{
-		"id": json.RawMessage(fmt.Sprint(s.nextID)), "issue_key": mustJSON(iss.key), "artifact_id": json.RawMessage("null"),
+		"id": json.RawMessage(fmt.Sprint(s.lastID)), "issue_key": mustJSON(iss.key), "artifact_id": json.RawMessage("null"),
 		"project": mustJSON(iss.project), "type": mustJSON(kind), "actor": mustJSON(actor), "notify": json.RawMessage("true"),
 		"payload": payload,
 	}, at)
@@ -491,25 +491,10 @@ func (s *shadow) rank(iss *shadowIssue) string {
 }
 
 // claimedBy is who the payload shows holding the issue's Dispatch claim (`<kind>:<id>`, "" for
-// nobody), and whether it shows the claim at all.
+// nobody), and whether it shows the claim at all, read as the daemon reads a claim Dispatch shows
+// (eventClaim): a claim that names no actor, or names it with no kind or no id, shows none.
 func (iss *shadowIssue) claimedBy() (string, bool) {
-	raw, ok := iss.payload["claim"]
-	if !ok {
-		return "", false
-	}
-	var held *struct {
-		Actor *dispatch.Actor `json:"actor"`
-	}
-	if err := json.Unmarshal(raw, &held); err != nil {
-		return "", false
-	}
-	if held == nil {
-		return "", true
-	}
-	if held.Actor == nil {
-		return "", false
-	}
-	return held.Actor.Kind + ":" + held.Actor.ID, true
+	return eventClaim(iss.payload["claim"])
 }
 
 // summary is the issue as a boot's listing shows it (dispatch.IssueSummary), at the rank the
@@ -524,13 +509,6 @@ func (s *shadow) summary(iss *shadowIssue) dispatch.IssueSummary {
 	return dispatch.IssueSummary{Key: iss.key, Title: iss.str("title"), Status: iss.status(), Parent: parent, Rank: s.rank(iss),
 		HandedOver: dispatch.CarriesLegionLabel(labels), Labels: labels, LastSeq: iss.seq, ResolvedRepo: iss.str("resolved_repo"),
 		BlockedBy: iss.blockers(), ClaimedBy: claimed, ClaimUnread: !known}
-}
-
-// observed is the issue as a tick's re-read of it shows it (intake.IssueStatus).
-func (s *shadow) observed(iss *shadowIssue) intake.IssueStatus {
-	claimed, known := iss.claimedBy()
-	return intake.IssueStatus{Key: iss.key, Project: iss.project, Status: iss.status(), Blockers: iss.blockers(), Seq: iss.seq,
-		ClaimedBy: claimed, ClaimKnown: known, Parent: iss.parent(), Labels: iss.labels(), Rank: s.rank(iss)}
 }
 
 // listing is every issue of the project the shadow holds a payload of, as a boot's listing shows

@@ -191,7 +191,8 @@ const (
 )
 
 // act is one act inside a piece: its kind, its offset from the piece's start, the record's moment
-// and order of it, and what it is of.
+// of it, its order among the acts of one moment (1 for an act a line holds, so it runs after a
+// turn or an event of the same moment, and 0 for every other), and what it is of.
 type act struct {
 	kind   actKind
 	offset time.Duration
@@ -302,8 +303,9 @@ func joinedStretches(stretches [][2]time.Time) [][2]time.Time {
 }
 
 // buildScript reads t into the pieces of its issues' work and the placement of its events, from
-// the window's start on. order is the record's order of each line and event the acts and events
-// come from, so acts of one instant run in the record's order.
+// the window's start on. A piece's acts run by offset, then by the record's moment, then by order
+// (act.order): of one instant, an act a line holds runs after a turn or an event, and acts of the
+// same order keep the order they were placed in.
 func buildScript(t Trace, w Window, lines recordLines) (script, error) {
 	s := script{pieces: map[string][]*piece{}, flight: map[string][][2]time.Time{}}
 	var flying [][2]time.Time

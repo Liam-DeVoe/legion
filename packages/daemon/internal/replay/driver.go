@@ -198,9 +198,9 @@ type driver struct {
 	drops map[string]string
 	// moves counts the replay's own facts, which names each.
 	moves int
-	// releasedOrTook is what the slots of the current fact did: a slot released and a slot
-	// taken in one fact is a slot given out in the pass that freed it (assumption 11).
-	released, took bool
+	// released is what the slots of the current fact did: a slot released before a slot taken in
+	// one fact is a slot given out in the pass that freed it (assumption 11).
+	released bool
 
 	// snap is the replay's snapshot timeline (snapshots), which each admission pass's observer
 	// and each settle feed, and dirty says an act ran since the last settle.
@@ -379,7 +379,7 @@ func (r replayRepositories) ResolveRepository(resolved string) (workflow.Resolut
 // what the daemon's lines say it did.
 func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result, error) {
 	began := time.Now()
-	d.released, d.took = false, false
+	d.released = false
 	result, err := intake.ApplyFactWith(d.ctx, d.pool, d.records, source, eventID, fact, d.handlers...)
 	d.facts++
 	d.passTime += time.Since(began)
@@ -457,7 +457,6 @@ func (d *driver) observe() error {
 			}
 		case "admission: slot taken":
 			d.used[9] = true
-			d.took = true
 			d.inFlight[key] = true
 			if _, ok := d.started[key]; !ok {
 				d.started[key] = d.clock.Instant()
@@ -945,7 +944,9 @@ func (d *driver) dispatchEvent(i int) ([]byte, error) {
 		d.shadow.note(event.env)
 		return nil, nil
 	}
-	d.used[10] = d.used[10] || d.namesLinkOrChild(event)
+	if d.namesLinkOrChild(event) {
+		d.used[10] = true
+	}
 	return d.shadow.apply(event.env, d.clock.Instant())
 }
 
@@ -1172,8 +1173,8 @@ func (d *driver) serialized(write func(ctx context.Context, tx pgx.Tx) error) er
 
 // catchesUp is every root a boot's catch-up reads, and so holds out of the pass's decision whether
 // it waits on a person until its catch-up has applied what Dispatch recorded while the daemon was
-// down: a root of its tree, not lingering, that waits on a person, stands at admitted under an open
-// gate, or may wait on one (record.CanWaitOnPerson), as the daemon's boot reads them.
+// down, by the daemon's own reading of each record (record.CatchesUp), over its design gate under
+// the window's steps and whether it holds a slot.
 func (d *driver) catchesUp(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
 	issues, err := d.records.Issues(ctx, tx)
 	if err != nil {
@@ -1193,12 +1194,7 @@ func (d *driver) catchesUp(ctx context.Context, tx pgx.Tx) ([]record.Issue, erro
 	}
 	var roots []record.Issue
 	for _, issue := range issues {
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
-			continue
-		}
-		gate := gates[issue.Key]
-		if issue.Phase == phase.AwaitingPerson || gate.Open() && issue.Phase == phase.Admitted ||
-			record.CanWaitOnPerson(issue, gate, slotted[issue.Key]) {
+		if record.CatchesUp(issue, gates[issue.Key], slotted[issue.Key]) {
 			roots = append(roots, issue)
 		}
 	}
@@ -1285,7 +1281,7 @@ func (d *driver) tick(at time.Time) error {
 		}
 		for _, key := range single {
 			if iss, ok := d.shadow.issues[key]; ok && iss.payload != nil && iss.project != "" {
-				observed = append(observed, d.shadow.observed(iss))
+				observed = append(observed, blockers.Observed(iss.project, d.shadow.summary(iss)))
 			}
 		}
 	}

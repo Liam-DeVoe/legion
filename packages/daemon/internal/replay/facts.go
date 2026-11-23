@@ -38,7 +38,7 @@ type RecordedMove struct {
 // ReadyMark is the merger's ready mark of the release at 9542c6fb inside merging (TriggerReady,
 // MoveMark, assumption 20), which the replay's handler writes into the replay's own table of marks
 // (replayTables) under a rule that keeps a slot in merging and gives it back at the mark
-// (record.SlotRule.ReleaseAtReady), whose admission pass reads it there (ruleTables). Under every
+// (record.SlotRule.ReadsReadyMark), whose admission pass reads it there (ruleTables). Under every
 // other rule it changes nothing.
 type ReadyMark struct {
 	replayFact
@@ -51,7 +51,7 @@ type ReadyMark struct {
 // a fact when such a claim settles (supervision's ClaimReady, TaskConfirmed), so the admission pass
 // that enters the root's wait on the person (workflow's ReconcileAwaiting) runs at the moment the
 // claim settled, and the replay's stub, which applies no fact of supervision's, applies this one in
-// their place (review Q2, item 15). It carries the root, and no handler of the chain reads it but
+// their place. It carries the root, and no handler of the chain reads it but
 // admission, whose pass runs.
 type Settled struct {
 	replayFact
@@ -109,7 +109,7 @@ func (h replayHandler) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (
 		}
 		return intake.Result{Refusal: &intake.Refusal{Status: 409, Code: refusedMove, Message: reason}}, nil
 	case ReadyMark:
-		if !readsReadyMarks(h.rule) {
+		if !h.rule.ReadsReadyMark() {
 			return intake.Result{}, nil
 		}
 		_, err := tx.Exec(ctx, `insert into replay_ready_marks (issue, generation, entry, marked_at)

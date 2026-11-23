@@ -58,11 +58,12 @@ type Stint struct {
 	IssueState
 }
 
-// IssueState is what the measures read of one issue at a moment: whether it is in flight, whether
+// IssueState is what a timeline records of one issue at a moment: whether it is in flight, whether
 // it holds a slot and in which of the slots reading's states (record.HolderStateOf), whether a
 // worker of it is in a turn, whether it stands past its review, its place in the waiting line, and,
 // for a holder or an issue that waits for a slot, its tree and the Dispatch ranks that place it.
-// An issue that is not in flight, holds no slot and stands in no part of the line is in the zero
+// The measures read every part but the holder's state, which the timeline keeps beside them. An
+// issue that is not in flight, holds no slot and stands in no part of the line is in the zero
 // state, which no measure counts.
 type IssueState struct {
 	// Tree is the key of the issue's tree root; Rank and RootRank are the Dispatch ranks of the

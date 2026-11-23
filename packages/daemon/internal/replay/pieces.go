@@ -21,16 +21,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// heldRootReleaseReason is the reason of the release of a held root set to todo (workflow's
-// releaseReason), by a person or by the controller through the daemon's API: the todo's own event
-// releases it in a replay, a person's as any person's event is applied and the daemon's as
-// keepsDaemonEvent applies it (releasesHold), so no retry is entered for it. operatorRetryReason is
-// the reason of the operator's retry of a phase (workflow's restartPhase), which a replay enters as
-// intake.RestartPhase, and by which the trace tells that retry of a worker whose issue stands in no
-// hold from a release of a hold it missed.
+// heldRootReleaseReason is the reason of the release of a held root set to todo
+// (workflow.ReleaseReason), by a person or by the controller through the daemon's API: the todo's
+// own event releases it in a replay, a person's as any person's event is applied and the daemon's
+// as keepsDaemonEvent applies it (releasesHold), so no retry is entered for it.
+// operatorRetryReason is the reason of the operator's retry of a phase
+// (workflow.OperatorRetryReason), which a replay enters as intake.RestartPhase, and by which the
+// trace tells that retry of a worker whose issue stands in no hold from a release of a hold it
+// missed. Each is the constant its writer writes, so a change of its words moves the replay's
+// reader with it.
 const (
-	heldRootReleaseReason = "the issue was set to todo while its phase was held"
-	operatorRetryReason   = "the operator retried this phase's worker"
+	heldRootReleaseReason = workflow.ReleaseReason
+	operatorRetryReason   = workflow.OperatorRetryReason
 )
 
 // openSeeded runs each piece under way at the window's start at its recorded times: the start
@@ -374,11 +376,18 @@ func (d *driver) enterMove(p *piece) error {
 // fact the API or GitHub applies. A move whose source is the conflict draw is no move this replay
 // enters: the stretch it ended drew no conflict, and goes on past the loop the record ran for it
 // (stretchEnds). Every move the daemon's code refuses is counted with its reason, and a merge
-// whose close waits for the issues beneath it is counted as held (merged).
+// whose close waits for the issues beneath it is counted as held (merged). The run names the
+// assumptions a move of a recorded release rests on (MoveSource.Assumptions: 21 and 22 for that
+// release's checks_red), and, for a worker's completion entered through ReplayTransition, the
+// one every such move rests on (assumeCompletionPassed), since the completion itself is a fact the
+// replay leaves out (FactSources' HandoffComplete).
 func (d *driver) enterRecorded(p *piece) error {
 	move := p.move()
 	if move.Source.Way == MoveDraw {
 		return d.stretchEnds(p)
+	}
+	for _, number := range move.Source.Assumptions {
+		d.used[number] = true
 	}
 	if move.Trigger == workflow.TriggerImplementationReady || move.Trigger == workflow.TriggerPullRequestMerged || pastImplementing(move.From) {
 		if err := d.ensurePullRequest(p.issue); err != nil {
@@ -395,6 +404,10 @@ func (d *driver) enterRecorded(p *piece) error {
 	}
 	switch move.Source.Way {
 	case MoveTransition:
+		// checks_red is GitHub's move, not a worker's completion.
+		if move.Trigger != workflow.TriggerChecksRed {
+			d.used[assumeCompletionPassed] = true
+		}
 		generation, err := d.moveGeneration(p, move)
 		if err != nil {
 			return err
@@ -530,7 +543,7 @@ func (d *driver) stretchEnds(p *piece) error {
 // signOff applies key's architect's sign-off (intake.SignOff) through the engine's own handler.
 // A sign-off the engine holds while a member beneath is in the workflow is applied again at each
 // leave of a member of its tree (observe), and is no refusal: the record shows the architect
-// signing off again at once (review Q2, item 3).
+// signing off again at once.
 func (d *driver) signOff(key string) error {
 	result, err := d.apply("api", d.factID("sign-off", key), intake.SignOff{Issue: key})
 	if err != nil {
@@ -539,7 +552,7 @@ func (d *driver) signOff(key string) error {
 	switch {
 	case result.Refusal == nil:
 		delete(d.signOffs, key)
-	case result.Refusal.Code == "SIGNOFF_CHILD_IN_WORKFLOW":
+	case result.Refusal.Code == workflow.SignOffChildInWorkflow:
 		if !d.signOffs[key] {
 			d.counters.HeldSignOffs++
 		}
@@ -726,7 +739,7 @@ func (d *driver) readyMark(key string) error {
 // ensurePullRequest writes the replay's own open pull request record of key where it holds none,
 // on the issue's repository and branch against its default branch, at the number the run gives
 // key's record in that repository (pullRequestNumbers), its head arriving now as a live webhook's
-// would: the record the daemon's guards read (review Q2, item 1).
+// would: the record the daemon's guards read.
 func (d *driver) ensurePullRequest(key string) error {
 	pr, err := d.pullRequestOf(key)
 	if err != nil || pr != nil {

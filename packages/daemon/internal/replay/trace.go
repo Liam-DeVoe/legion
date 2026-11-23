@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -436,10 +437,11 @@ type Suspended struct {
 // ClaimFailed is a `supervise: claim failed` line (supervise's machine): a claim's worker ran out
 // of a budget the machine keeps (launches, deaths, prompts) for Cause (died, launch_refused, …),
 // Why being the error it gives. A phase worker's failed claim is what puts its issue in the
-// phase held (workflow's claimFailed), which writes no line of its own, so the trace reads the
-// hold's start from this line and a replay injects intake.ClaimFailed at its offset. A line of a
-// release that recorded no cause carries none, and its Cause is the one the hold of a failure that
-// names none carries, supervise.CauseUnrecorded (ParseLogLine).
+// phase held (workflow's claimFailed). A release that wrote no line of the hold's own there
+// (PhaseHeld) left this line its only mark, so in a window that holds no PhaseHeld line the trace
+// reads the hold's start from this line; a replay injects intake.ClaimFailed at its offset either
+// way. A line of a release that recorded no cause carries none, and its Cause is the one the hold
+// of a failure that names none carries, supervise.CauseUnrecorded (ParseLogLine).
 type ClaimFailed struct {
 	LineHead
 	Claim ClaimRef
@@ -1104,43 +1106,27 @@ type DispatchEvent struct {
 	// Verdict is an artifact.approved or artifact.changes_requested event's verdict on its
 	// document; nil for an event of another type.
 	Verdict *DispatchVerdict
-	// Ask is the ask an ask.opened or ask.answered event opens or answers; nil for an event of
-	// another type.
+	// Ask is the ask an ask.opened, ask.answered or ask.resolved event opens, answers or resolves;
+	// nil for an event of another type.
 	Ask *DispatchAsk
 	// Handoff is a handoff.recorded event's handoff; nil for an event of another type.
 	Handoff *DispatchHandoff
 	// Claim is the issue's Dispatch claim the event shows, `<kind>:<id>` ("" for nobody), where it
 	// shows one (ClaimShown): the claim an issue event's payload carries, and an issue.claimed or
-	// issue.released event's, read as the daemon's decoder reads them (intake's issueEventClaim). A
+	// issue.released event's, read as the daemon's decoder reads them (intake.IssueEventClaim). A
 	// claim that names no actor, and an issue.claimed that names none, show no claim.
 	Claim      string
 	ClaimShown bool
 }
 
-// eventClaim reads the claim of an event's payload as the daemon's decoder does (intake's
-// issueEventClaim): `<kind>:<id>`, "" for null, and whether the payload shows it. An absent claim,
-// one that is not a claim object and one that names no actor show none, as the daemon then writes
-// no claim: such a claim is read as unknown and never refused.
+// eventClaim reads the claim of an event's payload by the daemon's decoder's own reading
+// (intake.IssueEventClaim): `<kind>:<id>`, "" for null, and whether the payload shows it. An
+// absent claim, one that is not a claim object and one that names no actor show none, as the
+// daemon then writes no claim: such a claim is read as unknown and never refused. What the
+// decoder would name of an unread claim is no fact of a replay's, and is dropped.
 func eventClaim(raw json.RawMessage) (string, bool) {
-	if raw == nil {
-		return "", false
-	}
-	var claimed *struct {
-		Actor struct {
-			Kind string `json:"kind"`
-			ID   string `json:"id"`
-		} `json:"actor"`
-	}
-	if json.Unmarshal(raw, &claimed) != nil {
-		return "", false
-	}
-	if claimed == nil {
-		return "", true
-	}
-	if claimed.Actor.Kind == "" || claimed.Actor.ID == "" {
-		return "", false
-	}
-	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
+	var unread []string
+	return intake.IssueEventClaim(raw, &unread)
 }
 
 // DispatchIssueState is an issue as an issue event shows it once the event applied: the fields the
@@ -1169,9 +1155,9 @@ type DispatchVerdict struct {
 	Reason   string
 }
 
-// DispatchAsk is the ask an ask event opens or answers: its id, its kind (question, approval), its
-// state once the event applied (open, answered), and the artifact of the document an approval asks
-// about ("" for a question).
+// DispatchAsk is the ask an ask event opens, answers or resolves: its id, its kind (question,
+// approval), its state once the event applied (open, answered, resolved), and the artifact of the
+// document an approval asks about ("" for a question).
 type DispatchAsk struct {
 	ID       string
 	Kind     string

@@ -534,17 +534,28 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, ReleaseReason, false)
 	if err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
 
-// releaseReason is the daemon's own reason for that release, which the restarted role's task and
+// ReleaseReason is the daemon's own reason for that release, which the restarted role's task and
 // the log line of the release both carry: it names the status write that made it, since no caller
-// of the status route names a reason of its own (R7).
-const releaseReason = "the issue was set to todo while its phase was held"
+// of the status route names a reason of its own (R7). A replay of a recorded window reads the
+// release of a held root by it.
+const ReleaseReason = "the issue was set to todo while its phase was held"
+
+// OperatorRetryReason is the reason of the operator's retry of a phase (restartPhase), which the
+// restarted role's task and the log line of the retry carry, and by which a replay of a recorded
+// window tells that retry from the release of a hold.
+const OperatorRetryReason = "the operator retried this phase's worker"
+
+// SignOffChildInWorkflow is the code of the refusal of a sign-off (signOff) and of a tree's close
+// (closeRoot) while an issue beneath is still in the workflow, which a replay of a recorded window
+// reads as a held sign-off.
+const SignOffChildInWorkflow = "SIGNOFF_CHILD_IN_WORKFLOW"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
@@ -2086,7 +2097,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
+	_, err = e.retryPhase(ctx, tx, *issue, working, OperatorRetryReason, fact.FreshSession)
 	return intake.Result{}, err
 }
 
@@ -2281,7 +2292,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. "+
+		return refused(SignOffChildInWorkflow, fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. "+
 			"A parent is accepted only once no issue beneath it is still in the workflow. Sign off again when each of them has left the workflow.",
 			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}

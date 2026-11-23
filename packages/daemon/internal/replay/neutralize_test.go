@@ -72,7 +72,7 @@ func privateEvent(t *testing.T, id, seq int64, key, project, kind string, at tim
 // of another project; its implementer's claim failed with the daemon's words naming a tailnet
 // host and privateWord; a person requested changes on the root's document, which the daemon's
 // gate line names by the same uuid; the root's architect asked a question from its workspace; and
-// the window's merges are of the private repository and of this one.
+// the window's merges are of the private repository, one merging pull request 88, and of this one.
 func privateWindow(t *testing.T) string {
 	t.Helper()
 	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
@@ -146,7 +146,7 @@ func privateWindow(t *testing.T) string {
 			},
 		},
 		Merges: map[string][]Merge{
-			privateRepo:    {{SHA: strings.Repeat("1", 40), At: at(8), Branch: "main"}},
+			privateRepo:    {{SHA: strings.Repeat("1", 40), At: at(8), Branch: "main", PR: 88}},
 			keptRepository: {{SHA: strings.Repeat("2", 40), At: at(9), Branch: "main"}},
 		},
 	}
@@ -470,6 +470,24 @@ func TestNeutralizeRefusesADenyWordItMustKeep(t *testing.T) {
 	_, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: mapFile, Deny: []string{"Turn"}})
 	if err == nil || !strings.Contains(err.Error(), "still holds") {
 		t.Errorf("Neutralize denying a word of a msg = %v, want a refusal naming the word left", err)
+	}
+	for _, path := range []string{out, mapFile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("the refused neutralization left %s: %v", path, err)
+		}
+	}
+}
+
+// A deny word that is part of the word every deny word is replaced with (withheld), in any case,
+// is refused before the window is read: its replacement would hold it again, and the check of the
+// bytes written would refuse every window that holds it. Nothing is written.
+func TestNeutralizeRefusesADenyWordItsReplacementHolds(t *testing.T) {
+	in := privateWindow(t)
+	scratch := t.TempDir()
+	out, mapFile := filepath.Join(scratch, "neutral"), filepath.Join(scratch, "map.json")
+	_, err := Neutralize(NeutralizeConfig{In: in, Out: out, Project: "ACME", Map: mapFile, Deny: []string{"Held"}})
+	if err == nil || !strings.Contains(err.Error(), `"Held" is part of "withheld"`) {
+		t.Errorf("Neutralize denying a word withheld holds = %v, want a refusal naming the word", err)
 	}
 	for _, path := range []string{out, mapFile} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

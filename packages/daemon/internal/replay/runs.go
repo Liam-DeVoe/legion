@@ -194,8 +194,10 @@ func (r partRun) label() string {
 
 // partRecord is a part's part.json: the window and the rule it ran, each branch it ran with its
 // seeds, the factors of the break-even search it ran the main branch at beyond its branches', and
-// what the part took — its wall time, how many runs it ran at once and the process's peak memory —
-// so a later Job can be sized from it (each run's own counts are in its run.json).
+// what the part took — the wall time of its window, whose parts' runs share one pool (runWindow),
+// so every part of one window writes the same time; how many runs it ran at once; and the
+// process's peak memory — so a later Job can be sized from it (each run's own counts are in its
+// run.json).
 type partRecord struct {
 	Window          string    `json:"window"`
 	Rule            string    `json:"rule"`

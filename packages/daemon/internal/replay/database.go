@@ -104,7 +104,7 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 	}
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// Every fact commits, and a replay's facts are many: a commit that does not wait for the
-		// write-ahead log to reach the disk changes no decision (review Q4, item 5).
+		// write-ahead log to reach the disk changes no decision.
 		if _, err := tx.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {
 			return err
 		}

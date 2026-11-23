@@ -3180,16 +3180,19 @@ func (s *Postgres) RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, le
 	return tag.RowsAffected() == 1, nil
 }
 
-// NextDue is the earliest moment after now one of issue's rows of kinds comes due: the least
+// NextDue is the earliest moment after now one of project's rows of kinds comes due: the least
 // next_at after now among the rows no live lease holds, so a lane with nothing to run sleeps until
 // it rather than polls. A row due already is not it, nor one another lane is running whose lease
-// outlasts its next_at. False is none; kinds nil is every kind.
-func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error) {
+// outlasts its next_at. False is none; issue "" is every issue of project, as DueRows reads it,
+// and kinds nil every kind. A lane asks it of its own issue; a replay of a recorded window, which
+// runs every lane of its project in one stub, asks it of the whole project.
+func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error) {
 	var next *time.Time
 	if err := tx.QueryRow(ctx, `select min(next_at) from outbox
-		where issue = $1 and (cardinality($2::text[]) = 0 or kind = any($2::text[]))
-		and next_at > $3 and (lease_until is null or lease_until <= $3)`, issue, kindNames(kinds), now).Scan(&next); err != nil {
-		return time.Time{}, false, fmt.Errorf("read when %s's outbox is next due: %w", issue, err)
+		where split_part(issue, '-', 1) = $1 and ($2::text = '' or issue = $2::text)
+		and (cardinality($3::text[]) = 0 or kind = any($3::text[]))
+		and next_at > $4 and (lease_until is null or lease_until <= $4)`, project, issue, kindNames(kinds), now).Scan(&next); err != nil {
+		return time.Time{}, false, fmt.Errorf("read when %s's outbox is next due: %w", cmp.Or(issue, project), err)
 	}
 	if next == nil {
 		return time.Time{}, false, nil

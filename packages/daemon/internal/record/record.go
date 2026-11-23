@@ -1711,6 +1711,17 @@ type Handover struct {
 	Cancelled  bool
 }
 
+// HandOverHolds says whether a hand-over's status write (HandOverStatusRow, write) still holds its
+// fence over the records read in one transaction: the child issue still in the tree its hand-over
+// record names, that record (handover) uncancelled and of the tree and linger the write names, and
+// the tree's root lingering at that generation. A record the read found none of (nil) holds
+// nothing. The daemon's executor reads it before the write, and a replay's worker stub before its
+// own; intake enforces the durable fence again when the write's event arrives.
+func HandOverHolds(issue, root *Issue, handover *Handover, write StatusWrite) bool {
+	return issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree &&
+		handover.Tree == write.HandOverTree && handover.Generation == write.HandOverLinger && root.LingersAt(handover.Generation)
+}
+
 // ReleaseRetry is the bounded wait for a released todo child whose parent event has not reached the
 // daemon yet. A changed Dispatch sequence begins a fresh bounded attempt.
 type ReleaseRetry struct {
@@ -2401,9 +2412,9 @@ type Store interface {
 	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; false is a
 	// lease no longer the caller's.
 	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (bool, error)
-	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
-	// false is none. Kinds nil is every kind.
-	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
+	// NextDue is the earliest next_at after now among project's rows of kinds no live lease holds;
+	// false is none. Issue "" is every issue of project, kinds nil every kind.
+	NextDue(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
 	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)

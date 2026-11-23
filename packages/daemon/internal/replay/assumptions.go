@@ -8,7 +8,7 @@ package replay
 // window that would test it, so a reader of a result can weigh what it rests on.
 type Assumption struct {
 	// Number is the assumption's number: 1 to 18 are the list of the tool's spec, in its order,
-	// and the numbers after them were added by its plan.
+	// 19 to 25 were added by its plan, and 26 on are the tool's own (Assumptions).
 	Number int `json:"number"`
 	// Text is what the replay assumes.
 	Text string `json:"text"`

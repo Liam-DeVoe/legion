@@ -241,7 +241,8 @@ legion replay neutralize \
 That file holds every private name, so keep it outside the repository and never commit it.
 `neutralize` refuses a `--map` inside `--out`, and one that exists already.
 `--deny` names a word that no file may hold in any case, such as an organization's name.
-`neutralize` replaces that word wherever it stands, and fails if one is left.
+`neutralize` replaces that word with `withheld` wherever it stands, and fails if one is left.
+`neutralize` refuses a deny word that is part of `withheld`, because its replacement would hold that word again.
 Before you commit the neutral window, search it for each private name that you know.
 
 | Flag | What it gives |

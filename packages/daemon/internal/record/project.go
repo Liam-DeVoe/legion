@@ -830,7 +830,7 @@ func ReadLineFactsUnder(ctx context.Context, tx pgx.Tx, store Store, project str
 		return LineFacts{}, err
 	}
 	facts.Rule = rule.OrMain()
-	if !facts.Rule.ReleaseAtReady || !facts.Rule.PhaseKeepsSlot(phase.Merging) {
+	if !facts.Rule.ReadsReadyMark() {
 		return facts, nil
 	}
 	facts.Ready = make(map[string]struct{})
@@ -1160,7 +1160,7 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 //
 // It is the one statement of the rule, and the two readers that must never disagree both call
 // it: the pass that starts a wait (workflow's decideAwait, rule 0) and the boot's catch-up of
-// the roots that pass can move (the daemon's catchesUp). A root this answers false for starts no
+// the roots that pass can move (CatchesUp). A root this answers false for starts no
 // wait on a person, so the boot need not read its Dispatch window either. gate is the root's own
 // design gate, the zero value for a root with no step of it registered.
 //
@@ -1170,6 +1170,43 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 // the daemon has started (KeepsSlot).
 func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 	return slotted && root.Phase == phase.Admitted && !root.Lingers() && InWorkflow(root) && AtWork(root, gate)
+}
+
+// CatchesUp says whether a boot's catch-up reads issue: a tree root, which the records it is read
+// from hold of the daemon's project alone, not lingering, and one of three things —
+//
+//   - a root in awaiting_person;
+//   - a root the boot's admission pass could move into it (workflow's ReconcileAwaiting) — at
+//     admitted, with a row of its own saying the daemon started it (slotted), its design gate
+//     never opened (CanWaitOnPerson, which is workflow's decideAwait's rule 0);
+//   - a root whose tree this boot's own step list opens and whose work that opening releases: one
+//     standing at admitted, whose first phase the waiting line offers a slot to (Waiting classes it
+//     LineFirstPhase, and workflow's StartFirstPhase runs it).
+//
+// gate is the root's own design gate under this boot's step list, the zero value for a root with
+// no step of it registered; slotted says the root holds an admission slot. A root in a phase of
+// its own tree is read by neither this nor ReconcileAwaiting: the phase's worker holds the work,
+// and the root's architect waits for it.
+//
+// The third case is broader than the trees a changed list actually releases, and nothing narrower
+// would do: a step dropped from gates.design before anything registered it leaves no row behind,
+// so no rule over the stored rows can tell that the list changed, and the boot reads its list
+// before the catch-up has applied anything. The daemon's boot holds every root this names out of
+// its admission pass until its catch-up has applied it, and a replay of a recorded window holds
+// the same roots at each boot it makes.
+func CatchesUp(issue Issue, gate TreeGate, slotted bool) bool {
+	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {
+		return false
+	}
+	if issue.Phase == phase.AwaitingPerson {
+		return true
+	}
+	if gate.Open() {
+		if issue.Phase == phase.Admitted {
+			return true
+		}
+	}
+	return CanWaitOnPerson(issue, gate, slotted)
 }
 
 // WaitingLineBand is where the line puts an issue whose work came back: in its first part, oldest
