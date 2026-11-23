@@ -917,8 +917,10 @@ primary_issue() {
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The request for changes ends the round whether or not the reviewer has completed
-    # (workflow's roundRejected); the reviewer's handoff record is read once the issue is back.
+    # (workflow's roundRejected), so the proof waits for the reviewer's handoff record, within a
+    # turn's budget, before it checks it.
     wait_for_phase "$root_issue" implementing 1200
+    until_true "$phase_seconds" "the reviewer's round $round handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
     assert_handoff_record "$root_issue" reviewer reviewing "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
@@ -1002,6 +1004,7 @@ primary_issue() {
     fail "a status write is pending for $root_issue at accepting, which writes none: $(jq -c --arg issue "$root_issue" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
   dispatch_status_is "$root_issue" needs_review >/dev/null ||
     fail "the board shows $root_issue $(dispatch_get "issues/$root_issue" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
+  until_true "$phase_seconds" "the reviewer's round 3 handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
   assert_handoff_record "$root_issue" reviewer reviewing 3
   assert_review_of_head "$root_issue" 3 APPROVED
   note "the reviewer's approval moved $root_issue to accepting: no worker started (the implementer's claim holds ${pending_phase:+a $pending_phase task, }no retro task), the board still needs_review with no status write pending, and the architect holds the reviewer's phase-finished notice"

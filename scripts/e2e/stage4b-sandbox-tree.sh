@@ -4841,6 +4841,9 @@ notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" archite
 on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
 [ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
+# The request for changes ends the round whether or not the reviewer has completed (workflow's
+# roundRejected), so the reviewer's handoff record is waited for, within a turn's budget, first.
+on_tree "$tree1" until_true "$phase_seconds" "the reviewer's round 1 handoff record on $tree1" role_handoff_recorded "$tree1" reviewer
 assert_handoff_record "$tree1" reviewer reviewing 1
 assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||
