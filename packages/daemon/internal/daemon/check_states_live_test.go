@@ -431,7 +431,7 @@ func (r *statesProof) seed() {
 	t.Helper()
 	ctx := context.Background()
 	all := r.allIssues()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range all {
 			listed := r.dispatch.issue(issue.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
