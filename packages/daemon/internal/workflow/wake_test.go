@@ -903,9 +903,7 @@ func TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
 	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
 		t.Fatalf("leave the owner's claim serving no run: %v", err)
 	}
-	id := armBackstop(t, rig.pool, claim.RoleArchitect, wakeAt.Add(-time.Minute))
-
-	rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleArchitect})
+	rig.apply("backstop", armBackstop(t, rig.pool, owner, claim.RoleArchitect, wakeAt.Add(-time.Minute)))
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop, "backstop")
 	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {

@@ -349,7 +349,7 @@ func TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone(t *testing.T) {
 				t.Fatalf("the names = %q, want %q", agentNames(got), tc.want)
 			}
 			for _, step := range got {
-				if _, err := StepToken("legion", "LEGION-209", "LEGION-208", step); err != nil {
+				if _, err := StepToken("legion", "LEGION-209", step); err != nil {
 					t.Errorf("step %d, %s, has no claim token: %v", step.Position, step.Role, err)
 				}
 			}

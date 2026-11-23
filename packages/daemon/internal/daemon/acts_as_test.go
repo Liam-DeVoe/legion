@@ -139,7 +139,7 @@ func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *test
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 			return err
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: implementer, Entry: 1,

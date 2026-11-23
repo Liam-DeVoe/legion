@@ -1,7 +1,7 @@
 # An issue's plan
 
 Part of `skill://legion-architect`, sections 1 and 2.
-Read it before you write or give an issue's plan.
+Read it before you give an issue's plan.
 Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, `retro-held` and `plan-not-taken` notices:
 `skill://legion-architect/references/plan-changes.md`.
 
@@ -103,10 +103,10 @@ Your role prompt gives the reasons a version gets for where its task stands.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
-The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+The version you give replaces them with your own one block: delete theirs, and put what the next steps need from the planner's plan into your task's text.
 
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
 `dispatch plans --project <KEY>` lists each finished issue of a project with its plan's source and steps, its retro's ratings, its time and its count of failed steps.
-Read it before you choose the steps of an issue like one that finished.
+Read it before you plan an issue like one that finished.
