@@ -17,12 +17,16 @@ import (
 
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
-// the resource has), and vectors otherwise, recording each request's inputs.
+// the resource has), the status outage names while it is set - to every request but one that
+// carries only embedCanary, which gets vectors, when canaryAnswers is set too - and vectors
+// otherwise, recording each request's inputs.
 type azureFake struct {
-	mu         sync.Mutex
-	throttling bool
-	missing    bool
-	requests   [][]string
+	mu            sync.Mutex
+	throttling    bool
+	missing       bool
+	outage        int
+	canaryAnswers bool
+	requests      [][]string
 }
 
 func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +39,8 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.requests = append(f.requests, request.Input)
-	throttling, missing := f.throttling, f.missing
+	throttling, missing, outage := f.throttling, f.missing, f.outage
+	canary := f.canaryAnswers && len(request.Input) == 1 && request.Input[0] == embedCanary
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	if throttling {
@@ -46,6 +51,11 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if missing {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`))
+		return
+	}
+	if outage != 0 && !canary {
+		w.WriteHeader(outage)
+		_, _ = fmt.Fprintf(w, `{"error":{"code":"InternalServerError","message":"%s"}}`, http.StatusText(outage))
 		return
 	}
 	type item struct {
@@ -129,6 +139,53 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 	}
 	if len(models) != 1 || models[0] != client.Identity() {
 		t.Errorf("models %v, want only the Azure identity %q", models, client.Identity())
+	}
+}
+
+// An Azure outage - a 408, a 500, a 502 or a 504 - through the real AzureClient, is a throttle as
+// a 429 is: a row whose own call meets it is retried as it stands, never confirmed with a canary,
+// however many times it recurs, so nothing is counted against the row even while the canary would
+// have been answered. An outage says nothing about the text (RFC 9110 sections 15.5.9 and 15.6).
+func TestAnAzureOutageIsNeverCountedAgainstARow(t *testing.T) {
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			database := storetest.Open(t)
+			id := fmt.Sprintf("AZOU-%d", status)
+			seedIssue(t, database, "AZOU", id, "Title of "+id)
+			fake := &azureFake{outage: status, canaryAnswers: true}
+			server := httptest.NewServer(fake)
+			defer server.Close()
+			client, err := embed.NewAzure(embed.AzureConfig{
+				Endpoint:        server.URL + "/models",
+				Deployment:      "embed-v-4-0",
+				TokensPerMinute: 300_000,
+				APIKey:          strings.Repeat("k", 8),
+				HTTPClient:      server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewAzure: %v", err)
+			}
+			deps := Deps{Store: database, Embedder: client}
+			for cycle := range retry.DeadLetterAttempts + 2 {
+				forceEligible(t, database, "issue", id)
+				succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+				if err != nil || blocked || !throttled || succeeded != 0 || failed != 1 {
+					t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, throttled", cycle, succeeded, failed, blocked, throttled, err)
+				}
+				if requests := fake.take(); len(requests) != 1 || len(requests[0]) != 1 || requests[0][0] == embedCanary {
+					t.Fatalf("cycle %d: Azure saw %v, want the row's one request and no canary", cycle, requests)
+				}
+			}
+			var dead, confirmed int
+			if err := database.Pool.QueryRow(context.Background(), `
+				select count(*) filter (where dead), coalesce(sum(confirmed_failures), 0) from embeddings where kind = 'issue'
+			`).Scan(&dead, &confirmed); err != nil {
+				t.Fatalf("read rows: %v", err)
+			}
+			if dead != 0 || confirmed != 0 {
+				t.Fatalf("%d dead rows, %d confirmed failures after a sustained %d, want 0 and 0", dead, confirmed, status)
+			}
+		})
 	}
 }
 

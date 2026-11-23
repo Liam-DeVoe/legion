@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -174,9 +175,9 @@ func azureInputType(inputType InputType) (string, error) {
 // Embed calls Azure once for up to azureMaxBatchTexts texts and places each vector by the index
 // Azure answers with, not by its position in the response. It sends whatever bytes it is given:
 // embedqueue keeps each background call within Limits().MaxBatchBytes, which is what lets the call
-// finish inside azureRequestTimeout, and a search query is one short text. A 429 or 503 comes back
-// marked for IsThrottled; any other failure names the HTTP status and Azure's error code, never
-// the texts or the credential.
+// finish inside azureRequestTimeout, and a search query is one short text. An outage status (a
+// 408, a 429, a 5xx) comes back marked for IsThrottled, and every failure names the HTTP status
+// and Azure's error code, never the texts or the credential.
 func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	bounded, err := boundBatch(texts, azureMaxBatchTexts)
 	if err != nil || bounded == nil {
@@ -235,9 +236,8 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	return placeAzureVectors(decoded, len(texts))
 }
 
-// azureStatusError describes a non-2xx answer by its status and Azure's error code, and marks 429
-// (the deployment's rate limit) and 503 (the service's capacity) as throttles: neither says
-// anything about the texts.
+// azureStatusError describes a non-2xx answer by its status and Azure's error code, and marks an
+// outage status as a throttle (azureThrottled).
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
 	body, _ := io.ReadAll(io.LimitReader(response.Body, azureErrorBodyLimit))
@@ -252,9 +252,14 @@ func azureStatusError(response *http.Response) error {
 	return err
 }
 
-// azureThrottled reports whether an HTTP status is Azure telling the caller to back off.
+// azureThrottled reports whether an HTTP status is Azure telling the caller to back off: an outage
+// (oauthrefusal.Outage, RFC 9110) - the deployment's rate limit (429), the service's capacity
+// (503), a request it did not take in time (408) and every other 5xx, the service failing. None
+// says anything about the texts, so none is counted against a row (embedqueue's
+// confirmSoloFailure never runs on one), and the queue backs off its pace on each rather than
+// splitting the batch and asking the service again for each half.
 func azureThrottled(status int) bool {
-	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
+	return oauthrefusal.Outage(status)
 }
 
 // placeAzureVectors puts each vector at the index Azure gave it, refusing an answer that does not

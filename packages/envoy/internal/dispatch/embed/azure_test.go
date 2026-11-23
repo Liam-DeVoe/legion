@@ -198,8 +198,9 @@ func TestAzureEmbedRefusesMoreThanTheBatchLimit(t *testing.T) {
 	}
 }
 
-// TestAzureEmbedClassifiesStatuses: 429 and 503 are throttles, every other failure is not, and
-// each error names the status and Azure's error code but never the key or the texts.
+// TestAzureEmbedClassifiesStatuses: an outage status (a 408, a 429, any 5xx) is a throttle, every
+// other failure is not, and each error names the status and Azure's error code but never the key
+// or the texts.
 func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	for _, tc := range []struct {
 		status    int
@@ -208,10 +209,16 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	}{
 		{http.StatusTooManyRequests, "RateLimitReached", true},
 		{http.StatusServiceUnavailable, "ServiceUnavailable", true},
+		{http.StatusRequestTimeout, "Timeout", true},
+		{http.StatusInternalServerError, "InternalServerError", true},
+		{http.StatusNotImplemented, "NotImplemented", true},
+		{http.StatusBadGateway, "BadGateway", true},
+		{http.StatusGatewayTimeout, "Timeout", true},
+		{http.StatusHTTPVersionNotSupported, "HTTPVersionNotSupported", true},
 		{http.StatusBadRequest, "InvalidRequest", false},
 		{http.StatusUnauthorized, "PermissionDenied", false},
 		{http.StatusNotFound, "DeploymentNotFound", false},
-		{http.StatusInternalServerError, "InternalServerError", false},
+		{http.StatusConflict, "Conflict", false},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +245,8 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	}
 }
 
+// An error body that names no code, such as a gateway's page, still names the status, and a 502
+// is an outage, so a throttle.
 func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -245,8 +254,8 @@ func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	}))
 	defer server.Close()
 	_, err := testAzureClient(t, server, AzureConfig{}).Embed(context.Background(), []string{"x"}, InputDocument)
-	if err == nil || !strings.Contains(err.Error(), "502") || IsThrottled(err) {
-		t.Fatalf("Embed error = %v, want an unthrottled error naming HTTP 502", err)
+	if err == nil || !strings.Contains(err.Error(), "502") || !IsThrottled(err) {
+		t.Fatalf("Embed error = %v, want a throttle naming HTTP 502", err)
 	}
 }
 

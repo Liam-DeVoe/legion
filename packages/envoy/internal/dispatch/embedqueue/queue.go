@@ -319,24 +319,24 @@ type pendingRow struct {
 // would be another identity's, which that process's coverage pass drops.
 //
 // A throttled whole-batch failure never counts toward any row's dead-letter threshold, however
-// many times it recurs: it is infrastructure (the provider is rate-limiting this account), never
-// evidence about a specific row's content - every row in the batch is retried as a whole, not
-// dead-lettered. A non-throttled whole-batch failure of two or more rows is different: something
-// about this batch's own content *might* have broken the request (a text the API refuses
-// outright, say), and handleGroupFailure isolates which row(s) via bisectSplit, splitting the
-// batch and re-embedding each half, recursively. A failure isolated down to a single row is
-// decided by confirmSoloFailure: a fixed, known-good embedCanary probe sent immediately after
-// that row's own failed call. Canary success proves the service, credentials and model were all
-// working at that exact moment, so the row's own failure is confirmed permanent (dead-lettered
-// once confirmed often enough); canary failure - including a throttle - means the condition is
-// systemic, not this row's fault, and the row goes back to retry instead. This confirmation is
-// local to the one row and its own canary call: it never depends on any other row in the batch,
-// so a batch that was already exactly one row with no siblings at all is confirmed and
-// dead-lettered exactly the same way as one isolated down to size one by bisection. A context
-// cancellation - this call's own ctx ending mid-request, including embed.RateLimitedEmbedder's
-// own pacing wait ending early - is never evidence about any row either, whatever error text
-// came back: handleGroupFailure checks for it before confirmSoloFailure or bisectSplit ever run,
-// and retries the whole group instead.
+// many times it recurs: it is infrastructure (the provider is rate-limiting this account, or
+// could not answer now: embed.IsThrottled), never evidence about a specific row's content - every
+// row in the batch is retried as a whole, not dead-lettered. A non-throttled whole-batch failure
+// of two or more rows is different: something about this batch's own content *might* have broken
+// the request (a text the API refuses outright, say), and handleGroupFailure isolates which
+// row(s) via bisectSplit, splitting the batch and re-embedding each half, recursively. A failure
+// isolated down to a single row is decided by confirmSoloFailure: a fixed, known-good embedCanary
+// probe sent immediately after that row's own failed call. Canary success proves the service,
+// credentials and model were all working at that exact moment, so the row's own failure is
+// confirmed permanent (dead-lettered once confirmed often enough); canary failure - including a
+// throttle - means the condition is systemic, not this row's fault, and the row goes back to
+// retry instead. This confirmation is local to the one row and its own canary call: it never
+// depends on any other row in the batch, so a batch that was already exactly one row with no
+// siblings at all is confirmed and dead-lettered exactly the same way as one isolated down to size
+// one by bisection. A context cancellation - this call's own ctx ending mid-request, including
+// embed.RateLimitedEmbedder's own pacing wait ending early - is never evidence about any row
+// either, whatever error text came back: handleGroupFailure checks for it before
+// confirmSoloFailure or bisectSplit ever run, and retries the whole group instead.
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err

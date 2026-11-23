@@ -158,10 +158,11 @@ func IdentityPlace(identity string) (place, model string) {
 }
 
 // IsThrottled reports whether err is the model service signaling "too many requests, back off"
-// (or a closely related capacity condition), rather than something wrong with the specific text
-// that was being embedded. It reads only the marker each client puts on its own throttles - an
-// error in err's chain with a Throttled() bool method answering true - because only the client
-// knows what its place's throttles look like (bedrockThrottled, azureThrottled).
+// (or a closely related capacity condition, or an outage: a service that could not answer now),
+// rather than something wrong with the specific text that was being embedded. It reads only the
+// marker each client puts on its own throttles - an error in err's chain with a Throttled() bool
+// method answering true - because only the client knows what its place's throttles look like
+// (bedrockThrottled, azureThrottled).
 //
 // embedqueue relies on this to decide what a failure means: a throttled batch is retried
 // indefinitely (the provider will recover; the content was never the problem), while a non-
