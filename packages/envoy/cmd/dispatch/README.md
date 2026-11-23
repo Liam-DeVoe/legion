@@ -2049,7 +2049,7 @@ It creates a table and touches no row; its census answers `0`.
 Migrations `0064`–`0066` let an approval request follow its document's versions.
 `0064` backfills `requested_version` into every approval ask from its `version`, rebuilds `asks_approval_kind_check` to require it, and adds the nullable `asks.handed_back_reply_id` and an insert trigger that gives an older binary's approval row the same value; it locks `asks` alone.
 `0065` sets `comments.created_at`'s default to `clock_timestamp()`, so a comment is stamped when its insert runs, under the owner lock every comment write takes, and an ask's newest reply is the one that committed last; it locks `comments` alone.
-This build's two comment inserts (`createCommentFor` and `replyComment`) read `clock_timestamp()` under that lock before the insert, plan their writes on it and write it explicitly, so their comments take the same order.
+This build's two comment inserts (`queueCommentRow`, which the comment route and an issue write's own comment take, and `replyComment`) read `clock_timestamp()` under that lock before the insert, plan their writes on it and write it explicitly, so their comments take the same order.
 `0066` adds `handed_back_reply_id`'s foreign key to `comments`, which takes `SHARE ROW EXCLUSIVE` on both tables, as adding any foreign key does:
 a write waits behind it, a read does not.
 In one migration, the column's key held `asks` `ACCESS EXCLUSIVE` while it waited for `comments`, and a comment write that went on to read `asks` deadlocked with it.
