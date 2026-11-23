@@ -236,15 +236,18 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	// The ready claim's role works one of the issue's steps that take work (OpenStepsOf): each
-	// running step is given its task, at the phase it runs as (IssueAtStep), whichever phase the
-	// issue stands in.
+	// running step is given its task on the copy of the issue its step is given its work on
+	// (StepCopy), at the phase it runs as, whichever phase the issue stands in.
 	role := fact.Role
 	open := OpenStepsOf(*issue)
 	at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role })
 	if at < 0 {
 		return nil
 	}
-	standing := IssueAtStep(*issue, open[at])
+	standing, err := StepCopy(ctx, e.store, tx, *issue, open[at])
+	if err != nil {
+		return err
+	}
 	issue = &standing
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil || root.Lingers() {
@@ -285,7 +288,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
+	agent, err := e.copyClaim(ctx, tx, *issue, role)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: agent,
 		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}

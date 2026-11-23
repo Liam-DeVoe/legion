@@ -632,41 +632,97 @@ const planVersionColumns = `issue, generation, version, source, artifact_id, giv
 
 // Plan is the plan of issue at generation, or nil where that generation has no plan rows.
 func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error) {
-	describe := fmt.Sprintf("read the plan of %s at generation %d", issue, generation)
-	version, err := scanPlanVersion(tx.QueryRow(ctx, "select "+planVersionColumns+` from issue_plans
-		where issue = $1 and generation = $2 order by version desc limit 1`, issue, int64(generation)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+	plans, err := plansOf(ctx, tx, []string{issue}, []int64{int64(generation)})
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("read the plan of %s at generation %d: %w", issue, generation, err)
 	}
-	plan := &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
+	return plans[issue], nil
+}
+
+// PlansOf is the plan of each of issues at the issue's own generation, by key, in the three
+// statements Plan asks whatever the number of issues (one where none of them has plan rows, and
+// none for no issue): a pass over many issues that reads each one's plan pays no round trip per
+// issue. An issue whose generation has no plan rows has no entry.
+func (s *Postgres) PlansOf(ctx context.Context, tx pgx.Tx, issues []Issue) (map[string]*StoredPlan, error) {
+	if len(issues) == 0 {
+		return map[string]*StoredPlan{}, nil
+	}
+	keys, generations := make([]string, len(issues)), make([]int64, len(issues))
+	for i, issue := range issues {
+		keys[i], generations[i] = issue.Key, int64(issue.Generation)
+	}
+	plans, err := plansOf(ctx, tx, keys, generations)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(issues), err)
+	}
+	return plans, nil
+}
+
+// plansOf is the body of Plan and PlansOf: the plan of the issue keys[i] at generations[i], for
+// each i, by key. Each plan is its highest version, every task ordered by its id and the steps of
+// each task ordered by place; the tasks and the steps are not read where no issue has a version.
+func plansOf(ctx context.Context, tx pgx.Tx, keys []string, generations []int64) (map[string]*StoredPlan, error) {
+	const read = `unnest($1::text[], $2::bigint[]) as read(key, gen)`
+	versions, err := tx.Query(ctx, `select distinct on (issue_plans.issue) `+planVersionColumns+` from issue_plans
+		join `+read+` on issue_plans.issue = read.key and issue_plans.generation = read.gen
+		order by issue_plans.issue, issue_plans.version desc`, keys, generations)
+	if err != nil {
+		return nil, err
+	}
+	plans := map[string]*StoredPlan{}
+	for versions.Next() {
+		version, err := scanPlanVersion(versions)
+		if err != nil {
+			versions.Close()
+			return nil, err
+		}
+		plans[version.Issue] = &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
+	}
+	versions.Close()
+	if err := versions.Err(); err != nil {
+		return nil, err
+	}
+	if len(plans) == 0 {
+		return plans, nil
+	}
 	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
-		where plan_tasks.issue = $1 and plan_tasks.generation = $2 order by plan_tasks.task`, issue, int64(generation))
+		join `+read+` on plan_tasks.issue = read.key and plan_tasks.generation = read.gen
+		order by plan_tasks.issue, plan_tasks.task`, keys, generations)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
 	}
-	if plan.Tasks, err = scanPlanTasks(rows); err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key, agent
-		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
+	tasks, err := scanPlanTasks(rows)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
+	}
+	for _, task := range tasks {
+		if plan := plans[task.Issue]; plan != nil {
+			plan.Tasks = append(plan.Tasks, task)
+		}
+	}
+	steps, err := tx.Query(ctx, `select plan_steps.issue, plan_steps.generation, plan_steps.task, plan_steps.position, plan_steps.role,
+		plan_steps.type, plan_steps.agent_key, plan_steps.agent from plan_steps
+		join `+read+` on plan_steps.issue = read.key and plan_steps.generation = read.gen
+		order by plan_steps.issue, plan_steps.task, plan_steps.position`, keys, generations)
+	if err != nil {
+		return nil, err
 	}
 	defer steps.Close()
 	for steps.Next() {
-		step := PlanStep{Issue: issue, Generation: generation}
-		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
-			return nil, fmt.Errorf("%s: %w", describe, err)
+		var step PlanStep
+		var generation int64
+		if err := steps.Scan(&step.Issue, &generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+			return nil, err
 		}
-		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
+		step.Generation = uint64(generation)
+		if plan := plans[step.Issue]; plan != nil {
+			plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
+		}
 	}
 	if err := steps.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
 	}
-	return plan, nil
+	return plans, nil
 }
 
 // PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its agent,
