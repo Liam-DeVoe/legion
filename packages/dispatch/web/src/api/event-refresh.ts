@@ -1293,8 +1293,8 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
  * upload or title correction, which moves the title every reference to the document shows; an
  * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
- * link, and an issue write that moved a structural edge (`ISSUE_EDGE_FIELDS`: its parent, its
- * blockers, its components) or the title every one of them shows as its excerpt.
+ * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
+ * or the title every one of them shows as its excerpt.
  */
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
@@ -1319,7 +1319,10 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
     case "issue.updated": {
       const changes = issueChanges(event);
       return (
-        changes === undefined || [...ISSUE_EDGE_FIELDS, "title"].some((field) => changes.has(field))
+        changes === undefined ||
+        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
+          (field) => changes.has(field)
+        )
       );
     }
     default:
@@ -1885,7 +1888,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
 
-  if (isIssueWrite(event)) {
+  if (
+    event.type === "issue.created" ||
+    event.type === "issue.updated" ||
+    event.type === "issue.closed"
+  ) {
     targets.push(...issueWriteTargets(event, key, project));
     return targets;
   }
@@ -1902,8 +1909,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "artifact.human_edited") {
     // The notice a person's settled edits send to the document's agents, after each edit's own
-    // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more,
-    // so it reads neither the issue's tree nor any view of it (above).
+    // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
     return targets;
   }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
