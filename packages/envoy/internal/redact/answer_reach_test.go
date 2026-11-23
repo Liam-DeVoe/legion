@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -39,6 +41,40 @@ func TestDecodeHoldsABoxPromotedFromAnEmbeddedUnexportedStruct(t *testing.T) {
 	}
 	redacttest.RequireNone(t, "redact.answer-embedded/value", byValue.Message.String())
 	redacttest.RequireNone(t, "redact.answer-embedded/pointer", byPointer.Message.String())
+}
+
+// said is the box under an unexported name of this package's own. Embedded, it is an embedded
+// field of an unexported name, whose address reflect hands out only as a value that cannot be
+// used, and the box's UnmarshalJSON is promoted to the struct that embeds it, so encoding/json
+// decodes a JSON string body whole into it.
+type said = redact.RemoteText
+
+// Said is the same box under an exported name, which reflect addresses.
+type Said = redact.RemoteText
+
+// TestDecodeRefusesABoxEmbeddedUnderAnUnexportedName: a destination that embeds the box itself
+// under an unexported name holds a box no record can reach, since reflect gives no usable address
+// of such a field to call the box's method through. Decode refuses it with fixed text that names
+// no word of the answer, where it panicked. The control embeds the same box under an exported
+// name, which Decode fills and records, so it prints with the request's bearer redacted.
+func TestDecodeRefusesABoxEmbeddedUnderAnUnexportedName(t *testing.T) {
+	answer := answerOf(t, http.StatusForbidden, func(auth string) string { return strconv.Quote("the token " + auth + " was refused") })
+	var unexported struct{ said }
+	err := answer.Decode(&unexported)
+	if err == nil {
+		t.Fatal("Decode filled a box embedded under an unexported name, which no record of the answer reaches")
+	}
+	if strings.Contains(err.Error(), redacttest.Token) || strings.Contains(err.Error(), "was refused") {
+		t.Errorf("Decode's refusal %q quotes the answer", err)
+	}
+	var exported struct{ Said }
+	if err := answer.Decode(&exported); err != nil {
+		t.Fatalf("control: Decode of the box embedded under an exported name = %v, want it filled", err)
+	}
+	if !exported.Said.Equal("the token Bearer " + redacttest.Token + " was refused") {
+		t.Fatal("control: Decode did not fill the embedded box, so this test reads nothing")
+	}
+	redacttest.RequireNone(t, "redact.answer-embedded/exported-alias", exported.Said.String())
 }
 
 // TestDecodeHoldsABoxBehindAnInterfaceTheCallerSet: encoding/json decodes a member into the value

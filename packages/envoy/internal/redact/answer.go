@@ -208,11 +208,13 @@ func ContainsFold(body []byte, phrase string) bool {
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
 // body, and compares as it came. A destination that would take the body whole - a string, a byte
 // slice, a json.RawMessage or an interface value, behind however many pointers - is refused, since
-// its text would leave the answer as plain text. Its error is fixed text: it names the
-// destination's type and, where it can, the member that did not decode and the JSON kind it held,
-// and never a value of the answer, since encoding/json's errors, and the errors of the types it
-// decodes into (time.Time's among them), quote the value they could not read; it unwraps to
-// nothing, so no caller reaches the decoder's own error.
+// its text would leave the answer as plain text. So is one that embeds a RemoteText itself under
+// an unexported name (an alias of it), whose box no record can reach (recordBoxes); the box is
+// left as encoding/json filled it, and the error says the destination holds it. Its error is
+// fixed text: it names the destination's type and, where it can, the member that did not decode
+// and the JSON kind it held, and never a value of the answer, since encoding/json's errors, and
+// the errors of the types it decodes into (time.Time's among them), quote the value they could not
+// read; it unwraps to nothing, so no caller reaches the decoder's own error.
 func (a Answer) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
@@ -223,8 +225,8 @@ func (a Answer) Decode(v any) error {
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
-	if a.a != nil && holdsBox(rv.Type(), map[reflect.Type]bool{}) {
-		recordBoxes(rv, a.a.carried())
+	if a.a != nil && holdsBox(rv.Type(), map[reflect.Type]bool{}) && !recordBoxes(rv, a.a.carried()) {
+		return fmt.Errorf("redact: an answer does not decode into %T, which embeds a RemoteText under an unexported name that no record of the answer reaches", v)
 	}
 	if err != nil {
 		return errors.New(decodeText(err, data, rv.Type().Elem()))
@@ -355,43 +357,50 @@ func decoded(f reflect.StructField) bool { return f.IsExported() || f.Anonymous 
 // as a *RemoteText and hands it the record through the box's own method: it reads no box's
 // storage, and descends into no box. A map's values are copied, recorded and set back, since a
 // map value has no address; an interface value that holds no pointer, as every one encoding/json
-// fills itself does, holds no box and is passed by.
-func recordBoxes(v reflect.Value, carried []string) {
+// fills itself does, holds no box and is passed by. It answers false where it reached a box it
+// cannot hand the record to - the box itself embedded under an unexported name (an alias of
+// RemoteText), which reflect gives no address that can be used - after recording every other box.
+func recordBoxes(v reflect.Value, carried []string) bool {
 	if len(carried) == 0 {
-		return
+		return true
 	}
+	recorded := true
 	switch v.Kind() {
 	case reflect.Pointer:
 		if !v.IsNil() {
-			recordBoxes(v.Elem(), carried)
+			recorded = recordBoxes(v.Elem(), carried)
 		}
 	case reflect.Interface:
 		if pointsAt(v) {
-			recordBoxes(v.Elem(), carried)
+			recorded = recordBoxes(v.Elem(), carried)
 		}
 	case reflect.Struct:
 		if v.Type() == remoteTextType {
-			if v.CanAddr() {
-				box := v.Addr().Interface().(*RemoteText)
-				*box = box.WithoutTokens(carried...)
+			if !v.CanAddr() {
+				return true
 			}
-			return
+			if !v.CanInterface() {
+				return false
+			}
+			box := v.Addr().Interface().(*RemoteText)
+			*box = box.WithoutTokens(carried...)
+			return true
 		}
 		for i := range v.NumField() {
 			if f := v.Type().Field(i); decoded(f) && holdsBox(f.Type, map[reflect.Type]bool{}) {
-				recordBoxes(v.Field(i), carried)
+				recorded = recordBoxes(v.Field(i), carried) && recorded
 			}
 		}
 	case reflect.Slice, reflect.Array:
 		if !holdsBox(v.Type().Elem(), map[reflect.Type]bool{}) {
-			return
+			return true
 		}
 		for i := range v.Len() {
-			recordBoxes(v.Index(i), carried)
+			recorded = recordBoxes(v.Index(i), carried) && recorded
 		}
 	case reflect.Map:
 		if !holdsBox(v.Type().Elem(), map[reflect.Type]bool{}) {
-			return
+			return true
 		}
 		for _, key := range v.MapKeys() {
 			item := v.MapIndex(key)
@@ -400,10 +409,11 @@ func recordBoxes(v reflect.Value, carried []string) {
 			}
 			value := reflect.New(v.Type().Elem()).Elem()
 			value.Set(item)
-			recordBoxes(value, carried)
+			recorded = recordBoxes(value, carried) && recorded
 			v.SetMapIndex(key, value)
 		}
 	}
+	return recorded
 }
 
 // pointsAt reports whether v, an interface value, holds a non-nil pointer: the one kind of value
