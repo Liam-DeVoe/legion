@@ -2596,7 +2596,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// row finishes without acting, since the claim runs nothing and the start of the step
 		// the issue stands in now gives it its role.
 		if found && payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
-			if err := r.reroleWaitsForCredential(issue, token, payload.Role); err != nil {
+			if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
 				return err
 			}
 			err := r.reroleForStep(ctx, machine, token, row, payload)
@@ -4023,26 +4023,41 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	if lacking == "" {
 		return nil
 	}
-	told := strings.HasPrefix(row.LastError, startWaitToldPrefix)
-	if !told && !r.idleReleases {
-		claims, err := r.supervisor.Claims(ctx)
-		if err != nil {
-			return fmt.Errorf("read the claims of %s for the wait of its %s: %w", issue.Key, role, err)
-		}
-		if !podRecorded(claims, issue.Key, pod) {
-			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role, Reason: podWaitWithNoReleaseWords(issue.Key, pod, role, lacking)}
-			if err := r.enqueueNotice(ctx, issue.Key, notice); err != nil {
-				return err
-			}
-			told = true
-		}
-	}
-	prefix := pods.StartWaitsForPodPrefix
-	if told {
-		prefix = startWaitToldPrefix
+	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, "the deployment defined "+lacking)
+	if err != nil {
+		return err
 	}
 	return wait.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
 		prefix, role, issue.Key, pod, lacking, runtime.ErrAwaitsPodUpdate)
+}
+
+// podWaitPrefix is what the text of a start of role that waits for pod, the issue's live pod, begins
+// with: startWaitToldPrefix where the controller is told of the wait, as the row's last error says
+// it was or as this try tells it now, and pods.StartWaitsForPodPrefix otherwise. A try tells it
+// where nothing ends the wait: the deployment's idle release is off (idleReleases false), so main's
+// rule never releases the pod, and no claim of the issue records a process in it (podRecorded), so
+// no update round opens over it. The notice is one pod-wait-held notice in a transaction of its
+// own, which names what the pod was made before (before), and the row's last error is then the one
+// record that it was written, so the row's next try writes none.
+func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue, pod string, role claim.Role, before string) (string, error) {
+	if strings.HasPrefix(row.LastError, startWaitToldPrefix) {
+		return startWaitToldPrefix, nil
+	}
+	if r.idleReleases {
+		return pods.StartWaitsForPodPrefix, nil
+	}
+	claims, err := r.supervisor.Claims(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read the claims of %s for the wait of its %s: %w", issue, role, err)
+	}
+	if podRecorded(claims, issue, pod) {
+		return pods.StartWaitsForPodPrefix, nil
+	}
+	notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role, Reason: podWaitWithNoReleaseWords(issue, pod, role, before)}
+	if err := r.enqueueNotice(ctx, issue, notice); err != nil {
+		return "", err
+	}
+	return startWaitToldPrefix, nil
 }
 
 // podLacking is what the issue's live pod lacks of a start whose claim runs in slot on a step of
@@ -4084,12 +4099,14 @@ func slotOfToken(token claim.Token, role claim.Role) claim.Role {
 // and the kubelet's sync. It answers a wait, whose text begins with pods.StartWaitsForPodPrefix and
 // which is runtime.ErrAwaitsPodUpdate too, as roleWaitsForItsPod's is, and the row tries again on
 // its own backoff; the pod's update round or its release replaces the pod with launchers that
-// wait. A runtime with no pods answers nothing, and a start that re-roles nothing never asks. A
-// slot with no launcher connected answers that it waits, which is what a daemon that has just
-// restarted reads of every slot: the launch then judges the launcher it reaches, and refuses a
-// start of another App into one that does not wait with the same runtime.ErrAwaitsPodUpdate,
-// which the supervisor charges nothing (the sandbox runtime's relaunch).
-func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token, role claim.Role) error {
+// wait. Where nothing ends the wait, the deployment's idle release off and no process recorded in
+// the pod, the controller is told once, as roleWaitsForItsPod tells it (podWaitPrefix). A runtime
+// with no pods answers nothing, and a start that re-roles nothing never asks. A slot with no
+// launcher connected answers that it waits, which is what a daemon that has just restarted reads of
+// every slot: the launch then judges the launcher it reaches, and refuses a start of another App
+// into one that does not wait with the same runtime.ErrAwaitsPodUpdate, which the supervisor
+// charges nothing (the sandbox runtime's relaunch).
+func (r *outbox) reroleWaitsForCredential(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
@@ -4098,12 +4115,16 @@ func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token,
 	if waits {
 		return nil
 	}
+	prefix, err := r.podWaitPrefix(ctx, row, issue.Key, pod, role, "its launchers waited for a new role's credential")
+	if err != nil {
+		return err
+	}
 	return wait.Errorf("%s%s of %s: the pod %s was built before its launchers waited for a new role's credential; its update round or its release replaces it: %w",
-		pods.StartWaitsForPodPrefix, role, issue.Key, pod, runtime.ErrAwaitsPodUpdate)
+		prefix, role, issue.Key, pod, runtime.ErrAwaitsPodUpdate)
 }
 
 // startWaitToldPrefix begins the last error of a start that waits for its pod once the controller
-// has been told of that wait (roleWaitsForItsPod). It begins with pods.StartWaitsForPodPrefix, so
+// has been told of that wait (podWaitPrefix). It begins with pods.StartWaitsForPodPrefix, so
 // the idle view, the release's boundary and the served state read the row as every other such wait.
 const startWaitToldPrefix = pods.StartWaitsForPodPrefix + "the controller is told: "
 
@@ -4118,12 +4139,13 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 
 // podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
 // pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
-// the pod lacks (lacking, podLacking's words), what is true now, and that the pod's disk can hold
-// work a role did not push. It tells nobody to take the pod away.
-func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, lacking string) string {
-	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made before the deployment defined %s, and no role runs in that pod now. "+
+// the pod was made before (before: that the deployment defined what the pod lacks, podLacking's
+// words, or that its launchers waited for a new role's credential), what is true now, and that the
+// pod's disk can hold work a role did not push. It tells nobody to take the pod away.
+func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, before string) string {
+	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made before %s, and no role runs in that pod now. "+
 		"The idle release of this deployment is off (idle_minutes: 0), so the daemon keeps that pod. The start of %s waits until an operator acts. "+
-		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, lacking, role)
+		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, before, role)
 }
 
 // enqueueNotice writes one controller notice of issue in a transaction of its own on the pool, as

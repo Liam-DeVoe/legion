@@ -943,9 +943,11 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
-// A pod-wait-held notice names an issue whose pod lacks the slot of a start's claim or the role
-// of its step, built before the deployment defined that name, where the start waits for it (the
-// outbox's roleWaitsForItsPod), and nothing ends that wait until
+// A pod-wait-held notice names an issue whose pod a start waits for: one that lacks the slot of
+// the start's claim or the role of its step, built before the deployment defined that name (the
+// outbox's roleWaitsForItsPod), or one whose launcher of a re-roled claim's slot starts a child
+// before its gh files hold the new role's credential (reroleWaitsForCredential); and nothing ends
+// that wait until
 // an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
 // it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
 // release is off and no claim records a process in the pod, so no update round opens over it

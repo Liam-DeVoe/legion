@@ -98,8 +98,10 @@ func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T)
 			if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: keyed, By: supervise.SuspendedByDaemon, Reason: "its step ended"}); err != nil {
 				t.Fatalf("suspend key a's agent: %v", err)
 			}
+			// The idle release is on, so the pod's release ends the wait and the controller is told
+			// nothing of it (TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce).
 			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, notices: &outboxPublisher{},
-				trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), idleReleases: true,
 				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 				},
@@ -132,6 +134,114 @@ func TestAReroleInAPodBuiltBeforeTheCredentialWaitWaitsForTheRound(t *testing.T)
 			}
 			if got := machine.Claim().State; got != supervise.StateSuspended {
 				t.Errorf("the claim is %s, want it suspended, running nothing", got)
+			}
+		})
+	}
+}
+
+// Under a deployment with no idle release (idle_minutes: 0), nothing ends a re-role's wait for a
+// pod whose slot's launcher does not wait for a start's credential where no claim records a process
+// in that pod: no release comes, and no update round opens over it. So the controller is told
+// once, as one pod-wait-held notice naming the role, the issue, the pod and why it waits, and the
+// wait's text then begins with startWaitToldPrefix, so the row's next try tells nothing more, as
+// the wait for a pod built before a role does (TestAWaitUnderADeploymentWithNoIdleReleaseIsToldOnce).
+// The controls are the same wait where a claim records a process in the pod, whose round replaces
+// it, and the same wait with the idle release on, which ends it: neither tells anything.
+func TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		idleReleases bool
+		recorded     bool
+		told         bool
+	}{
+		{name: "no claim records a process in the pod", told: true},
+		{name: "control: a claim records a process in the pod", recorded: true},
+		{name: "control: the idle release is on", idleReleases: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
+			putOutboxIssue(t, pool, records, issue)
+			keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
+			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
+			putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Role]bool{claim.RoleImplementer: false}}
+			// The claims are stored as the daemon stores them, where the wait reads every claim of
+			// the issue for a process recorded in the pod.
+			st := outboxTreeStore(t, pool, issue.Tree)
+			sup.deps.Store, sup.store = st, st
+			// Key a's agent ran its implementer step and was suspended at its end, so its claim
+			// runs nothing, as a claim does when its next step takes another role.
+			machine, _, err := sup.Create(ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
+				Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
+			if err != nil {
+				t.Fatalf("create the claim of key a: %v", err)
+			}
+			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: keyed, Exempt: true}); err != nil {
+				t.Fatalf("spawn key a's agent: %v", err)
+			}
+			launch := machine.Claim().Generation
+			if err := machine.Handle(ctx, supervise.RequestRegister{Claim: keyed, Generation: launch, Session: "ses-a", SessionFile: "/tmp/a.jsonl"}); err != nil {
+				t.Fatalf("register key a's agent: %v", err)
+			}
+			if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
+				t.Fatalf("ready key a's agent: %v", err)
+			}
+			if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: keyed, By: supervise.SuspendedByDaemon, Reason: "its step ended"}); err != nil {
+				t.Fatalf("suspend key a's agent: %v", err)
+			}
+			if tc.recorded {
+				architect := mustClaimToken(t, issue.Key, claim.RoleArchitect)
+				if err := st.PutClaim(ctx, supervise.Claim{Token: architect, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
+					Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle,
+					Locator: podUpdateLocator(architect, issue.Key, "pod-1")}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, notices: &outboxPublisher{},
+				trees: st, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), idleReleases: tc.idleReleases,
+				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+				},
+			}
+			row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester, Phase: phase.Testing,
+				Entry: 2, Task: "Do it.", Generation: 1}, time.Now())
+			row.ID = 72
+			try := func() error {
+				err := runner.execute(ctx, row)
+				if err != nil {
+					row.LastError = err.Error()
+				}
+				return err
+			}
+
+			for _, attempt := range []string{"first", "second"} {
+				err := try()
+				if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) || !strings.HasPrefix(err.Error(), pods.StartWaitsForPodPrefix) {
+					t.Fatalf("the %s try = %v, want a wait for the pod that is runtime.ErrAwaitsPodUpdate", attempt, err)
+				}
+				if told := strings.HasPrefix(err.Error(), startWaitToldPrefix); told != tc.told {
+					t.Errorf("the %s try reads %q, which says the controller is told: %t; want %t", attempt, err, told, tc.told)
+				}
+				notices := outboxPodWaitHeld(t, runner, issue.Key)
+				if !tc.told {
+					if len(notices) != 0 {
+						t.Errorf("the %s try queued the pod-wait-held notices %q, want none: something else ends the wait", attempt, notices)
+					}
+					continue
+				}
+				if len(notices) != 1 {
+					t.Fatalf("after the %s try the outbox holds %d pod-wait-held notices, want the one", attempt, len(notices))
+				}
+				for _, want := range []string{"tester", "LEGION-208", "pod-1", "launchers waited", "idle_minutes: 0", "can hold work that a role did not push"} {
+					if !strings.Contains(notices[0], want) {
+						t.Errorf("the notice's reason %q does not name %q", notices[0], want)
+					}
+				}
 			}
 		})
 	}
