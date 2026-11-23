@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -138,4 +139,67 @@ func TestARequestsStandingIsJudgedUnderTheLockAtItsFirstAct(t *testing.T) {
 			t.Fatalf("the claim is %s holding %+v, want it ready holding nothing", got.State, got.Pending)
 		}
 	})
+}
+
+// A claim that takes another role keeps its session, so the transcript its next generation resumes
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub honours
+// for up to an hour. The first prompt the agent takes in its new role says that every such token
+// is void and must not be used, and that its gh and git now act as the new role's App; a later
+// prompt says it no more. A daemon restart between the re-role and that prompt loses none of it.
+// The control is the same claim suspended, restarted and resumed in the role it held: no prompt of
+// its next generation says anything of an earlier role.
+func TestTheFirstPromptAfterARoleChangeSaysTheEarlierRolesTokensAreVoid(t *testing.T) {
+	const (
+		void = "Any GitHub token you saw in an earlier role is void: do not use it."
+		app  = "Your gh and git now act as the GitHub App of the tester role."
+	)
+	for _, tc := range []struct {
+		name string
+		role claim.Role
+		says bool
+	}{
+		{"a claim that took another role", claim.RoleTester, true},
+		{"a claim that kept its role", claim.RoleImplementer, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.must(RequestSuspend{Claim: testToken, By: SuspendedByDaemon})
+			if err := h.m.Rerole(stepStands(context.Background()), tc.role); err != nil {
+				t.Fatalf("give the suspended claim the %s's role: %v", tc.role, err)
+			}
+			h.restart()
+			h.must(RequestRuleResume{Claim: testToken, Reason: "its agent's next step is the " + string(tc.role) + "'s"})
+			h.relaunched()
+
+			before := len(h.prompts())
+			h.must(RequestDeliver{Claim: testToken, Task: "test the change"})
+			sent := h.prompts()[before:]
+			if len(sent) == 0 {
+				t.Fatal("the resumed generation was sent no prompt, want its task")
+			}
+			first := sent[0].Message
+			if got := strings.Contains(first, void) && strings.Contains(first, app); got != tc.says {
+				t.Fatalf("the resumed generation's first prompt says the earlier role's tokens are void = %v, want %v: %q",
+					got, tc.says, first)
+			}
+			if !tc.says && strings.Contains(first, "earlier role") {
+				t.Fatalf("the first prompt of a claim that kept its role names an earlier role: %q", first)
+			}
+
+			h.must(StreamTurnStart{Claim: testToken})
+			h.must(StreamTurnEnd{Claim: testToken})
+			before = len(h.prompts())
+			h.must(RequestDeliver{Claim: testToken, Task: "test it again"})
+			later := h.prompts()[before:]
+			if len(later) == 0 {
+				t.Fatal("the second task was sent as no prompt, so nothing here reads whether it repeats the sentence")
+			}
+			for _, prompt := range later {
+				if strings.Contains(prompt.Message, "earlier role") {
+					t.Fatalf("a prompt after the one a turn took names an earlier role again: %q", prompt.Message)
+				}
+			}
+		})
+	}
 }
