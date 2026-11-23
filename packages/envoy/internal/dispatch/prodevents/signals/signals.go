@@ -1,5 +1,5 @@
 // Package signals writes the record's rows that no person and no system posts
-// (dispatch://INFRA-978, T11 and T12): the GitHub adapter's deploy rows, one per deploy run of a
+// (dispatch://INFRA-978, R6 and R7): the GitHub adapter's deploy rows, one per deploy run of a
 // deploy repository that the repository's rule calls a deploy, and the failures of the three
 // automatic signals: a failed after-merge check (check_fail), a merged revert (revert), and an issue
 // labelled incident that links the pull request or the run it blames (incident_issue).

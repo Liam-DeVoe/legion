@@ -23,7 +23,7 @@
 --
 -- As the other triggers do, it writes no change row when nothing moved.
 --
--- The census answers 0: one function and one trigger, reading and rewriting no row.
+-- The census answers 0: two functions and one trigger, reading and rewriting no row.
 create function production_events_counts_at(p_kind text, p_finished timestamptz, p_deploy uuid)
 returns timestamptz language sql stable as $$
   select case when p_kind = 'deploy' then p_finished

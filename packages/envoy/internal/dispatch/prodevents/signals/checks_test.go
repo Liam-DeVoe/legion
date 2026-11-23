@@ -10,9 +10,9 @@ import (
 
 // TestAFailedAfterMergeCheckMakesOneCheckFailRow: a fail of an after_merge check, at a commit a
 // deploy row holds, is one counted check_fail row of the result issue's project, blaming that
-// deploy, naming the issue's pull requests, keyed check:<block>@<deploy>, with the result's actor
-// and time; written by the record route's handler (RecordCheckFailure) and by the checks feed from
-// the result.recorded event, a repeat of either writes no second row.
+// deploy, naming the issue's pull requests, keyed check:<document>/<block>@<deploy>, with the
+// result's actor and time; written by the record route's handler (RecordCheckFailure) and by the
+// checks feed from the result.recorded event, a repeat of either writes no second row.
 func TestAFailedAfterMergeCheckMakesOneCheckFailRow(t *testing.T) {
 	r := newRig(t)
 	issue := r.issue(1)
@@ -21,7 +21,7 @@ func TestAFailedAfterMergeCheckMakesOneCheckFailRow(t *testing.T) {
 	r.passDeploys()
 	deploy := r.deployOf(200)
 
-	result := r.checkResult(issue, "c1", sha("8"), verdictFail, whenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("8"), verdictFail, model.CheckWhenAfterMerge)
 	created, err := RecordCheckFailure(r.ctx, r.pool, result)
 	if err != nil || !created {
 		t.Fatalf("RecordCheckFailure = %v, %v; want a row", created, err)
@@ -38,7 +38,7 @@ func TestAFailedAfterMergeCheckMakesOneCheckFailRow(t *testing.T) {
 	}
 	row := rows[0]
 	if row.ProjectKey != alpha || row.Source != prodevents.SourceCheckResults || *row.Signal != prodevents.SignalCheckFail ||
-		row.SourceRef != "check:c1@"+deploy.ID || *row.DeployID != deploy.ID || row.State != prodevents.StateCounted ||
+		row.SourceRef != "check:"+r.verification(issue)+"/c1@"+deploy.ID || *row.DeployID != deploy.ID || row.State != prodevents.StateCounted ||
 		row.Actor != tester || !slices.Equal(row.PullRequests, []string{"acme/widgets#8"}) {
 		t.Fatalf("check_fail row = %+v", row)
 	}
@@ -62,9 +62,9 @@ func TestAPassABeforeMergeFailAndAnUnmatchedCommitMakeNoCheckFailRow(t *testing.
 	r.passDeploys()
 
 	for _, result := range []string{
-		r.checkResult(issue, "c1", sha("b"), "pass", whenAfterMerge),
+		r.checkResult(issue, "c1", sha("b"), "pass", model.CheckWhenAfterMerge),
 		r.checkResult(issue, "c2", sha("b"), verdictFail, "before_merge"),
-		r.checkResult(issue, "c3", sha("e"), verdictFail, whenAfterMerge),
+		r.checkResult(issue, "c3", sha("e"), verdictFail, model.CheckWhenAfterMerge),
 	} {
 		if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
 			t.Errorf("RecordCheckFailure(%s) = %v, %v; want no row", result, created, err)
@@ -84,7 +84,7 @@ func TestARetractionRejectsTheCheckFailRow(t *testing.T) {
 	issue := r.issue(3)
 	r.deployRun(220, at(60), sha("c"), prodJob, success, success)
 	r.passDeploys()
-	result := r.checkResult(issue, "c1", sha("c"), verdictFail, whenAfterMerge)
+	result := r.checkResult(issue, "c1", sha("c"), verdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	if rows := r.failures(); len(rows) != 1 || rows[0].State != prodevents.StateCounted {
 		t.Fatalf("before the retraction, failure rows = %+v, want one counted", rows)
@@ -115,7 +115,7 @@ func TestARetractionRejectsTheCheckFailRow(t *testing.T) {
 func TestAnEarlyCheckFailIsMatchedWhenItsDeployRowLands(t *testing.T) {
 	r := newRig(t)
 	issue := r.issue(4)
-	r.checkResult(issue, "c1", sha("d"), verdictFail, whenAfterMerge)
+	r.checkResult(issue, "c1", sha("d"), verdictFail, model.CheckWhenAfterMerge)
 	r.passEvents()
 	if rows := r.failures(); len(rows) != 0 {
 		t.Fatalf("before any deploy holds the commit, failure rows = %+v, want none", rows)
@@ -125,7 +125,48 @@ func TestAnEarlyCheckFailIsMatchedWhenItsDeployRowLands(t *testing.T) {
 	r.passDeploys()
 	deploy := r.deployOf(230)
 	rows := r.failures()
-	if len(rows) != 1 || *rows[0].DeployID != deploy.ID || rows[0].SourceRef != "check:c1@"+deploy.ID {
+	if len(rows) != 1 || *rows[0].DeployID != deploy.ID || rows[0].SourceRef != "check:"+r.verification(issue)+"/c1@"+deploy.ID {
 		t.Fatalf("once the deploy row landed, failure rows = %+v, want the check_fail blaming %s", rows, deploy.ID)
+	}
+}
+
+// TestTwoDocumentsChecksOfOneBlockIDMakeTwoCheckFailRows: a block id names a check within one
+// Verification document alone, so fails of two issues' after_merge checks that share a block id,
+// at commits one deploy shipped, are two check_fail rows, each keyed by its own document
+// (check:<document>/<block>@<deploy>). A retraction of one result rejects its own row and leaves
+// the other's counted, since the other's fail still stands.
+func TestTwoDocumentsChecksOfOneBlockIDMakeTwoCheckFailRows(t *testing.T) {
+	r := newRig(t)
+	first, second := r.issue(5), r.issue(6)
+	r.deployRun(240, at(60), sha("f"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(240)
+	retracted := r.checkResult(first, "c1", sha("f"), verdictFail, model.CheckWhenAfterMerge)
+	r.checkResult(second, "c1", sha("f"), verdictFail, model.CheckWhenAfterMerge)
+	r.passEvents()
+
+	firstRef := "check:" + r.verification(first) + "/c1@" + deploy.ID
+	secondRef := "check:" + r.verification(second) + "/c1@" + deploy.ID
+	states := func() map[string]string {
+		held := map[string]string{}
+		for _, row := range r.failures() {
+			held[row.SourceRef] = row.State
+		}
+		return held
+	}
+	if got := states(); len(got) != 2 || got[firstRef] != prodevents.StateCounted || got[secondRef] != prodevents.StateCounted {
+		t.Fatalf("check_fail rows by source_ref = %v, want %s and %s, both counted", got, firstRef, secondRef)
+	}
+
+	const reason = "The check of the first issue read the wrong cluster."
+	r.exec("retract the first result", `insert into check_result_retractions (result_id, reason, actor) values ($1, $2, $3)`,
+		retracted, reason, `{"kind":"user","id":"alice"}`)
+	r.event(first, "result.retracted", person, model.CheckResultRetractedEventPayload{
+		ResultID: retracted, Issue: first, CheckIssue: first, CheckBlockID: "c1", CommitSHA: sha("f"), Reason: reason,
+	})
+	r.passEvents()
+	if got := states(); len(got) != 2 || got[firstRef] != prodevents.StateRejected || got[secondRef] != prodevents.StateCounted {
+		t.Fatalf("after the first result's retraction, check_fail rows by source_ref = %v, want %s rejected and %s counted",
+			got, firstRef, secondRef)
 	}
 }

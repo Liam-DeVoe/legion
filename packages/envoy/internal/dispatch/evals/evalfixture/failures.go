@@ -470,7 +470,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		return prodevents.DeployForRun(ctx, pool, runs[index].repo, runID(index))
 	}
 	signalRefs := map[string]string{
-		prodevents.SignalRevert:        "revert:" + prodevents.PullRequestName(appRepo, 4),
+		prodevents.SignalRevert:        "revert:" + delivery.PullRequestName(appRepo, 4),
 		prodevents.SignalIncidentIssue: "incident:" + incident,
 	}
 	landed := func(ctx context.Context) (bool, error) {
@@ -483,7 +483,11 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 				return false, err
 			}
 			if index == 2 {
-				signalRefs[prodevents.SignalCheckFail] = "check:" + checkFail.block + "@" + row.ID
+				var artifact string
+				if err := pool.QueryRow(ctx, `select check_artifact_id::text from check_results where id = $1`, checkFail.id(project)).Scan(&artifact); err != nil {
+					return false, fmt.Errorf("read the Verification document of %s: %w", checkFail.block, err)
+				}
+				signalRefs[prodevents.SignalCheckFail] = signals.CheckSourceRef(artifact, checkFail.block, row.ID)
 			}
 		}
 		for signal, ref := range signalRefs {
@@ -521,7 +525,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		pulls           []string
 	}{
 		{"P1", "release-1", "", at(1, 13, 0), nil},
-		{"P2", "release-2", secondRepo, at(1, 14, 0), []string{prodevents.PullRequestName(secondRepo, 1)}},
+		{"P2", "release-2", secondRepo, at(1, 14, 0), []string{delivery.PullRequestName(secondRepo, 1)}},
 	} {
 		row, _, err := prodevents.Write(ctx, pool, prodevents.Event{
 			ProjectKey: second, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceAPI,

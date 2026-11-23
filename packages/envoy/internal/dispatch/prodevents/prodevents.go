@@ -160,11 +160,22 @@ func decodeActor(raw []byte) (*model.Actor, error) {
 	return &actor, nil
 }
 
-// recorded is actor as the record keeps it: who wrote the row, never how the request
-// authenticated (model.Actor.Credential is a fact of the request alone).
-func recorded(actor model.Actor) ([]byte, error) {
-	actor.Credential = nil
-	return json.Marshal(actor)
+// prepared refuses an event no row can hold (validate), and answers its actor as the record keeps
+// it, who wrote the row and never how the request authenticated (model.Actor.Recorded), and its
+// environment, DefaultEnvironment where it names none.
+func prepared(event Event) ([]byte, string, error) {
+	if err := validate(event); err != nil {
+		return nil, "", err
+	}
+	actor, err := json.Marshal(event.Actor.Recorded())
+	if err != nil {
+		return nil, "", fmt.Errorf("encode the actor of production event %s: %w", event.SourceRef, err)
+	}
+	environment := event.Environment
+	if environment == "" {
+		environment = DefaultEnvironment
+	}
+	return actor, environment, nil
 }
 
 // Write stores event under its project, or answers the row its project already holds under its
@@ -172,16 +183,9 @@ func recorded(actor model.Actor) ([]byte, error) {
 // row and created false. A failure's blamed deploy must be a deploy row; a deploy names none. The
 // row's id, its creation time and its state are the server's, whatever event carries.
 func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, error) {
-	if err := validate(event); err != nil {
-		return Event{}, false, err
-	}
-	actor, err := recorded(event.Actor)
+	actor, environment, err := prepared(event)
 	if err != nil {
-		return Event{}, false, fmt.Errorf("encode the actor of production event %s: %w", event.SourceRef, err)
-	}
-	environment := event.Environment
-	if environment == "" {
-		environment = DefaultEnvironment
+		return Event{}, false, err
 	}
 	commits, pulls := nonNil(event.Commits), nonNil(event.PullRequests)
 	tx, err := pool.Begin(ctx)
@@ -201,7 +205,7 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	}
 	var restoredBy []byte
 	if event.RestoredBy != nil {
-		if restoredBy, err = recorded(*event.RestoredBy); err != nil {
+		if restoredBy, err = json.Marshal(event.RestoredBy.Recorded()); err != nil {
 			return Event{}, false, fmt.Errorf("encode the restorer of production event %s: %w", event.SourceRef, err)
 		}
 	}
@@ -218,8 +222,7 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	created := true
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = false
-		stored, err = scan(tx.QueryRow(ctx, `select `+columns+` from production_events
-			where project_key = $1 and source_ref = $2`, event.ProjectKey, event.SourceRef))
+		stored, err = bySourceRef(ctx, tx, event.ProjectKey, event.SourceRef)
 	}
 	if err != nil {
 		return Event{}, false, fmt.Errorf("write production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
@@ -318,7 +321,7 @@ func SetState(ctx context.Context, pool *store.Pool, project, id string, change 
 	if _, err := uuid.Parse(id); err != nil {
 		return Event{}, ErrNotFound
 	}
-	by, err := recorded(change.Actor)
+	by, err := json.Marshal(change.Actor.Recorded())
 	if err != nil {
 		return Event{}, fmt.Errorf("encode the writer of production event %s's state: %w", id, err)
 	}
@@ -463,10 +466,10 @@ func (r totalRow) Scan(dest ...any) error {
 // DeployForCommit is the deploy row, of any project, whose commits hold sha: the earliest to
 // reach production, which is the deploy that first shipped the commit (a check made at a commit
 // blames the deploy that shipped it, R7). ok is false where no deploy holds it yet. A dropped
-// GitHub deploy (StatusDropped) holds none.
+// GitHub deploy (StatusDropped) holds none. The read is a probe of production_events_commits.
 func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and $1 = any(commits) and not `+droppedDeploy+`
+		where kind = 'deploy' and commits @> array[$1::text] and not `+droppedDeploy+`
 		order by finished_at, id limit 1`, strings.ToLower(sha)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
@@ -543,6 +546,12 @@ func scanAll(rows pgx.Rows, what string) ([]Event, error) {
 // GitHubSourceRef is the source_ref of the GitHub adapter's deploy row of run runID.
 func GitHubSourceRef(runID int64) string {
 	return fmt.Sprintf("github:%d", runID)
+}
+
+// PersonSourceRef is the source_ref of the flag of deploy (a deploy row's id) by the person
+// actorID: one row per person and deploy, so a second flag writes nothing.
+func PersonSourceRef(deployID, actorID string) string {
+	return "person:" + deployID + ":" + actorID
 }
 
 func nonNil(list []string) []string {

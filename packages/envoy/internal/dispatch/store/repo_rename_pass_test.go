@@ -585,7 +585,7 @@ const projectDeliveryRenameSeed = `
 `
 
 // The pass writes the new name into each project's delivery settings and the reconcile progress
-// of the repository's run steps (dispatch://INFRA-978, T6): an excluded repository in its place
+// of the repository's run steps (dispatch://INFRA-978, D2): an excluded repository in its place
 // and every other one as it was, a source that names the old name, and the name and the scope of
 // each run step of the old name with its progress kept, so the reconcile resumes the renamed
 // repository's steps and imports nothing again. A source whose project names the new name already
@@ -603,9 +603,9 @@ func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
 		t.Fatalf("the pass = %+v (%v), want 2 rows deleted, no failure and nothing left", pass, pass.Err())
 	}
 	for query, want := range map[string]string{
-		`select string_agg(project_key || '=' || excluded_repos::text, ' ' order by project_key) from project_delivery_settings`: "INFRA={sjawhar/dotfiles} SMOKE={} TOOLS={acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke}",
+		`select string_agg(project_key || '=' || excluded_repos::text, ' ' order by project_key) from project_delivery_settings`:                                "INFRA={sjawhar/dotfiles} SMOKE={} TOOLS={acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke}",
 		`select string_agg(project_key || '#' || position || '=' || coalesce(repo, 'default'), ' ' order by project_key, position) from project_deploy_sources`: "INFRA#0=default SMOKE#1=cybermonklabs/legion SMOKE#2=default TOOLS#0=acme/tools TOOLS#1=cybermonklabs/legion",
-		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`: "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke TOOLS=acme/tools",
+		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                                                         "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke TOOLS=acme/tools",
 		`select string_agg(step || '=' || scope || '@' || to_char(through at time zone 'UTC', 'MM-DD'), ' | ' order by step) from delivery_reconcile_progress`: "" +
 			"backfill/created_at/deploy/cybermonklabs/legion=cybermonklabs/legion deploy.yml@01-04 | " +
 			"backfill/runs/pr_checks/cybermonklabs/legion=cybermonklabs/legion pr.yml@01-02 | " +
@@ -643,12 +643,13 @@ func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
 }
 
 // productionEventsRenameSeed writes, under the old name sjawhar/legion, the fields of the record
-// of production events and of the merged reverts (dispatch://INFRA-978, T11 and T12): a revert of
+// of production events and of the merged reverts (dispatch://INFRA-978, R6 and R7): a revert of
 // the old name, one whose twin the new name holds, and one of sjawhar/legion-smoke that reverts a
 // pull request of the old name; a GitHub deploy row whose pull requests name the old name in mixed
-// case beside one of sjawhar/legion-smoke, a posted deploy that names none, and two revert rows of
-// the old name, one of them with a twin under the new name; the rule the old name's deploy rows
-// stand derived under; and the progress of its reverts' search.
+// case beside one of sjawhar/legion-smoke, and whose run's page names the old name in mixed case, a
+// posted deploy that names none, its page sjawhar/legion-smoke's, and two revert rows of the old
+// name, each with the revert's page, one of them with a twin under the new name; the rule the old
+// name's deploy rows stand derived under; and the progress of its reverts' search.
 const productionEventsRenameSeed = `
 	insert into projects (key, name, default_assignee, default_repo) values
 		('INFRA', 'Infra', 'alice', 'sjawhar/legion');
@@ -659,18 +660,22 @@ const productionEventsRenameSeed = `
 		('cybermonklabs/legion', 9, 'cybermonklabs/legion', 5, '2026-01-02T00:00:00Z'),
 		('sjawhar/legion', 10, 'sjawhar/legion-smoke', 3, '2026-01-03T00:00:00Z'),
 		('sjawhar/legion-smoke', 4, 'SJawhar/Legion', 2, '2026-01-04T00:00:00Z');
-	insert into production_events (id, project_key, kind, source, source_ref, finished_at, repo, pull_requests, actor) values
+	insert into production_events (id, project_key, kind, source, source_ref, finished_at, repo, pull_requests, url, actor) values
 		('00000000-0000-7000-8000-000000000001', 'INFRA', 'deploy', 'github', 'github:100', '2026-01-01T01:00:00Z',
-			'sjawhar/legion', '{sjawhar/legion#5,SJawhar/Legion#6,sjawhar/legion-smoke#7}', '{"kind":"system","id":"production-signals"}'),
+			'sjawhar/legion', '{sjawhar/legion#5,SJawhar/Legion#6,sjawhar/legion-smoke#7}',
+			'https://github.com/SJawhar/Legion/actions/runs/100', '{"kind":"system","id":"production-signals"}'),
 		('00000000-0000-7000-8000-000000000002', 'INFRA', 'deploy', 'api', 'posted-1', '2026-01-01T02:00:00Z',
-			'', '{sjawhar/legion-smoke#8}', '{"kind":"session","id":"poster"}');
-	insert into production_events (id, project_key, kind, source, source_ref, repo, pull_requests, actor, deploy_id, signal, detected_at) values
+			'', '{sjawhar/legion-smoke#8}', 'https://github.com/sjawhar/legion-smoke/pull/8', '{"kind":"session","id":"poster"}');
+	insert into production_events (id, project_key, kind, source, source_ref, repo, pull_requests, url, actor, deploy_id, signal, detected_at) values
 		('00000000-0000-7000-8000-000000000003', 'INFRA', 'failure', 'reverts', 'revert:sjawhar/legion#10', 'sjawhar/legion',
-			'{sjawhar/legion-smoke#3}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-03T00:00:00Z'),
+			'{sjawhar/legion-smoke#3}', 'https://github.com/sjawhar/legion/pull/10', '{"kind":"system","id":"production-signals"}',
+			'00000000-0000-7000-8000-000000000001', 'revert', '2026-01-03T00:00:00Z'),
 		('00000000-0000-7000-8000-000000000004', 'INFRA', 'failure', 'reverts', 'revert:sjawhar/legion#9', 'sjawhar/legion',
-			'{sjawhar/legion#5}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z'),
+			'{sjawhar/legion#5}', 'https://github.com/sjawhar/legion/pull/9', '{"kind":"system","id":"production-signals"}',
+			'00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z'),
 		('00000000-0000-7000-8000-000000000005', 'INFRA', 'failure', 'reverts', 'revert:cybermonklabs/legion#9', 'cybermonklabs/legion',
-			'{cybermonklabs/legion#5}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z');
+			'{cybermonklabs/legion#5}', 'https://github.com/cybermonklabs/legion/pull/9', '{"kind":"system","id":"production-signals"}',
+			'00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z');
 	insert into production_deploy_rules (repo, project_key, production_job_names) values
 		('sjawhar/legion', 'INFRA', '{release}');
 	insert into delivery_reconcile_progress (step, scope, through, updated_at) values
@@ -679,12 +684,12 @@ const productionEventsRenameSeed = `
 
 // The pass writes the new name into the merged reverts, the record of production events and the
 // rule its deploy rows stand derived under (dispatch://INFRA-978): each revert's repository and the
-// repository of the pull request it reverts, each row's repository, each pull request a row names
-// in its place with its number, and each revert row's source_ref, so the revert's signal reads its
-// row back under the new name and writes no second one. A revert and a revert row whose twin the
-// new name holds are deleted, and the twins stay. The reverts' search step keeps its progress
-// under the new name. Names that only begin like the old name are left. A second pass writes
-// nothing.
+// repository of the pull request it reverts, each row's repository and the page its url names,
+// each pull request a row names in its place with its number, and each revert row's source_ref, so
+// the revert's signal reads its row back under the new name and writes no second one. A revert and
+// a revert row whose twin the new name holds are deleted, and the twins stay. The reverts' search
+// step keeps its progress under the new name. Names that only begin like the old name are left. A
+// second pass writes nothing.
 func TestARenameMovesTheRecordOfProductionEventsAndTheReverts(t *testing.T) {
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, productionEventsRenameSeed)
@@ -698,11 +703,11 @@ func TestARenameMovesTheRecordOfProductionEventsAndTheReverts(t *testing.T) {
 	for query, want := range map[string]string{
 		`select string_agg(repo || '#' || number || '>' || reverts_repo || '#' || reverts_number, ' ' order by repo collate "C", number) from delivery_reverts`: "" +
 			"cybermonklabs/legion#9>cybermonklabs/legion#5 cybermonklabs/legion#10>sjawhar/legion-smoke#3 sjawhar/legion-smoke#4>cybermonklabs/legion#2",
-		`select string_agg(source_ref || '=' || repo || ' ' || pull_requests::text, ' | ' order by id) from production_events`: "" +
-			"github:100=cybermonklabs/legion {cybermonklabs/legion#5,cybermonklabs/legion#6,sjawhar/legion-smoke#7} | " +
-			"posted-1= {sjawhar/legion-smoke#8} | " +
-			"revert:cybermonklabs/legion#10=cybermonklabs/legion {sjawhar/legion-smoke#3} | " +
-			"revert:cybermonklabs/legion#9=cybermonklabs/legion {cybermonklabs/legion#5}",
+		`select string_agg(source_ref || '=' || repo || ' ' || pull_requests::text || ' ' || url, ' | ' order by id) from production_events`: "" +
+			"github:100=cybermonklabs/legion {cybermonklabs/legion#5,cybermonklabs/legion#6,sjawhar/legion-smoke#7} https://github.com/cybermonklabs/legion/actions/runs/100 | " +
+			"posted-1= {sjawhar/legion-smoke#8} https://github.com/sjawhar/legion-smoke/pull/8 | " +
+			"revert:cybermonklabs/legion#10=cybermonklabs/legion {sjawhar/legion-smoke#3} https://github.com/cybermonklabs/legion/pull/10 | " +
+			"revert:cybermonklabs/legion#9=cybermonklabs/legion {cybermonklabs/legion#5} https://github.com/cybermonklabs/legion/pull/9",
 		`select string_agg(repo || '=' || project_key, ' ') from production_deploy_rules`:                                                        "cybermonklabs/legion=INFRA",
 		`select string_agg(step || '=' || scope || '@' || to_char(through at time zone 'UTC', 'MM-DD'), ' | ') from delivery_reconcile_progress`: "reverts/cybermonklabs/legion=cybermonklabs/legion@01-05",
 	} {
@@ -720,7 +725,7 @@ func TestARenameMovesTheRecordOfProductionEventsAndTheReverts(t *testing.T) {
 	}
 	for field, want := range map[string]float64{
 		"delivery_reverts.repo": 1, "delivery_reverts.reverts_repo": 1,
-		"production_events.source_ref": 1, "production_events.repo": 2, "production_events.pull_requests": 1,
+		"production_events.source_ref": 1, "production_events.repo": 2, "production_events.url": 2, "production_events.pull_requests": 1,
 		"production_deploy_rules.repo": 1, "delivery_reconcile_progress.step": 1, "delivery_reconcile_progress.scope": 1,
 	} {
 		if written[field] != want {

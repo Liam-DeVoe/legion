@@ -256,3 +256,14 @@ func (r *rig) checkResult(issue, block, commit, verdict, when string) string {
 		id, issue, artifact, block, commit, verdict, actorJSON, seq)
 	return id
 }
+
+// verification is the id of issue's Verification document, which checkResult makes.
+func (r *rig) verification(issue string) string {
+	r.t.Helper()
+	var artifact string
+	if err := r.pool.QueryRow(r.ctx, `select id::text from artifacts where issue_key = $1 and slug = 'verification-md'`,
+		issue).Scan(&artifact); err != nil {
+		r.t.Fatalf("read the Verification document of %s: %v", issue, err)
+	}
+	return artifact
+}

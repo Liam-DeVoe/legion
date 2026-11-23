@@ -112,7 +112,7 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	}
 	blamed, unblamed := r.deployOf(130), r.deployOf(131)
 	flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
-		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: "person:" + blamed.ID + ":alice",
+		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: prodevents.PersonSourceRef(blamed.ID, "alice"),
 		Actor: person, DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
 	})
 	if err != nil {

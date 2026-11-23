@@ -912,7 +912,7 @@ func (r *Reconcile) reconcileReverts(ctx context.Context, owner, name, repoFull 
 			if _, _, says := ParseRevert(pr.Body); !says || pr.MergedAt == nil {
 				continue
 			}
-			if _, err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
+			if err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
 				slog.Warn("dispatch delivery: reconcile a merged revert", "repo", repoFull, "number", pr.Number, "error", err)
 				failures = append(failures, fmt.Sprintf("#%d: %s", pr.Number, err))
 				blocked = true

@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The GitHub adapter (dispatch://INFRA-978, T11): the deploy row of each run of a deploy repository
+// The GitHub adapter (dispatch://INFRA-978, R6): the deploy row of each run of a deploy repository
 // that the repository's rule calls a deploy (delivery.DeployRowsIn), written under the repository's
 // owner (delivery.DeployRules) after the write that made the run a deploy has committed: the
 // intake's workflow write, the reconcile's run write and its backfills, and the job intake's job
@@ -94,10 +94,8 @@ func passDeploys(ctx context.Context, pool *store.Pool, now func() time.Time) er
 			break
 		}
 	}
-	for _, deploy := range landed {
-		if err := matchEarlyChecks(ctx, pool, deploy); err != nil {
-			return err
-		}
+	if err := matchEarlyChecks(ctx, pool, landed); err != nil {
+		return err
 	}
 	for _, rule := range rules.All() {
 		if err := revertFailures(ctx, pool, rule); err != nil {

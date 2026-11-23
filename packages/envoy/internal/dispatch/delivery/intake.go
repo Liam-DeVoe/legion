@@ -644,7 +644,7 @@ func (in *Intake) recordRevert(ctx context.Context, rules *SourceRules, repoFull
 	if _, _, says := ParseRevert(payload["body"]); !says && payload["body_truncated"] != "true" {
 		return
 	}
-	if _, err := recordRevertFromGitHub(ctx, in.pool, in.github, rule.DeployRepo, number); err != nil {
+	if err := recordRevertFromGitHub(ctx, in.pool, in.github, rule.DeployRepo, number); err != nil {
 		slog.Warn("dispatch delivery: record a merged revert; the reconcile's search records it later",
 			"repo", repoFull, "number", number, "error", err)
 	}

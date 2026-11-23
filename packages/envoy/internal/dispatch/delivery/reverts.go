@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The merged reverts of the deploy repositories (dispatch://INFRA-978, R7 and T12), kept in
+// The merged reverts of the deploy repositories (dispatch://INFRA-978, R7 and D5), kept in
 // delivery_reverts (migration 20261123041500): a merged pull request whose body says
 // `Reverts <owner>/<repo>#<n>`, the line GitHub's revert button writes, recorded whoever authored
 // it. The pull-request intake records one as it merges (handlePullRequestEnvelope), and the
@@ -124,52 +124,62 @@ func RecordRevert(ctx context.Context, pool *store.Pool, revert Revert) error {
 
 // recordRevertFromGitHub reads pull request number of the deploy repository repo from GitHub and,
 // where it merged and its body says it reverts a pull request, reads that pull request's merge
-// commit and records the revert (RecordRevert). It reports whether it recorded one. Every fact it
-// stores is GitHub's own answer, never an envelope's, which any bearer of the bus can publish. A
-// reverted pull request GitHub no longer answers for is recorded with no merge commit: the deploy
-// that shipped it is then the one whose deploy row names it.
-func recordRevertFromGitHub(ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) (bool, error) {
+// commit (revertedPullRequest) and records the revert (RecordRevert). Every fact it stores is
+// GitHub's own answer, never an envelope's, which any bearer of the bus can publish.
+func recordRevertFromGitHub(ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) error {
 	owner, name, err := refs.SplitGitHubRepo(repo)
 	if err != nil {
-		return false, err
+		return err
 	}
 	token, err := client.RepositoryToken(ctx, owner, name)
 	if err != nil {
-		return false, fmt.Errorf("mint installation token for %s: %w", repo, err)
+		return fmt.Errorf("mint installation token for %s: %w", repo, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, name, number)
 	if err != nil {
-		return false, err
+		return err
 	}
 	revertsRepo, revertsNumber, ok := ParseRevert(payload.Body)
 	if !ok || payload.MergedAt == nil {
-		return false, nil
+		return nil
 	}
-	var reverted *pullRequestPayload
-	if revertedOwner, revertedName, err := refs.SplitGitHubRepo(revertsRepo); err == nil {
-		revertedToken := token
-		if !strings.EqualFold(revertsRepo, repo) {
-			revertedToken, err = client.RepositoryToken(ctx, revertedOwner, revertedName)
+	reverted, err := revertedPullRequest(ctx, client, repo, token, revertsRepo, revertsNumber)
+	if err != nil {
+		return err
+	}
+	// payload merged and its body names revertsRepo#revertsNumber, as read above, so it is a revert.
+	revert, _ := revertOf(repo, payload, reverted)
+	return RecordRevert(ctx, pool, revert)
+}
+
+// revertedPullRequest is GitHub's answer for pull request number of revertsRepo, which a revert
+// of repo names, read with token, repo's own, where revertsRepo is repo. It is nil where GitHub no
+// longer answers for that pull request, where no installation reads its repository, and where
+// revertsRepo is no GitHub owner/name: the revert is then recorded with no merge commit of it, and
+// the deploy that shipped it is the one whose deploy row names it.
+func revertedPullRequest(ctx context.Context, client *githubapp.Client, repo, token, revertsRepo string, number int) (*pullRequestPayload, error) {
+	owner, name, err := refs.SplitGitHubRepo(revertsRepo)
+	if err != nil {
+		return nil, nil
+	}
+	if !strings.EqualFold(revertsRepo, repo) {
+		token, err = client.RepositoryToken(ctx, owner, name)
+		if errors.Is(err, githubapp.ErrNoInstallation) {
+			return nil, nil
 		}
-		if err == nil {
-			read, err := fetchPullRequestPayload(ctx, client, revertedToken, revertedOwner, revertedName, revertsNumber)
-			switch {
-			case err == nil:
-				reverted = &read
-			case errors.Is(err, ErrPullRequestNotFound) || errors.Is(err, githubapp.ErrRepositoryUnreadable) ||
-				errors.Is(err, githubapp.ErrNoInstallation):
-			default:
-				return false, err
-			}
-		} else if !errors.Is(err, githubapp.ErrNoInstallation) {
-			return false, fmt.Errorf("mint installation token for %s: %w", revertsRepo, err)
+		if err != nil {
+			return nil, fmt.Errorf("mint installation token for %s: %w", revertsRepo, err)
 		}
 	}
-	revert, ok := revertOf(repo, payload, reverted)
-	if !ok {
-		return false, nil
+	read, err := fetchPullRequestPayload(ctx, client, token, owner, name, number)
+	switch {
+	case err == nil:
+		return &read, nil
+	case errors.Is(err, ErrPullRequestNotFound) || errors.Is(err, githubapp.ErrRepositoryUnreadable) ||
+		errors.Is(err, githubapp.ErrNoInstallation):
+		return nil, nil
 	}
-	return true, RecordRevert(ctx, pool, revert)
+	return nil, err
 }
 
 // RevertShip is a recorded revert with the deploy run that ships it: the first production deploy

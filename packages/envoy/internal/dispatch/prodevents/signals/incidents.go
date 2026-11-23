@@ -18,11 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The incident_issue signal (dispatch://INFRA-978, R7 and T12): an issue labelled incident whose
+// The incident_issue signal (dispatch://INFRA-978, R7 and D5): an issue labelled incident whose
 // own links (issue_external_links) name a pull request or a workflow run is a failure of that pull
 // request's deploy or that run's deploy row: the cause the issue names, not the pull requests that
-// cite the issue, which are its fix. It is written under the issue's project, keyed
-// incident:<issue key>, its actor and detected time those of the event that made the issue an
+// cite the issue, which are its fix. It is written under the issue's project, keyed by the issue
+// (IncidentSourceRef), its actor and detected time those of the event that made the issue an
 // incident or gave it its link. A bug label makes none.
 
 // incidentLabel is the label that makes an issue an incident, in any case.
@@ -35,35 +35,20 @@ const incidentLabel = "incident"
 const incidentEvents = `jsonb_path_exists(event.payload, '$.labels[*] ? (@ like_regex "^` + incidentLabel + `$" flag "i")')
 	and (event.type = 'issue.created' or coalesce((event.payload -> 'changed') ?| array['labels', 'external_links'], false))`
 
-// passIncidents is one pass of the incidents feed: it reads the issue events after its cursor up
-// to safe that make or move an incident (incidentEvents), page after page, writes each one's
-// incident_issue (recordIncident), then moves its cursor over the page.
+// IncidentSourceRef is the source_ref of the incident_issue row of issue: incident:<issue key>, one
+// row per incident whatever links it gains later.
+func IncidentSourceRef(issue string) string {
+	return "incident:" + issue
+}
+
+// passIncidents is one pass of the incidents feed (passEventFeed): it reads the issue events that
+// make or move an incident (incidentEvents) and writes each one's incident_issue (recordIncident).
 func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
-	stored, err := readCursor(ctx, pool, incidentsCursor)
-	if err != nil {
-		return err
-	}
-	position := stored.position
-	for position < safe {
-		events, err := readEventPage(ctx, pool, position, safe, []string{"issue.created", "issue.updated"}, incidentEvents)
-		if err != nil {
+	return passEventFeed(ctx, pool, incidentsCursor, safe, []string{"issue.created", "issue.updated"}, incidentEvents,
+		func(event feedEvent) error {
+			_, err := recordIncident(ctx, pool, event.issueKey, event.createdAt, event.actor)
 			return err
-		}
-		for _, event := range events {
-			if _, err := recordIncident(ctx, pool, event.issueKey, event.createdAt, event.actor); err != nil {
-				return err
-			}
-		}
-		next := safe
-		if len(events) == page {
-			next = events[len(events)-1].id
-		}
-		if err := moveCursor(ctx, pool, incidentsCursor, next, nil, time.Now()); err != nil {
-			return err
-		}
-		position = next
-	}
-	return nil
+		})
 }
 
 // recordIncident writes the incident_issue of issue, an incident, from the links it holds now, and
@@ -72,7 +57,8 @@ func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
 // one whose commits hold its stored merge commit) and a run's (the run's deploy row). Its pull
 // requests are the pull requests its links name, or the blamed deploy's where they name only runs.
 // An issue whose links name no deployed pull request and no deploy run writes nothing until a link
-// that does is added; a repeat writes nothing.
+// that does is added; a repeat writes nothing, and an incident whose row is made already reads no
+// link.
 func recordIncident(ctx context.Context, pool *store.Pool, issue string, detected time.Time, actor model.Actor) (bool, error) {
 	var project string
 	if err := pool.QueryRow(ctx, `select project_key from issues where key = $1`, issue).Scan(&project); err != nil {
@@ -80,6 +66,10 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 			return false, nil
 		}
 		return false, fmt.Errorf("read issue %s: %w", issue, err)
+	}
+	ref := IncidentSourceRef(issue)
+	if _, made, err := prodevents.BySourceRef(ctx, pool, project, ref); err != nil || made {
+		return false, err
 	}
 	links, err := issueLinks(ctx, pool, issue)
 	if err != nil {
@@ -95,7 +85,7 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 		var deploy prodevents.Event
 		var held bool
 		if target.pull > 0 {
-			name := prodevents.PullRequestName(target.repo, target.pull)
+			name := delivery.PullRequestName(target.repo, target.pull)
 			pulls = append(pulls, name)
 			if deploy, held, err = pullRequestDeploy(ctx, pool, target.repo, target.pull); err != nil {
 				return false, err
@@ -115,7 +105,7 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 	}
 	_, created, err := prodevents.Write(ctx, pool, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceIncidentLabel,
-		SourceRef: "incident:" + issue, PullRequests: pulls, Actor: actor,
+		SourceRef: ref, PullRequests: pulls, Actor: actor,
 		DeployID: new(blamed.ID), Signal: new(prodevents.SignalIncidentIssue), DetectedAt: new(detected.UTC()),
 	})
 	if err != nil {
@@ -146,7 +136,7 @@ func issueLinks(ctx context.Context, q delivery.Querier, issue string) ([]string
 // requests it shipped, else the one whose commits hold its merge commit as delivery_pull_requests
 // stores it, and false where neither holds it.
 func pullRequestDeploy(ctx context.Context, q delivery.Querier, repo string, number int) (prodevents.Event, bool, error) {
-	deploy, held, err := prodevents.DeployForPullRequest(ctx, q, prodevents.PullRequestName(repo, number))
+	deploy, held, err := prodevents.DeployForPullRequest(ctx, q, delivery.PullRequestName(repo, number))
 	if err != nil || held {
 		return deploy, held, err
 	}

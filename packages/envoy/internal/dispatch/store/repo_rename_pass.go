@@ -510,7 +510,7 @@ func renamedPullRequest(r repoRename, entry string) string {
 }
 
 // revertRefNamed is true where column, a source_ref of production_events, is a revert row's
-// (revert:owner/repo#n, signals' revertSourceRef) of the old name.
+// (revert:owner/repo#n, signals' RevertSourceRef) of the old name.
 func revertRefNamed(r repoRename, column string) string {
 	return `(starts_with(` + column + `, 'revert:') and ` + pullRequestNamed(r, `substr(`+column+`, 8)`) + `)`
 }
@@ -741,13 +741,13 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
-		// The record of production events names a repository in three fields: a row's repo, each
-		// pull request a row ships or blames, and a revert row's source_ref, which names the revert
-		// as delivery_reverts names it and which the revert's signal reads its row back by, so it
-		// moves with delivery_reverts.repo and the signal writes no second row. source_ref is a key
-		// with project_key, so a revert row under the old name whose twin the new name holds is
-		// deleted, and the twin stays. Each pull request is rewritten in its place.
-		fields: "production_events.source_ref, .repo, .pull_requests",
+		// The record of production events names a repository in four fields: a row's repo and its
+		// url, each pull request a row ships or blames, and a revert row's source_ref, which names
+		// the revert as delivery_reverts names it and which the revert's signal reads its row back
+		// by, so it moves with delivery_reverts.repo and the signal writes no second row.
+		// source_ref is a key with project_key, so a revert row under the old name whose twin the
+		// new name holds is deleted, and the twin stays. Each pull request is rewritten in its place.
+		fields: "production_events.source_ref, .repo, .url, .pull_requests",
 		steps: func(r repoRename) []repoRenameStep {
 			named, pulls := revertRefNamed(r, "source_ref"), pullRequestsNamed(r)
 			return []repoRenameStep{
@@ -764,6 +764,7 @@ var repoRenameLines = []repoRenameLine{
 				{table: "production_events", where: named, write: "source_ref", sql: `
 					update production_events set source_ref = ` + renamedRevertRef(r, "source_ref") + ` where ` + named},
 				nameWrite(r, "production_events", "repo"),
+				urlWrite(r, "production_events", "url"),
 				{table: "production_events", where: pulls, write: "pull_requests", sql: `
 					update production_events set pull_requests = array(
 						select case when ` + pullRequestNamed(r, "e.pr") + ` then ` + renamedPullRequest(r, "e.pr") + ` else e.pr end
@@ -778,11 +779,9 @@ var repoRenameLines = []repoRenameLine{
 		// deleted, and the twin stays.
 		fields: "production_deploy_rules.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			where := r.named("repo")
 			return []repoRenameStep{
 				collisions(r, "production_deploy_rules"),
-				{table: "production_deploy_rules", where: where, write: "repo", sql: `
-					update production_deploy_rules set repo = lower(` + r.to() + `) where ` + where},
+				nameWrite(r, "production_deploy_rules", "repo"),
 			}
 		},
 	},

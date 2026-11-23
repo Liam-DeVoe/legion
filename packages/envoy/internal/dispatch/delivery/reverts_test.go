@@ -10,7 +10,7 @@ import (
 )
 
 // readCapturedPullRequest decodes one of GitHub's own REST answers for a pull request, captured
-// into testdata/github (dispatch://INFRA-978, T12), as fetchPullRequestPayload decodes GitHub's
+// into testdata/github (dispatch://INFRA-978, R7), as fetchPullRequestPayload decodes GitHub's
 // answer.
 func readCapturedPullRequest(t *testing.T, name string) pullRequestPayload {
 	t.Helper()
@@ -35,7 +35,7 @@ func readCapturedPullRequest(t *testing.T, name string) pullRequestPayload {
 func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 	revert := readCapturedPullRequest(t, "revert-pull-cli-14462.json")
 	reverted := readCapturedPullRequest(t, "reverted-pull-cli-14437.json")
-	if !strings.Contains(revert.Body, "\r\n\r\nReverts cli/cli#14437\r\n\r\n") || len(revert.Body) <= len("Reverts cli/cli#14437") {
+	if !strings.Contains(revert.Body, "\r\n\r\nReverts cli/cli#14437\r\n\r\n") {
 		t.Fatalf("the captured body is not the longer description holding the revert line: %q", revert.Body)
 	}
 	var bare string
