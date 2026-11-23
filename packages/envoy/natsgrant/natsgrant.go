@@ -677,19 +677,20 @@ func otherDeclaredStreams() []string {
 // the stream's own sender, and a create carries a republish or a source of the caller's choosing,
 // so either writes any subject, a protected bucket's key among them.
 //
-// Naming no write subject does not keep the grant from writing. The boundary is one bus, a grant
-// per connection, and every client in $G: any grant that holds a JetStream API request can have the
-// server store a JetStream answer on any subject a stream in $G captures, the subject it names as
-// the request's reply. The principals that can choose the stored bytes, by writing a KV key and
-// then DIRECT.GETting it with that reply, are the writers of a bucket by design (today Listener,
-// ListenerHost, Dispatch, and Host, which retires), through a key of a bucket they write. Measure
-// can copy a listener lease message, with its headers, onto any captured subject, and Daemon can
-// have a notification it may pull stored, under the notification's own subject, in any stream that
-// captures the pull's reply subject. Every other principal can store only a server JSON document,
-// this list's among them; Operator(held) writes keys by design. Session grants hold no $JS.API.
-// publish. So no record the hold trusts for completion is in NATS (the broker's cutover record in
-// Postgres decides), and every reader of a bucket value decodes strictly and fails closed on a
-// value that is not an exact record of its key's kind.
+// Naming no write subject does not keep the grant from writing. On a hub that keeps every client
+// in $G, the boundary is one bus and a grant per connection: any grant that holds a JetStream API
+// request can have the server store a JetStream answer on any subject a stream in $G captures, the
+// subject it names as the request's reply. The principals that can choose the stored bytes, by
+// writing a KV key and then DIRECT.GETting it with that reply, are the writers of a bucket by
+// design (today Listener, ListenerHost, Dispatch, and Host, which retires), through a key of a
+// bucket they write. Measure can copy a listener lease message, with its headers, onto any
+// captured subject, and Daemon can have a notification it may pull stored, under the
+// notification's own subject, in any stream that captures the pull's reply subject. Every other
+// principal can store only a server JSON document, this list's among them; Operator(held) writes
+// keys by design. Session grants hold no $JS.API. publish. So no record the hold trusts for
+// completion is in NATS (the broker's cutover record in Postgres decides), and every reader of a
+// bucket value decodes strictly and fails closed on a value that is not an exact record of its
+// key's kind.
 func operatorReleased() []string {
 	publish := []string{
 		jsAPI + "INFO",

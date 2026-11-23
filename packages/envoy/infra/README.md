@@ -4330,12 +4330,12 @@ operator connects with that inbox prefix, which sits under the one reply root `_
   stream creates and updates from every callout answer but the held operator's and narrows every
   static user on a callout hub, so after the cutover the held operator is their only holder. Naming
   no write subject does not keep a grant from writing:
-  the boundary is one bus, a grant per connection, and every client in `$G`, and any grant that
-  holds a JetStream API request can have the server store a JetStream answer on any subject a
-  stream in `$G` captures, by naming it as the request's reply. The writers of a bucket by design
-  (today Listener, ListenerHost, Dispatch, and Host, which retires) can choose those bytes, by
-  writing a key of a bucket they write and direct-getting it with that reply; Measure can copy a
-  listener lease message, with its headers, onto any captured subject; Daemon can have a
+  on a hub that keeps every client in `$G`, the boundary is one bus and a grant per connection, and
+  any grant that holds a JetStream API request can have the server store a JetStream answer on any
+  subject a stream in `$G` captures, by naming it as the request's reply. The writers of a bucket
+  by design (today Listener, ListenerHost, Dispatch, and Host, which retires) can choose those
+  bytes, by writing a key of a bucket they write and direct-getting it with that reply; Measure can
+  copy a listener lease message, with its headers, onto any captured subject; Daemon can have a
   notification it may pull stored, under the notification's own subject, in any stream that
   captures the pull's reply subject; every other principal can store only a server JSON document,
   and the held operator writes keys by design. Session grants hold no `$JS.API.` publish. So no
