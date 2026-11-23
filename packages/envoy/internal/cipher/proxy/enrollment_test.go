@@ -330,6 +330,10 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Second", "Token " + secondPlaceholder}, secondGrantID},
 		{"a placeholder no grant holds", "/v1/things",
 			[]string{"Authorization", "Bearer " + unknown}, ""},
+		// No boundary before the prefix: a placeholder written right after a letter would go
+		// upstream unswapped with one, which is what this refusal closes.
+		{"a placeholder written right after a letter", "/v1/things",
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Note", "x" + unknown}, ""},
 	} {
 		refusals := len(r.logs.refusals())
 		answer, body := r.get(client, "https://"+boundHost+row.path, row.headers...)
