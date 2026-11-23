@@ -2638,6 +2638,10 @@ group by s.issue, s.generation, s.task, s.role
 having count(*) > 1;
 ```
 
+**Remove from every project's `default_steps` each role it names at two steps.**
+This release lets `projects.<KEY>.default_steps` name a role at two steps, and the earlier release refuses such a list when it loads `legion.yaml` (`config/roles.go`), so a daemon of the earlier release would not start.
+Before you pin the earlier image, edit `default_steps` in `legion.yaml` so that each project names each role at one step at most.
+
 At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it deletes each phases row of a role but the one with the highest entry, writes the key `(issue, role)` again and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again.
 The key is owed to the earlier release, whose every write of a phases row needs it.
 What the delete costs is the report of each earlier step of a role that stands at two steps of a task: after the rollback, the task of a later step names the report of that role's latest step alone, which the read above leaves to no running task.
