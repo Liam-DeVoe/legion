@@ -53,9 +53,11 @@ func TestWithBoundEndArmsTheBoundEndOfTheTestsDeadline(t *testing.T) {
 }
 
 // BoundArm, given a product's bound, arms what WithBoundEnd arms for it: BoundEndAt of the test's
-// deadline and that bound, read when the wait begins.
+// deadline and that bound, read when the wait begins. The bound is longer than any test's deadline
+// is away, so its floor decides the end (the deadline itself), and an arm that dropped the bound
+// would end the wait margin sooner.
 func TestBoundArmArmsTheBoundEndOfTheBoundItIsGiven(t *testing.T) {
-	const bound = 10 * time.Second
+	const bound = 1000 * time.Hour
 	before := time.Now()
 	ctx, cancel := BoundArm(t)(context.Background(), bound)
 	after := time.Now()
