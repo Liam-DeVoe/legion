@@ -67,8 +67,12 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 // Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in a test
 // file of a package whose tests call Parallel, and in any file of a test-support package, by
 // whatever name the file imports os and however the mode is spelled, and a mode it cannot
-// evaluate; it leaves out a mode with no execute bit, a package whose tests do not run beside each
-// other, a write by WriteFile, another module below root, and this package's own WriteFile.
+// evaluate. It names an open by os.WriteFile, os.OpenFile or os.Create whose file the same
+// function gives an execute bit by os.Chmod or by the file's Chmod method, in a closure too, a use
+// of one of those functions as a value, and a dot import of os. It leaves out a mode with no
+// execute bit, a Chmod with none or of a path no open of the function names, a package whose tests
+// do not run beside each other, a write by WriteFile, another module below root, and this
+// package's own WriteFile.
 func TestUnguardedNamesEveryExecutableWriteATestMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -151,13 +155,55 @@ import (
 `+parallel+`
 func writes() { _ = os.WriteFile("l", nil, 0o755) }
 `)
+	write("beside/chmod_test.go", `package beside
+
+import (
+	"os"
+	"testing"
+)
+
+func chmods(t *testing.T, mode os.FileMode) {
+	_ = os.WriteFile("m", nil, 0o644)
+	_ = os.Chmod("m", 0o755)
+	f, _ := os.Create("n")
+	_ = f.Chmod(0o700)
+	g, _ := os.OpenFile("o", os.O_CREATE|os.O_WRONLY, 0o600)
+	_ = g.Chmod(0o755)
+	_ = os.WriteFile("p", nil, 0o600)
+	t.Cleanup(func() { _ = os.Chmod("p", mode) })
+	h, _ := os.Create("q")
+	_ = h.Chmod(0o600)
+	_ = os.WriteFile("r", nil, 0o644)
+	_ = os.Chmod("r", 0o640)
+	_ = os.Chmod(t.TempDir(), 0o755)
+	var i, _ = os.Create("s")
+	_ = i.Chmod(0o755)
+}
+
+func values() {
+	write := os.WriteFile
+	_ = write("t", nil, 0o644)
+}
+`)
+	write("beside/dot_test.go", `package beside
+
+import (
+	. "os"
+	"testing"
+)
+
+func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
+`)
 	got, err := Unguarded(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"beside/a_test.go:12", "beside/a_test.go:14", "beside/a_test.go:15", "beside/a_test.go:16",
-		"beside/a_test.go:17", "beside/a_test.go:20", "beside/b_test.go:11", "fakestest/fakestest.go:5",
+		"beside/a_test.go:17", "beside/a_test.go:20", "beside/b_test.go:11",
+		"beside/chmod_test.go:11", "beside/chmod_test.go:13", "beside/chmod_test.go:15",
+		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
+		"beside/dot_test.go:4", "fakestest/fakestest.go:5",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))

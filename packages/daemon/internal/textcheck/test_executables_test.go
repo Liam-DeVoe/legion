@@ -8,11 +8,11 @@ import (
 )
 
 // Every file a test of this module writes and then runs is written by testexec.WriteFile, in a
-// package whose tests run beside each other and in every test-support package: a write by
-// os.WriteFile or os.OpenFile there can make the run fail with ETXTBSY ("text file busy") whenever
-// a test beside it forks while the file is open (docs/testing.md, "A file a test runs").
-// testexec.Unguarded names each such write, with a mode it cannot read as no execute bit, as
-// file:line.
+// package whose tests run beside each other and in every test-support package: a write by package
+// os there (os.WriteFile, os.OpenFile, or os.Create and a Chmod) can make the run fail with
+// ETXTBSY ("text file busy") whenever a test beside it forks while the file is open
+// (docs/testing.md, "A file a test runs"). testexec.Unguarded names each such write, with a mode
+// it cannot read as no execute bit, as file:line.
 func TestEveryFileATestRunsBesideAForkIsWrittenUnderTheForkLock(t *testing.T) {
 	offences, err := testexec.Unguarded("../..")
 	if err != nil {

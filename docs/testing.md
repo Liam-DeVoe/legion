@@ -569,13 +569,14 @@ takes for writing, so no fork falls inside the write.
 Two kinds of package write such a file with `testexec.WriteFile`: a package whose tests call
 `Parallel`, in its test files, and a test-support package (a package whose name begins or ends
 with `test`), in every file, since tests of any package call it. Each module's
-`internal/textcheck` names, by `testexec.Unguarded`, each write of a file with an execute bit by
-`os.WriteFile` or `os.OpenFile` in those files. A package whose tests run one at a time can still
-write such a file with `os.WriteFile`. Its test binary runs one test at a time, and a fork in
-another process copies none of its descriptors, so only a goroutine of the running test can fork
-while the file is open. Once its tests call `Parallel`, the check names its writes. A test that
-starts a command from another goroutine while it writes such a file writes it with
-`testexec.WriteFile` wherever it is.
+`internal/textcheck` names, by `testexec.Unguarded`, each place in those files that opens a file
+by `os.WriteFile`, `os.OpenFile` or `os.Create` and gives it an execute bit, in the open's own
+mode or by a `Chmod` of the same file in the same function. The comment on `Unguarded` lists what
+it cannot see. A package whose tests run one at a time can still write such a file with
+`os.WriteFile`. Its test binary runs one test at a time, and a fork in another process copies
+none of its descriptors, so only a goroutine of the running test can fork while the file is open.
+Once its tests call `Parallel`, the check names its writes. A test that starts a command from
+another goroutine while it writes such a file writes it with `testexec.WriteFile` wherever it is.
 
 ## A Go test that opens a NATS client
 
