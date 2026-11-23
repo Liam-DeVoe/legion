@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
@@ -537,22 +538,22 @@ func isGitHubHost(host string) bool {
 // OWNER/REPO, HOST/OWNER/REPO, or a github.com URL, its host github.com or a subdomain as gh
 // normalizes it (isGitHubHost) — given in the slot kind ("a -R value", "a repository argument"),
 // refused when it names no owner, another host, an owner that is no GitHub login, or a name of a
-// character no GitHub repository's name holds. The name is the second segment as gh reads it,
-// whatever follows it (a pull request's number, a tree's path), as the argument spells it. The
-// caller that records it keys it as gh reads a name of it (selectors.repository,
+// character no GitHub repository's name holds (ghrepo.IsName). The name is the second segment as
+// gh reads it, whatever follows it (a pull request's number, a tree's path), as the argument
+// spells it. The caller that records it keys it as gh reads a name of it (selectors.repository,
 // ghconfig.RepositoryName), so two spellings of one repository are one selector.
 //
-// A refusal names the value by its slot alone (ghShown, with the repository's strict form, which
-// no value it refuses has): a URL holding a password, or a user name other than an ssh:// or
-// git+ssh:// URL's SSH login (`ssh://git@github.com/o/r`, `git+ssh://git@github.com/o/r`, which gh
-// reads as ssh and which place as before, as the remote rule reads them), a value with
-// no scheme holding an "@", a ":", a "?" or a "#" in any segment, on a github.com host or another,
-// where a user name, a password or a query stands (`x-access-token:<token>@ghe.example/o/r`,
-// `<token>@github.com:o/r`, `ghe.example/x:<token>@ghe.example/o/r`, `ghe.example/o/r?t=<token>`),
-// and a URL whose owner segment holds the user info a person put there
+// A refusal names the value by its slot alone (ghShown): a URL holding a password, or a user name
+// other than an ssh:// or git+ssh:// URL's SSH login (`ssh://git@github.com/o/r`,
+// `git+ssh://git@github.com/o/r`, which gh reads as ssh and which place as before, as the remote
+// rule reads them), a value with no scheme holding an "@", a ":", a "?" or a "#" in any segment, on
+// a github.com host or another, where a user name, a password or a query stands
+// (`x-access-token:<token>@ghe.example/o/r`, `<token>@github.com:o/r`,
+// `ghe.example/x:<token>@ghe.example/o/r`, `ghe.example/o/r?t=<token>`), and a URL whose owner
+// segment holds the user info a person put there
 // (`https://github.com/x-access-token:<token>@github.com/o/r`), named an owner that is no login.
 func repositoryTarget(value, kind string, api bool) (owner, repo string, err error) {
-	shown := ghShown(value, kind, ghRepository)
+	shown := ghShown(value, kind)
 	host, rest := "", value
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
 		if _, hasPassword := parsed.User.Password(); parsed.User != nil && (hasPassword || !slices.Contains([]string{"ssh", "git+ssh"}, strings.ToLower(parsed.Scheme))) {
@@ -574,7 +575,7 @@ func repositoryTarget(value, kind string, api bool) (owner, repo string, err err
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", cannotPlace(shown, "names no owner", api)
 	}
-	if !ghRepositoryNameShape.MatchString(parts[1]) {
+	if !ghrepo.IsName(parts[1]) {
 		return "", "", cannotPlace(shown, "names a repository whose name holds a character no GitHub repository's name does", api)
 	}
 	owner, err = checkedOwner(parts[0], kind, api)
@@ -582,11 +583,11 @@ func repositoryTarget(value, kind string, api bool) (owner, repo string, err err
 }
 
 // checkedOwner is owner lowercased, given in the slot kind, refused when it is no GitHub login and
-// then named by its place alone: an owner's slot quotes a login only, and owner is none.
+// then named by its place alone.
 func checkedOwner(owner, kind string, api bool) (string, error) {
 	lower := strings.ToLower(owner)
 	if !ghconfig.IsOwner(lower) {
-		return "", cannotPlace(kind, "names "+ghShown(owner, "an owner that is not a GitHub login", ghLogin), api)
+		return "", cannotPlace(kind, "names "+ghShown(owner, "an owner that is not a GitHub login"), api)
 	}
 	return lower, nil
 }

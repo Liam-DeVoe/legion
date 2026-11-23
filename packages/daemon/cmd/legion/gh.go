@@ -870,7 +870,7 @@ func ghCallerToken(env map[string]string) string {
 // any directory's token, are errors.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
-		return ghTarget{}, fmt.Errorf("GH_HOST names %s, so it sends no token; unset GH_HOST", ghShown(host, "another host than github.com", ghGitHubHost))
+		return ghTarget{}, fmt.Errorf("GH_HOST names %s, so it sends no token; unset GH_HOST", ghShown(host, "another host than github.com"))
 	}
 	if name := ghCallerToken(env); name != "" {
 		return ghTarget{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)

@@ -128,24 +128,33 @@ var ghCanaryRows = map[string][]ghCanaryRow{
 	},
 }
 
-// ghShownPaths is every call of ghShown in this package's non-test gh*.go files, the refusal
-// paths of legion gh that put a person's value into a refusal, each keyed by the function that
-// makes it (a method by its receiver's type) and the source of its place argument, with the file
-// and line it stands at. It is read from the source, so a call added to the code is a path here
-// without anyone listing it. A place two calls of one function share would key both as one, and
-// is refused.
-func ghShownPaths(t *testing.T) map[string]string {
+// ghSourceCall is one call in the package's non-test gh*.go files as ghSourceCalls hands it on:
+// the function that holds it (owner, a method by its receiver's type), the file and line it stands
+// at, the call, and text, which is a node's source.
+type ghSourceCall struct {
+	owner, at string
+	call      *ast.CallExpr
+	text      func(ast.Node) string
+}
+
+// ghSourceCalls is every call in the package's non-test gh*.go files, in each function's body. It
+// is the one walk ghShownPaths and ghFormatSites both read, so a file or a receiver form one of
+// them reaches the other reaches too. A source holding no gh*.go file is refused: the walk would
+// have read nothing.
+func ghSourceCalls(t *testing.T) []ghSourceCall {
 	t.Helper()
 	files, err := filepath.Glob("gh*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths := map[string]string{}
+	var calls []ghSourceCall
 	fset := token.NewFileSet()
+	read := 0
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
+		read++
 		source, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -153,6 +162,9 @@ func ghShownPaths(t *testing.T) map[string]string {
 		file, err := parser.ParseFile(fset, name, source, 0)
 		if err != nil {
 			t.Fatal(err)
+		}
+		text := func(node ast.Node) string {
+			return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -165,31 +177,53 @@ func ghShownPaths(t *testing.T) map[string]string {
 				if star, ok := recv.(*ast.StarExpr); ok {
 					recv = star.X
 				}
+				switch generic := recv.(type) {
+				case *ast.IndexExpr:
+					recv = generic.X
+				case *ast.IndexListExpr:
+					recv = generic.X
+				}
 				if ident, ok := recv.(*ast.Ident); ok {
 					owner = ident.Name + "." + owner
+				} else {
+					t.Fatalf("%s: a receiver of a form the walk does not read: %s", fset.Position(fn.Pos()), text(recv))
 				}
 			}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
+				if call, ok := node.(*ast.CallExpr); ok {
+					calls = append(calls, ghSourceCall{owner: owner, at: fset.Position(call.Pos()).String(), call: call, text: text})
 				}
-				if ident, ok := call.Fun.(*ast.Ident); !ok || ident.Name != "ghShown" {
-					return true
-				}
-				at := fset.Position(call.Pos()).String()
-				if len(call.Args) < 2 {
-					t.Fatalf("%s: ghShown takes a value and a place, given %d arguments", at, len(call.Args))
-				}
-				place := call.Args[1]
-				key := owner + ": " + string(source[fset.Position(place.Pos()).Offset:fset.Position(place.End()).Offset])
-				if prior, seen := paths[key]; seen {
-					t.Fatalf("%s and %s both call ghShown as %s: give each path a place of its own", prior, at, key)
-				}
-				paths[key] = at
 				return true
 			})
 		}
+	}
+	if read == 0 {
+		t.Fatal("UNKNOWN: no non-test gh*.go file was read")
+	}
+	return calls
+}
+
+// ghShownPaths is every call of ghShown in this package's non-test gh*.go files, the refusal
+// paths of legion gh that put a person's value into a refusal, each keyed by the function that
+// makes it (a method by its receiver's type) and the source of its place argument, with the file
+// and line it stands at. It is read from the source, so a call added to the code is a path here
+// without anyone listing it. A place two calls of one function share would key both as one, and
+// is refused.
+func ghShownPaths(t *testing.T) map[string]string {
+	t.Helper()
+	paths := map[string]string{}
+	for _, c := range ghSourceCalls(t) {
+		if ident, ok := c.call.Fun.(*ast.Ident); !ok || ident.Name != "ghShown" {
+			continue
+		}
+		if len(c.call.Args) != 2 {
+			t.Fatalf("%s: ghShown takes a value and a place, given %d arguments", c.at, len(c.call.Args))
+		}
+		key := c.owner + ": " + c.text(c.call.Args[1])
+		if prior, seen := paths[key]; seen {
+			t.Fatalf("%s and %s both call ghShown as %s: give each path a place of its own", prior, c.at, key)
+		}
+		paths[key] = c.at
 	}
 	return paths
 }
@@ -292,7 +326,10 @@ var ghFormattedValues = map[string]string{
 	"readGhCommand: %w err":                                               "readGhHelp's error, this command's own words with gh's exit, gh's output not printed",
 	"runGhChild: %w cause":                                                "the cause of a stop: a signal or a deadline",
 	"runGhChild: %w err (2 places)":                                       "exec's error of starting LEGION_GH_PATH, a configured path",
-	"ghShown: strconv.Quote(value)":                                       "the helper itself: a value its slot's strict form admits",
+	"ghWalk.named: strconv.Quote(word)":                                   "a subcommand gh's own help lists, quoted only when it does",
+	"ghCommand.parse: cannotPlace why leaf (2 places)":                    "the leaf's command path, as gh's help spelled it",
+	"selectors.fromCommand: cannotPlace why leaf":                         "the leaf's command path, as gh's help spelled it",
+	"selectors.fromOptions: cannotPlace why name":                         "an option the leaf's help lists, by the help's name",
 	"ghCallLogValue: strconv.Quote(value)":                                "the call log's fields (role, issue, a placed repository, gh's command path, a visibility), no refusal",
 	"appendGhCallLog: %s ghCallLogValue(commandPath)":                     "the call log's field, quoted by ghCallLogValue",
 	"appendGhCallLog: %s ghCallLogValue(env[\"LEGION_ISSUE\"])":           "the call log's field, quoted by ghCallLogValue",
@@ -374,105 +411,72 @@ var ghFormattedValues = map[string]string{
 }
 
 // ghFormatSites is every place in the package's non-test gh*.go files that quotes or formats a
-// value without ghShown: each strconv.Quote call (`fn: strconv.Quote(<arg>)`), each errors.New
-// call whose text is no literal (`fn: errors.New(<arg>)`), each argument a %s, %v, %q, %x, %X or
-// %w verb of an fmt call's literal format formats (`fn: %q <arg>`) but a literal, a ghShown call
-// or a position, and each cannotPlace call whose name is neither a ghShown call nor a literal
-// (`fn: cannotPlace(<name>)`), fn the function that holds it, a method by its receiver's type. A
-// place that stands more than once in one function is keyed with its count (`(5 places)`).
+// value without ghShown, fn the function that holds it, a method by its receiver's type:
+//   - each strconv.Quote call (`fn: strconv.Quote(<arg>)`);
+//   - each errors.New call whose text is no literal (`fn: errors.New(<arg>)`);
+//   - each fmt call whose format is no literal (`fn: <the call's function> format <format>`), whose
+//     arguments no reading can hold to a verb;
+//   - each argument a %s, %v, %q, %x, %X or %w verb of an fmt call's literal format formats (`fn:
+//     %q <arg>`) but a literal, a ghShown call or a position (ordinalArgument);
+//   - each cannotPlace call whose name is neither a ghShown call nor a literal (`fn:
+//     cannotPlace(<name>)`);
+//   - and each piece of a cannotPlace call's why, read as the "+" of its pieces, that is neither a
+//     literal, a ghShown call nor an fmt call this reads on its own (`fn: cannotPlace why <piece>`).
+//
+// A format or a text built only of literals joined with "+" is a literal. A place that stands
+// more than once in one function is keyed with its count (`(5 places)`).
 func ghFormatSites(t *testing.T) map[string]string {
 	t.Helper()
-	files, err := filepath.Glob("gh*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	sites, found := map[string]string{}, map[string][]string{}
-	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		source, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		file, err := parser.ParseFile(fset, name, source, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := func(node ast.Node) string {
-			return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
-		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			owner := fn.Name.Name
-			if fn.Recv != nil && len(fn.Recv.List) == 1 {
-				recv := fn.Recv.List[0].Type
-				if star, ok := recv.(*ast.StarExpr); ok {
-					recv = star.X
-				}
-				if ident, ok := recv.(*ast.Ident); ok {
-					owner = ident.Name + "." + owner
-				}
-			}
-			ast.Inspect(fn.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				at := fset.Position(call.Pos()).String()
-				add := func(key string) { found[key] = append(found[key], at) }
-				switch callee := text(call.Fun); {
-				case callee == "strconv.Quote" && len(call.Args) == 1:
-					add(owner + ": strconv.Quote(" + text(call.Args[0]) + ")")
-				case callee == "errors.New" && len(call.Args) == 1:
-					if _, literal := call.Args[0].(*ast.BasicLit); !literal {
-						add(owner + ": errors.New(" + text(call.Args[0]) + ")")
-					}
-				case callee == "cannotPlace" && len(call.Args) > 0:
-					first := call.Args[0]
-					if _, literal := first.(*ast.BasicLit); literal {
-						break
-					}
-					if inner, ok := first.(*ast.CallExpr); ok && text(inner.Fun) == "ghShown" {
-						break
-					}
-					add(owner + ": cannotPlace(" + text(first) + ")")
-				case strings.HasPrefix(callee, "fmt.") && len(call.Args) > 0:
-					formatAt := 0
-					if callee == "fmt.Fprintf" {
-						formatAt = 1
-					}
-					if formatAt >= len(call.Args) {
-						break
-					}
-					literal, ok := call.Args[formatAt].(*ast.BasicLit)
-					if !ok || literal.Kind != token.STRING {
-						break
-					}
-					format, err := strconv.Unquote(literal.Value)
-					if err != nil {
-						break
-					}
-					for i, verb := range formatVerbs(format) {
-						arg := formatAt + 1 + i
-						if arg >= len(call.Args) || !strings.ContainsRune("sqvxXw", verb) {
-							continue
-						}
-						if _, literal := call.Args[arg].(*ast.BasicLit); literal {
-							continue
-						}
-						if inner, ok := call.Args[arg].(*ast.CallExpr); ok && slices.Contains([]string{"ghShown", "ordinalArgument"}, text(inner.Fun)) {
-							continue
-						}
-						add(owner + ": %" + string(verb) + " " + text(call.Args[arg]))
-					}
-				}
-				return true
+	for _, c := range ghSourceCalls(t) {
+		call, owner, text := c.call, c.owner, c.text
+		add := func(key string) { found[owner+": "+key] = append(found[owner+": "+key], c.at) }
+		calls := func(expr ast.Expr, names ...string) bool {
+			inner, ok := expr.(*ast.CallExpr)
+			return ok && slices.ContainsFunc(names, func(name string) bool {
+				return text(inner.Fun) == name || strings.HasSuffix(name, ".") && strings.HasPrefix(text(inner.Fun), name)
 			})
+		}
+		switch callee := text(call.Fun); {
+		case callee == "strconv.Quote" && len(call.Args) == 1:
+			add("strconv.Quote(" + text(call.Args[0]) + ")")
+		case callee == "errors.New" && len(call.Args) == 1:
+			if _, literal := literalString(call.Args[0]); !literal {
+				add("errors.New(" + text(call.Args[0]) + ")")
+			}
+		case callee == "cannotPlace" && len(call.Args) > 1:
+			if _, literal := literalString(call.Args[0]); !literal && !calls(call.Args[0], "ghShown") {
+				add("cannotPlace(" + text(call.Args[0]) + ")")
+			}
+			for _, piece := range sumPieces(call.Args[1]) {
+				if _, literal := literalString(piece); literal || calls(piece, "ghShown", "fmt.") {
+					continue
+				}
+				add("cannotPlace why " + text(piece))
+			}
+		case strings.HasPrefix(callee, "fmt.") && len(call.Args) > 0:
+			formatAt := 0
+			if callee == "fmt.Fprintf" {
+				formatAt = 1
+			}
+			if !strings.HasSuffix(callee, "f") || formatAt >= len(call.Args) {
+				break
+			}
+			format, literal := literalString(call.Args[formatAt])
+			if !literal {
+				add(callee + " format " + text(call.Args[formatAt]))
+				break
+			}
+			for i, verb := range formatVerbs(format) {
+				arg := formatAt + 1 + i
+				if arg >= len(call.Args) || !strings.ContainsRune("sqvxXw", verb) {
+					continue
+				}
+				if _, literal := literalString(call.Args[arg]); literal || calls(call.Args[arg], "ghShown", "ordinalArgument") {
+					continue
+				}
+				add("%" + string(verb) + " " + text(call.Args[arg]))
+			}
 		}
 	}
 	for key, at := range found {
@@ -482,6 +486,45 @@ func ghFormatSites(t *testing.T) map[string]string {
 		sites[key] = strings.Join(at, ", ")
 	}
 	return sites
+}
+
+// literalString is expr's value when expr is a string literal or literals joined with "+", and
+// whether it is.
+func literalString(expr ast.Expr) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(e.Value)
+		return value, err == nil
+	case *ast.ParenExpr:
+		return literalString(e.X)
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return "", false
+		}
+		left, ok := literalString(e.X)
+		if !ok {
+			return "", false
+		}
+		right, ok := literalString(e.Y)
+		return left + right, ok
+	}
+	return "", false
+}
+
+// sumPieces is expr read as the "+" of its pieces, each piece that is no "+" itself.
+func sumPieces(expr ast.Expr) []ast.Expr {
+	switch e := expr.(type) {
+	case *ast.ParenExpr:
+		return sumPieces(e.X)
+	case *ast.BinaryExpr:
+		if e.Op == token.ADD {
+			return append(sumPieces(e.X), sumPieces(e.Y)...)
+		}
+	}
+	return []ast.Expr{expr}
 }
 
 // formatVerbs is the verb of each argument format formats, in order; %% takes none.

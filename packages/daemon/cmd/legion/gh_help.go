@@ -5,6 +5,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -276,7 +277,7 @@ func (w *ghWalk) check(word string) error {
 	}
 	if len(w.path) == 0 && !w.parent.listed[word] {
 		return fmt.Errorf("cannot tell which repository the command targets: %s is no command gh's own help lists, and gh may answer it by installing an extension, so it sends no token; run gh's own commands, with -R <owner>/<repo>",
-			ghShown(word, "the command's first word", ghListedIn(w.parent.listed)))
+			ghShown(word, "the command's first word"))
 	}
 	return nil
 }
@@ -297,11 +298,15 @@ func (w *ghWalk) read(word string) (ghCommand, error) {
 
 // named is the command read reads next, the walk's path and word, as a refusal names it: the path
 // as gh's help spelled it, and word, a subcommand's slot, quoted only where the help of the path
-// lists it (ghShown, ghListedIn). A word that help does not list, a cobra alias of a subcommand
-// among them, is named by its place, and so is every word when gh's help could not be read.
+// lists it, which no credential is. A word that help does not list, a cobra alias of a subcommand
+// among them, is named by its place (ghShown), and so is every word when gh's help could not be
+// read.
 func (w *ghWalk) named(word string) string {
 	path := "`" + strings.Join(append([]string{"gh"}, w.path...), " ") + "`"
-	return path + " and " + ghShown(word, "a subcommand its help does not list", ghListedIn(w.parent.listed))
+	if w.parent.listed[word] {
+		return path + " and " + strconv.Quote(word)
+	}
+	return path + " and " + ghShown(word, "a subcommand its help does not list")
 }
 
 // mayRead refuses word as a subcommand of the group c when c's help lists it as a gh alias, whose

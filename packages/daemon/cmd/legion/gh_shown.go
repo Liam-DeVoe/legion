@@ -1,58 +1,20 @@
 package main
 
-import (
-	"regexp"
-	"strconv"
-	"strings"
-)
-
-// ghShown is value, a value a person gave legion gh — an argument, an option's value, a selector,
-// an environment value, a search query — as a legion gh refusal may print it: quoted where its slot
-// expects one kind of identifier (form) and value has that kind's strict form, and otherwise place,
-// the words that name its kind and where it stands ("the 2nd argument", "a -R value", "the search
-// query's 3rd word"). The form is the slot's, never whichever one value happens to match: a --body
-// value or a search word that reads as a login is named by its place all the same, since its slot
-// takes no login, and a slot that takes no identifier passes no form.
+// ghShown is place, the words that name value, a value a person gave legion gh (an argument, an
+// option's value, a selector, an environment value, a search query), by its kind and where it
+// stands ("a -R value", "a git flag after --", "an option the command's help does not list"). A
+// refusal of legion gh prints no such value in any form: any of it can be a credential a person
+// put there. value is passed so that each refusal path says which value its words stand for.
 //
-// It is the one place a refusal of legion gh prints such a value: no refusal formats one itself,
-// and each call names its place with a literal of its own, by which TestNoRefusalPathPrintsACanary
-// finds every call in the source and drives each with a canary in every slot.
-func ghShown(value, place string, form ...ghForm) string {
-	for _, admits := range form {
-		if admits(value) {
-			return strconv.Quote(value)
-		}
-	}
+// No refusal formats such a value itself. Three other prints stand beside ghShown, each of
+// something read from a value and checked first: ghWalk.named quotes a subcommand only where gh's
+// own help lists it; ghNamed.shown prints the owner and the name a selector named, once
+// checkedOwner and repositoryTarget admitted them; and remoteShown prints a remote's URL through
+// the URL rule. TestNoRefusalPathPrintsACanary finds every call of ghShown in the source, keyed by
+// the function that makes it and the source of its place argument (a literal, or a variable such
+// as repositoryTarget's kind), and drives each with a canary in every slot.
+// TestNoRefusalFormatsAPersonsValueItself holds every other place that formats a value to a
+// reviewed table.
+func ghShown(value, place string) string {
 	return place
-}
-
-// ghForm is the strict form of the one kind of identifier a slot takes (ghShown): a GitHub login
-// for an owner's slot, OWNER/REPO for a repository's, a subcommand gh's own help lists for a
-// subcommand's, exactly github.com for a host's.
-type ghForm func(value string) bool
-
-var (
-	// ghLoginShape is a GitHub login: a letter or digit, then up to 38 letters, digits or "-".
-	ghLoginShape = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-	// ghRepositoryNameShape is the name of a GitHub repository: letters, digits, ".", "_" and "-".
-	ghRepositoryNameShape = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-)
-
-// ghLogin is an owner's slot's form: a GitHub login.
-func ghLogin(value string) bool { return ghLoginShape.MatchString(value) }
-
-// ghRepository is a repository's slot's form: OWNER/REPO, the owner a login and the name of the
-// characters GitHub takes in one.
-func ghRepository(value string) bool {
-	owner, name, ok := strings.Cut(value, "/")
-	return ok && ghLogin(owner) && ghRepositoryNameShape.MatchString(name)
-}
-
-// ghGitHubHost is a host's slot's form: github.com exactly.
-func ghGitHubHost(value string) bool { return value == "github.com" }
-
-// ghListedIn is a subcommand's slot's form: a word that gh's own help of the command before it,
-// read at run time, lists. A help that could not be read lists none.
-func ghListedIn(listed map[string]bool) ghForm {
-	return func(value string) bool { return listed[value] }
 }
