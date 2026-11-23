@@ -111,7 +111,7 @@ func misordered(ctx context.Context, conn *pgx.Conn) error {
 // name it.
 func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 	ctx := context.Background()
-	dsn := testdb.Database(t, "legion_ompsessions_order")
+	dsn := testdb.PlainDatabase(t, "legion_ompsessions_order")
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)

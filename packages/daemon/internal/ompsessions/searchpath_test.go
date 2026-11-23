@@ -342,7 +342,7 @@ func TestEveryPoolPinsItsSearchPath(t *testing.T) {
 	// The database first: a host with no LEGION_TEST_PG_DSN skips here, as every test that needs
 	// a database does. Where there is one and no docker, the test skips outside CI and fails on
 	// GitHub Actions, the module's rule for an input CI provides (testbin's binary).
-	direct := testdb.Database(t, "legion_ompsessions_pin")
+	direct := testdb.PlainDatabase(t, "legion_ompsessions_pin")
 	docker, err := exec.LookPath("docker")
 	if err != nil {
 		if os.Getenv("GITHUB_ACTIONS") == "true" {

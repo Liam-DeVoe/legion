@@ -77,7 +77,7 @@ type planted struct {
 func plantDatabase(t *testing.T, prefix string, tables bool, plant func(login string) []string) planted {
 	t.Helper()
 	ctx := context.Background()
-	dsn := testdb.Database(t, prefix)
+	dsn := testdb.PlainDatabase(t, prefix)
 	admin, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
