@@ -74,16 +74,27 @@ func (m *Machine) workHoldWaits(ev Event) error {
 //     is retired in its place. The one task is queued under task's id and row, so the start's own
 //     delivery of task, made once this returns, queues nothing more (given). EndHold reports
 //     true. With task nil the claim is started with whatever it kept.
-//   - A claim the hold stopped that kept a task of no run that no turn has taken is started again
-//     with that task first. Such a task is an operator's own: the operator's deliver route queues
-//     it with no run, no phase and no entry (api's deliverEvent). An operator's act overrides the
-//     hold, and the daemon drops no instruction without saying so. So EndHold does not retire that
-//     task, does not put its work behind the opening's sentences (OpeningKeeps), and queues
-//     nothing of task. The start's own delivery of task, made once this returns, waits behind the
-//     operator's task by queue's rule for a task that no rule replaces: while no turn has taken
-//     the operator's task, queue refuses task ErrDeliveryPending (refuseBehindPending), and the
-//     start's row asks again on its backoff. Once a turn has taken the operator's task, queue puts
-//     task in its place, and the claim sends task when that turn ends. EndHold reports true.
+//   - A claim the hold stopped that kept an operator's task that no turn has taken
+//     (KeptOperatorTask) is started again with that task first. The operator's deliver route
+//     queues such a task with no run, no phase and no entry (api's deliverEvent). An operator's
+//     act overrides the hold, and the daemon drops no instruction without saying so. So EndHold
+//     does not retire that task, does not put its work behind the opening's sentences
+//     (OpeningKeeps), and queues nothing of task. The start's own delivery of task, made once
+//     this returns, waits behind the operator's task by queue's rule for a task that no rule
+//     replaces: while no turn has taken the operator's task, queue refuses task
+//     ErrDeliveryPending (refuseBehindPending), and the start's row asks again on its backoff.
+//     Once a turn has taken the operator's task, queue puts task in its place, and the claim
+//     sends task when that turn ends. EndHold reports true. The outbox has a start with no
+//     opening's sentences wait while the claim's own start of the opening is queued, so that
+//     start ends the hold and its task, which builds the opening's sentences again at its later
+//     attempt, goes second (the outbox's openingGoesFirst, startOfAHeldClaim). Limit: where no
+//     such start of the opening is queued (the stop was made after the opening read the claim, or
+//     a newer stop or a newer run undid that start), a start with no opening's sentences ends the
+//     hold here, and its worker is never told that the hold stopped its turn, and is told the
+//     gate's open message only where its issue's holder row still owes the opening then (the
+//     outbox's startNewsOf). Under `merge`, where the boot ended the hold, a start waits for the
+//     start of the opening only while the claim is stopped: a later start that records itself
+//     first finishes that start of the opening, and the worker is not told the boot's sentence.
 //   - Any other claim — one an operator's suspension or the daemon's own took over, one the hold
 //     never reached — is left as it is, and EndHold reports false.
 //
@@ -120,7 +131,7 @@ func (m *Machine) EndHold(ctx context.Context, task *RequestDeliver) (bool, erro
 	if task != nil {
 		if one, kept := m.openingTask(*task); !m.given(one) {
 			switch p := m.claim.Pending; {
-			case p != nil && p.ConfirmedAt.IsZero() && HoldsTask(p) && p.Generation == 0:
+			case KeptOperatorTask(p):
 				m.log.Info("supervise: the work hold's opening keeps the operator's task the claim kept; the claim takes it first, and the opening's task waits behind it",
 					"kept", p.ID, "delivery", one.ID)
 			default:
@@ -353,9 +364,9 @@ func OpeningWork(task, opening string) string {
 // of a relaunch's record, which is no work: its sentence goes in front of whatever task follows it
 // (Delivery.message). Nor does it keep a task of news alone (Delivery.NewsOnly): it holds no work,
 // and the opening's start carries the news it still owes, which no turn confirmed. Nor does it keep
-// a task of no run (Delivery.Generation 0), which is an operator's own: that task is no work of the
-// run, and the opening neither retires it nor puts its work behind the opening's sentences. The
-// claim takes it first, and the opening's task waits behind it (EndHold).
+// an operator's task that no turn has taken (KeptOperatorTask): that task is no work of the run,
+// and the opening neither retires it nor puts its work behind the opening's sentences. The claim
+// takes it first, and the opening's task waits behind it (EndHold).
 //
 // Newer work is a task of a later run than the kept one's, or of a later entry of the same run,
 // that is no resend: a transition or an owed entry written for the role while the gate was closed,
@@ -366,11 +377,29 @@ func OpeningWork(task, opening string) string {
 // task, and the daemon's startNewsOf, which renders the news the opening's start carries over the
 // kept work, so the news that start carries is news of the work the claim is given.
 func OpeningKeeps(pending *Delivery, generation uint64, entry int64, resend bool) bool {
-	if pending == nil || !pending.ConfirmedAt.IsZero() || pending.Relaunch() || pending.NewsOnly || pending.Generation == 0 {
+	if pending == nil || !pending.ConfirmedAt.IsZero() || pending.Relaunch() || pending.NewsOnly || KeptOperatorTask(pending) {
 		return false
 	}
 	newer := entry > 0 && !resend && (generation > pending.Generation || (generation == pending.Generation && entry > pending.Entry))
 	return !newer
+}
+
+// KeptOperatorTask is whether pending, the delivery a claim holds, is an operator's own task that
+// no turn has taken: a task (HoldsTask) of no run (Delivery.Generation 0) that no turn confirmed.
+// The operator's deliver route queues such a task with no run, no phase and no entry (api's
+// deliverEvent). The work hold's opening never retires it, and never puts its work behind the
+// opening's sentences: the claim takes it first, and the start that ends the hold waits behind it
+// (EndHold, OpeningKeeps).
+//
+// It is the one statement of the rule, and four readers ask it: EndHold, OpeningKeeps, and the
+// daemon's openingGoesFirst and startNewsOf. openingGoesFirst has a start that carries no
+// opening's sentences wait while the claim's own start of the opening is queued, so that start
+// ends the hold and its task goes second. Where no such start is queued, the start that carries no
+// opening's sentences ends the hold itself, and startNewsOf settles no opening as told for it: its
+// task follows the operator's task with no opening's sentences, so the opening stays owed to its
+// news.
+func KeptOperatorTask(pending *Delivery) bool {
+	return HoldsTask(pending) && pending.ConfirmedAt.IsZero() && pending.Generation == 0
 }
 
 // openingTask is the one task the hold's opening gives a claim it stopped (EndHold): task, the

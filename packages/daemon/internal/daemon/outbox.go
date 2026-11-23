@@ -2934,7 +2934,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// does the hold ends before this start goes on as an ordinary start (startOfAHeldClaim). A
 		// start of the opening that reaches here with no hold is the retry of the row that ended
 		// the hold (openingStartFindsNoHold), and it builds the opening's sentences there again.
-		if found && (machine.Claim().WorkHeld() || payload.Opening != "") {
+		// Under `work`, any other start of a phase worker's claim that a start ran against before
+		// this row reads whether that start is the opening's, still in flight behind an operator's
+		// task (openingGoesFirst); this costs that start one read transaction, and a `merge`
+		// deployment pays nothing.
+		if found && (machine.Claim().WorkHeld() || payload.Opening != "" || r.openingMayBeInFlight(machine.Claim(), row)) {
 			if done, err := r.startOfAHeldClaim(ctx, row, payload, issue, machine, task); done || err != nil {
 				return err
 			}
@@ -4208,11 +4212,18 @@ func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record
 //     sentences, which carry today's open message where the tree's record of its last opening
 //     names it (workflow.OpeningTellsTheGate). That task is the holder's one delivery of the
 //     opening, so its holder row is settled as told first (settleHeldOpening), and the news the
-//     start carries, and every send of it, names no second opening. A start that finds no claim
-//     the hold stopped settles nothing, an opening's start among them: a later opening can owe
-//     its holder the opening. Such a start of the opening gives no opening's sentences, but for
-//     the retry of the row that ended the hold, whose first attempt settled the holder row
-//     (openingStartFindsNoHold, supervise.Machine.EndHold).
+//     start carries, and every send of it, names no second opening. One such start settles
+//     nothing: a start that carries no opening's sentences and finds the claim keeping an
+//     operator's task that no turn has taken (supervise.KeptOperatorTask). It waits while the
+//     claim's own start of the opening is queued (openingGoesFirst), and that start settles the
+//     row. Where no such start is queued, it ends the hold itself, and its task follows the
+//     operator's task as the row carries it, with no opening's sentences
+//     (supervise.Machine.EndHold). So the opening stays owed, and the news of this start's later
+//     attempt carries it (item 3). A start that finds no claim the hold stopped settles nothing,
+//     an opening's start among them: a later opening can owe its holder the opening. Such a start
+//     of the opening gives no opening's sentences, but for the retry of the row that ended the
+//     hold, whose first attempt settled the holder row (openingStartFindsNoHold,
+//     supervise.Machine.EndHold).
 func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
 	machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
 	if payload.News {
@@ -4229,9 +4240,11 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 	if err := r.startWaitsForTheHold(ctx, issue, payload.Role, payload.CheckLook); err != nil {
 		return startNews{}, false, err
 	}
-	if found && stoppedByHold(machine.Claim()) {
-		if err := r.settleHeldOpening(ctx, issue, payload.Role); err != nil {
-			return startNews{}, false, err
+	if found {
+		if held := machine.Claim(); stoppedByHold(held) && (payload.Opening != "" || !supervise.KeptOperatorTask(held.Pending)) {
+			if err := r.settleHeldOpening(ctx, issue, payload.Role); err != nil {
+				return startNews{}, false, err
+			}
 		}
 	}
 	if !payload.News && payload.Entry == 0 && payload.Opening == "" {
@@ -4410,16 +4423,23 @@ func (r *outbox) openingStartFindsNoHold(row record.OutboxRow, payload record.Su
 }
 
 // startOfAHeldClaim is a start that reached a claim the work hold holds (supervise.Claim.WorkHeld),
-// or the retry of a start of the opening whose earlier attempt ended that hold
-// (openingStartFindsNoHold), past the fence (startWaitsForTheHold). It answers whether the row is
-// done without going on. It reads the role's queued rows, the tree root and the tree's record of
-// its hold in one transaction (heldStartRead), and then:
+// the retry of a start of the opening whose earlier attempt ended that hold
+// (openingStartFindsNoHold), or under `work` any other start of a phase worker's claim that a
+// start ran against before this row (openingMayBeInFlight), past the fence
+// (startWaitsForTheHold). It answers whether the row is done without going on. It reads the role's
+// queued rows, the tree root and the tree's record of its hold in one transaction (heldStartRead),
+// and then:
 //
 //   - A start that a queued start of the hold's opening stands over gives way to it, the role's
 //     one task (workflow.OpeningStartStands, the rule the opening reads too): it finishes without
 //     acting, so the role is not started first without the opening's sentences and given the
 //     opening's task second. A start of the opening gives way only to a newer one, and an opening
-//     start that carries no phase work stands over no start that carries it.
+//     start that carries no phase work stands over no start that carries it. Only a start of a
+//     claim the hold holds, or a start of the opening, reads this rule.
+//   - A start that carries no opening's sentences waits, on its row's backoff, while the claim's
+//     own start of the opening goes first (openingGoesFirst): the claim is given the operator's
+//     task it kept, then the opening's task, then this start's task. A start of a claim the hold
+//     no longer holds that waits for nothing goes on as an ordinary start here.
 //   - A record that shows a hold that stands means the tree holds work: the start waits, as it
 //     waits at the fence, and no start row lifts the hold. The record says so, and no read of the
 //     gate: the close writes it and the opening deletes it (workflow's workHoldClose,
@@ -4444,19 +4464,31 @@ func (r *outbox) openingStartFindsNoHold(row record.OutboxRow, payload record.Su
 //     yet made and the claim runs. Any other start goes on with its task as the row carries it.
 func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue,
 	machine *supervise.Machine, task *supervise.RequestDeliver) (bool, error) {
-	token := machine.Claim().Token
+	held := machine.Claim()
+	token := held.Token
 	read, err := r.heldStartRead(ctx, payload, issue, token)
 	if err != nil {
 		return false, err
 	}
-	after := int64(0)
-	if payload.Opening != "" {
-		after = row.ID
+	if held.WorkHeld() || payload.Opening != "" {
+		after := int64(0)
+		if payload.Opening != "" {
+			after = row.ID
+		}
+		if workflow.OpeningStartStands(read.run, read.root, payload.Phase, after) {
+			r.log.Info("outbox start of a claim the work hold stopped gives way to the hold's opening start, the role's one task; finished without acting",
+				"row", row.ID, "issue", issue.Key, "role", payload.Role, "opening", payload.Opening != "")
+			return true, nil
+		}
 	}
-	if workflow.OpeningStartStands(read.run, read.root, payload.Phase, after) {
-		r.log.Info("outbox start of a claim the work hold stopped gives way to the hold's opening start, the role's one task; finished without acting",
-			"row", row.ID, "issue", issue.Key, "role", payload.Role, "opening", payload.Opening != "")
-		return true, nil
+	if payload.Opening == "" {
+		if openingGoesFirst(held, read) {
+			return false, routineWaiting{err: wait.Errorf("start %s of %s waits for the work hold's opening start of the claim, which gives the claim the operator's task it kept first and the opening's task after it",
+				payload.Role, issue.Key)}
+		}
+		if !held.WorkHeld() {
+			return false, nil
+		}
 	}
 	opening, standing := workflow.HeldClaimOpening(read.hold, read.root)
 	if standing {
@@ -4480,6 +4512,45 @@ func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, pa
 	r.log.Info("outbox: the work hold of a claim ends, and its start goes on", "row", row.ID, "issue", issue.Key, "role", payload.Role,
 		"started", started, "opening", payload.Opening != "")
 	return false, nil
+}
+
+// openingMayBeInFlight is whether a start that carries no opening's sentences, of a claim the work
+// hold does not hold, reads whether the claim's own start of the opening is in flight
+// (openingGoesFirst): only under `work` (holdIsWork), only for a phase worker, the one role the
+// hold stops (claim.IsPhaseWorker), and only where a start ran against the claim before this row
+// (supervise.Claim.LastStartRow), since only such a start can have ended the hold. That read is one
+// transaction (heldStartRead) at each attempt of such a start, and a `merge` deployment makes none.
+func (r *outbox) openingMayBeInFlight(held supervise.Claim, row record.OutboxRow) bool {
+	return r.holdIsWork() && claim.IsPhaseWorker(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
+}
+
+// openingGoesFirst is whether a start that carries no opening's sentences waits for the claim's
+// own start of the work hold's opening, which read holds queued, so that the claim is given the
+// operator's task it kept, then the opening's task, then this start's task. That is so in two
+// states:
+//
+//   - The hold stopped held, which keeps an operator's task that no turn has taken
+//     (supervise.KeptOperatorTask), and a queued start of the opening stands
+//     (workflow.OpeningStartStands, with no phase, so a start of the opening that carries no phase
+//     work counts). That start ends the hold, not this one. Ended by this start, the hold's end
+//     would leave this start's task behind the operator's task with no opening's sentences, and
+//     the opening's start would then find no hold and finish (openingStartFindsNoHold).
+//   - The hold no longer holds held, and the claim's last start is a queued start of the opening,
+//     or a newer one. That start ended the hold over the operator's task, and its task waits
+//     behind that task (supervise.Machine.EndHold). Its later attempt goes on only while it is the
+//     claim's last start (openingStartFindsNoHold), so this start records no newer start until
+//     that start is done.
+//
+// A claim whose stop of the hold is held for a turn waits for neither: EndHold drops that stop.
+func openingGoesFirst(held supervise.Claim, read heldStartRecord) bool {
+	switch {
+	case stoppedByHold(held):
+		return supervise.KeptOperatorTask(held.Pending) && workflow.OpeningStartStands(read.run, read.root, "", 0)
+	case held.WorkHeld():
+		return false
+	default:
+		return held.LastStartRow != 0 && workflow.OpeningStartStands(read.run, read.root, "", held.LastStartRow-1)
+	}
 }
 
 // heldStartRecord is what a start that reached a claim the work hold holds reads of the record

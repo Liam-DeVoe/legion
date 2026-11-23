@@ -39,8 +39,14 @@ body: |-
   holder is told the opening once: a live holder that is owed news gets no open message, and the
   task that carries its news starts with the opening.
   A claim can keep a task that an operator gave it before the hold stopped it, where no turn took
-  that task. The opening never retires that task: the daemon sends it first, and the opening's task
-  after it.
+  that task. The opening never retires that task: the daemon sends it first, then the opening's
+  task, and then the task of any phase start that came after the opening. Where no start of the
+  opening is queued for that claim, because its stop was made after the opening read it or a newer
+  stop or run undid that start, a phase start ends the hold instead: the worker is not told that
+  the hold stopped its turn, and is told the gate's open message only where its issue's holder was
+  still owed the opening then. Under `merge`, where a restart ended the hold, a phase start that
+  runs after the opening's start ended the hold, and before that start's task went, can take its
+  place, so the worker is not told the restart's sentence.
   An operator's own resume or retry of such a claim starts it
   too. The hold survives a daemon restart. Any other value of `gates.hold` is refused at load,
   `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it

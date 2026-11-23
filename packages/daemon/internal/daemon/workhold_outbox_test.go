@@ -3776,3 +3776,236 @@ func TestWorkHoldOpeningGivesTheOperatorsTaskFirstAndItsOwnTaskAfter(t *testing.
 		})
 	}
 }
+
+// openingOwed is whether the told row of the root's phase holder owes the gate's opening
+// (record.DesignTold.OpeningOwed), false where no such row stands.
+func (r *workHoldRig) openingOwed() bool {
+	r.t.Helper()
+	var owed bool
+	err := r.pool.QueryRow(r.ctx, `select opening_owed from design_news_told where issue = $1 and audience = $2`,
+		r.tree.key, string(record.AudienceHolder)).Scan(&owed)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		r.t.Fatalf("read the holder's told row of %s: %v", r.tree.key, err)
+	}
+	return owed
+}
+
+// heldOperatorTask is the task an operator gives the implementer in the rigs of heldWithAnOperatorsTask.
+const heldOperatorTask = "Read the daemon log of the last hour and report what failed."
+
+// noPhaseOpeningWork is the work the opening's start gives a claim it stopped that holds no phase
+// (workflow's openHeldClaims), written out here.
+const noPhaseOpeningWork = "The issue's other roles may ask you questions."
+
+// heldWithAnOperatorsTask is tree, a root in testing under `work`, whose implementer holds no phase
+// and kept an operator's task when the close stopped it: the operator gave the task while the
+// implementer's turn ran, and the close's stop, held for that turn, was made at the turn's end.
+// With testerStopped, the tester, the holder of the phase, is released before the close, so the
+// close stops it too. Then a person approves version 4. The opening's start of the implementer,
+// which carries no phase work, is put on its backoff, and one pass of the outbox runs.
+func heldWithAnOperatorsTask(t *testing.T, tree holdTree, testerStopped bool) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, tree)
+	if testerStopped {
+		r.released(claim.RoleTester)
+		r.inTx(func(tx pgx.Tx) error {
+			return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester), Entry: 1})
+		})
+	}
+	token := r.token(claim.RoleImplementer)
+	r.working(claim.RoleImplementer)
+	r.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, Task: heldOperatorTask})
+	r.close(4)
+	r.runOnce()
+	r.runOnce()
+	endTurn(r.ctx, t, r.machine(claim.RoleImplementer), token)
+	r.drain()
+	r.wantHeld(claim.RoleImplementer, 1, "after the close")
+	if kept := r.machine(claim.RoleImplementer).Claim().Pending; kept == nil || kept.Task != heldOperatorTask {
+		t.Fatalf("the stopped implementer keeps %+v, want the operator's task", kept)
+	}
+	r.approve(4, 12)
+	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = $3`, r.tree.key, r.clock.Now().Add(10*time.Minute),
+		string(claim.RoleImplementer)); err != nil {
+		t.Fatalf("put the implementer's opening start on its backoff: %v", err)
+	}
+	r.runOnce()
+	return r
+}
+
+// movedBack applies a tester's move of the root back to implementing, and answers the task of the
+// start of the implementer's phase that the move queued.
+func (r *workHoldRig) movedBack() string {
+	r.t.Helper()
+	r.apply("back", intake.BackwardMove{Issue: r.tree.key, Requester: claim.RoleTester, To: phase.Implementing,
+		Reason: "the empty list is not covered"})
+	var work string
+	for _, start := range startRequestsOf(r.t, r.pool, r.tree.key, "start") {
+		if start.Role == claim.RoleImplementer && start.Opening == "" {
+			work = start.Task
+		}
+	}
+	if work == "" {
+		r.t.Fatal("the move back queued no start of the implementer's phase")
+	}
+	return work
+}
+
+// takeTheTask has role's agent take the task its claim holds: the turn that task's prompt starts,
+// and that turn's end.
+func (r *workHoldRig) takeTheTask(role claim.Role) {
+	r.t.Helper()
+	machine := r.machine(role)
+	pending := machine.Claim().Pending
+	if pending == nil {
+		r.t.Fatalf("the %s holds no task to take", role)
+	}
+	r.handle(role, supervise.StreamTurnStart{Claim: r.token(role), DeliveryID: pending.ID})
+	endTurn(r.ctx, r.t, machine, r.token(role))
+}
+
+// wantPrompts is the implementer prompted with len(suffixes) tasks after a drain, each ending with
+// its suffix in order, and a second drain prompting nothing more.
+func (r *workHoldRig) wantPrompts(when string, suffixes ...string) {
+	r.t.Helper()
+	for _, pass := range []string{"a drain", "a second drain"} {
+		r.drain()
+		r.machine(claim.RoleImplementer).Wait()
+		prompts := r.conn(claim.RoleImplementer).Prompts()
+		ok := len(prompts) == len(suffixes)
+		for i := 0; ok && i < len(suffixes); i++ {
+			ok = strings.HasSuffix(prompts[i].Message, suffixes[i])
+		}
+		if !ok {
+			r.t.Fatalf("%s, after %s, the implementer was prompted %+v, want %d tasks ending\n%q", when, pass, prompts, len(suffixes), suffixes)
+		}
+	}
+}
+
+// An operator's act overrides the work hold, and the daemon drops no instruction without saying
+// so: a claim the hold stopped that kept an operator's task gets that task first, then the
+// opening's task, then the task of a phase start written after the opening
+// (supervise.Machine.EndHold, openingGoesFirst). The tester holds the phase at the opening, and
+// the close stopped it, so the opening settles the issue's holder row as told: the opening's start
+// of the implementer, which carries no phase work, is the one carrier of the opening's sentences.
+// A move back then gives the implementer its phase. That phase start waits while the claim is
+// stopped, and again after the opening's start ended the hold, while that start's task waits
+// behind the operator's task; it never records itself first, which would finish the opening's
+// start. The implementer is prompted with the operator's task, then with the task that names
+// version 4 and carries today's open message, then with its phase work, and nothing more. A
+// daemon restart while the phase start waits changes nothing.
+func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTask(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		name := "no restart"
+		if restart {
+			name = "a daemon restart while the phase start waits"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork), true)
+			if r.openingOwed() {
+				t.Fatal("after the opening the holder's told row owes the opening, want it settled by the tester's own start")
+			}
+			work := r.movedBack()
+			r.runOnce()
+			if c := r.machine(claim.RoleImplementer).Claim(); !c.WorkHeld() {
+				t.Fatalf("the phase start ended the hold (the implementer is %s by %q), want it waiting for the opening's start", c.State, c.SuspendedBy)
+			}
+			r.clock.advance(11 * time.Minute)
+			r.drain()
+			if c := r.machine(claim.RoleImplementer).Claim(); c.WorkHeld() || c.Pending == nil || c.Pending.Task != heldOperatorTask {
+				t.Fatalf("the implementer is %s by %q holding %+v, want the hold ended by the opening's start and the operator's task kept", c.State, c.SuspendedBy, c.Pending)
+			}
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 2 {
+				t.Fatalf("the outbox holds %d starts of the implementer, want the opening's start and the phase start waiting", got)
+			}
+			readyClaimAs(t, r.sup, r.token(claim.RoleImplementer), claim.RoleImplementer, "ses-implementer")
+			opening := r.opening(4, 4) + "\n\n" + noPhaseOpeningWork
+			r.wantPrompts("at its ready", heldOperatorTask)
+			r.takeTheTask(claim.RoleImplementer)
+			if restart {
+				r.restart()
+			}
+			r.wantPrompts("after the operator's turn", heldOperatorTask, opening)
+			r.takeTheTask(claim.RoleImplementer)
+			r.wantPrompts("after the opening's turn", heldOperatorTask, opening, work)
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 0 {
+				t.Fatalf("the outbox still holds %d starts of the implementer, want none", got)
+			}
+		})
+	}
+}
+
+// The same order where the issue's holder row owes the opening: the tester, the holder of the
+// phase, has no claim and is owed the news of version 4 (withNews), so the opening leaves its told
+// row owing the opening. The opening's start of the implementer, which holds the phase by then,
+// settles that row as told and gives the opening's sentences, with the news of version 4 after its
+// work, once. The phase start's task after it carries neither.
+func TestWorkHoldOpeningStartGoesBeforeAPhaseStartBehindAnOperatorsTaskWithTheNews(t *testing.T) {
+	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork).withNews(), false)
+	if !r.openingOwed() {
+		t.Fatal("after the opening the holder's told row owes no opening, want it owed to the holder owed news")
+	}
+	work := r.movedBack()
+	r.runOnce()
+	r.clock.advance(11 * time.Minute)
+	r.drain()
+	readyClaimAs(t, r.sup, r.token(claim.RoleImplementer), claim.RoleImplementer, "ses-implementer")
+	r.wantPrompts("at its ready", heldOperatorTask)
+	r.takeTheTask(claim.RoleImplementer)
+	opening := r.opening(4, 4) + "\n\n" + noPhaseOpeningWork + "\n\n" + r.heldNews(phase.Implementing, 3, 4)
+	r.wantPrompts("after the operator's turn", heldOperatorTask, opening)
+	if r.openingOwed() {
+		t.Fatal("the holder's told row still owes the opening once the opening's start gave its sentences")
+	}
+	r.takeTheTask(claim.RoleImplementer)
+	r.wantPrompts("after the opening's turn", heldOperatorTask, opening, work)
+	if prompts := r.conn(claim.RoleImplementer).Prompts(); strings.Contains(prompts[2].Message, r.openedMessage(4)) ||
+		strings.Contains(prompts[2].Message, "The approved design of") {
+		t.Fatalf("the phase work's prompt is %q, want no second opening and no second news", prompts[2].Message)
+	}
+}
+
+// Where no start of the opening of the claim is queued — its stop was made after the opening read
+// the claim and the fact that starts it has not been applied yet, or a newer stop or run undid that
+// start; here its row is deleted — a phase start that carries no opening's sentences ends the hold
+// over the operator's task itself. It settles no opening as told (startNewsOf,
+// supervise.KeptOperatorTask), so the holder's told row, which owes the opening, still owes it, and
+// the phase start's task, which follows the operator's, carries the gate's open message in its news.
+// The implementer is not told that the hold stopped its turn.
+func TestWorkHoldPhaseStartWithNoOpeningStartQueuedCarriesTheOwedOpening(t *testing.T) {
+	r := heldWithAnOperatorsTask(t, legionTree(phase.Testing, config.HoldWork).withNews(), false)
+	if _, err := r.pool.Exec(r.ctx, `delete from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+		and payload->>'role' = $2 and coalesce(payload->>'opening', '') <> ''`, r.tree.key, string(claim.RoleImplementer)); err != nil {
+		t.Fatalf("delete the implementer's opening start: %v", err)
+	}
+	if !r.openingOwed() {
+		t.Fatal("after the opening the holder's told row owes no opening, want it owed to the holder owed news")
+	}
+	work := r.movedBack()
+	r.runOnce()
+	r.clock.advance(11 * time.Minute)
+	r.drain()
+	if c := r.machine(claim.RoleImplementer).Claim(); c.WorkHeld() || c.Pending == nil || c.Pending.Task != heldOperatorTask {
+		t.Fatalf("the implementer is %s by %q holding %+v, want the hold ended and the operator's task kept", c.State, c.SuspendedBy, c.Pending)
+	}
+	if !r.openingOwed() {
+		t.Fatal("the phase start that ended the hold settled the opening as told, want it still owed: its task carries no opening's sentences")
+	}
+	readyClaimAs(t, r.sup, r.token(claim.RoleImplementer), claim.RoleImplementer, "ses-implementer")
+	r.wantPrompts("at its ready", heldOperatorTask)
+	r.takeTheTask(claim.RoleImplementer)
+	r.drain()
+	r.machine(claim.RoleImplementer).Wait()
+	prompts := r.conn(claim.RoleImplementer).Prompts()
+	if len(prompts) != 2 || !strings.Contains(prompts[1].Message, work) || !strings.Contains(prompts[1].Message, r.openedMessage(4)) {
+		t.Fatalf("after the operator's turn the implementer was prompted %+v, want the phase work with the gate's open message", prompts)
+	}
+	if !r.openingOwed() {
+		t.Fatal("the holder's told row owes no opening before the turn of the task that tells it")
+	}
+	r.takeTheTask(claim.RoleImplementer)
+	if r.openingOwed() {
+		t.Fatal("the holder's told row still owes the opening after the turn of the task that told it")
+	}
+}
