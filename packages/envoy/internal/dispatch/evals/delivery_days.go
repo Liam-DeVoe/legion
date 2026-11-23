@@ -42,8 +42,8 @@ import (
 // deploy's own, which counts it as a deploy with pull requests (with_prs), as the delivery routes
 // count it, and names the projects it counts for. Two kinds of row are not settled when their
 // day is first built (measures.go names them): a pull request with no deploy yet and a deploy run
-// still running; the day is built again when the run that settles them lands. change-fail-rate and
-// failed-deploy-recovery get no rows: no failure source exists, so they read "no data".
+// still running; the day is built again when the run that settles them lands. The three failure
+// measures' rows are built from the record of deploys and failures instead (failure_days.go).
 //
 // Attribution, decided in one place (attribution), by R15 of dispatch://INFRA-2916 and R12 of
 // dispatch://INFRA-978: a pull request counts for the project of the issue it names
@@ -113,8 +113,8 @@ const (
 const SeriesUnownedP0 = "issues"
 
 // deliveryDaySlugs is every eval a delivery day's rows are of, and so every eval writeDeliveryDay
-// writes the rows of that a day no longer holds as zero rows: neither change-fail-rate nor
-// failed-deploy-recovery, which get no rows, nor unowned-p0, which WriteUnownedP0Day writes.
+// writes the rows of that a day no longer holds as zero rows: neither the three failure measures,
+// whose rows failure_days.go writes, nor unowned-p0, which WriteUnownedP0Day writes.
 var deliveryDaySlugs = []string{
 	SlugDeployFrequency, SlugDeployRunSuccess, SlugMergeToProduction, SlugFirstCommitToProduction,
 	SlugOpenToProduction, SlugPROpenToMerge, SlugReworkShare, SlugPRCI, SlugStagingE2E,
@@ -644,33 +644,38 @@ func (a attribution) pullRequest(pr delivery.DeliveryPullRequest, apply *deliver
 
 // deploy is run, a deploy run on main started on the day, as the builders read it: whether it
 // reached production, the pull requests it ships first (Deploys.ShippedBy's), and what it counts
-// for: the projects its pull requests count for through an issue, once each, and, where it ships a
-// pull request no issue attributes, its repository's owner key with those projects as its sharers
-// (INFRA-2916 R15). A deploy run that ships no pull request counts for owner, the delivery-on
-// project whose deploy source reads its repository (delivery.DeployRules), through that
-// repository, and for no other project, whatever the default repositories say (INFRA-978 R12): a
-// run that did not reach production ships none, and so counts for owner too; with no owner (no
-// source reads the repository) it counts for the repository's owner key, as R15 has it. This is
-// the one rule the delivery evals, the failure measures and their items read a deploy run's
-// projects by.
+// for (deployProjects).
 func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*delivery.DeliveryPullRequest, owner string) dayDeploy {
 	deploy := dayDeploy{
 		run: measures.Run{
 			ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
 			ReachedProduction: reached, ShippedPRs: len(shipped),
 		},
-		repo: run.Repo, member: RunMember(run.Repo, run.RunID),
-	}
-	if len(shipped) == 0 && owner != "" {
-		deploy.projects = []counted{{project: owner, via: true}}
-		return deploy
+		repo: run.Repo, member: RunMember(run.Repo, run.RunID), projects: a.deployProjects(run.Repo, shipped, owner),
 	}
 	for _, pr := range shipped {
 		deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
 	}
+	return deploy
+}
+
+// deployProjects is what a deploy of repo that ships shipped counts for: the projects its pull
+// requests count for through an issue, once each, and, where it ships a pull request no issue
+// attributes, repo's owner key with those projects as its sharers (INFRA-2916 R15). A deploy that
+// ships no pull request counts for owner, the delivery-on project whose deploy source found it
+// (delivery.DeployRules), through its repository, and for no other project, whatever the default
+// repositories say (INFRA-978 R12): a run that did not reach production ships none, and so counts
+// for owner too; with no owner (no source reads the repository) it counts for repo's owner key, as
+// R15 has it. This is the one rule the delivery evals, the failure measures (failure_days.go) and
+// their items read a deploy's projects by.
+func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPullRequest, owner string) []counted {
+	if len(shipped) == 0 && owner != "" {
+		return []counted{{project: owner, via: true}}
+	}
 	// Once in each project its pull requests count for through an issue; once more for its
 	// repository where any of them, or none, counts through it.
 	owned := len(shipped) == 0
+	var projects []counted
 	var sharers []string
 	for _, pr := range shipped {
 		counts := a.of(*pr)
@@ -678,15 +683,15 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 			owned = true
 			continue
 		}
-		if !slices.ContainsFunc(deploy.projects, func(c counted) bool { return c.project == counts.project }) {
-			deploy.projects = append(deploy.projects, counts)
+		if !slices.ContainsFunc(projects, func(c counted) bool { return c.project == counts.project }) {
+			projects = append(projects, counts)
 			sharers = append(sharers, counts.project)
 		}
 	}
 	if owned {
-		deploy.projects = append(deploy.projects, counted{project: OwnerKey(run.Repo, sharers), via: true})
+		projects = append(projects, counted{project: OwnerKey(repo, sharers), via: true})
 	}
-	return deploy
+	return projects
 }
 
 // checkRuns is runs, PR-checks runs started on the day, each attributed to the project its pull

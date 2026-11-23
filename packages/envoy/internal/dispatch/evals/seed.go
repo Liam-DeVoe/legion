@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -148,13 +149,15 @@ func (s *Store) UnseededProjects(ctx context.Context) ([]string, error) {
 // (refresh.load): whether a pass of this process has seeded every project yet, the projects
 // whose seed failed, which the next pass seeds again, and those whose seed was refused for their
 // `evals-md` (seedRefusals); and, beside them, the process's watch of the release rule
-// (releaseWatch, rebuild.go), which its first pass decides. One goroutine runs the loop's passes,
-// so it takes no lock.
+// (releaseWatch, rebuild.go), which its first pass decides, and the UTC day on which its passes
+// last wrote each project's failure rows whole (refresh.writeFailures). One goroutine runs the
+// loop's passes, so it takes no lock.
 type seeding struct {
-	everyProject bool
-	failed       map[string]bool
-	refused      seedRefusals
-	release      releaseWatch
+	everyProject    bool
+	failed          map[string]bool
+	refused         seedRefusals
+	release         releaseWatch
+	failuresWritten map[string]time.Time
 }
 
 // owed is the projects a pass seeds besides those it reads to seed: every one whose seed failed,

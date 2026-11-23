@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // GET /api/v1/projects/{key}/evals/{slug}/items: the rows behind an eval's numbers, every row in
@@ -30,11 +31,14 @@ import (
 // (evalComputedItems): the issues a Legion eval counts, closed in the range, and the filings
 // legion-splitting counts (`issue`, from the stored facts and filings, legionfacts.ItemRows);
 // the pull requests and deploy runs a delivery eval counts (`pull_request`, `deploy`, from the
-// delivery reads the day rows are built with, delivery/measure_rows.go); the runs a CI eval times
-// (`run`) and, for pr-ci, each job's figures (`job`); and the open P0 issues with no owner (`issue`,
-// delivery.ListUnownedP0). A delivery or CI row is answered where the project's day rows counted
-// it (eval_day_members, evals.Store.CountedIn), so the items are the rows the numbers fold, under
-// the attribution the day rows made (evals' delivery_days.go, "Attribution").
+// delivery reads the day rows are built with, delivery/measure_rows.go); the deploys and failures
+// of the record a failure measure counts (`deploy`, `failure`, from production_events, as the
+// failure rows count them, evals.FailureItemsIn), each with its relation to the measure's numbers;
+// the runs a CI eval times (`run`) and, for pr-ci, each job's figures (`job`); and the open P0
+// issues with no owner (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where
+// the project's day rows counted it (eval_day_members, evals.Store.CountedIn), so the items are the
+// rows the numbers fold, under the attribution the day rows made (evals' delivery_days.go,
+// "Attribution").
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, each range's after the window's, and a row kind's rows in its own order.
@@ -86,6 +90,7 @@ const (
 	evalRowIssue       = legionfacts.ItemRowKind
 	evalRowPullRequest = "pull_request"
 	evalRowDeploy      = "deploy"
+	evalRowFailure     = "failure"
 	evalRowRun         = "run"
 	evalRowJob         = "job"
 	evalRowDay         = "day"
@@ -154,14 +159,17 @@ type evalItemsRead struct {
 }
 
 // evalRangeReads is the reads two readers of one range make alike, each made once a range and
-// kept for the other: change-fail-rate's pull requests and deploys both read the items the
-// delivery family's day rows of the range counted and the pull requests merged in it, and pr-ci's
-// jobs and its day rows both read the eval's day rows of the range.
+// kept for the other: a delivery eval's pull requests and deploys both read the items the delivery
+// family's day rows of the range counted and the pull requests merged in it, pr-ci's jobs and its
+// day rows both read the eval's day rows of the range, and a failure measure's deploys and failures
+// both read the record's rows behind it.
 type evalRangeReads struct {
-	counted map[string]map[string]bool
-	merged  *delivery.MergedRows
-	days    []evals.DayRow
-	read    bool
+	counted      map[string]map[string]bool
+	merged       *delivery.MergedRows
+	days         []evals.DayRow
+	read         bool
+	failures     []evals.FailureItem
+	failuresRead bool
 }
 
 // evalItemKind is one row kind a computed eval answers, and its reader: read answers the kind's
@@ -173,22 +181,26 @@ type evalItemKind struct {
 }
 
 var (
-	pullRequestItems = evalItemKind{kind: evalRowPullRequest, read: (*server).pullRequestItemRows}
-	deployItems      = evalItemKind{kind: evalRowDeploy, read: (*server).deployItemRows}
-	legionItems      = evalItemKind{kind: evalRowIssue, source: (*server).legionItemSource}
+	pullRequestItems    = evalItemKind{kind: evalRowPullRequest, read: (*server).pullRequestItemRows}
+	deployItems         = evalItemKind{kind: evalRowDeploy, read: (*server).deployItemRows}
+	legionItems         = evalItemKind{kind: evalRowIssue, source: (*server).legionItemSource}
+	failureDeployItems  = evalItemKind{kind: evalRowDeploy, read: (*server).failureDeployItemRows}
+	failureRecordItems  = evalItemKind{kind: evalRowFailure, read: (*server).failureItemRows}
+	failureMeasureItems = []evalItemKind{failureDeployItems, failureRecordItems}
 )
 
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
 // rows, by the source it names: the rows its fold counts. A failure is a fact about its deploy
-// (dispatch://INFRA-978, D7), so the three failure measures answer their deploys.
+// (dispatch://INFRA-978, D7), so the three failure measures answer the deploys of the record they
+// count and the failures on them.
 var evalComputedItems = map[string][]evalItemKind{
 	evals.SourceFoldDeployFrequency:  {deployItems},
 	evals.SourceFoldDeployRunSuccess: {deployItems},
 	evals.SourceFoldLeadTime:         {pullRequestItems},
 	evals.SourceFoldReworkShare:      {pullRequestItems},
-	evals.SourceFoldChangeFailRate:   {deployItems},
-	evals.SourceFoldRecovery:         {deployItems},
-	evals.SourceFoldReworkRate:       {deployItems},
+	evals.SourceFoldChangeFailRate:   failureMeasureItems,
+	evals.SourceFoldRecovery:         failureMeasureItems,
+	evals.SourceFoldReworkRate:       failureMeasureItems,
 	evals.SourceFoldTiming:           {{kind: evalRowRun, read: (*server).runItemRows}, {kind: evalRowJob, read: (*server).jobItemRows}},
 	evals.SourceListUnownedP0:        {{kind: evalRowIssue, read: (*server).unownedItemRows}},
 	evals.SourceFoldWorkTime:         {legionItems},
@@ -387,7 +399,7 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 
 // mergedRowsOf is the pull requests merged in read's range with the deploy runs created from its
 // start on (delivery.ReadMergedRows, as the day builder reads them), read once a range
-// (evalRangeReads): change-fail-rate's pull requests and its deploys both read them.
+// (evalRangeReads), for every reader of the range that reads them.
 func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead) (delivery.MergedRows, error) {
 	if read.shared.merged == nil {
 		merged, err := delivery.ReadMergedRows(ctx, read.tx, *read.settings, read.rng.days.From, read.rng.days.To)
@@ -600,7 +612,7 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 // counted is the row keys of the items family's day rows of the project counted on the days of
 // days, under the deploy repositories the eval's read reads (evals.DeployRepoOf), those of the
 // repositories the request names where it names any. Those of the range's own days are read once
-// a range (evalRangeReads), since two readers of change-fail-rate read them.
+// a range (evalRangeReads), for every reader of the range that reads them.
 func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string]bool, error) {
 	ranged := days == read.rng.days
 	if keys, held := read.shared.counted[family]; ranged && held {
@@ -715,6 +727,71 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 		rows = append(rows, runItemRow(run, evalRowDeploy, "delivery.ReadDeploys", read.rng.label, map[string]any{
 			"reached_production": reached[run.RunID], "shipped_prs": len(shipped[run.RunID]),
 		}))
+	}
+	return rows, nil
+}
+
+// failureItemsOf is the rows of the record behind read's eval, a failure measure, on the range's
+// days, as its day rows count them (evals.FailureItemsIn), read once a range (evalRangeReads): its
+// deploys and its failures both read them. Of a request naming repositories it keeps those counted
+// through a deploy of one of them, the rows of those repositories' day rows.
+func (s *server) failureItemsOf(ctx context.Context, read evalItemsRead) ([]evals.FailureItem, error) {
+	if !read.shared.failuresRead {
+		items, err := evals.FailureItemsIn(ctx, read.tx, read.project, read.entry.Definition.Slug, read.rng.days)
+		if err != nil {
+			return nil, err
+		}
+		if len(read.request.repos) > 0 {
+			items = slices.DeleteFunc(items, func(item evals.FailureItem) bool { return !slices.Contains(read.request.repos, item.Repo) })
+		}
+		read.shared.failures, read.shared.failuresRead = items, true
+	}
+	return read.shared.failures, nil
+}
+
+// failureDeployItemRows is the deploys of the record a failure measure's day rows of the range
+// count (failureItemsOf), each with its relation to the measure.
+func (s *server) failureDeployItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
+	return s.failureRowsOf(ctx, read, prodevents.KindDeploy)
+}
+
+// failureItemRows is the failures of the record a failure measure's day rows of the range count
+// (failureItemsOf), each with its relation to the measure.
+func (s *server) failureItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
+	return s.failureRowsOf(ctx, read, prodevents.KindFailure)
+}
+
+// failureRowsOf is the rows of kind (a deploy or a failure) of failureItemsOf, each as an items
+// row: keyed by its id in the record, its columns its own and its relation, the repository of the
+// deploy it is counted through, and a deploy's count of counted failures or a failure's minutes to
+// restore; measured at the moment it counts on (evals.FailureItem.At), and addressed by its url.
+func (s *server) failureRowsOf(ctx context.Context, read evalItemsRead, kind string) ([]evalItemRow, error) {
+	items, err := s.failureItemsOf(ctx, read)
+	if err != nil {
+		return nil, err
+	}
+	var rows []evalItemRow
+	for _, item := range items {
+		event := item.Event
+		if event.Kind != kind {
+			continue
+		}
+		cols := map[string]any{
+			"relation": item.Relation, "repo": item.Repo, "source": event.Source, "source_ref": event.SourceRef,
+			"pull_requests": event.PullRequests, "note": event.Note,
+		}
+		rowKind := evalRowDeploy
+		if kind == prodevents.KindDeploy {
+			cols["status"], cols["started_at"], cols["finished_at"], cols["failures"] = event.Status, event.StartedAt, event.FinishedAt, item.Failures
+		} else {
+			rowKind = evalRowFailure
+			cols["deploy_id"], cols["signal"], cols["detected_at"] = event.DeployID, event.Signal, event.DetectedAt
+			cols["restored_at"], cols["restored_by_deploy"], cols["minutes"] = event.RestoredAt, event.RestoredByDeploy, item.Minutes
+		}
+		rows = append(rows, evalItemRow{
+			RowKey: event.ID, RowKind: rowKind, Cols: cols, MeasuredAt: item.At, Source: "production_events",
+			Href: event.URL, Links: []evals.Link{}, Range: read.rng.label,
+		})
 	}
 	return rows, nil
 }

@@ -519,7 +519,7 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	stored := storedDayRows(t, database.Pool, fixture.Project)
 	for _, row := range stored {
 		if slug := strings.TrimPrefix(row.EvalID, fixture.Project+"/"); slug == evals.SlugChangeFailRate || slug == evals.SlugFailedDeployRecovery || slug == evals.SlugDeploymentReworkRate {
-			t.Fatalf("%s holds a day row (%s on %s), want none: no builder of the failure measures exists yet", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
+			t.Fatalf("%s holds a day row (%s on %s), want none: its project counts no failure source", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
 		}
 	}
 	if other := storedDayRows(t, database.Pool, fixture.SecondProject); len(other) != 0 {

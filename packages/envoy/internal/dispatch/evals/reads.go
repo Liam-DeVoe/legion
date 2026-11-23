@@ -241,7 +241,9 @@ func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepos *Dep
 // repositories its read reads where the rows are recorded under deployRepos (DeployReposIn,
 // DeployRepoOf): the earliest of them, so the evals of many projects are one read, a row the other
 // writer made moves no eval's first day, and an eval that reads the deploy repository begins on
-// the first day of the first of its project's repositories to begin.
+// the first day of the first of its project's repositories to begin. A failure measure's first day
+// is its project's failures_measured_since, or none where its failure measures are off
+// (failureFirstDays).
 func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepos *DeployRepos) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {
@@ -290,6 +292,9 @@ func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deplo
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
+	}
+	if err := failureFirstDays(ctx, q, entries, firsts); err != nil {
+		return nil, err
 	}
 	return firsts, nil
 }
