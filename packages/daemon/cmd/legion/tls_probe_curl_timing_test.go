@@ -11,17 +11,18 @@ import (
 
 // The image's curl at a vendored chain. curlPastTheVendoredChain is curl 8.18.0 on OpenSSL 3.5.5,
 // which verifies a chain only after the handshake, so it fails the server's signature first
-// whatever root it holds (theorem-labs/agent-infra job 137340412198, log lines 7414 and 7415); curl
-// 8.14.1 gives the same at a vendored chain with its CA-published root. curlRefusingAnUnknownIssuer
-// is curl 8.14.1 on OpenSSL 3.5.7, which verifies a chain during the handshake, refusing a chain
-// its root does not issue, captured on 2026-11-22 in the INFRA-5350 pod's worker image.
+// whatever root it holds (the deployment repository's job 137340412198, log lines 7414 and 7415);
+// curl 8.14.1 gives the same at a vendored chain with its CA-published root.
+// curlRefusingAnUnknownIssuer is curl 8.14.1 on OpenSSL 3.5.7, which verifies a chain during the
+// handshake, refusing a chain its root does not issue, captured on 2026-11-22 in the INFRA-5350
+// pod's worker image.
 const (
 	curlPastTheVendoredChain    = "curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure"
 	curlRefusingAnUnknownIssuer = "curl: (60) SSL certificate problem: unable to get local issuer certificate More details here: https://curl.se/docs/sslcerts.html  curl failed to verify the legitimacy of the server and therefore could not establish a secure connection to it. To learn more about this situation and how to fix it, please visit the webpage mentioned above."
 )
 
 // A curl that fails the server's signature at each vendored chain whatever root it gets, as curl
-// 8.18.0 on OpenSSL does (theorem-labs/agent-infra job 137340412198), verifies a chain only after
+// 8.18.0 on OpenSSL does (the deployment repository's job 137340412198), verifies a chain only after
 // the handshake: no vendored chain can show it refusing one, since the probe cannot make the
 // server's signature. The probe holds that curl to the public sites in place of the vendored
 // chains, says why on its own line, and passes. On main 64887452 the probe held that curl to the
@@ -31,7 +32,7 @@ const (
 // on the day it runs.
 func TestProbeImageHoldsACurlThatVerifiesAfterTheHandshakeToThePublicSites(t *testing.T) {
 	// curl 8.18.0 on OpenSSL 3.5.5, the curl of curlPastTheVendoredChain, refusing a fixture chain
-	// (theorem-labs/agent-infra job 137340412198, log lines 7411 and 7412).
+	// (the deployment repository's job 137340412198, log lines 7411 and 7412).
 	const refusesAFixture = "curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)"
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
