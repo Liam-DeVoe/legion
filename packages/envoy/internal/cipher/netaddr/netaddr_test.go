@@ -73,8 +73,8 @@ func TestDestinationRefusalReadsTheIPv4AnAddressCarries(t *testing.T) {
 		"2001:0:5db8:d822::f5ff:fffa": "a Teredo address (2001::/32) whose server is 93.184.216.34",
 		"64:ff9b::a00:5":              "the NAT64 form (64:ff9b::/96) of 10.0.0.5",
 		"2002:a00:5::1":               "the 6to4 form (2002::/16) of 10.0.0.5",
-		"fd00::5efe:a00:5":            "an ISATAP address",
-		"fd00::200:5efe:a00:5":        "an ISATAP address",
+		"fd00::5efe:a00:5":            "the ISATAP form (interface identifier 0:5efe or 200:5efe) of 10.0.0.5",
+		"fd00::200:5efe:a00:5":        "the ISATAP form (interface identifier 0:5efe or 200:5efe) of 10.0.0.5",
 		"10.0.0.5":                    "",
 		"fd12:3456::5":                "",
 	} {
