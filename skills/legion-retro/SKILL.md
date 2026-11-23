@@ -42,8 +42,9 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it.
      Name each run that has not concluded in step 5's `Runs still going` line, and go on.
-     When CI settles, the daemon tells the architect and the worker of the issue's phase at that time.
-     Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and likewise a check whose `run` is a whole test suite.
+     When CI settles, the daemon tells the architect and the worker of the issue's current phase.
+     A name that no run answers (`absent`), or a `run` that is a whole test suite, goes to the architect as a finding.
+     The check's words are wrong.
      Neither that run nor that finding moves the issue back.
 
    - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
@@ -95,7 +96,9 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
-   send both `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step 1's evidence, or neither where your tool takes neither.
+   send both `plan_rating` and `plan_reason`, or neither where your tool takes neither.
+   `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work).
+   `plan_reason` is one sentence of why, from step 1's evidence.
    The daemon refuses a completion without them where your tool takes them (`PLAN_RATING_REQUIRED`), with one alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on any other completion (`PLAN_RATING_UNEXPECTED`).
    A refusal records nothing: complete again.
 
