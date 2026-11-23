@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"crypto/sha256"
+	"encoding/json/v2"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -649,7 +650,9 @@ func cell(kind, base, input string, right placeRight) string {
 // definition covers it. So a state, a kind or a form of right that the code gains with no word of the
 // definition for it fails by name. Outside the domain, the judgment refuses a state of no kind at the
 // base, a place of no kind and a form of right that it has no rule for. And it reads each base of the
-// sweeps (sweepBases) in the reader's process: each place of each base is of a kind and each state
+// sweeps (sweepBases) in the reader's process, and decodes the states of each reply itself, apart from
+// the decoder that the judgment reads replies with, and fails a base whose reply that decoder reads
+// otherwise (decodedBase): each place of each base is of a kind and each state
 // that it reads is a state of that kind; and it hands judgeAnswer answers of each base whose arguments
 // it ranges over by their types (eachAnswer): the input's right, whether there is one and allowed nil
 // or a map; and at each place, the base's state, none or each state of its kind, the input's, none or
@@ -784,7 +787,7 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	disagree := map[string][]string{}
 	held := map[string]bool{} // the form of each right at a place of an answer, as the definition reads it
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
-		whole := baseStates(t, p, bases[name])
+		whole := decodedBase(t, p, name, bases[name])
 		kindOf := map[string]judgedKind{}
 		for _, at := range slices.Sorted(maps.Keys(whole)) {
 			switch k, of := placeKindOf(kinds, at); {
@@ -831,6 +834,33 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 		t.Errorf("%s: the judgment of an answer (judgeAnswer) disagrees with the definition applied place by place (definedAnswer) in %d answers, the first %s", c, len(disagree[c]), disagree[c][0])
 	}
 	t.Logf("%d cases of %d kinds of state; %d places of %d bases, %d whole answers judged", cases, len(kinds), places, len(bases), answers)
+}
+
+// decodedBase is the states of the base fsys, of the name name, as the reader's process p writes them
+// in its reply, decoded by the domain test itself: the reply's member "states" as encoding/json/v2
+// reads it, apart from the decoder that the judgment reads each reply with (readerReply.states). It fails
+// the test t, by the base's name, where that decoder reads the same reply otherwise. So the places of the
+// answers that the domain test writes (eachAnswer) are the places that the reader wrote, and a fault of
+// the judgment's decoder that drops or changes places of a reply fails here by the base's name, and by
+// the answers that move those places, rather than taking the places out of the test's domain and the
+// judgment's reading alike.
+func decodedBase(t *testing.T, p *readerProcess, name string, fsys fstest.MapFS) map[string]string {
+	t.Helper()
+	line, _ := readerLine(t, fsys)
+	reply, err := p.ask(t, line)
+	if err != nil {
+		t.Fatalf("%s: the base: %v", name, err)
+	}
+	var own struct {
+		States map[string]string `json:"states"`
+	}
+	if err := json.Unmarshal([]byte(reply.text), &own); err != nil {
+		t.Fatalf("%s: the base's reply %q: %v", name, reply.text, err)
+	}
+	if read, err := reply.states(); err != nil || !maps.Equal(read, own.States) {
+		t.Errorf("%s: the judgment's decoder (readerReply.states) reads the base's reply %q as %q (%v), where its member \"states\" is %q", name, reply.text, read, err, own.States)
+	}
+	return own.States
 }
 
 // knownRight is the right of the known positive beyond its right (knownPositives): it holds at each
