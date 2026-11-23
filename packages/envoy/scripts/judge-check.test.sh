@@ -19,7 +19,11 @@
 #   (f) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
 #       builds nothing, for a base whose policy.go defines TagJudge: that broker reads the judge
 #       from the key's tags, so it is no control, whatever its profiles.go holds. A base that
-#       reads the judge from the proxy block and defines no TagJudge passes the guard and is built.
+#       reads the judge from the proxy block and defines no TagJudge passes the guard and is built;
+#   (g) page_of and post_decision, the approval k10's card case makes, post back each
+#       profile_digest field the page prints, against a stand-in page that refuses an approval
+#       naming none, as the broker does (403 Profile changed); with page_of's profile_digest taken
+#       out, the same approval is refused.
 # Each function is read out of the script that defines it and run in this shell. Needs bash, jq
 # and Linux's /proc.
 set -euo pipefail
@@ -209,6 +213,70 @@ file_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"
 said="$(guard_run "$file_base")"
 check "k10's base control builds a base that reads the judge from the proxy block and defines no TagJudge" \
   test -e "$work/base-go-ran"
+
+# --- (g) page_of and post_decision against a stand-in approval page: it prints a form with two
+# profile_digest fields, each "<record> <name> <digest>" with spaces, as the broker prints one for
+# each profile a request names, and holds the POST to the broker's rule (approval.profilesMoved):
+# every printed fingerprint must come back as printed, or the answer is 403 and nothing is decided.
+# JUDGE_CHECK_TEST_PAGE_OF, when set, names a file holding another page_of to run in its place. ---
+for function in page_of post_decision; do
+  definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/judge-check.sh")"
+  [[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no %s()\n' "$function"; exit 1; }
+  eval "$definition"
+done
+if [[ -n "${JUDGE_CHECK_TEST_PAGE_OF:-}" ]]; then
+  # shellcheck disable=SC1090 # a page_of the caller names, for the red run against an older one
+  . "$JUDGE_CHECK_TEST_PAGE_OF"
+fi
+page_dir="$work/page"
+mkdir -p "$page_dir"
+cat >"$page_dir/stand.py" <<'PY'
+import http.server, urllib.parse
+REC = "ab" * 32
+DIGESTS = [REC + " AIRLOCK_JUDGED_TOKEN " + "1f" * 32, REC + " AIRLOCK_UNJUDGED_TOKEN " + "2e" * 32]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def send(self, code, body=b""):
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        if self.path != "/approve/" + REC or "__Host-broker-session=s" not in self.headers.get("Cookie", ""):
+            return self.send(404)
+        fields = '<input type="hidden" name="printed" value="%s">' % REC
+        fields += "".join('<input type="hidden" name="profile_digest" value="%s">' % d for d in DIGESTS)
+        fields += '<input type="hidden" name="token" value="tok"><input type="hidden" name="expires" value="9">'
+        fields += '<input type="hidden" name="record" value="%s">' % REC
+        self.send(200, ("<form>" + fields + "</form>").encode())
+    def do_POST(self):
+        form = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode(), keep_blank_values=True)
+        ok = (self.headers.get("Origin") and form.get("decision") == ["approve"] and form.get("record") == [REC]
+              and form.get("token") == ["tok"] and sorted(form.get("profile_digest", [])) == sorted(DIGESTS))
+        self.send(303 if ok else 403, b"" if ok else b"Profile changed")
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True)
+s.serve_forever()
+PY
+python3 "$page_dir/stand.py" >"$page_dir/port" &
+page_stand=$!
+for _ in $(seq 1 50); do [[ -s "$page_dir/port" ]] && break; sleep 0.1; done
+record="$(printf 'ab%.0s' $(seq 1 32))"
+# shellcheck disable=SC2034 # read by page_of and post_decision, eval'd above
+AGENT_SECRETS_URL="http://127.0.0.1:$(cat "$page_dir/port")" SIGNED_IN_COOKIE="__Host-broker-session=s" WORK_DIR="$page_dir"
+page_of "$record"
+posted="$(post_decision "$record" "$PAGE_TOKEN_FIELDS")"
+check "page_of and post_decision post back each profile_digest the page printed, and the approval is decided (303)" \
+  test "$posted" = 303
+[[ "$posted" == 303 ]] || printf 'the POST answered %s with the fields %s\n' "$posted" "$PAGE_TOKEN_FIELDS"
+# The control: the same page_of with profile_digest taken out of what it reads off the page.
+without="$(sed -n '/^page_of() {/,/^}/p' "$script_dir/judge-check.sh")"
+without="${without//\\|profile_digest/}"
+[[ "$without" != *profile_digest\\\)* ]] || { printf 'FAIL: the control could not take profile_digest out of page_of\n'; exit 1; }
+eval "$without"
+page_of "$record"
+posted="$(post_decision "$record" "$PAGE_TOKEN_FIELDS")"
+check "control: the same approval without the page's profile_digest fields is refused 403" \
+  test "$posted" = 403
+kill "$page_stand" 2>/dev/null || true
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'judge-check.test: %s failed\n' "$failed"
