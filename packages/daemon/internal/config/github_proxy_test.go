@@ -9,9 +9,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// githubProxyBlock is an agent_secrets block whose github member is lines, each indented under it.
+// githubKindHosts is the github_hosts line every test block carries: the hosts the broker's GitHub
+// kind binds.
+const githubKindHosts = "      github_hosts: [api.github.com, github.com, uploads.github.com]\n"
+
+// githubProxyBlock is an agent_secrets block whose github member is lines, each indented under it,
+// beside githubKindHosts.
 func githubProxyBlock(lines string) string {
-	return "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile + "      github:\n" + lines
+	return githubProxyBlockWith(lines, githubKindHosts)
+}
+
+// githubProxyBlockWith is githubProxyBlock with hosts, the github_hosts line or "" for none, in
+// place of githubKindHosts.
+func githubProxyBlockWith(lines, hosts string) string {
+	return "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile + "      github:\n" + lines + hosts
 }
 
 // runtime.kubernetes.agent_secrets.github maps a role to the secret names its GitHub access goes
@@ -56,6 +67,42 @@ func TestTheGitHubProxyMapRefusesWhatNoRoleCouldAskFor(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+githubProxyBlock(tc.lines)), noEnv)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("load = %v, want a refusal holding %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// runtime.kubernetes.agent_secrets.github_hosts are the hosts the broker's GitHub kind binds, which
+// each forwarder is told: before its first grant a call to one of them waits for that grant, and
+// every other call goes out at once. They settle as written, lowercased.
+func TestTheGitHubKindsHostsSettleAsWritten(t *testing.T) {
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+githubProxyBlockWith(
+		"        tester: [LEGION_REVIEW_APP]\n", "      github_hosts: [API.github.com, github.com, '*.githubusercontent.com']\n")), noEnv)
+	if err != nil {
+		t.Fatalf("load = %v", err)
+	}
+	if got, want := cfg.Runtime.Kubernetes.AgentSecrets.GitHubHosts, []string{"api.github.com", "github.com", "*.githubusercontent.com"}; !slices.Equal(got, want) {
+		t.Fatalf("agent_secrets.github_hosts settled as %v, want %v", got, want)
+	}
+}
+
+// A github map with no github_hosts is refused: a forwarder that knew no GitHub host would send
+// every call before its first grant straight out. A host list that is empty, holds a port, a URL,
+// a name that is no DNS name or one name twice is refused naming the entry.
+func TestTheGitHubKindsHostsRefuseWhatNoProxyBinds(t *testing.T) {
+	const key = "runtime.kubernetes.agent_secrets.github_hosts"
+	for _, tc := range []struct{ name, hosts, want string }{
+		{"none", "", key + " is required when runtime.kubernetes.agent_secrets.github names a role"},
+		{"an empty list", "      github_hosts: []\n", key + " names no host"},
+		{"a port", "      github_hosts: [api.github.com:443]\n", key + ` entry "api.github.com:443" is no host name`},
+		{"a URL", "      github_hosts: ['https://api.github.com']\n", key + ` entry "https://api.github.com" is no host name`},
+		{"a bare wildcard", "      github_hosts: ['*']\n", key + ` entry "*" is no host name`},
+		{"a host twice", "      github_hosts: [github.com, GitHub.com]\n", key + " names github.com twice"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+githubProxyBlockWith("        tester: [LEGION_REVIEW_APP]\n", tc.hosts)), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("load = %v, want a refusal holding %q", err, tc.want)
 			}

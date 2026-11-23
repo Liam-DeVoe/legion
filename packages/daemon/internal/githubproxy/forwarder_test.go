@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -132,7 +133,8 @@ func (p *brokerProxy) calls() []proxyCall {
 // a new grant g<n>, whose proxy password and two account placeholders name it, alive at the
 // proxy until the test ends it or the forwarder revokes it. With gate set, each ask signals
 // entered and then waits for gate to close before it answers: an ask the broker commits while the
-// forwarder stops.
+// forwarder stops. With denyFrom set, the ask of that number and every later one is denied, as a
+// broker whose policy no longer allows the names answers.
 type fakeBroker struct {
 	proxy    *brokerProxy
 	lifetime time.Duration
@@ -140,6 +142,7 @@ type fakeBroker struct {
 	asValue  bool // release the name as its value, which the forwarder must refuse
 	gate     chan struct{}
 	entered  chan struct{}
+	denyFrom int
 
 	mu      sync.Mutex
 	asked   int
@@ -159,10 +162,22 @@ func (b *fakeBroker) Request(_ context.Context, names []string, reason string, l
 	}
 	b.mu.Lock()
 	b.asked++
-	id := fmt.Sprintf("g%d", b.asked)
+	n := b.asked
+	id := fmt.Sprintf("g%d", n)
 	b.mu.Unlock()
+	if b.denyFrom > 0 && n >= b.denyFrom {
+		detail := "the policy refuses ROLE_APP"
+		return cipher.RequestAnswer{RequestID: "r-" + id, State: "denied", Detail: &detail}, nil
+	}
 	b.proxy.setLive("pw-"+id, true)
 	return cipher.RequestAnswer{RequestID: "r-" + id, State: "granted", GrantID: &id, LifetimeSeconds: &lifetime}, nil
+}
+
+// asks is how many asks the broker has answered, granted or denied.
+func (b *fakeBroker) asks() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.asked
 }
 
 func (b *fakeBroker) WaitRequest(context.Context, string, time.Duration) (cipher.RequestAnswer, error) {
@@ -217,7 +232,8 @@ func newRig(t *testing.T, change func(*Config, *fakeBroker)) *rig {
 	ghDir := filepath.Join(t.TempDir(), "gh")
 	cfg := Config{
 		Role: "implementer", Listen: "127.0.0.1:0", Secrets: []string{"ROLE_APP"}, Reason: "the implementer of ACME-1",
-		GHDir: ghDir, DefaultOwner: "acct-a", Renames: nil,
+		GitHubHosts: []string{"api.github.com", "github.com", "uploads.github.com"},
+		GHDir:       ghDir, DefaultOwner: "acct-a", Renames: nil,
 		Open: func() (Broker, error) { return broker, nil },
 		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -250,12 +266,23 @@ func (r *rig) shutdown() {
 }
 
 // connect sends a CONNECT for target through the forwarder and answers the status line and, for
-// a 200, what the tunnel echoes of one line.
+// a 200, what the tunnel echoes of one line, failing the test on an error.
 func (r *rig) connect(target string) (status string, echoed string) {
 	r.t.Helper()
-	conn, err := net.Dial("tcp", r.fwd.Addr().String())
+	status, echoed, err := r.tryConnect(target)
 	if err != nil {
 		r.t.Fatal(err)
+	}
+	return status, echoed
+}
+
+// tryConnect is connect answering its error rather than failing the test, for a goroutine other
+// than the test's own, which may not call t.Fatal. A status read before the error is answered
+// with it.
+func (r *rig) tryConnect(target string) (status string, echoed string, err error) {
+	conn, err := net.Dial("tcp", r.fwd.Addr().String())
+	if err != nil {
+		return "", "", err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
@@ -263,17 +290,17 @@ func (r *rig) connect(target string) (status string, echoed string) {
 	reader := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
 	if err != nil {
-		r.t.Fatalf("read the forwarder's answer: %v", err)
+		return "", "", fmt.Errorf("read the forwarder's answer: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return resp.Status, ""
+		return resp.Status, "", nil
 	}
 	fmt.Fprintf(conn, "ping\n")
 	line, err := reader.ReadString('\n')
 	if err != nil {
-		r.t.Fatalf("read the tunnel's echo: %v", err)
+		return resp.Status, "", fmt.Errorf("read the tunnel's echo: %w", err)
 	}
-	return resp.Status, strings.TrimSpace(line)
+	return resp.Status, strings.TrimSpace(line), nil
 }
 
 // awaitGrant waits for the forwarder's first grant.
@@ -502,7 +529,8 @@ func TestAGrantInFlightAtTheStopIsRevokedWhenItLands(t *testing.T) {
 func TestAListenerThatFailsStillRevokesTheGrants(t *testing.T) {
 	broker := &fakeBroker{proxy: newBrokerProxy(t, echoServer(t, "bound").Addr().String()), lifetime: time.Hour, hosts: []string{"api.github.com"}}
 	fwd, err := Listen(Config{Role: "implementer", Listen: "127.0.0.1:0", Secrets: []string{"ROLE_APP"}, Reason: "the implementer of ACME-1",
-		GHDir: filepath.Join(t.TempDir(), "gh"), Open: func() (Broker, error) { return broker, nil },
+		GitHubHosts: []string{"api.github.com"},
+		GHDir:       filepath.Join(t.TempDir(), "gh"), Open: func() (Broker, error) { return broker, nil },
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
@@ -527,6 +555,153 @@ func TestAListenerThatFailsStillRevokesTheGrants(t *testing.T) {
 	}
 	if revoked := broker.revokedIDs(); !slices.Equal(revoked, []string{"g1"}) {
 		t.Fatalf("the broker saw revocations %v; want g1", revoked)
+	}
+}
+
+// TestAProxyThatNeverFinishesTheTLSHandshakeIsGivenUp: an https proxy that accepts the connection
+// and never answers the TLS handshake is given up within connectThrough's bound, not waited on
+// for ever while the role's call hangs.
+//
+// The named revert: set the connection's deadline only after the handshake, and connectThrough is
+// still in the handshake when the test gives up on it.
+func TestAProxyThatNeverFinishesTheTLSHandshakeIsGivenUp(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []net.Conn
+	var mu sync.Mutex
+	t.Cleanup(func() {
+		silent.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			conn.Close()
+		}
+	})
+	go func() {
+		for {
+			conn, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	proxyURL, err := url.Parse("https://" + silent.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := &Grant{ID: "g1", ProxyURL: proxyURL, Password: "pw-g1"}
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, _, _, err := connectThrough(grant, "api.github.com:443", 500*time.Millisecond)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("connectThrough answered no error for a proxy that never finished the TLS handshake")
+		}
+		if took := time.Since(start); took > 3*time.Second {
+			t.Fatalf("connectThrough gave up after %s; want about its 500 ms bound", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("connectThrough is still in the TLS handshake 5 s after its 500 ms bound")
+	}
+}
+
+// TestConcurrent407sMakeOneAsk: after the broker ends the grant early and then denies every ask,
+// eight connections answered 407 at once make one ask between them, and eight more, one after
+// another, make none: a failed ask for a new grant is not made again for each 407'd connection
+// within replaceCooldown, so a refusing broker gets one denied request, not one per call.
+//
+// The named revert: drop the cooldown from Replace, and each 407 that comes after the denied ask
+// makes an ask of its own.
+func TestConcurrent407sMakeOneAsk(t *testing.T) {
+	r := newRig(t, func(_ *Config, b *fakeBroker) { b.denyFrom = 2 })
+	first := r.awaitGrant()
+	r.proxy.setLive("pw-"+first.ID, false)
+
+	const n = 8
+	var wg sync.WaitGroup
+	statuses := make([]string, n)
+	for i := range n {
+		wg.Go(func() { statuses[i], _ = r.connect("api.github.com:443") })
+	}
+	wg.Wait()
+	for _, status := range statuses {
+		if !strings.HasPrefix(status, "502") {
+			t.Fatalf("concurrent CONNECTs after the grant ended = %v; want 502 for each, the new grant denied", statuses)
+		}
+	}
+	if asks := r.broker.asks(); asks != 2 {
+		t.Fatalf("the broker answered %d asks; want 2, the first grant and one ask for %d concurrent 407s", asks, n)
+	}
+	for range n {
+		if status, _ := r.connect("api.github.com:443"); !strings.HasPrefix(status, "502") {
+			t.Fatalf("a CONNECT after the denied ask = %q; want 502", status)
+		}
+	}
+	if asks := r.broker.asks(); asks != 2 {
+		t.Fatalf("the broker answered %d asks after %d more 407s one after another; want still 2", asks, n)
+	}
+}
+
+// TestAHostTheKindBindsWaitsForTheFirstGrant: the hosts the forwarder is told the GitHub kind binds
+// (Config.GitHubHosts) decide which CONNECTs wait for the first grant. A host the kind gained is
+// held until the grant comes and then goes through the broker, and a host the kind does not bind
+// goes out at once. The added host is a name that never resolves (.invalid), so a CONNECT that
+// goes out directly fails at once and the test reaches no outside network.
+//
+// The named revert: have serveConn read a fixed list of GitHub's hosts in place of the hosts it
+// is told, and the CONNECT to the added host goes out at once, before any grant.
+func TestAHostTheKindBindsWaitsForTheFirstGrant(t *testing.T) {
+	const host = "codeload.github.invalid"
+	added := host + ":443"
+	gate := make(chan struct{})
+	r := newRig(t, func(cfg *Config, b *fakeBroker) {
+		cfg.GitHubHosts = append(cfg.GitHubHosts, host)
+		b.hosts = append(b.hosts, host)
+		b.gate, b.entered = gate, make(chan struct{}, 1)
+	})
+	select {
+	case <-r.broker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the forwarder made no ask")
+	}
+	public := echoServer(t, "public")
+	if status, echoed := r.connect(public.Addr().String()); !strings.HasPrefix(status, "200") || echoed != "public:ping" {
+		t.Fatalf("CONNECT %s before the first grant = %q, echo %q; want 200 at once", public.Addr(), status, echoed)
+	}
+	type answer struct {
+		status, echoed string
+		err            error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		status, echoed, err := r.tryConnect(added)
+		answered <- answer{status, echoed, err}
+	}()
+	select {
+	case got := <-answered:
+		t.Fatalf("CONNECT %s before the first grant was answered at once (%q, %v); want it held for the grant", added, got.status, got.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(gate)
+	select {
+	case got := <-answered:
+		if got.err != nil || !strings.HasPrefix(got.status, "200") || got.echoed != "bound:ping" {
+			t.Fatalf("CONNECT %s once the grant came = %q, echo %q, %v; want 200 through the broker", added, got.status, got.echoed, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("CONNECT %s was not answered once the grant came", added)
+	}
+	if calls := r.proxy.calls(); len(calls) != 1 || calls[0].target != added {
+		t.Fatalf("the broker's proxy saw %+v; want the one CONNECT to %s", calls, added)
 	}
 }
 
@@ -571,8 +746,8 @@ func TestAnythingButCONNECTIsRefused(t *testing.T) {
 // anything listens.
 func TestTheForwarderListensOnLoopbackAlone(t *testing.T) {
 	for _, address := range []string{"0.0.0.0:0", ":0", "example.com:80"} {
-		_, err := Listen(Config{Role: "implementer", Listen: address, Secrets: []string{"ROLE_APP"}, GHDir: t.TempDir(),
-			Open: func() (Broker, error) { return nil, errors.New("unused") }})
+		_, err := Listen(Config{Role: "implementer", Listen: address, Secrets: []string{"ROLE_APP"}, GitHubHosts: []string{"api.github.com"},
+			GHDir: t.TempDir(), Open: func() (Broker, error) { return nil, errors.New("unused") }})
 		if err == nil || !strings.Contains(err.Error(), "loopback") {
 			t.Errorf("Listen(%q) = %v; want a refusal naming loopback", address, err)
 		}

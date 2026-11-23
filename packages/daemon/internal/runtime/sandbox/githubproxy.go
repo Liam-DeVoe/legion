@@ -30,8 +30,13 @@ const gitHubForwarderFile = "github-forwarder.json"
 
 // forwarderPortBase is the loopback port before the first role's forwarder's: every role of an
 // issue pod shares the pod's network namespace, so each role's forwarder listens on a port of its
-// own, forwarderPortBase plus the role's place in forwarderRoles.
-const forwarderPortBase = 47800
+// own, forwarderPortBase plus the role's place in forwarderRoles (12801-12807). The ports are
+// below every range the kernel takes a connection's source port from, so no outgoing connection
+// of the pod can hold one before the forwarder binds it: a gVisor pod's netstack starts its range
+// at 16000 (gVisor's pkg/tcpip/ports firstEphemeral), Linux's default range is 32768-60999, and
+// the load test takes 14000-15999 just under a gVisor pod's range
+// (packages/envoy/loadtest/common.sh).
+const forwarderPortBase = 12800
 
 // forwarderRoles are the roles a forwarder may serve, each the place its port is counted from:
 // every workflow role, then the controller.
@@ -102,8 +107,8 @@ func (r *Runtime) proxyRoute(spec runtime.SpawnSpec) (string, []ghrepo.Rename) {
 
 // forwarderFlags are the flags l's forwarder is started with (`legion forwarder`): its role, its
 // loopback address, the role's secret names, a reason naming the role and its issue (the grant's
-// audit row names it), the bundle it writes, the directory GH_CONFIG_DIR names and the renames
-// (proxyRoute).
+// audit row names it), the hosts the broker's GitHub kind binds, the bundle it writes, the
+// directory GH_CONFIG_DIR names and the renames (proxyRoute).
 func (r *Runtime) forwarderFlags(l launch) []string {
 	role := l.spec.Role
 	reason := fmt.Sprintf("GitHub access of the %s of %s, through its forwarder", role, l.spec.Issue)
@@ -114,7 +119,11 @@ func (r *Runtime) forwarderFlags(l launch) []string {
 	for _, name := range r.agentSecrets.GitHub[role] {
 		flags = append(flags, "--secret", name)
 	}
-	flags = append(flags, "--reason", reason, "--gh-dir", gitHubProxyDir(l.spec.Generation))
+	flags = append(flags, "--reason", reason)
+	for _, host := range r.agentSecrets.GitHubHosts {
+		flags = append(flags, "--github-host", host)
+	}
+	flags = append(flags, "--gh-dir", gitHubProxyDir(l.spec.Generation))
 	if l.proxyDefault != "" {
 		flags = append(flags, "--default-owner", l.proxyDefault)
 	}

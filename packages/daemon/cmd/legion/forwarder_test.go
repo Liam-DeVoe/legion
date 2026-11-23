@@ -28,14 +28,14 @@ import (
 // TestForwarderRefusesAnIncompleteCall: every flag the forwarder needs, and the role's broker and
 // key directory, is required, and a call missing one exits 2 naming it before anything listens.
 func TestForwarderRefusesAnIncompleteCall(t *testing.T) {
-	full := []string{"--role", "implementer", "--listen", "127.0.0.1:0", "--secret", "ROLE_APP", "--reason", "the implementer of ACME-1", "--gh-dir", t.TempDir()}
+	full := []string{"--role", "implementer", "--listen", "127.0.0.1:0", "--secret", "ROLE_APP", "--reason", "the implementer of ACME-1", "--github-host", "api.github.com", "--gh-dir", t.TempDir()}
 	without := func(flag string) []string {
 		at := slices.Index(full, flag)
 		return slices.Concat(full[:at], full[at+2:])
 	}
 	t.Setenv("AGENT_SECRETS_URL", "http://127.0.0.1:1")
 	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
-	for _, flag := range []string{"--role", "--listen", "--secret", "--reason", "--gh-dir"} {
+	for _, flag := range []string{"--role", "--listen", "--secret", "--reason", "--github-host", "--gh-dir"} {
 		code, _, stderr := legionRun(t, append([]string{"forwarder"}, without(flag)...)...)
 		if code != 2 || !strings.Contains(stderr, flag+" is required") {
 			t.Errorf("legion forwarder without %s = %d, %q; want 2 naming it", flag, code, stderr)
@@ -157,7 +157,7 @@ func TestForwarderAsksWithTheRolesKeyWritesTheBundleAndRevokesAtItsStop(t *testi
 	var stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
-		done <- runForwarder(ctx, forwarderFlags{role: "implementer", listen: address, secrets: []string{"ROLE_APP"},
+		done <- runForwarder(ctx, forwarderFlags{role: "implementer", listen: address, secrets: []string{"ROLE_APP"}, githubHosts: []string{"api.github.com", "github.com"},
 			reason: "the implementer of ACME-1", ghDir: ghDir, defaultOwner: "acme-a", renames: []string{"acme-b/old=acme-a/new"}}, getenv, &stderr)
 	}()
 

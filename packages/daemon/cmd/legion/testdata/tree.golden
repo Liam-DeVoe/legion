@@ -22,7 +22,7 @@ legion config check	--config string
 legion config reference	--json bool
 legion controller
 legion controller start	--config string	--daemon-url string
-legion forwarder	hidden	--default-owner string	--gh-dir string	--listen string	--reason string	--rename stringArray	--role string	--secret stringArray
+legion forwarder	hidden	--default-owner string	--gh-dir string	--github-host stringArray	--listen string	--reason string	--rename stringArray	--role string	--secret stringArray
 legion gh	hidden	words unread
 legion git	hidden	words unread
 legion git-credential	hidden	words unread

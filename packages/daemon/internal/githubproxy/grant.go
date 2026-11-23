@@ -83,12 +83,6 @@ type Grant struct {
 	Accounts  map[string]string
 }
 
-// githubHosts are the hosts the broker's GitHub kind binds (the spec's kind table: api.github.com,
-// github.com, uploads.github.com). Before the forwarder holds its first grant, whose hosts decide
-// afterwards, a CONNECT to one of them waits for that grant, and a CONNECT to any other host goes
-// out at once (serveConn): no placeholder is in the role's files yet, and no other host needs one.
-var githubHosts = []string{"api.github.com", "github.com", "uploads.github.com"}
-
 // Binds reports whether the grant sends a CONNECT to host:port through the broker (bindsHost).
 func (g *Grant) Binds(host, port string) bool { return bindsHost(g.Hosts, host, port) }
 
@@ -184,10 +178,12 @@ type keeper struct {
 	current *Grant
 	held    map[string]time.Time // every grant asked for and not yet revoked, by id, with its expiry
 	asking  *ask                 // the ask in flight, which every caller joins
-	// lastErr is how the last ask ended, nil for a grant or before any ask, and changed is closed
-	// and replaced each time an ask ends, so awaitFirst learns of the next one.
-	lastErr error
-	changed chan struct{}
+	// lastErr is how the last ask ended, nil for a grant or before any ask, lastEnded when it
+	// ended, and changed is closed and replaced each time an ask ends, so awaitFirst learns of the
+	// next one.
+	lastErr   error
+	lastEnded time.Time
+	changed   chan struct{}
 	// stopping is set once revokeHeld began: no ask starts after it, so none lands a grant it
 	// cannot revoke.
 	stopping bool
@@ -243,36 +239,65 @@ func (k *keeper) awaitFirst(ctx context.Context) (*Grant, error) {
 	}
 }
 
-// Replace asks for a new grant at once in place of failed, the grant whose password the broker's
-// proxy refused, and answers the grant held once that ask ends. A caller whose failed grant was
-// already replaced gets the current one without asking; callers that come while an ask runs join
-// it.
+// replaceCooldown is how long after a failed ask Replace makes no new one: a 407'd connection in
+// that time is answered with the failed ask's reason. A broker that ended the role's grant and
+// refuses its names then writes one denied request for the role's calls, not one for each call,
+// and the role's calls still work again within the 60 seconds R13 gives once the broker grants
+// again (the next 407 after the cooldown asks, and the keeper's own renewal asks on its backoff).
+const replaceCooldown = 10 * time.Second
+
+// Replace asks for a new grant in place of failed, the grant whose password the broker's proxy
+// refused, and answers the grant held once that ask ends. The choice is made under the keeper's
+// lock, so asks coalesce across every 407'd connection: a caller whose failed grant was already
+// replaced gets the current one without asking; a caller that comes while an ask runs joins it;
+// and a caller within replaceCooldown of a failed ask gets that ask's failure without asking.
 func (k *keeper) Replace(ctx context.Context, failed *Grant) (*Grant, error) {
 	k.mu.Lock()
-	if k.current != nil && failed != nil && k.current.ID != failed.ID {
+	switch {
+	case k.current != nil && failed != nil && k.current.ID != failed.ID:
 		current := k.current
 		k.mu.Unlock()
 		return current, nil
+	case k.asking == nil && k.lastErr != nil && time.Since(k.lastEnded) < replaceCooldown:
+		err := k.lastErr
+		k.mu.Unlock()
+		return nil, fmt.Errorf("the last ask for a grant failed less than %s ago: %w", replaceCooldown, err)
 	}
+	a, err := k.askLocked("the broker's proxy refused the grant's password (407)")
 	k.mu.Unlock()
-	return k.obtain(ctx, "the broker's proxy refused the grant's password (407)")
+	if err != nil {
+		return nil, err
+	}
+	return a.wait(ctx)
 }
 
 // obtain makes one ask for a grant, or joins the one in flight, and on success makes it current
 // and writes its placeholders into the bundle. Once the stop began it starts none (errStopping).
 func (k *keeper) obtain(ctx context.Context, why string) (*Grant, error) {
 	k.mu.Lock()
+	a, err := k.askLocked(why)
+	k.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return a.wait(ctx)
+}
+
+// askLocked is the ask in flight, started now for why when none runs, under k.mu. Once the stop
+// began it starts none (errStopping).
+func (k *keeper) askLocked(why string) (*ask, error) {
 	if k.asking == nil {
 		if k.stopping {
-			k.mu.Unlock()
 			return nil, errStopping
 		}
-		a := &ask{done: make(chan struct{})}
-		k.asking = a
-		go k.run(a, why)
+		k.asking = &ask{done: make(chan struct{})}
+		go k.run(k.asking, why)
 	}
-	a := k.asking
-	k.mu.Unlock()
+	return k.asking, nil
+}
+
+// wait answers how a ends, or ctx's cause if ctx ends first.
+func (a *ask) wait(ctx context.Context) (*Grant, error) {
 	select {
 	case <-a.done:
 		return a.grant, a.err
@@ -295,7 +320,7 @@ func (k *keeper) run(a *ask, why string) {
 		k.current = grant
 	}
 	a.grant, a.err = grant, err
-	k.asking, k.lastErr = nil, err
+	k.asking, k.lastErr, k.lastEnded = nil, err, time.Now()
 	close(k.changed)
 	k.changed = make(chan struct{})
 	k.mu.Unlock()

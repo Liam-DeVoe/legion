@@ -1114,14 +1114,16 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
-		GitHub: map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHub:      map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHubHosts: []string{"api.github.com", "github.com"},
 	}
 	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute, ExchangeAudience: "legion-broker-exchange",
-		GitHub: map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHub:      map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
+		GitHubHosts: []string{"api.github.com", "github.com"},
 	}
 	if opts.AgentSecrets == nil || !reflect.DeepEqual(*opts.AgentSecrets, *want) {
 		t.Fatalf("AgentSecrets = %+v, want %+v", opts.AgentSecrets, want)

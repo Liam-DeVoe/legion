@@ -498,12 +498,15 @@ type PodResources struct {
 // (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one. GitHub is
 // runtime.kubernetes.agent_secrets.github: by role, the secret names whose grant the role's
 // GitHub access goes through, by way of its forwarder (proxiesGitHubIn); a role it names gets no
-// App token, and its forwarder's bundle routes by Options.GitHubRoute.
+// App token, and its forwarder's bundle routes by Options.GitHubRoute. GitHubHosts is
+// runtime.kubernetes.agent_secrets.github_hosts, the hosts the broker's GitHub kind binds, which
+// each forwarder is told (--github-host); the config refuses a GitHub map without them.
 type AgentSecrets struct {
 	URL, Audience    string
 	TokenExpiry      time.Duration
 	ExchangeAudience string
 	GitHub           map[claim.Role][]string
+	GitHubHosts      []string
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the

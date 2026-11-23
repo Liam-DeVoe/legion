@@ -152,8 +152,25 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/proxy-role-check.XXXXXX")"
 STACK_LOG="$WORK_DIR/stack.log"
 PIDS=()
 STACK_PID=""
+# BROKER_DB_URL is this check's broker's database once its broker is started, and DROP_TRIGGER
+# true once the renewal step has made its back-dating trigger, which cleanup then drops: the stack
+# drops its database at its own stop, but --keep leaves the work directory for a person, and the
+# trigger is dropped whether or not the run passed, so no later grant of that database is
+# back-dated. Cleanup then reads back how many such triggers the database holds and says so, so a
+# drop that did not happen is seen.
+BROKER_DB_URL=""
+DROP_TRIGGER=false
 cleanup() {
-	local pid
+	local pid left
+	if [ -n "$BROKER_DB_URL" ]; then
+		if [ "$DROP_TRIGGER" = true ]; then
+			pg_url_run "$BROKER_DB_URL" psql -v ON_ERROR_STOP=1 -q -c \
+				'drop trigger if exists proxy_role_check_backdate on grants; drop function if exists proxy_role_check_backdate();' >/dev/null 2>&1 ||
+				echo "proxy-role-check: could not drop the back-dating trigger proxy_role_check_backdate on grants; drop it by hand" >&2
+		fi
+		left="$(pg_url_run "$BROKER_DB_URL" psql -Atqc "select count(*) from pg_trigger where tgname = 'proxy_role_check_backdate'" 2>/dev/null)" || left="unknown (the database could not be read)"
+		echo "proxy-role-check: back-dating triggers left in this check's database: $left" >&2
+	fi
 	for pid in "${PIDS[@]+"${PIDS[@]}"}"; do
 		kill -CONT "$pid" 2>/dev/null || true
 		kill "$pid" 2>/dev/null || true
@@ -259,13 +276,17 @@ jq --arg name "${SECRET_PREFIX}proxy-role-app" --argjson stack "$STACK_APP" --ra
 	   value: ({app_id: $appid, private_key: $key} | tojson)}]' "$AIRLOCK_FAKE_SECRETS_FILE" >"$WORK_DIR/fake-secrets.json"
 chmod 600 "$WORK_DIR/fake-secrets.json"
 PERMISSIONS='{"contents": "read", "metadata": "read"}'
+# The GitHub kind's hosts, as the profiles bind them and each forwarder is told them
+# (--github-host, the role's runtime.kubernetes.agent_secrets.github_hosts in a pod).
+GITHUB_HOSTS=(api.github.com github.com uploads.github.com)
+GITHUB_HOST_FLAGS=()
+for host in "${GITHUB_HOSTS[@]}"; do GITHUB_HOST_FLAGS+=(--github-host "$host"); done
 jq --arg a "$ACCOUNT_A" --arg b "$ACCOUNT_B" --argjson permissions "$PERMISSIONS" \
+	--argjson hosts "$(printf '%s\n' "${GITHUB_HOSTS[@]}" | jq -R . | jq -sc .)" \
 	'.profiles += [
-	   {name: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions},
-	    proxy: {hosts: ["api.github.com", "github.com", "uploads.github.com"]}},
+	   {name: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}, proxy: {hosts: $hosts}},
 	   {name: "PROXY_ROLE_PLAIN", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}},
-	   {name: "PROXY_ROLE_RENEW", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions},
-	    proxy: {hosts: ["api.github.com", "github.com", "uploads.github.com"]}}]' \
+	   {name: "PROXY_ROLE_RENEW", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}, proxy: {hosts: $hosts}}]' \
 	"$AIRLOCK_PROFILES_FILE" >"$WORK_DIR/profiles.json"
 API_PORT="$(free_port)"
 PROXY_PORT="$(free_port)"
@@ -285,6 +306,9 @@ broker_env_of "$STACK_BROKER_PID" \
 BROKER_PID=$!
 PIDS+=("$BROKER_PID")
 await "this check's broker" 120 "$WORK_DIR/broker.log" '"message":"airlock proxy listening"' "$BROKER_PID"
+for entry in "${BROKER_ENV[@]}"; do
+	case "$entry" in BROKER_DATABASE_URL=*) BROKER_DB_URL="${entry#BROKER_DATABASE_URL=}" ;; esac
+done
 
 # --- The role's forwarder. ---
 FORWARDER_PORT="$(free_port)"
@@ -292,7 +316,7 @@ FORWARDER="http://127.0.0.1:$FORWARDER_PORT"
 GH_DIR="$WORK_DIR/role/gh"
 AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_KEY_DIR" \
 	"$LEGION" forwarder --role implementer --listen "127.0.0.1:$FORWARDER_PORT" --secret PROXY_ROLE_APP \
-	--reason "proxy-role-check: the implementer of ACME-1 through its forwarder" --gh-dir "$GH_DIR" \
+	--reason "proxy-role-check: the implementer of ACME-1 through its forwarder" "${GITHUB_HOST_FLAGS[@]}" --gh-dir "$GH_DIR" \
 	--default-owner "$ACCOUNT_A" >"$WORK_DIR/forwarder.log" 2>&1 &
 PIDS+=($!)
 await "the forwarder's first grant" 60 "$WORK_DIR/forwarder.log" 'holds a grant of the role' "${PIDS[-1]}"
@@ -405,10 +429,10 @@ judge "$([ "$placeholder_records" = 0 ] && echo 0)" "no placeholder reached the 
 # PROXY_ROLE_RENEW is written into the broker's database as if 49 min 45 s of its hour had passed,
 # so the forwarder asks for the next one 15 seconds after it holds it, and the broker, which reuses
 # an automatic grant only in its first half, gives a new grant then; the old grant stays live. ---
-BROKER_DB_URL=""
-for entry in "${BROKER_ENV[@]}"; do
-	case "$entry" in BROKER_DATABASE_URL=*) BROKER_DB_URL="${entry#BROKER_DATABASE_URL=}" ;; esac
-done
+[ -n "$BROKER_DB_URL" ] || {
+	echo "proxy-role-check: this check's broker names no BROKER_DATABASE_URL, so the renewal step cannot back-date a grant" >&2
+	exit 1
+}
 # The trigger matches this reason, which no other step's request carries.
 RENEW_REASON="proxy-role-check: a renewal of the implementer of ACME-1"
 pg_url_run "$BROKER_DB_URL" psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
@@ -425,12 +449,13 @@ begin
 end $$ language plpgsql;
 create trigger proxy_role_check_backdate before insert on grants for each row execute function proxy_role_check_backdate();
 SQL
+DROP_TRIGGER=true
 RENEW_PORT="$(free_port)"
 RENEW_LOG="$WORK_DIR/forwarder-renew.log"
 RENEW_GH="$WORK_DIR/role-renew/gh"
 AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_KEY_DIR" \
 	"$LEGION" forwarder --role implementer --listen "127.0.0.1:$RENEW_PORT" --secret PROXY_ROLE_RENEW \
-	--reason "$RENEW_REASON" --gh-dir "$RENEW_GH" --default-owner "$ACCOUNT_A" >"$RENEW_LOG" 2>&1 &
+	--reason "$RENEW_REASON" "${GITHUB_HOST_FLAGS[@]}" --gh-dir "$RENEW_GH" --default-owner "$ACCOUNT_A" >"$RENEW_LOG" 2>&1 &
 RENEW_PID=$!
 PIDS+=("$RENEW_PID")
 await "the renewing forwarder's first grant" 60 "$RENEW_LOG" 'holds a grant of the role' "$RENEW_PID"

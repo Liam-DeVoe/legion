@@ -460,6 +460,9 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // `github`: by role, the secret names whose grant that role's GitHub access goes through, behind
 // the broker's proxy, by way of the role's forwarder (`legion forwarder`); a role it names gets
 // no App token from the daemon. Nil, every role's App token is minted by the daemon as before.
+// GitHubHosts is `github_hosts`: the hosts the broker's GitHub kind binds, lowercased, which each
+// forwarder is told, so a call to one of them waits for its first grant and every other call goes
+// out at once; required with GitHub, since the daemon holds no copy of the broker's kinds.
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
@@ -467,6 +470,7 @@ type AgentSecretsConfig struct {
 	TokenExpirySeconds int
 	ExchangeAudience   string
 	GitHub             map[claim.Role][]string
+	GitHubHosts        []string
 }
 
 const (
@@ -545,7 +549,45 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 			return nil, err
 		}
 	}
+	if hosts := fields["github_hosts"]; hosts != nil {
+		if block.GitHubHosts, err = readGitHubHosts(hosts, agentSecretsKey+".github_hosts"); err != nil {
+			return nil, err
+		}
+	}
+	if len(block.GitHub) > 0 && len(block.GitHubHosts) == 0 {
+		return nil, fmt.Errorf("%s.github_hosts is required when %s.github names a role: the hosts the broker's GitHub kind binds, which each forwarder sends to the broker", agentSecretsKey, agentSecretsKey)
+	}
 	return block, nil
+}
+
+// hostNamePattern is a DNS name as a kind's hosts are written: lowercase labels of letters, digits
+// and inner hyphens, at least two, optionally after one `*.` (every name under the rest).
+var hostNamePattern = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// readGitHubHosts is `agent_secrets.github_hosts`: the hosts the broker's GitHub kind binds, which
+// the deployment renders from the profiles file that defines the kind. Each is lowercased; a list
+// that is empty or holds no strings, an entry that is no host name (a port, a URL, a bare `*`) and
+// a host given twice are refused naming the entry.
+func readGitHubHosts(value *yaml.Node, key string) ([]string, error) {
+	list, err := readStrings(value, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("%s names no host: give the hosts the broker's GitHub kind binds", key)
+	}
+	hosts := make([]string, 0, len(list))
+	for _, entry := range list {
+		host := strings.ToLower(entry)
+		switch {
+		case !hostNamePattern.MatchString(host):
+			return nil, fmt.Errorf("%s entry %q is no host name: a DNS name, or `*.` and one, with no scheme or port", key, entry)
+		case slices.Contains(hosts, host):
+			return nil, fmt.Errorf("%s names %s twice", key, host)
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
 }
 
 // secretNamePattern is the name the secrets broker holds a secret under, the one a session asks

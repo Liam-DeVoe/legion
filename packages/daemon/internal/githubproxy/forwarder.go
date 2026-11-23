@@ -26,16 +26,19 @@ import (
 const ProxyUser = "legion-forwarder"
 
 // Config is one forwarder: the role it serves, the loopback address it listens on, the role's
-// secret names behind the proxy and the reason its grants are asked under, the gh bundle it
-// writes the placeholders into, the account directory GH_CONFIG_DIR names, the configured renames
-// the bundle routes a moved repository by, and how it reaches the broker. RenewBefore is
-// githubproxy.RenewBefore unless a test shortens it; Open is LoadSession unless a test hands a
-// fake.
+// secret names behind the proxy and the reason its grants are asked under, the hosts the broker's
+// GitHub kind binds, the gh bundle it writes the placeholders into, the account directory
+// GH_CONFIG_DIR names, the configured renames the bundle routes a moved repository by, and how it
+// reaches the broker. GitHubHosts decide only before the first grant, whose own hosts decide
+// afterwards: a CONNECT to one of them waits for that grant, and every other CONNECT goes out at
+// once (serveConn). RenewBefore is githubproxy.RenewBefore unless a test shortens it; Open is
+// LoadSession unless a test hands a fake.
 type Config struct {
 	Role         string
 	Listen       string
 	Secrets      []string
 	Reason       string
+	GitHubHosts  []string
 	GHDir        string
 	DefaultOwner string
 	Renames      []ghrepo.Rename
@@ -69,6 +72,9 @@ func Listen(cfg Config) (*Forwarder, error) {
 	}
 	if len(cfg.Secrets) == 0 {
 		return nil, errors.New("no secret names")
+	}
+	if len(cfg.GitHubHosts) == 0 {
+		return nil, errors.New("no GitHub hosts: the hosts the broker's GitHub kind binds decide which calls wait for the first grant")
 	}
 	if cfg.GHDir == "" {
 		return nil, errors.New("no gh directory")
@@ -176,12 +182,13 @@ func (f *Forwarder) serveConn(ctx context.Context, client net.Conn) {
 	}
 	grant := f.keeper.Current()
 	if grant == nil {
-		// Before the first grant no placeholder is in the role's files, and a host GitHub's kind
-		// does not bind needs none: it goes out at once, so a broker that is down or refuses the
-		// role's names stops only GitHub's calls. A call to one of GitHub's hosts waits for the
-		// first grant while an ask can still bring it (keeper.awaitFirst), within the recovery
-		// bound, and is otherwise answered 503 with the failed ask's reason at once.
-		if !bindsHost(githubHosts, host, port) {
+		// Before the first grant no placeholder is in the role's files, and a host the GitHub kind
+		// does not bind (Config.GitHubHosts) needs none: it goes out at once, so a broker that is
+		// down or refuses the role's names stops only GitHub's calls. A call to one of the kind's
+		// hosts waits for the first grant while an ask can still bring it (keeper.awaitFirst),
+		// within the recovery bound, and is otherwise answered 503 with the failed ask's reason at
+		// once.
+		if !bindsHost(f.cfg.GitHubHosts, host, port) {
 			f.direct(client, reader, req.Host)
 			return
 		}
@@ -225,7 +232,7 @@ func (f *Forwarder) direct(client net.Conn, reader *bufio.Reader, target string)
 // call reads the new bundle. Every other answer of the broker's is relayed to the client as it
 // came, with its Cipher-Proxy-Code.
 func (f *Forwarder) throughBroker(ctx context.Context, client net.Conn, reader *bufio.Reader, target string, grant *Grant) {
-	upstream, resp, upstreamReader, err := connectThrough(grant, target)
+	upstream, resp, upstreamReader, err := connectThrough(grant, target, dialBound)
 	if err == nil && resp.StatusCode == http.StatusProxyAuthRequired {
 		upstream.Close()
 		f.log.Warn("forwarder: the broker's proxy refused the grant's password; asking for a new grant", "grant", grant.ID, "host", target, "code", resp.Header.Get("Cipher-Proxy-Code"))
@@ -264,8 +271,10 @@ func (f *Forwarder) throughBroker(ctx context.Context, client net.Conn, reader *
 // connectThrough opens a connection to grant's proxy, over TLS where its URL is https (trusting
 // the system's roots and the release's own certificate authority), and sends a CONNECT to target
 // with the grant's password, answering the connection, the proxy's answer and the reader that
-// holds any bytes past it.
-func connectThrough(grant *Grant, target string) (net.Conn, *http.Response, *bufio.Reader, error) {
+// holds any bytes past it. bound bounds the dial, and then, from one deadline set as the
+// connection opens, the TLS handshake, the CONNECT and its answer together, so a proxy that never
+// finishes any of them is given up.
+func connectThrough(grant *Grant, target string, bound time.Duration) (net.Conn, *http.Response, *bufio.Reader, error) {
 	address := grant.ProxyURL.Host
 	if grant.ProxyURL.Port() == "" {
 		port := "80"
@@ -274,10 +283,11 @@ func connectThrough(grant *Grant, target string) (net.Conn, *http.Response, *buf
 		}
 		address = net.JoinHostPort(grant.ProxyURL.Hostname(), port)
 	}
-	conn, err := net.DialTimeout("tcp", address, dialBound)
+	conn, err := net.DialTimeout("tcp", address, bound)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	_ = conn.SetDeadline(time.Now().Add(bound))
 	if grant.ProxyURL.Scheme == "https" {
 		roots, err := x509.SystemCertPool()
 		if err != nil || roots == nil {
@@ -292,7 +302,6 @@ func connectThrough(grant *Grant, target string) (net.Conn, *http.Response, *buf
 		conn = secured
 	}
 	credential := base64.StdEncoding.EncodeToString([]byte(ProxyUser + ":" + grant.Password))
-	_ = conn.SetDeadline(time.Now().Add(dialBound))
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", target, target, credential); err != nil {
 		conn.Close()
 		return nil, nil, nil, err

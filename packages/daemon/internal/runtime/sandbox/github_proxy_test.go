@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"encoding/json"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,8 @@ import (
 func proxiedSecrets() *AgentSecrets {
 	return &AgentSecrets{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
-		GitHub: map[claim.Role][]string{claim.RoleTester: {"LEGION_REVIEW_APP"}},
+		GitHub:      map[claim.Role][]string{claim.RoleTester: {"LEGION_REVIEW_APP"}},
+		GitHubHosts: []string{"api.github.com", "github.com", "uploads.github.com", "codeload.github.com"},
 	}
 }
 
@@ -99,10 +102,11 @@ func TestARoleBehindTheProxyIsStartedWithItsForwarder(t *testing.T) {
 		t.Fatal("the tester's start runs no forwarder")
 	}
 	dir := generationDir(spec.Generation) + "/gh"
-	listen := "127.0.0.1:47804"
+	listen := "127.0.0.1:12804"
 	for name, want := range map[string][]string{
 		"--role": {"tester"}, "--listen": {listen}, "--secret": {"LEGION_REVIEW_APP"}, "--gh-dir": {dir},
 		"--default-owner": {"cybermonklabs"}, "--rename": {"sjawhar/legion-smoke=cybermonklabs/legion-smoke"},
+		"--github-host": {"api.github.com", "github.com", "uploads.github.com", "codeload.github.com"},
 	} {
 		if got := flagValues(flags, name); !slices.Equal(got, want) {
 			t.Errorf("the forwarder's %s = %v, want %v", name, got, want)
@@ -199,13 +203,38 @@ func TestARoleTheMapLeavesOutIsToldNoForwarderFlag(t *testing.T) {
 // shares the pod's network namespace.
 func TestEveryRolesForwarderHasAPortOfItsOwn(t *testing.T) {
 	want := map[claim.Role]string{
-		claim.RoleArchitect: "127.0.0.1:47801", claim.RolePlanner: "127.0.0.1:47802", claim.RoleImplementer: "127.0.0.1:47803",
-		claim.RoleTester: "127.0.0.1:47804", claim.RoleReviewer: "127.0.0.1:47805", claim.RoleMerger: "127.0.0.1:47806",
-		claim.RoleController: "127.0.0.1:47807",
+		claim.RoleArchitect: "127.0.0.1:12801", claim.RolePlanner: "127.0.0.1:12802", claim.RoleImplementer: "127.0.0.1:12803",
+		claim.RoleTester: "127.0.0.1:12804", claim.RoleReviewer: "127.0.0.1:12805", claim.RoleMerger: "127.0.0.1:12806",
+		claim.RoleController: "127.0.0.1:12807",
 	}
 	for role, address := range want {
 		if got := forwarderAddress(role); got != address {
 			t.Errorf("forwarderAddress(%s) = %s, want %s", role, got, address)
+		}
+	}
+}
+
+// No forwarder's port is one the kernel may hand an outgoing connection as its source port
+// before the forwarder binds it: each is below the first ephemeral port of a gVisor pod (16000,
+// gVisor's netstack firstEphemeral, pkg/tcpip/ports/ports.go), below Linux's default range
+// (32768-60999, the range a runc pod and a developer box read in ip_local_port_range), and below
+// the 2000 ports the load test takes just under a gVisor pod's range (14000-15999,
+// packages/envoy/loadtest/common.sh).
+//
+// The named revert: put the ports back at 47801 and up, and every one is inside both ranges.
+func TestNoForwarderPortIsAnEphemeralOne(t *testing.T) {
+	const belowEverything = 14000
+	for _, role := range forwarderRoles {
+		_, portText, err := net.SplitHostPort(forwarderAddress(role))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if port >= belowEverything || port < 1024 {
+			t.Errorf("the %s's forwarder port %d is not in 1024-%d, below every ephemeral range a pod may have", role, port, belowEverything-1)
 		}
 	}
 }
