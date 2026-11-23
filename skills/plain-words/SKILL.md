@@ -40,7 +40,7 @@ Plain verbs that name a real action stay (merge, delete, send, read, measure), a
 6. A word that rates the thing ("comprehensive", "seamless"): give the measurement instead.
 7. A paragraph whose first and last sentences say the same thing: delete one.
 
-No ALL-CAPS headings or phrases. Bold only a number, a name or a choice the reader must find again. A passage that needs a shouted handle needs cutting instead, in a brief to another agent too.
+No ALL-CAPS headings or phrases. Bold only a number, a name, a choice the reader must find again, or, in a skill, the label that starts a rule. A passage that needs a shouted handle needs cutting instead, in a brief to another agent too.
 
 ## Before you send
 
