@@ -129,13 +129,16 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 	contains("core/common.md", readSource, true)
 	contains("core/common.md", noDefer, true)
-	// The four roles that compose common.md do not repeat it; core/oracle.md is joined to no
-	// common part and composed for no role, so it keeps the read-first rule itself, never the
-	// hardening ledger (it changes nothing).
+	// The five roles that compose common.md do not repeat it: the four whose core part Compose
+	// joins to it, and acceptance, whose own part (acceptance.md) Compose joins to it in place of a
+	// core part; core/oracle.md is joined to no common part and composed for no role, so it keeps
+	// the read-first rule itself, never the hardening ledger (it changes nothing).
 	for _, role := range composedWithCommon {
 		contains("core/"+role+".md", readSource, false)
 		contains("core/"+role+".md", noDefer, false)
 	}
+	contains("acceptance.md", readSource, false)
+	contains("acceptance.md", noDefer, false)
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
@@ -470,8 +473,8 @@ func TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy(t *tes
 
 // Background work is on for every role: Legion writes no Oh My Pi settings overlay, so
 // a long bash call becomes a background job and a task subagent runs as one, and a role reads a
-// result with the `wait` tool. Nothing takes a turn away from a role either: a CI red
-// that ends a phase starts the implementer at once and tells the role by one message, which stops
+// result with the `wait` tool. Nothing takes a turn away from a role either: a CI red moves no
+// phase and tells the roles that work the issue by one message (the workflow's checks), which stops
 // nothing. So no part may say a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and a part that dispatches a task subagent names the tool that reads its result.
 //
@@ -745,7 +748,7 @@ func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 	}
 }
 
-// The headless fragment sends four runs to CI on the pull request, and
+// The headless fragment sends four runs to CI on the pull request, where the issue has one, and
 // skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
 // may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
 // fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
