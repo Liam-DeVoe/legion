@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -256,11 +258,13 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 // create, and the context is cancelled: the open answers at once (Bounded), leaving its create
 // running on a goroutine of its own. The held request is then written to the server, which answers
 // it, and that create reads its context before the STREAM.CREATE (addBucketStream) and sends none,
-// so the server sees no create and holds no bucket. With that read removed, the STREAM.CREATE goes
-// out after the release and makes the bucket, an operator's interrupted `envoy-infra buckets
-// create` among such opens. The control is the same hold released with the context live: the
-// create goes on and makes the bucket, so the watch sees a create sent after a release within the
-// 2 s the first half waits.
+// so the server sees no create and holds no bucket. The test waits for that goroutine to end
+// (createGoroutines), not a fixed time, before it reads what the create sent: with the read
+// replaced by a 3 s sleep, the STREAM.CREATE goes out once the sleep ends and the test sees it,
+// where at 69cde74210 it waited 2 s and passed that change. Before the release it checks that a
+// goroutine of the open runs addBucketStream, so the wait is not a wait for nothing. The test is
+// not parallel: while it runs, every test that calls t.Parallel is paused. The control is the same
+// hold released with the context live: the create goes on and makes the bucket.
 func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCreate(t *testing.T) {
 	stream := "KV_" + SessionBucket
 	// A server of the test's own, so no other test's account info rides the relay's subject.
@@ -294,9 +298,22 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 		return answer
 	}
 
+	before := createGoroutines()
 	ctx, cancel := context.WithCancel(t.Context())
 	release := make(chan struct{})
 	answer := open(ctx, release)
+	// The create the open leaves running once its context ends: each goroutine running the create
+	// step now that did not before the open. Goroutine ids are never reused.
+	var ours []string
+	for id := range createGoroutines() {
+		if !before[id] {
+			ours = append(ours, id)
+		}
+	}
+	if len(ours) == 0 {
+		close(release)
+		t.Fatalf("no goroutine of the open runs addBucketStream while its account info is held, so the wait for the create to end would wait for nothing")
+	}
 	cancel()
 	select {
 	case err := <-answer:
@@ -311,9 +328,15 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 	if _, err := infos.NextMsg(30 * time.Second); err != nil {
 		t.Fatalf("the held account info did not reach the server in 30 s after its release: %v", err)
 	}
-	// The server answers the account info at once, and the create would send its STREAM.CREATE
-	// within milliseconds of that answer.
-	time.Sleep(2 * time.Second)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		running := createGoroutines()
+		if !slices.ContainsFunc(ours, func(id string) bool { return running[id] }) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the create the open left running (goroutines %v) still ran 30 s after its held account info was released", ours)
+		}
+	}
 	if got := writes.Take(t); len(got) != 0 {
 		t.Fatalf("the open whose context ended sent %v after its held account info was answered, want no create", got)
 	}
@@ -330,6 +353,27 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.CREATE."+stream {
 		t.Fatalf("control: the open sent %v, want its create alone", got)
 	}
+}
+
+// createGoroutines is the id of each goroutine whose stack runs a bucket's create step,
+// addBucketStream, read from every goroutine's stack (runtime.Stack).
+func createGoroutines() map[string]bool {
+	stacks := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(stacks, true)
+		if n < len(stacks) {
+			stacks = stacks[:n]
+			break
+		}
+		stacks = make([]byte, 2*len(stacks))
+	}
+	ids := map[string]bool{}
+	for _, stack := range strings.Split(string(stacks), "\n\n") {
+		if header, _, ok := strings.Cut(stack, " ["); ok && strings.Contains(stack, "github.com/sjawhar/envoy/internal/bus.addBucketStream(") {
+			ids[strings.TrimPrefix(header, "goroutine ")] = true
+		}
+	}
+	return ids
 }
 
 // A create-only open answers with a handle only once the member answering has applied its create
