@@ -5,6 +5,13 @@ set -euo pipefail
 # NATS_NKEY_SEED or NATS_NKEY_SEED_FILE.
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 
+# This script's own directory, which holds the fake listener's and the fake broker's account
+# tokens. It is read here, before the build below changes directory to packages/envoy: a caller
+# that runs the script by a relative path, as e2e/acceptance/one-inbox-callers.sh boots the base
+# build (`bash e2e/run-server.sh` from packages/dispatch), names it from the directory it started
+# in, which a read after that change no longer resolves.
+e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # The server is a test fixture. It must not inherit a service endpoint,
 # credential, data file or configuration from the shell that starts Playwright:
 # a Legion pane exports ENVOY_URL (the real listener), DISPATCH_URL and
@@ -173,7 +180,7 @@ broker_env=()
 if [ -z "${DISPATCH_E2E_AGENT_SECRETS_URL+set}" ]; then
   : "${FAKE_BROKER_PORT:?FAKE_BROKER_PORT must name the fake secrets broker (e2e/fake-broker.ts) this server reads}"
   broker_env=(
-    DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$(cd "$(dirname "$0")" && pwd)/fake-broker-account-token"
+    DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$e2e_dir/fake-broker-account-token"
     DISPATCH_AGENT_SECRETS_URL="http://127.0.0.1:$FAKE_BROKER_PORT"
   )
 elif [ -n "$DISPATCH_E2E_AGENT_SECRETS_URL" ]; then
@@ -454,7 +461,7 @@ exec "${listen[@]}" env \
   DISPATCH_TEST_UNRECORDED_MARK_TTL="$unrecorded_mark_ttl" \
   DISPATCH_WEB_DIST="$web_dist" \
   ENVOY_URL="http://127.0.0.1:$fake_envoy_port" \
-  ENVOY_ACCOUNT_TOKEN_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fake-listener-account-token" \
+  ENVOY_ACCOUNT_TOKEN_FILE="$e2e_dir/fake-listener-account-token" \
   "${gomaxprocs_env[@]}" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \
