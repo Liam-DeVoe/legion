@@ -1040,6 +1040,15 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
+	// PodRefused is told when a launch is refused because the claim's issue pod cannot run it
+	// until that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate), at
+	// the first such refusal and hourly while that pod stands (podRefused): the claim is suspended,
+	// charged nothing, and runs nothing until another pod stands. pod is the refusing pod's uid.
+	// queue is whether no outbox start stands behind the launch (a relaunch of the machine's own,
+	// an operator's resume), so the daemon queues a start of the claim, which resumes it once the
+	// pod is replaced. Nil tells no one. It is called inside the machine's decision and returns at
+	// once.
+	PodRefused func(c Claim, pod, detail string, queue bool)
 	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
 	// once per process end (sessionGone says where and when, and why then). It is the daemon's
 	// clean stop of that session's registration, which makes the listener read it `gone` at once

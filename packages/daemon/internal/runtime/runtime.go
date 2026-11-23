@@ -232,6 +232,18 @@ type IssuePodReader interface {
 // (IssuePodRoles).
 var ErrAwaitsPodUpdate = errors.New("the issue's pod cannot run this launch, and only its update round or its release replaces it")
 
+// AwaitsPodUpdate is a launch refused with ErrAwaitsPodUpdate that names Pod, the uid of the
+// issue's live pod that cannot run it: the supervisor tries no launch of the claim while that pod
+// stands (supervise's podRefused). Its text is Reason followed by the sentinel's.
+type AwaitsPodUpdate struct {
+	Pod    string
+	Reason string
+}
+
+func (e AwaitsPodUpdate) Error() string { return e.Reason + ": " + ErrAwaitsPodUpdate.Error() }
+
+func (e AwaitsPodUpdate) Unwrap() error { return ErrAwaitsPodUpdate }
+
 // IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
 // without role, a name the caller asks both as the slot of a claim and as the role of its step
 // (slots are named for roles), and that pod's uid; and whether the launcher of slot in the issue's
