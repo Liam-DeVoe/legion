@@ -157,11 +157,14 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 }
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
-// one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
+// one place the workflow names an act's agent: for a step, the agent of that step, so the steps of
 // one key name one agent; for the retro, the agent of the task's last step of the type
-// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
-// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
-// there the role stands for the agent (Engine.stepToken).
+// implementation, which runs it; and for the merge, the merger, one agent of the issue that does
+// the merge of each task (its role's own name, whose token is the merger's claim, as
+// record.RunningStep names it), so two merges of one issue run one at a time (Engine.start). It is
+// "" for a walk with no plan rows, for a step of the key owner, whose claim is no name on the
+// issue, and for a place the task does not hold: there the role stands for the agent
+// (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	if !w.Stored {
 		return ""
@@ -177,6 +180,8 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 				return w.Steps[i].AgentName()
 			}
 		}
+	case record.PlaceMerge:
+		return claim.Agent(claim.RoleMerger)
 	}
 	return ""
 }

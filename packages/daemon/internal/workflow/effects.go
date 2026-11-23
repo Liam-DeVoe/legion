@@ -495,17 +495,20 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 	return e.started(ctx, tx, s, role, sent, entry, startMarks{stored: true})
 }
 
-// waitForAgent says whether the step at the place of s's task waits for its agent (Walk.AgentAt)
-// rather than starts, and writes
-// what it waits for (record.Store.SetStepWait). The agent is busy where the issue's running steps,
-// read from the store in this transaction, give it a step of another task, or where a step of
-// another task has waited for it since earlier (record.Store.AgentWaiter), so a freed agent goes to
-// the step that waited longest. A step a move just put at its task's place is a running step until
-// its own start, and its task is left out, so it counts as no busy step. A step that waits keeps
-// the moment its wait began, so its place in the line holds, and the log says which step the agent
-// does or which waits before it. A step whose agent is free waits for nothing (its wait is ended,
-// and w with it), and so does a step no agent of the issue does: the merge, and a step of the key
-// owner.
+// waitForAgent says whether the act at the place of s's task, a step, its retro or its merge, waits
+// for its agent (Walk.AgentAt) rather than starts, and writes what it waits for
+// (record.Store.SetStepWait). The agent is busy where the issue's running steps, read from the
+// store in this transaction, give it an act of another task, or where an act of another task has
+// waited for it since earlier (record.Store.AgentWaiter), so a freed agent goes to the act that
+// waited longest. That second rule has one exemption: the retro of the task whose step on the agent
+// just ended (retroFollowsItsStep) starts ahead of an act that waited for the agent, so the agent
+// does the retro of its task before the next task's work. No step and no merge is exempt, so a task
+// whose steps keep returning never holds its agent from a waiter. An act a move just put at its
+// task's place is a running act until its own start, and its task is left out, so it counts as no
+// busy act. An act that waits keeps the moment its wait began, so its place in the line holds, and
+// the log says which act the agent does or which waits before it. An act whose agent is free waits
+// for nothing (its wait is ended, and w with it), and so does an act no agent of the issue does: a
+// step of the key owner.
 func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.Role) (bool, error) {
 	issue, w := s.issue, &s.walk
 	agent := w.AgentAt(w.Place)
@@ -527,8 +530,14 @@ func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, s *TaskScope, role
 			if err != nil {
 				return false, err
 			}
-			if waiter != w.Task {
-				behind = waiter
+			if waiter != w.Task && waiter != "" {
+				follows, err := e.retroFollowsItsStep(ctx, tx, *s, agent)
+				if err != nil {
+					return false, err
+				}
+				if !follows {
+					behind = waiter
+				}
 			}
 		}
 	}
@@ -557,6 +566,40 @@ func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, s *TaskScope, role
 	}
 	e.logOnCommit(ctx, "workflow: a step waits for its agent", args...)
 	return true, nil
+}
+
+// retroFollowsItsStep says whether s's task stands at its retro and the newest start of agent, the
+// retro's agent, in the issue is a start of a step of that task: the step whose end moved the task
+// into its retro, which the task has left. The starts are the issue's step_starts rows
+// (record.Store.StepStarts) of each act of each task of the plan whose agent is agent (Walk.AgentAt).
+// The newest is read by the moment its start wrote, so once the settle hands the agent on, the
+// newest start is the waiter's, and the answer never outlives the fact that ended the step. It
+// reads no mark and writes nothing.
+func (e *Engine) retroFollowsItsStep(ctx context.Context, tx pgx.Tx, s TaskScope, agent claim.Agent) (bool, error) {
+	if s.walk.Place.Kind != record.PlaceRetro || s.plan == nil {
+		return false, nil
+	}
+	var newest record.StepPlace
+	var at time.Time
+	for _, w := range walksOf(s.issue.Key, s.plan) {
+		places := []record.TaskPlace{{Kind: record.PlaceRetro}, {Kind: record.PlaceMerge}}
+		for i := range w.Steps {
+			places = append(places, record.TaskPlace{Kind: record.PlaceStep, Position: i + 1})
+		}
+		for _, place := range places {
+			if w.AgentAt(place) != agent {
+				continue
+			}
+			start, err := e.store.StepStarts(ctx, tx, s.issue.Key, place.StepPlace(w.Task))
+			if err != nil {
+				return false, err
+			}
+			if start.StartedAt.After(at) {
+				newest, at = place.StepPlace(w.Task), start.StartedAt
+			}
+		}
+	}
+	return newest.Task == s.walk.Task && newest.Kind == record.PlaceStep, nil
 }
 
 // joinNeeds joins the needs of w's task of issue at a start of the task whose step waits for that
