@@ -22,11 +22,18 @@ const (
 	heldPortChildEnv = "CMDTEST_HELD_PORT_CHILD"
 	// heldPortFD is the variable Pass names the child's inherited socket in.
 	heldPortFD = "CMDTEST_LISTEN_FD"
+	// buildChildEnv makes this test binary's TestMain run its tests under Main ("main") or without
+	// it ("plain"): the processes the build rows (build_test.go) start, whose TestBuildChild builds
+	// hello.
+	buildChildEnv = "CMDTEST_BUILD_CHILD"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv(heldPortChildEnv) == "1" {
 		os.Exit(heldPortChild())
+	}
+	if os.Getenv(buildChildEnv) == "main" {
+		os.Exit(Main(m))
 	}
 	os.Exit(m.Run())
 }
