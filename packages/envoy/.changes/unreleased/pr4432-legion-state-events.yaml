@@ -50,11 +50,12 @@ body: |-
   one exception: a boot of a marked store, or of the store the setting named before, while the
   project's store is one a read verified, makes a whole read, so a daemon that a redeploy started
   behind the setting's URL in that store is found again, and a read that finds it takes the mark
-  off. A
-  project keeps at most 16 messages waiting for its turn. A message that arrives past that does
-  not wait and makes no read: it owes a read, which the read in flight does not clear, one such
-  message holds that read, and Dispatch acknowledges the others. So a project whose daemon does
-  not answer a read holds 17 messages of the consumer's window of 256.
+  off. A project keeps at most 16 messages waiting for its turn. A message that arrives past that
+  does not wait and makes no read: it owes a read, which the read in flight does not clear, one
+  such message holds that read, and Dispatch acknowledges the others. A message of a marked or
+  old store does too while a whole read of the project is in flight, since that read can find its
+  store behind the setting's URL. So a project whose daemon does not answer a read holds 17
+  messages of the consumer's window of 256.
   A whole read asks for `GET /legion/v1/state?view=observed`, which carries only the fields
   Dispatch reads. A daemon of an earlier build ignores the query and serves its whole state, which
   Dispatch reads the same way. A whole read reads at most 64 MiB of the answer, not 32 MiB, and

@@ -725,7 +725,11 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 // the project's position (lockPosition), it answers outcomeDropped for a project with no setting,
 // finishes a message whose hold a write of the setting ended (cursor.releases, endHold), and
 // answers outcomeForgotten, writing nothing, for a message of a store the cursor drops
-// (cursor.forgets). Every other message owes a read: the one its position calls for against the
+// (cursor.forgets) while no whole read of the project is in flight (readsNow). A read in flight
+// can find that store behind the setting's URL (the same store behind a new URL, a marked store a
+// redeploy started there), and the cursor it leaves then applies that store's later events, so a
+// message of it past the cap is judged as any other: its events may be past that read's snapshot.
+// Every other message owes a read: the one its position calls for against the
 // cursor as it stands (stateMessage.unfollowed: a boot that does not follow calls for
 // ReadReasonBoot), and ReadReasonGap otherwise, since its events may be past the snapshot of the
 // read in flight, which does not clear a reason that arrives while it is in flight (recordWhole).
@@ -754,7 +758,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 		return outcomeDropped, nil
 	case current.releases(attempt.seq):
 		return endHold(ctx, tx, project, current, message.StateID)
-	case current.forgets(message.StateID):
+	case current.forgets(message.StateID) && !in.readsNow(project):
 		return outcomeForgotten, nil
 	}
 	if !current.exists {
@@ -782,6 +786,14 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	}
 	attempt.answered(answer)
 	return outcomeCrowded, nil
+}
+
+// readsNow reports whether a whole read of project is in flight on its runner (reads).
+func (in *Intake) readsNow(project string) bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	_, reading := in.reading[project]
+	return reading
 }
 
 // inFlight is current with the start of the whole read in flight on project's runner (reading) as
