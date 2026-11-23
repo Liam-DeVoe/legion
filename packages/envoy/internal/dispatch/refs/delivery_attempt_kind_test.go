@@ -12,7 +12,7 @@ import (
 )
 
 // TestDeliveryAttemptIsAResolvedNodeKind holds a delivery attempt to the node kinds this package
-// resolves. This change writes a node of kind graphstore.KindDeliveryAttempt for every attempt to
+// resolves. This release writes a node of kind graphstore.KindDeliveryAttempt for every attempt to
 // reach a session or a role, so a read of the graph that meets one - the far end of an edge, a
 // node a reader opens, a count beside a list - resolves it as it resolves every other node the
 // store holds itself: nodeRegistry carries its loader (loadStoreNodes) and nodeKinds lists it,

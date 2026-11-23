@@ -97,10 +97,10 @@ type Write struct {
 	// mentioned is, for a comment or a message, the login of each person a mention of its text
 	// newly names (ReachesMentioned), in the order the text first names them.
 	mentioned []string
-	// mentions is, for a comment or a message an older build wrote, the mentions tuple to each
-	// person its text names, and identities to each session and role, which RecordOlder appends
-	// under the write's event (Names).
-	mentions, identities []graphstore.Tuple
+	// mentionedPeople is, for a comment or a message an older build wrote, the mentions tuple to
+	// each person its text names, and identities to each session and role, which RecordOlder
+	// appends under the write's event (Names).
+	mentionedPeople, identities []graphstore.Tuple
 	// unstored is a write whose head pointers the store holds no tuple of (Unstored).
 	unstored bool
 	// members are the thread's members as the write's own read phase read them (Members, or an
@@ -247,7 +247,7 @@ func mentionedLogins(indexed graphstore.Uncaused) []string {
 // by nothing of the record: a session is told of a write through its delivery routes and the
 // outbox, which the backfill's comment mention, attempt and published-delivery passes state.
 func (w Write) Names(identities, people []graphstore.Tuple) Write {
-	w.identities, w.mentions = identities, people
+	w.identities, w.mentionedPeople = identities, people
 	return w.ReachesMentioned(graphstore.Uncaused{People: people})
 }
 

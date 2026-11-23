@@ -37,20 +37,6 @@ func writeAsTheReleaseBefore(t *testing.T, writes addressingWrites, rows func(ct
 	})
 }
 
-// queuedInboxEvents is the events events_inbox_owed holds, in id order.
-func queuedInboxEvents(t *testing.T, database *store.Store) []int64 {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select event_id from events_inbox_owed order by event_id`)
-	if err != nil {
-		t.Fatalf("read the queue of an older build's events: %v", err)
-	}
-	queued, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
-		t.Fatalf("read the queue of an older build's events: %v", err)
-	}
-	return queued
-}
-
 // newestOf is whether the newest tuple of the relation (fromKind/fromID -kind-> toKind/toID)
 // asserts it, and the event it was stated under; false and the sentinel where the store holds none.
 func newestOf(t *testing.T, database *store.Store, fromKind, fromID, kind, toKind, toID string) (bool, int64) {
@@ -126,19 +112,19 @@ func requireTheThreadsAgree(t *testing.T, database *store.Store, what string) {
 }
 
 // catchUpTheTick runs the block-index tick's catch-up (CatchUpOwedRows) until it reads no full
-// batch.
-func catchUpTheTick(t *testing.T, database *store.Store) {
+// batch, failing the test, under what, on its error or on a hundredth full batch.
+func catchUpTheTick(t *testing.T, database *store.Store, what string) {
 	t.Helper()
 	for round := 1; ; round++ {
 		caught, err := CatchUpOwedRows(context.Background(), database)
 		if err != nil {
-			t.Fatalf("catch the inbox's rows up: %v", err)
+			t.Fatalf("%s: catch the inbox's rows up: %v", what, err)
 		}
 		if !caught.More {
 			return
 		}
 		if round == 100 {
-			t.Fatalf("the catch-up still reads a full batch after %d rounds", round)
+			t.Fatalf("%s: the catch-up still reads a full batch after %d rounds, want it done", what, round)
 		}
 	}
 }
@@ -190,21 +176,21 @@ func TestTheTickMovesAnAskAnOlderBuildsReopenRestoresToWhoeverItWaitsOn(t *testi
 		return model.Event{IssueKey: new("CENS-1"), Type: "ask.opened", Actor: carol,
 			Payload: model.AskEventPayload{Ask: model.Ask{ID: asked.id, IssueKey: new("CENS-1"), Author: alice, CreatedAt: asked.at}}}, err
 	})
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 1 || queued[0] != reopened.ID {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != reopened.ID {
 		t.Fatalf("the queue holds %v after the older build's close and reopen, want the restore's ask.opened %d alone", queued, reopened.ID)
 	}
 	if !eventsOwe(t, writes.database, after, reopened.ID) {
 		t.Errorf("the older build's restore of an ask owes the tick's catch-up nothing, want it owed")
 	}
 
-	catchUpTheTick(t, writes.database)
+	catchUpTheTick(t, writes.database, "the restore's move")
 	requireStands(t, writes.database, "the restore's move", reopened.ID,
 		graphstore.KindAsk, asked.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, "dave")
 	requireStands(t, writes.database, "the restore's move", reopened.ID,
 		graphstore.KindPerson, "dave", graphstore.TupleParticipatesIn, graphstore.KindAsk, asked.id)
 	requireEnded(t, writes.database, "the restore's move", graphstore.KindAsk, asked.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob")
 	requireEnded(t, writes.database, "the restore's move", graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, graphstore.KindAsk, asked.id)
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 0 {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the tick's catch-up, want none", queued)
 	}
 	if eventsOwe(t, writes.database, after, reopened.ID) {
@@ -247,7 +233,7 @@ func TestTheLastOfAnOlderBuildsMovesOfAnAskStatesItsArm(t *testing.T) {
 	}
 	first := reassign("carol", dave)
 	second := reassign("dave", bob)
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 2 || queued[0] != first.ID || queued[1] != second.ID {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 2 || queued[0] != first.ID || queued[1] != second.ID {
 		t.Fatalf("the queue holds %v after the older build's two changes of CENS-1's assignee, want %d and %d", queued, first.ID, second.ID)
 	}
 
@@ -258,7 +244,7 @@ func TestTheLastOfAnOlderBuildsMovesOfAnAskStatesItsArm(t *testing.T) {
 		graphstore.KindPerson, "dave", graphstore.TupleParticipatesIn, graphstore.KindAsk, asked.id)
 	requireEnded(t, writes.database, "the later move", graphstore.KindAsk, asked.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, "bob")
 	requireEnded(t, writes.database, "the later move", graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, graphstore.KindAsk, asked.id)
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 0 {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the backfill, want none", queued)
 	}
 	requireTheThreadsAgree(t, writes.database, "after the backfill of the two moves")
@@ -302,7 +288,7 @@ func TestEachOfAnOlderBuildsMovesInOneBatchIsMadeByItsOwnActor(t *testing.T) {
 	fromLaptop := model.Actor{Kind: "user", ID: "bob", Origin: &model.ActorOrigin{Host: "laptop"}, Proven: true}
 	toCarol := handOn(first, "carol", fromLaptop)
 	toDave := handOn(second, "dave", bob)
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 2 || queued[0] != toCarol.ID || queued[1] != toDave.ID {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 2 || queued[0] != toCarol.ID || queued[1] != toDave.ID {
 		t.Fatalf("the queue holds %v after the older build's two hand-ons, want %d and %d", queued, toCarol.ID, toDave.ID)
 	}
 
@@ -322,7 +308,7 @@ func TestEachOfAnOlderBuildsMovesInOneBatchIsMadeByItsOwnActor(t *testing.T) {
 		requireMadeBy(t, writes.database, what, moved.by,
 			graphstore.KindPerson, moved.to, graphstore.TupleParticipatesIn, graphstore.KindAsk, moved.ask)
 	}
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 0 {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the backfill, want none", queued)
 	}
 	requireTheThreadsAgree(t, writes.database, "after the backfill of the two hand-ons")
@@ -358,7 +344,7 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfACommentNames(t *testing.T
 		return model.Event{IssueKey: new("CENS-1"), Type: "comment.edited", Actor: alice,
 			Payload: map[string]any{"id": thread.id, "body": body}}, err
 	})
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 1 || queued[0] != edited.ID {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 1 || queued[0] != edited.ID {
 		t.Fatalf("the queue holds %v after the older build's edit, want its comment.edited %d alone", queued, edited.ID)
 	}
 
@@ -382,7 +368,7 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsEditOfACommentNames(t *testing.T
 	if aliceUnderEdit != 0 {
 		t.Errorf("the edit stated %d participates_in of alice, who wrote it, want none", aliceUnderEdit)
 	}
-	if queued := queuedInboxEvents(t, writes.database); len(queued) != 0 {
+	if queued := queuedEvents(t, writes.database, "events_inbox_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the backfill, want none", queued)
 	}
 	requireTheThreadsAgree(t, writes.database, "after the backfill of the edit")

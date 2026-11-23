@@ -119,23 +119,14 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 		return 0, err
 	}
 	if len(w.identities) > 0 {
-		identities := make([]graphstore.Tuple, 0, len(w.identities))
-		for _, mention := range w.identities {
-			mention.SourceEvent = event
-			identities = append(identities, mention)
-		}
+		identities := UnderEvent(w.identities, event)
 		if err := graphstore.Write(ctx, tx, nil, identities); err != nil {
 			return 0, fmt.Errorf("state the sessions and roles %s/%s names: %w", w.NodeKind, w.NodeID, err)
 		}
 		stated += len(identities)
 	}
-	if len(w.mentions) > 0 {
-		mentions := make([]graphstore.Tuple, 0, len(w.mentions)+len(people))
-		for _, mention := range w.mentions {
-			mention.SourceEvent = event
-			mentions = append(mentions, mention)
-		}
-		people = append(mentions, people...)
+	if len(w.mentionedPeople) > 0 {
+		people = append(UnderEvent(w.mentionedPeople, event), people...)
 	}
 	for _, login := range reached {
 		people = append(people, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
@@ -146,7 +137,7 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 		}
 	}
 	if event != graphstore.NoEvent {
-		people = append(people, MentionParticipation(thread.kind, thread.id, graphstore.Uncaused{People: w.mentions}, w.Who, w.At, event)...)
+		people = append(people, MentionParticipation(thread.kind, thread.id, graphstore.Uncaused{People: w.mentionedPeople}, w.Who, w.At, event)...)
 	}
 	if err := graphstore.ToPerson(ctx, tx, people); err != nil {
 		return 0, fmt.Errorf("deliver %s/%s to who wrote in %s/%s before it: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
@@ -158,6 +149,18 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 		}
 	}
 	return stated + len(cleared), nil
+}
+
+// UnderEvent is tuples, each stated under event: an older write's own, as RecordOlder and the
+// backfill's pass over an older build's comment edits state what such a write names. It is a new
+// slice, and tuples is left as it was.
+func UnderEvent(tuples []graphstore.Tuple, event int64) []graphstore.Tuple {
+	under := make([]graphstore.Tuple, len(tuples))
+	for index, tuple := range tuples {
+		tuple.SourceEvent = event
+		under[index] = tuple
+	}
+	return under
 }
 
 // lockReachedAndReadCleared takes the user_threads rows of thread that reached and mentioned hold,

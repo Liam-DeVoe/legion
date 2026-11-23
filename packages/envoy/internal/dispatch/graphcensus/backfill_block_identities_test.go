@@ -19,11 +19,14 @@ import (
 // mention (migration 20261122100124). Three documents of CORE-1, each with one paragraph naming
 // dave: the first indexed and stated by that release; the second by that release too, whose
 // paragraph already mentions dave (a later pass of this release stated it); the third by this
-// release. The backfill's block identity pass marks the first alone owed this release's block
-// index (store_owed_at, at the marking rule), which states the mention at the version it stands
-// at, and sets identities_stated on the first two; the third holds it from its insert. A second
-// run reads no row. Its control is the pass taken out of inboxPasses: the first document stays
-// unmarked, and no pass of this release would read it again.
+// release. The backfill's block identity pass marks the first two owed this release's block index
+// (store_owed_at, at the marking rule), which states the mention at the version each stands at,
+// and sets identities_stated on both; the third holds it from its insert. The second is marked
+// though its paragraph's node mentions dave already: the pass reads the text alone
+// (blockNamesIdentity), since a version that release writes can name another identity beside one
+// a mention stands to, and the index it owes appends no mention that stands. A second run reads no
+// row. Its control is the pass taken out of inboxPasses: the first document stays unmarked, and no
+// pass of this release would read it again.
 func TestTheBackfillMarksADocumentAnOlderBuildStatedWithoutItsIdentityMentions(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -130,7 +133,7 @@ func TestTheBackfillMarksADocumentAnOlderBuildStatedWithoutItsIdentityMentions(t
 	for name, want := range map[string]struct {
 		id   string
 		want stand
-	}{"the older build's document": {older, stand{true, true}}, "the stated document": {stated, stand{false, true}}, "this build's document": {here, stand{false, true}}} {
+	}{"the older build's document": {older, stand{true, true}}, "the stated document": {stated, stand{true, true}}, "this build's document": {here, stand{false, true}}} {
 		if got := read(want.id); got != want.want {
 			t.Errorf("after the backfill %s reads owed=%t identities_stated=%t, want owed=%t identities_stated=%t",
 				name, got.owed, got.identities, want.want.owed, want.want.identities)

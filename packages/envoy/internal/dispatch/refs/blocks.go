@@ -96,7 +96,7 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 		select b.block_id, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, null::text[],
 		       'epoch'::timestamptz, null::bigint, null::text, null::text
 		from document_blocks b
-		cross join lateral (`+identityMentionsRead(`b.node_kind`, `b.node_address`, `$2`)+`) mentioned
+		cross join lateral (`+IdentityMentionsRead(`b.node_kind`, `b.node_address`, `$2`)+`) mentioned
 		where b.artifact_id = $1 and b.node_kind is not null
 	`, artifactID, IdentityKinds)
 	if err != nil {

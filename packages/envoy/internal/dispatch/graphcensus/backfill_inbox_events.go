@@ -88,6 +88,8 @@ type queuedEvent struct {
 
 // queuedEventsRead reads the events of the queued ids $1 still queued, in id order. A payload id
 // that is no uuid names no ask or comment and is read as empty, which the batch states nothing for.
+//
+// kept for one release: events-inbox-owed
 const queuedEventsRead = `
 	select e.id, e.type, coalesce(e.issue_key, ''), coalesce(e.project_key, ''),
 	       case when pg_input_is_valid(coalesce(e.payload->>'id', ''), 'uuid') then e.payload->>'id' else '' end,
@@ -137,6 +139,11 @@ const queuedEventsRead = `
 // it holds: the comment pointer pass states a comment that build wrote from the text it holds
 // when that pass runs, the edits before it among it. Its text is the one the edit's event carries,
 // and the comment's own where the event carried only the first part of it.
+//
+// It answers the rows it took off the queue and, of the tuples it handed the store, the edits'
+// alone: a move's tuples go in through a statement whose count nothing reads back
+// (inboxwrite.QueueMoveWaiting) and are not counted, so the upper bound the pass reports
+// (inboxWrote) leaves the moves' tuples out.
 func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (inboxWrote, error) {
 	ids := column(keys, 0)
 	rows, err := tx.Query(ctx, queuedEventsRead, ids)
@@ -187,24 +194,11 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 			}
 		}
 	}
-	for _, read := range []struct {
-		owners string
-		ids    []string
-	}{{askOwners, askIDs}, {commentOwners, commentIDs}} {
-		if len(read.ids) == 0 {
-			continue
-		}
-		rows, err := tx.Query(ctx, read.owners, read.ids)
-		if err != nil {
-			return inboxWrote{}, fmt.Errorf("read the owners of a batch of queued events: %w", err)
-		}
-		var id, issue, document string
-		if _, err := pgx.ForEachRow(rows, []any{&id, &issue, &document}, func() error {
-			owners.Add(issue, document)
-			return nil
-		}); err != nil {
-			return inboxWrote{}, fmt.Errorf("read the owners of a batch of queued events: %w", err)
-		}
+	if err := readOwnersInto(ctx, tx, owners, askOwners, askIDs); err != nil {
+		return inboxWrote{}, err
+	}
+	if err := readOwnersInto(ctx, tx, owners, commentOwners, commentIDs); err != nil {
+		return inboxWrote{}, err
 	}
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return inboxWrote{}, err
@@ -232,6 +226,7 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 			return inboxWrote{}, err
 		}
 	}
+	// kept for one release: events-inbox-owed
 	claimed, err := readKeys(ctx, tx, 1, `
 		select event_id::text from events_inbox_owed where event_id = any($1::text[]::bigint[]) order by event_id for no key update
 	`, ids)
@@ -274,6 +269,7 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 		}
 		wrote.tuples += stated
 	}
+	// kept for one release: events-inbox-owed
 	if _, err := tx.Exec(ctx, `delete from events_inbox_owed where event_id = any($1::text[]::bigint[])`, column(claimed, 0)); err != nil {
 		return inboxWrote{}, fmt.Errorf("take a batch of events off the queue of an older build's events: %w", err)
 	}
@@ -304,6 +300,7 @@ func movedBy(event queuedEvent) (inboxwrite.Move, bool) {
 // falls through to where nobody has it handed on, read as the asks, issues and documents stand,
 // as the move itself reads them.
 func laterMoveOf(event int64) string {
+	// kept for one release: events-inbox-owed
 	return `narrowed.tuples_stored_at is not null and not exists (
 		select 1 from events_inbox_owed later
 		join events moved on moved.id = later.event_id
@@ -338,14 +335,12 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, event queuedEvent) (int64, e
 		from comments c
 		join graph_nodes n on n.kind = c.node_kind and n.id = c.node_address
 		left join lateral (
-			select array_agg(m.to_kind order by m.to_kind, m.to_id) as kinds, array_agg(m.to_id order by m.to_kind, m.to_id) as ids
-			from (
-				select distinct t.to_kind, t.to_id from graph_tuples t
-				where t.from_kind = n.kind and t.from_id = n.id and t.kind = $3 and t.to_kind = any($2::text[]) and t.asserted
-			) m
+			select array_agg(mentioned.to_kind order by mentioned.to_kind, mentioned.to_id) as kinds,
+			       array_agg(mentioned.to_id order by mentioned.to_kind, mentioned.to_id) as ids
+			from (`+refs.IdentityMentionsRead(`n.kind`, `n.id`, `$2::text[]`)+`) mentioned
 		) held on true
 		where c.id = $1::uuid and c.tuples_stored
-	`, event.target, refs.IdentityKinds, graphstore.TupleMentions).Scan(&body, &visibility, &madeBy, &standingKinds, &standingIDs)
+	`, event.target, refs.IdentityKinds).Scan(&body, &visibility, &madeBy, &standingKinds, &standingIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -371,12 +366,8 @@ func writeOlderEdit(ctx context.Context, tx pgx.Tx, event queuedEvent) (int64, e
 	if err != nil {
 		return 0, err
 	}
-	tuples := make([]graphstore.Tuple, 0, len(identities)+2*len(people))
-	for _, mention := range append(identities, people...) {
-		mention.SourceEvent = event.id
-		tuples = append(tuples, mention)
-	}
-	tuples = append(tuples, inboxwrite.MentionParticipation(rootKind, rootID, graphstore.Uncaused{People: people}, event.actor, event.at, event.id)...)
+	tuples := append(inboxwrite.UnderEvent(append(identities, people...), event.id),
+		inboxwrite.MentionParticipation(rootKind, rootID, graphstore.Uncaused{People: people}, event.actor, event.at, event.id)...)
 	if err := writeRelations(ctx, tx, tuples); err != nil {
 		return 0, fmt.Errorf("state what an older build's edit of comment %s names: %w", event.target, err)
 	}

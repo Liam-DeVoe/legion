@@ -193,11 +193,12 @@ func blockIdentityMentions(
 	return tuples, people, held
 }
 
-// identityMentionsRead is the select of the identities the store holds `mentions` tuples to from
-// one node, its kind and id bound as the numbered parameters kind and id and the identity kinds
-// as kinds (IdentityKinds): a mention is appended once and never retracted (identityMentions), so
-// an asserted tuple is one that stands. It answers (to_kind, to_id), each once.
-func identityMentionsRead(kind, id, kinds string) string {
+// IdentityMentionsRead is the select of the identities the store holds `mentions` tuples to from
+// one node, its kind and id the SQL expressions kind and id - numbered parameters, or columns of
+// the statement it is spliced into - and the identity kinds the array kinds (IdentityKinds): a
+// mention is appended once and never retracted (identityMentions), so an asserted tuple is one
+// that stands. It answers (to_kind, to_id), each once.
+func IdentityMentionsRead(kind, id, kinds string) string {
 	return `select distinct m.to_kind, m.to_id from graph_tuples m
 		where m.from_kind = ` + kind + ` and m.from_id = ` + id + ` and m.kind = '` + graphstore.TupleMentions + `'
 		  and m.to_kind = any(` + kinds + `) and m.asserted`

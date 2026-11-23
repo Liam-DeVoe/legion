@@ -17,12 +17,12 @@
 -- default); a row this release inserts holds true (its default from then on); and the trigger
 -- below gives false to every row a build before this release inserts or updates. The backfill and
 -- the block-index tick's catch-up read the rows that hold false and stand at a version
--- (graphcensus' blockIdentitiesPass): each whose blocks name an identity their nodes mention none
--- of is marked owed this release's pass (store_owed_at, as the backfill marks a document), which
--- states the mentions at the version the row stands at, and every row read is set true. The pass
--- that drains the mark writes the fence on this release's connection, which the trigger passes by,
--- so the row stays true; a build before this release that drains it first writes false again, and
--- the next catch-up marks it again.
+-- (graphcensus' blockIdentitiesPass): each that holds a block whose text names an identity is
+-- marked owed this release's pass (store_owed_at, as the backfill marks a document), which states
+-- the mentions at the version the row stands at and appends none that stands already, and every
+-- row read is set true. The pass that drains the mark writes the fence on this release's
+-- connection, which the trigger passes by, so the row stays true; a build before this release
+-- that drains it first writes false again, and the next catch-up marks it again.
 --
 -- The trigger's WHEN is the marker triggers' own (20261116150000, 20261122100122): every
 -- connection of this release's pool carries dispatch.store_marker_writer `on`

@@ -1072,7 +1072,7 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 // (ItemIndex.PlanOwnRefs). A row of the ask's own carries no block id, which tells the two apart,
 // and its last column is its tuples_stored where a link's is whether it names its block's node.
 // For a comment or a message the same statement reads the identities the store holds a mention
-// of out of the item's node (mentioned, identityMentionsRead), each a row with no block id whose
+// of out of the item's node (mentioned, IdentityMentionsRead), each a row with no block id whose
 // far end is an identity's kind, which no refs row names (TargetOf): what the index appends no
 // mention of again.
 func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned map[Target]struct{}, err error) {
@@ -1080,7 +1080,7 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 		select block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
 		union all
 		select null, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, true from (
-			`+identityMentionsRead(`$2`, `$3`, `$4`)+`
+			`+IdentityMentionsRead(`$2`, `$3`, `$4`)+`
 		) mentioned
 	`, []any{itemID, string(kind), itemID, IdentityKinds}
 	if kind == ItemAsk {

@@ -6,10 +6,11 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 
 # This script's own directory, which holds the fake listener's and the fake broker's account
-# tokens. It is read here, before the build below changes directory to packages/envoy: a caller
-# that runs the script by a relative path, as e2e/acceptance/one-inbox-callers.sh boots the base
-# build (`bash e2e/run-server.sh` from packages/dispatch), names it from the directory it started
-# in, which a read after that change no longer resolves.
+# tokens and from which the held-port helper and packages/envoy are found. It is read here,
+# before the build below changes directory to packages/envoy: a caller that runs the script by a
+# relative path, as e2e/acceptance/one-inbox-callers.sh boots the base build
+# (`bash e2e/run-server.sh` from packages/dispatch), names it from the directory it started in,
+# which a read after that change no longer resolves.
 e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The server is a test fixture. It must not inherit a service endpoint,
@@ -87,7 +88,7 @@ esac
 database_url="$DATABASE_URL"
 fake_envoy_port="$FAKE_ENVOY_PORT"
 fake_github_port="$FAKE_GITHUB_PORT"
-held_port="$(cd "$(dirname "$0")/../../.." && pwd)/scripts/e2e/lib/held-port.py"
+held_port="$(cd "$e2e_dir/../../.." && pwd)/scripts/e2e/lib/held-port.py"
 if [ -n "$own_port" ] && [ -n "${DISPATCH_E2E_LISTEN_FROM:-}" ]; then
   echo "run-server.sh: set $own_port_variable or DISPATCH_E2E_LISTEN_FROM, not both" >&2
   exit 2
@@ -402,7 +403,7 @@ done
 # any DISPATCH_SIGNIN_* setting.
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 
-cd "$(dirname "$0")/../../envoy"
+cd "$e2e_dir/../../envoy"
 # Build first, in the caller's toolchain environment, and exec the binary itself - or exec the
 # one DISPATCH_E2E_SERVER_BIN named, which is already built and is not this checkout's. A server
 # started as `go run` is the go command's child; the go command ignores only SIGINT and SIGQUIT,

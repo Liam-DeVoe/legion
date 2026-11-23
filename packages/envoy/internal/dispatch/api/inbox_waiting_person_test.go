@@ -437,18 +437,30 @@ func TestAPersonsOwnMoveOfAnAskDeliversThemNothing(t *testing.T) {
 // nowhere before it. The node's id is the test's own, so the trigger reaches no other write.
 func refuseTuplesFrom(t *testing.T, database *store.Store, fromKind, fromID, kind string) {
 	t.Helper()
+	refuseTupleTrigger(t, database,
+		`new.from_kind = `+quoteLiteral(fromKind)+` and new.from_id = `+quoteLiteral(fromID)+` and new.kind = `+quoteLiteral(kind),
+		`raise exception 'the test refuses % from %/%', new.kind, new.from_kind, new.from_id;`)
+}
+
+// refuseTupleTrigger installs, for the rest of t, a row trigger before each insert into
+// graph_tuples whose new row passes when, the trigger's WHEN condition, running body, the
+// statements of its plpgsql function, which raises where it refuses the row and returns new where
+// it lets it through; t's cleanup drops the trigger and its function. Both carry one name made of
+// a fresh uuid, so no two installs share one.
+func refuseTupleTrigger(t *testing.T, database *store.Store, when, body string) {
+	t.Helper()
 	ctx := context.Background()
 	name := "refuse_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
 	if _, err := database.Pool.Exec(ctx, `
 		create function `+name+`() returns trigger language plpgsql as $$
 		begin
-			raise exception 'the test refuses % from %/%', new.kind, new.from_kind, new.from_id;
+			`+body+`
 		end $$`); err != nil {
 		t.Fatalf("create the refusing function: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
 		create trigger `+name+` before insert on graph_tuples for each row
-		when (new.from_kind = `+quoteLiteral(fromKind)+` and new.from_id = `+quoteLiteral(fromID)+` and new.kind = `+quoteLiteral(kind)+`)
+		when (`+when+`)
 		execute function `+name+`()`); err != nil {
 		t.Fatalf("create the refusing trigger: %v", err)
 	}

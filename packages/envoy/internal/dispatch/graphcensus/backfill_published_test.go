@@ -33,16 +33,18 @@ func recordAsAnOlderOutbox(t *testing.T, database *store.Store, event int64, rea
 	}
 }
 
-// queuedEvents is the ids the queue of what an older build's outbox recorded holds, in order.
-func queuedEvents(t *testing.T, database *store.Store) []int64 {
+// queuedEvents is the ids the queue table holds, in order: events_published_owed, the queue of
+// what an older build's outbox recorded, or events_inbox_owed, the queue of the events of an older
+// build's writes no row's marker records.
+func queuedEvents(t *testing.T, database *store.Store, table string) []int64 {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select event_id from events_published_owed order by event_id`)
+	rows, err := database.Pool.Query(context.Background(), `select event_id from `+table+` order by event_id`)
 	if err != nil {
-		t.Fatalf("read the queue of what an older build's outbox recorded: %v", err)
+		t.Fatalf("read the queue %s: %v", table, err)
 	}
 	queued, err := pgx.CollectRows(rows, pgx.RowTo[int64])
 	if err != nil {
-		t.Fatalf("read the queue of what an older build's outbox recorded: %v", err)
+		t.Fatalf("read the queue %s: %v", table, err)
 	}
 	return queued
 }
@@ -96,14 +98,14 @@ func TestTheBackfillStatesWhatAnOlderBuildsOutboxPublishedToASessionOrARole(t *t
 	if _, err := writes.database.Pool.Exec(ctx, `delete from events_published_owed where event_id = $1`, messages[0].event); err != nil {
 		t.Fatalf("take the first record off the queue: %v", err)
 	}
-	if queued := queuedEvents(t, writes.database); len(queued) != 1 || queued[0] != messages[1].event {
+	if queued := queuedEvents(t, writes.database, "events_published_owed"); len(queued) != 1 || queued[0] != messages[1].event {
 		t.Fatalf("the queue holds %v before the backfill, want the second message's event %d alone", queued, messages[1].event)
 	}
 
 	backfilled := backfillInboxOnce(t, writes.database)
 	report, _ := f.census(t, "after the backfill")
 	requirePublishedAgrees(t, report, 4, "after the backfill")
-	if queued := queuedEvents(t, writes.database); len(queued) != 0 {
+	if queued := queuedEvents(t, writes.database, "events_published_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the backfill, want none", queued)
 	}
 	for _, message := range messages {
@@ -145,7 +147,7 @@ func TestThisBuildsOutboxQueuesNothingAndAnOlderOnesRecordIsQueuedForTheTick(t *
 	})
 	rig.published(t)
 	rig.stop()
-	if queued := queuedEvents(t, rig.database); len(queued) != 0 {
+	if queued := queuedEvents(t, rig.database, "events_published_owed"); len(queued) != 0 {
 		t.Fatalf("this build's outbox queued events %v as it recorded them, want none", queued)
 	}
 	var stated int
@@ -168,7 +170,7 @@ func TestThisBuildsOutboxQueuesNothingAndAnOlderOnesRecordIsQueuedForTheTick(t *
 	after := newestEventID(t, rig.database)
 	recordAsAnOlderOutbox(t, rig.database, created.ID, []string{contracts.AgentTopicPrefix + "ses-late"})
 	recordAsAnOlderOutbox(t, rig.database, routed.ID, []string{contracts.AgentTopicPrefix + "ses-late"})
-	if queued := queuedEvents(t, rig.database); len(queued) != 1 || queued[0] != created.ID {
+	if queued := queuedEvents(t, rig.database, "events_published_owed"); len(queued) != 1 || queued[0] != created.ID {
 		t.Fatalf("the queue holds %v after an older build's outbox recorded the message's event and the route's, want the message's %d alone", queued, created.ID)
 	}
 	report, err = StoreCensus(ctx, rig.database.Pool.Config().ConnString(), false, nil)
@@ -185,16 +187,8 @@ func TestThisBuildsOutboxQueuesNothingAndAnOlderOnesRecordIsQueuedForTheTick(t *
 	if !eventsOwe(t, rig.database, after, appended.ID) {
 		t.Errorf("an event after the older build's record leaves the catch-up owed nothing while the queue holds the message's event, want it owed")
 	}
-	for {
-		caught, err := CatchUpOwedRows(ctx, rig.database)
-		if err != nil {
-			t.Fatalf("catch the inbox's rows up: %v", err)
-		}
-		if !caught.More {
-			break
-		}
-	}
-	if queued := queuedEvents(t, rig.database); len(queued) != 0 {
+	catchUpTheTick(t, rig.database, "after the older build's record")
+	if queued := queuedEvents(t, rig.database, "events_published_owed"); len(queued) != 0 {
 		t.Errorf("the queue holds %v after the tick's catch-up, want none", queued)
 	}
 	if eventsOwe(t, rig.database, after, appended.ID) {

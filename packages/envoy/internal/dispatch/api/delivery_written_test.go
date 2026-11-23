@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -280,11 +278,9 @@ const secondAppendRefused = "the test refuses the second append"
 // appended; a delivery appended before any retraction passes.
 func refuseSecondAppend(t *testing.T, database *store.Store, ask string) {
 	t.Helper()
-	ctx := context.Background()
-	name := "refuse_second_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
-	if _, err := database.Pool.Exec(ctx, `
-		create function `+name+`() returns trigger language plpgsql as $$
-		begin
+	refuseTupleTrigger(t, database,
+		`new.from_kind = `+quoteLiteral(graphstore.KindAsk)+` and new.from_id = `+quoteLiteral(ask)+`
+		  and new.kind = `+quoteLiteral(graphstore.TupleDeliveredTo)+` and new.asserted`, `
 			if exists (
 				select 1 from graph_tuples t
 				where t.from_kind = new.from_kind and t.from_id = new.from_id and t.kind = new.kind
@@ -292,22 +288,7 @@ func refuseSecondAppend(t *testing.T, database *store.Store, ask string) {
 			) then
 				raise exception '`+secondAppendRefused+`, % to %/% under event %', new.kind, new.to_kind, new.to_id, new.source_event;
 			end if;
-			return new;
-		end $$`); err != nil {
-		t.Fatalf("create the function refusing the second append: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		create trigger `+name+` before insert on graph_tuples for each row
-		when (new.from_kind = `+quoteLiteral(graphstore.KindAsk)+` and new.from_id = `+quoteLiteral(ask)+`
-		  and new.kind = `+quoteLiteral(graphstore.TupleDeliveredTo)+` and new.asserted)
-		execute function `+name+`()`); err != nil {
-		t.Fatalf("create the trigger refusing the second append: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := database.Pool.Exec(context.Background(), `drop trigger `+name+` on graph_tuples; drop function `+name+`()`); err != nil {
-			t.Errorf("drop the trigger refusing the second append: %v", err)
-		}
-	})
+			return new;`)
 }
 
 // askTuplesOf is every tuple with ask at either end, as `from kind to @event`, a retraction marked,
