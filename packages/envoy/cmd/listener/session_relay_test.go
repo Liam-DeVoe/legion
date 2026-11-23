@@ -615,8 +615,11 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	e0, _ := rig.storeEvent(t, agent)
+	e0, e0Seq := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), e0)
+	// e0's done reaches the relay before the stand-in goes silent, so the only frame it holds
+	// unanswered is e1: a done the relay read past the receipt wait would pause it on e0.
+	awaitAcked(t, rig.consumers, sessionID, e0Seq)
 
 	standIn.silent.Store(true)
 	e1, _ := rig.storeEvent(t, agent)
@@ -651,8 +654,9 @@ func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testin
 	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	e0, _ := rig.storeEvent(t, agent)
+	e0, e0Seq := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 5*time.Second), e0)
+	awaitAcked(t, rig.consumers, sessionID, e0Seq)
 
 	standIn.silent.Store(true)
 	e1, _ := rig.storeEvent(t, agent)

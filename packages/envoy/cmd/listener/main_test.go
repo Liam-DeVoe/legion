@@ -4801,7 +4801,6 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
-	t.Parallel()
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),
@@ -5138,14 +5137,15 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // listenerTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every test calls t.Parallel except those that change or measure something the
-// whole process shares (t.Setenv, the log package's output, takeoverUnrecordedWarnings) or that
-// hold a wall-clock upper bound, which stay serial and run before the rest. A test here spends most
-// of its time waiting on NATS, a listener process or Postgres, not on a core, and each has a
-// JetStream account of its own (testnats.URL) or a server of its own. go test's default of
-// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account,
-// rig and Dispatch database at once would swamp the one shared server. Eight is the API package's
-// measured setting (internal/dispatch/api, apiTestParallelism).
+// names no -parallel. Every test calls t.Parallel except those that change or read back something
+// the whole process shares (t.Setenv, the log package's output, the default logger, the entries
+// of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock upper bound close to
+// what they wait for (a close, a probe count or a recovery within a second or two), which stay
+// serial and run before the rest. A test here spends most of its time waiting on NATS, a listener
+// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL) or
+// a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on
+// a dev box, where every test's account, rig and Dispatch database at once would swamp the one
+// shared server.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8

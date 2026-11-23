@@ -244,7 +244,6 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 // and once the scheduled read - armed inside the bound - has run, both name the role again. The
 // claim record is never written in between, so the read is what put it back.
 func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t *testing.T) {
-	t.Parallel()
 	const (
 		holder = "ses_role_copy_lost_rows"
 		role   = "role-copy-lost-rows"

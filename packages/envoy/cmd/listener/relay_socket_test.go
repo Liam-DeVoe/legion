@@ -210,7 +210,6 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 // control of all of them: an answer that has not changed keeps the socket open. Each row's own
 // control is the check of its case removed, and the socket stays open.
 func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
-	t.Parallel()
 	type outcome struct {
 		code int
 		text string
@@ -286,7 +285,6 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 // socket of one session is refused 429 (control: the fourth opens); and a socket the listener
 // closes at its stop is closed 1012, and an upgrade after the stop is refused 503 by serve.
 func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
-	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_upgrade", "ses_not_the_tokens"
 	token := "access-token-of-the-upgrading-session"
@@ -679,7 +677,6 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 // on which its client opens it again after 5 s, on whichever replica answers. Control: the
 // subscription's check removed; the socket stays open, and the row fails naming it.
 func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
-	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_lost_subscription"
 	client, _ := rig.open(t, session)
@@ -697,7 +694,6 @@ func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
 // broker's refusal. Control: the verdict reading only the broker's refusal as expired; the socket
 // stays open past the exp, and the row fails naming it.
 func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
-	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_expiring"
 	token := "access-token-that-expires-in-two-seconds"
@@ -717,7 +713,6 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 // the connection to end's grace once end has run (read's conn.Close removed); each case's
 // connection ends a whole grace after the close, and the row fails naming how long.
 func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
-	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		close func(rig *relaySocketRig, client *relaySocketClient, token string)
