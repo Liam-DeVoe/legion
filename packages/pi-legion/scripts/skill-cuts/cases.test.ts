@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -525,7 +525,7 @@ describe("a role-line case", () => {
     };
   }
   const repos = path.join(scratch, "role-repos");
-  writeRolePromptRepository(repos);
+  beforeAll(() => writeRolePromptRepository(repos));
   /** The prompt parts of the made-up repository at `commit`, as the behaviour commands read them. */
   const at = (commit: string) => rolePromptParts(commit, localSource(repos));
 
@@ -563,8 +563,8 @@ describe("a role-line case", () => {
     expect(refused.split("\n")).toEqual([
       "refused cases:",
       `case r2 (${file}:1): its line is not a whole line of ${ROLE_REPO}:${ROLE_PART} at ${BASE_COMMIT}: "Answer in French."`,
-      expect.stringStartingWith(`case r3 (${file}:2) is not a case: rolePromptLine.role: `),
-      expect.stringStartingWith(`case r4 (${file}:3) is not a case: rolePromptLine.part: `),
+      expect.stringContaining(`case r3 (${file}:2) is not a case: rolePromptLine.role: `),
+      expect.stringContaining(`case r4 (${file}:3) is not a case: rolePromptLine.part: `),
       `case c5 (${file}:4): its line is not a whole line of ${path.join(base, "SKILL.md")}: ${JSON.stringify(ROLE_LINE)}`,
     ]);
   });

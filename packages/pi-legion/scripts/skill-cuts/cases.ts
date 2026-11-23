@@ -12,6 +12,15 @@
  * reads one; `caseReadFile` says which file either reads. Every read result of the case's
  * messages that answers one is in `skillReads`, and the arms answer it with their own text
  * (arms.ts). A read of another copy, or one with a selector, stays as the session had it.
+ *
+ * A role-line case (`rolePromptLine`, written by `skill-cuts build-role-cases`, rolecases.ts) is
+ * one step that a line of a Legion role's prompt governs, not a line of the skill: its `line` is
+ * that line of the prompt part `rolePromptLine.part` (also its `baseFile`), and its skill is the
+ * one the role loads first, which every arm installs (arms.ts). Its line is checked against the
+ * part at the old arm's commit of the case's plugin repository (`loadCasesAt`, given
+ * `behaviour`'s `--old-role-prompt-at`), in place of the skill's directory; `loadCases`, which
+ * names no commit, refuses it. It holds no `source.kind`: a reader of one reads it as a case of a
+ * session.
  */
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
@@ -61,15 +70,22 @@ export function testedCopy(
     source !== undefined && skill.repo === source.repo && skill.path === source.path;
 }
 
-/** A directory inside a repository's checkout: relative, `/`-separated, with no empty, `.` or
- * `..` part. */
+/** Whether `value` is a path inside a repository's checkout: relative, `/`-separated, with no
+ *  empty, `.` or `..` part. */
+const insideCheckout = (value: string) =>
+  value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+
+/** A directory inside a repository's checkout (`insideCheckout`). */
 const CheckoutDir = z
   .string()
   .min(1)
-  .refine(
-    (dir) => dir.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
-    "is not a directory inside the repository's checkout"
-  );
+  .refine(insideCheckout, "is not a directory inside the repository's checkout");
+
+/** A file of a repository, as its path in the repository (`insideCheckout`). */
+const RepoFile = z
+  .string()
+  .min(1)
+  .refine(insideCheckout, "is not a path of a file inside the repository");
 
 /** What the capture installs for a case, the same in every arm but the case's skill (context.ts):
  * the installed skills, the plugins the session's context installed at its
@@ -143,7 +159,10 @@ const AbsoluteDir = z.string().refine(
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
  * `evidence`, when the case builder wrote it, says where each part of the case came from that the
  * transcript does not show by itself (the context's role, each skill, plugin and context file of
- * the profile), one `{item, source}` per part, so a reader can check it. */
+ * the profile), one `{item, source}` per part, so a reader can check it. `rolePromptLine` marks a
+ * role-line case (the file's header): `role`, the role of its `legion:<project>:<role>` context,
+ * and `part`, the prompt part's path in the case's plugin repository, which `baseFile` names too;
+ * `line` is then the role line of that part. */
 export const Case = z.strictObject({
   id: z.string().min(1),
   cut: z.string().min(1),
@@ -156,6 +175,9 @@ export const Case = z.strictObject({
     lineNumber: z.int().positive(),
     lineCount: z.int().positive(),
   }),
+  rolePromptLine: z
+    .strictObject({ role: z.string().regex(/^[^:\s]+$/), part: RepoFile })
+    .optional(),
   criterion: z.strictObject({ pass: z.string().min(1), fail: z.string().min(1) }),
   model: z.string().min(1),
   thinking: Thinking,
@@ -286,15 +308,16 @@ export function textLines(text: string): string[] {
   return text.replace(/\n$/, "").split("\n");
 }
 
-/** Why `c` cannot run against the base text in `baseDir`, whose file `c.baseFile` holds `lines`
- *  (undefined when it cannot be read), or undefined when it can. */
+/** Why `c` cannot run against its base text, the file `base.file` (as a refusal names it), which
+ *  holds `lines` (undefined when it cannot be read, refused as `base.missing`), or undefined when
+ *  it can. */
 function refusal(
   c: Case,
-  baseDir: string,
+  base: { readonly file: string; readonly missing: string },
   lines: readonly string[] | undefined
 ): string | undefined {
-  const file = path.join(baseDir, c.baseFile);
-  if (lines === undefined) return `its baseFile ${c.baseFile} is not a file of ${baseDir}`;
+  const { file } = base;
+  if (lines === undefined) return base.missing;
   const wanted = c.line.text.trim();
   if (!lines.some((line) => line.trim() === wanted)) {
     return `its line is not a whole line of ${file}: ${JSON.stringify(c.line.text)}`;
@@ -361,34 +384,13 @@ function* fileLines(file: string): Generator<string> {
   }
 }
 
-/** The cases of `file`, each checked against the base text of its skill, the directory `baseDir`
- * (the skill's own directory, SKILL.md at its top). Throws one error that names each case it
- * refuses and why: a line that is no case, a missing realStep or violatingStep, a line.text that
- * is not a whole line (trimmed) of `baseDir/<baseFile>` or is not at its lineNumber, a skillReads
- * index that is not a read result of a file of the skill (`caseReadFile`: a `skill://<skill>`
- * file, or a file of the case's own copy read whole by path), a read result of one that
- * skillReads leaves out, a skill its profile does not install, an id given twice, or cases of
- * more than one skill. */
-export function loadCases(file: string, baseDir: string): Case[] {
-  if (!statSync(baseDir, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Error(`the base directory ${baseDir} is not a directory`);
-  }
-  const cases: Case[] = [];
-  const refusals: string[] = [];
-  // Each base file's lines, read once for all the cases that name it; undefined when unreadable.
-  const baseLines = new Map<string, string[] | undefined>();
-  const linesOf = (baseFile: string): string[] | undefined => {
-    if (!baseLines.has(baseFile)) {
-      let lines: string[] | undefined;
-      try {
-        lines = textLines(readFileSync(path.join(baseDir, baseFile), "utf8"));
-      } catch {
-        lines = undefined;
-      }
-      baseLines.set(baseFile, lines);
-    }
-    return baseLines.get(baseFile);
-  };
+/** A line of a case file that its schema reads as a case, with how a refusal names it; or why
+ *  the line holds no case. */
+type CaseLine = { readonly name: string; readonly c: Case } | string;
+
+/** Each line of `file` in order, a blank one left out (`fileLines`): the case it holds, or why it
+ *  holds none: it is not JSON, it has no realStep or violatingStep, or its schema refuses it. */
+function* caseLines(file: string): Generator<CaseLine> {
   let number = 0;
   for (const text of fileLines(file)) {
     number += 1;
@@ -398,7 +400,7 @@ export function loadCases(file: string, baseDir: string): Case[] {
     try {
       raw = JSON.parse(text);
     } catch (error) {
-      refusals.push(`${where} is not JSON: ${messageFor(error)}`);
+      yield `${where} is not JSON: ${messageFor(error)}`;
       continue;
     }
     const id =
@@ -407,30 +409,65 @@ export function loadCases(file: string, baseDir: string): Case[] {
         : undefined;
     const name = id === undefined ? `the case at ${where}` : `case ${id} (${where})`;
     if (typeof raw === "object" && raw !== null && !("realStep" in raw)) {
-      refusals.push(`${name} has no realStep (the real agent's next assistant message)`);
+      yield `${name} has no realStep (the real agent's next assistant message)`;
       continue;
     }
     if (typeof raw === "object" && raw !== null && !("violatingStep" in raw)) {
-      refusals.push(
-        `${name} has no violatingStep (a step that breaks the line, written before any run): build its case again`
-      );
+      yield `${name} has no violatingStep (a step that breaks the line, written before any run): build its case again`;
       continue;
     }
     const parsed = Case.safeParse(raw);
-    if (!parsed.success) {
-      refusals.push(`${name} is not a case: ${schemaFaults(parsed.error, "the case")}`);
-      continue;
+    yield parsed.success
+      ? { name, c: parsed.data }
+      : `${name} is not a case: ${schemaFaults(parsed.error, "the case")}`;
+  }
+}
+
+/** Why a skill case cannot run against the base text of its skill, the directory `baseDir`
+ *  (`refusal`, at `baseDir/<baseFile>`), each base file's lines read once for all the cases that
+ *  name it. Throws when `baseDir` is no directory. */
+function skillRefusals(baseDir: string): (c: Case) => string | undefined {
+  if (!statSync(baseDir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`the base directory ${baseDir} is not a directory`);
+  }
+  // Each base file's lines; undefined when it cannot be read.
+  const baseLines = new Map<string, string[] | undefined>();
+  return (c) => {
+    if (!baseLines.has(c.baseFile)) {
+      let lines: string[] | undefined;
+      try {
+        lines = textLines(readFileSync(path.join(baseDir, c.baseFile), "utf8"));
+      } catch {
+        lines = undefined;
+      }
+      baseLines.set(c.baseFile, lines);
     }
-    const why = refusal(parsed.data, baseDir, linesOf(parsed.data.baseFile));
-    if (why !== undefined) {
-      refusals.push(`${name}: ${why}`);
-      continue;
-    }
-    if (cases.some((c) => c.id === parsed.data.id)) {
-      refusals.push(`${name}: its id is given twice`);
-      continue;
-    }
-    cases.push(parsed.data);
+    return refusal(
+      c,
+      {
+        file: path.join(baseDir, c.baseFile),
+        missing: `its baseFile ${c.baseFile} is not a file of ${baseDir}`,
+      },
+      baseLines.get(c.baseFile)
+    );
+  };
+}
+
+/** A line of a case file, checked: why it holds no case, or its case and why that case is refused
+ *  (undefined: it is not). */
+type CheckedLine = string | { readonly name: string; readonly c: Case; readonly why?: string };
+
+/** The cases of the lines of `file`, `checked` in order. Throws one error that names each line it
+ *  refuses and why, an id given twice, and cases of more than one skill. */
+function keptCases(file: string, checked: readonly CheckedLine[]): Case[] {
+  const cases: Case[] = [];
+  const refusals: string[] = [];
+  for (const line of checked) {
+    if (typeof line === "string") refusals.push(line);
+    else if (line.why !== undefined) refusals.push(`${line.name}: ${line.why}`);
+    else if (cases.some((c) => c.id === line.c.id)) {
+      refusals.push(`${line.name}: its id is given twice`);
+    } else cases.push(line.c);
   }
   const other = cases.find((c) => c.skill !== cases[0]?.skill);
   if (other !== undefined) {
@@ -440,4 +477,96 @@ export function loadCases(file: string, baseDir: string): Case[] {
   }
   if (refusals.length > 0) throw new Error(`refused cases:\n${refusals.join("\n")}`);
   return cases;
+}
+
+/** Why `loadCases` refuses a role-line case: it names no commit to check its line at. */
+const NO_ROLE_COMMIT =
+  "it is a role-line case (rolePromptLine), whose line is checked against its prompt part at the old arm's commit, and no --old-role-prompt-at names one";
+
+/** The cases of `file`, each checked against the base text of its skill, the directory `baseDir`
+ * (the skill's own directory, SKILL.md at its top). Throws one error that names each case it
+ * refuses and why: a line that is no case, a missing realStep or violatingStep, a line.text that
+ * is not a whole line (trimmed) of `baseDir/<baseFile>` or is not at its lineNumber, a skillReads
+ * index that is not a read result of a file of the skill (`caseReadFile`: a `skill://<skill>`
+ * file, or a file of the case's own copy read whole by path), a read result of one that
+ * skillReads leaves out, a skill its profile does not install, a role-line case (no commit to
+ * check its line at: `loadCasesAt`), an id given twice, or cases of more than one skill. */
+export function loadCases(file: string, baseDir: string): Case[] {
+  const skillRefusal = skillRefusals(baseDir);
+  const checked: CheckedLine[] = [];
+  for (const line of caseLines(file)) {
+    checked.push(
+      typeof line === "string"
+        ? line
+        : {
+            ...line,
+            why: line.c.rolePromptLine === undefined ? skillRefusal(line.c) : NO_ROLE_COMMIT,
+          }
+    );
+  }
+  return keptCases(file, checked);
+}
+
+/** The old arm's commit of the role-line cases' plugin repository, at which `loadCasesAt` checks
+ *  each one's line (context.ts's `rolePromptParts` reads it from a repository source). */
+export interface RolePromptAt {
+  /** The commit: `behaviour`'s `--old-role-prompt-at`. */
+  readonly commit: string;
+  /** The text of the prompt part `part` of `c`'s plugin repository at `commit`, and the place a
+   *  refusal names it by (`<repo>:<part> at <commit>`), its text undefined when the repository
+   *  holds no such file there; or why `c` has no plugin repository to read it from. */
+  part(
+    c: Case,
+    part: string
+  ): Promise<{ readonly where: string; readonly text: string | undefined } | string>;
+}
+
+/** Why the role-line case `c`, of the role line `line`, cannot run against its prompt part at the
+ *  old arm's commit (`at`): its role is not its context's, its baseFile is not its part, or the
+ *  part there does not hold its line as `refusal` checks a skill's base file; else undefined. */
+async function roleLineRefusal(
+  c: Case,
+  line: NonNullable<Case["rolePromptLine"]>,
+  at: RolePromptAt
+): Promise<string | undefined> {
+  const role = /^legion:[^:\s]+:([^:\s]+)$/.exec(c.context)?.[1];
+  if (role !== line.role) {
+    return `its rolePromptLine.role ${line.role} is not the role of its context ${c.context}`;
+  }
+  if (c.baseFile !== line.part) {
+    return `its baseFile ${c.baseFile} is not its rolePromptLine.part ${line.part}`;
+  }
+  const read = await at.part(c, line.part);
+  if (typeof read === "string") return read;
+  return refusal(
+    c,
+    { file: read.where, missing: `its rolePromptLine.part is no file: ${read.where} does not exist` },
+    read.text === undefined ? undefined : textLines(read.text)
+  );
+}
+
+/** The cases of `file` as `loadCases` reads them, a role-line case (`rolePromptLine`) checked
+ *  against its prompt part at the old arm's commit `at` in place of the skill's directory: its
+ *  role is its context's, its baseFile is its part, and its line is a whole line of the part
+ *  there at its lineNumber, of its lineCount. Each skill case is checked against `baseDir`, as
+ *  `loadCases` checks one. Throws as `loadCases` does. */
+export async function loadCasesAt(
+  file: string,
+  baseDir: string,
+  at: RolePromptAt
+): Promise<Case[]> {
+  const skillRefusal = skillRefusals(baseDir);
+  const checked: CheckedLine[] = [];
+  for (const line of caseLines(file)) {
+    if (typeof line === "string") {
+      checked.push(line);
+      continue;
+    }
+    const role = line.c.rolePromptLine;
+    checked.push({
+      ...line,
+      why: role === undefined ? skillRefusal(line.c) : await roleLineRefusal(line.c, role, at),
+    });
+  }
+  return keptCases(file, checked);
 }
