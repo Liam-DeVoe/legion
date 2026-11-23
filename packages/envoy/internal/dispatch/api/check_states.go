@@ -309,7 +309,11 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
-		if reads, err = c.verifyFormerHeads(ctx, issue, heads); err != nil {
+		needed, err := c.formerHeadsNeeded(ctx, issue)
+		if err != nil {
+			return false, err
+		}
+		if reads, err = c.verifyFormerHeads(ctx, issue, heads, needed); err != nil {
 			return false, err
 		}
 		former, err := formerHeadsOf(ctx, pool, issue, heads)
@@ -448,6 +452,48 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 	return former, nil
 }
 
+// formerHeadsNeeded is each commit a result of a `before_merge` check of issue's Verification
+// document was recorded at, in either result table, whichever issue recorded it: the commits at
+// which a state the settler publishes is computed from a result, and so the only candidates the
+// settle reads GitHub about (verifyFormerHeads). The checks are the document's now, as the settle
+// computes them (answerIssueChecks), so a check whose `when` became `before_merge` needs its
+// results' commits from the settle the change of the document owes on. None where the issue has no
+// Verification document or no `before_merge` check.
+func (c *checkStatesSettler) formerHeadsNeeded(ctx context.Context, issue string) ([]string, error) {
+	s := c.server
+	pool := s.deps.Store.Pool
+	artifact, held, err := s.verificationDocument(ctx, pool, issue, "")
+	if err != nil || !held {
+		return nil, err
+	}
+	checks, err := s.checkBlocksOf(ctx, pool, artifact, nil)
+	if err != nil {
+		return nil, err
+	}
+	var blocks []string
+	for _, check := range checks {
+		if check.When == docs.CheckWhenBeforeMerge {
+			blocks = append(blocks, check.BlockID)
+		}
+	}
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	rows, err := pool.Query(ctx, `
+		select commit_sha from check_results where check_artifact_id = $1::uuid and check_block_id = any($2)
+		union
+		select commit_sha from ci_check_results where check_artifact_id = $1::uuid and check_block_id = any($2)`,
+		artifact.ID, blocks)
+	if err != nil {
+		return nil, fmt.Errorf("read the commits of the before_merge results of %s: %w", issue, err)
+	}
+	needed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the commits of the before_merge results of %s: %w", issue, err)
+	}
+	return needed, nil
+}
+
 // formerHeadsReadClaim is how long a settle holds a pull request's verification read
 // (pull_request_former_heads_reads) before another may take it over: several times the bound of
 // the read itself (ciReadDeadline), so it outlasts every read a live settle makes, and short, so a
@@ -488,6 +534,14 @@ type formerHeadsReads struct {
 // comes again once access or configuration returns. Until then a candidate is no former head. Only
 // a failed read of Dispatch's own database is an error.
 //
+// It reads only the candidates needed names (formerHeadsNeeded): the commits a result of a
+// `before_merge` check of the issue's Verification document was recorded at, the only commits a
+// state the settler publishes is computed from a result at. A candidate whose results are all of a
+// check of another `when` is kept as history, unread, and leaves no obligation and nothing the
+// test handoff's fence waits for, so an issue whose set of checks is empty is not held by its
+// candidates; once a check that has a result there becomes a `before_merge` check, the change of
+// the document owes the issue a settle, which reads it.
+//
 // The read is made once per pull request, whichever issue's settle makes it: an issue's lease
 // serializes the settles of one issue, and a pull request moves between issues. So a settle first
 // claims the pull request's read, keyed by its identity, which is the same under every issue and
@@ -519,17 +573,19 @@ type formerHeadsReads struct {
 // later settle reads the candidates again, and publish keeps the obligation that asked for the
 // read. Where a candidate became a former head and the pull request now belongs to another issue
 // than the one settling, it marks that issue owed, so its settle publishes there.
-func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (formerHeadsReads, error) {
+func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead, needed []string) (formerHeadsReads, error) {
 	var reads formerHeadsReads
 	pool := c.server.deps.Store.Pool
 	repos, numbers := openHeadsOf(heads)
-	if len(repos) == 0 {
+	if len(repos) == 0 || len(needed) == 0 {
 		return reads, nil
 	}
 	rows, err := pool.Query(ctx, formerHeadsHeld("$1", "$2")+`
 		select held.pull, held.repo, held.number from held
-		where held.first and exists (select 1 from pull_request_former_heads former where former.pull = held.pull and not former.verified)
-		order by held.pull`, repos, numbers)
+		where held.first and exists (
+			select 1 from pull_request_former_heads former
+			where former.pull = held.pull and not former.verified and former.head_sha = any($3))
+		order by held.pull`, repos, numbers, needed)
 	if err != nil {
 		return reads, fmt.Errorf("read the unverified former heads of %s: %w", issue, err)
 	}
@@ -566,6 +622,11 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		case err != nil:
 			return reads, fmt.Errorf("claim the read of %s#%d's commits: %w", held.repo, held.number, err)
 		}
+		incarnation := make(map[string]int64, len(claim.candidates))
+		for index, sha := range claim.candidates {
+			incarnation[sha] = claim.incarnations[index]
+		}
+		claim.candidates = slices.DeleteFunc(claim.candidates, func(sha string) bool { return !slices.Contains(needed, sha) })
 		unstored := claim.head == "" || claim.base == ""
 		var membership delivery.CommitMembership
 		var readErr error
@@ -578,10 +639,6 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			sent = requests.Load()
 			reads.verifications++
 			reads.requests += int(sent)
-		}
-		incarnation := make(map[string]int64, len(claim.candidates))
-		for index, sha := range claim.candidates {
-			incarnation[sha] = claim.incarnations[index]
 		}
 		incarnationsOf := func(shas []string) []int64 {
 			read := make([]int64, len(shas))

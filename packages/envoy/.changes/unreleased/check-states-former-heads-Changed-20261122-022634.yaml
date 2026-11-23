@@ -58,7 +58,12 @@ body: |-
     field of the `pull_request` envelope), since a base branch moves with no change of its name;
     a row with none, written before this release or by an envelope without the field, is not read
     until a write stores one, which the reconcile's read of each open pull request does within
-    minutes; a verification's log line counts its HTTP requests apart from
+    minutes; only a candidate a `before_merge` check needs is read, a commit a result of such a
+    check of the issue's Verification document was recorded at, so a candidate whose results are
+    all of a check of another `when` holds no obligation and no `test` handoff, and an issue with
+    no `before_merge` check is not held by its candidates; it is read once a check with a result
+    there becomes `before_merge`, whose change owes the issue a settle; a verification's log line
+    counts its HTTP requests apart from
     its pages (`requests`), and each settle's line its verifications and their requests; so
     a head left before the release where a result was recorded publishes its states,
     and one with no result is not known and needs none. A result recorded later at a commit that is

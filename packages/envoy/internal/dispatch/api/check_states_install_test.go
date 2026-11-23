@@ -159,6 +159,7 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 		t.Fatalf("k1 at H1 once #70's commits are read is published as %s, want yes", publishedLine(row))
 	}
 
+	eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH3)
 	seedInstallCandidates(t, rig, eachHeadH3)
 	rig.github.mu.Lock()
 	delete(rig.github.pullCommits, 70)
@@ -188,7 +189,9 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 	h1, h2 := commits[500], commits[501]
 	onBase, apart, absent, unanswered := fmt.Sprintf("%040x", 0xb0001), fmt.Sprintf("%040x", 0xa0001),
 		fmt.Sprintf("%040x", 0xd0001), fmt.Sprintf("%040x", 0xe0001)
-	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", h1)
+	for _, sha := range []string{h1, onBase, apart, absent, unanswered} {
+		eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", sha)
+	}
 	upsertHead(t, rig, 70, h2, rig.issue, "A change")
 	forgetCandidates(t, rig)
 	settleOwed(t, rig)
@@ -281,14 +284,17 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsPublishedOnceItsPullRequestL
 	}
 }
 
-// TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue: the install seeded H1 for #70
-// of ACME-1, and ACME-1's settle starts its read of #70's commits, which GitHub holds open. #70
-// then moves to another issue, whose settle runs while that read is open: it reads #70's commits
-// no second time. Once the first read answers, H1 is verified and the other issue owed, and its
-// settle publishes at H1 with no further read.
+// TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue: the tester recorded k1 passing
+// at H1 before the install, which seeded H1 for #70 of ACME-1, and ACME-1's settle starts its
+// read of #70's commits, which GitHub holds open. #70 then moves to another issue, whose settle
+// runs while that read is open: it reads #70's commits no second time. Once the first read
+// answers, H1 is verified and the other issue owed, and its settle publishes at H1 with no further
+// read.
 func TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	other := rig.fileIssue(t, "Where the pull request moves")
 	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
