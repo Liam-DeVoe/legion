@@ -428,10 +428,16 @@ func main() {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
+	// The boot logs where its migrations begin and where they end, with the time they took, so a
+	// reader of the log times the migrations, and the move after them, from the line that begins
+	// them and not from the boot's first line (c-stores-moved's volume step, dispatch://INFRA-1098).
+	migrationsBegan := time.Now()
+	slog.Info("dispatch: the boot's migrations begin")
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
 	}
+	slog.Info("dispatch: the boot's migrations ended", "took", time.Since(migrationsBegan).String())
 
 	// The move of the priority store and the workflow store into the graph store (storesmove,
 	// dispatch://INFRA-1098's R32): after the migrations, which create its record and the three

@@ -45,6 +45,14 @@
 #       with DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION naming a file that replaces
 #       block_schema_changed (census-extra-migration.out), and with
 #       DISPATCH_TEST_STORES_MOVE_EXPLAIN=1 (census-explain.out).
+#   head-migrations.txt, read-priorities.json, read-history.json: captured after the rest, before
+#       boot_seconds read the line that begins the boot's migrations, from this head's build with
+#       the boot's two lines of its migrations (cmd/dispatch/main.go; the working copy above
+#       50c8c8db, stamped with that commit), over an empty database of the capture's own with
+#       DISPATCH_TEST_HOOKS=1 and DISPATCH_TEST_STORES_MOVE_HOLD_FILE. The move held after the
+#       migrations ended while one priority, held-open-capture, was written by SQL as t1_priority
+#       writes one, and then the hold file was made. They are that boot's log, and its answers to
+#       GET /api/v1/priorities and GET /api/v1/priorities/held-open-capture/history.
 #
 # A scratch path of the capture's own in a fixture is written /tmp/tmp.capture or
 # /tmp/dispatch-baseline.capture; nothing else in them was changed. A near miss is the captured text
@@ -124,8 +132,26 @@ holds "the second runner waits on stores-moved" \
   "$(log_line "$data/head-second.txt" 'another process holds the advisory lock stores-moved; the boot waits for it')" level=INFO
 holds "the stopped boot says it stopped" "$(log_line "$data/head-stopped.txt" "$stopped_words")" level=ERROR
 is "near miss: the roll's boot did not stop" "$(log_line "$data/head-roll.txt" "$stopped_words")" ""
-is "the roll's boot took 5.471s from its first line to the move's end" "$(boot_seconds "$data/head-roll.txt")" 5.471
-is "near miss: a boot that moved nothing has no move's end" "$(boot_seconds "$data/head-second.txt"; echo "exit $?")" "exit 1"
+holds "the boot logs where its migrations begin" "$(log_line "$data/head-migrations.txt" "$migrations_began_words")" level=INFO
+holds "the boot logs where its migrations end, and how long they took" \
+  "$(log_line "$data/head-migrations.txt" "msg=\"dispatch: the boot's migrations ended\"")" 'took=5.775224265s'
+is "near miss: the roll's boot, a build before the two lines, logs no end of its migrations" \
+  "$(log_line "$data/head-roll.txt" "msg=\"dispatch: the boot's migrations ended\"")" ""
+# 22:19:17.749, the line that begins the migrations, to 22:19:23.806, the move's end; the boot's
+# first line, at 22:19:17.733, is 16ms earlier, and would read 6.073s.
+is "the boot took 6.057s from the line that begins its migrations to the move's end" "$(boot_seconds "$data/head-migrations.txt")" 6.057
+{
+  printf '%s\n' 'time=2026-11-23T21:19:17.733Z level=INFO msg="dispatch: NATS publisher disabled"'
+  cat "$data/head-migrations.txt"
+} >"$scratch/earlier-first.txt"
+is "near miss: a first line an hour before the migrations changes nothing" "$(boot_seconds "$scratch/earlier-first.txt")" 6.057
+grep -vF "$migrations_began_words" "$data/head-migrations.txt" >"$scratch/no-begin.txt"
+is "near miss: without the line that begins its migrations there is no time, none from the first line" \
+  "$(boot_seconds "$scratch/no-begin.txt"; echo "exit $?")" "exit 1"
+is "near miss: the roll's boot, a build before the line that begins its migrations, has no time" \
+  "$(boot_seconds "$data/head-roll.txt"; echo "exit $?")" "exit 1"
+grep -vF "$move_ended_words" "$data/head-migrations.txt" >"$scratch/no-move-end.txt"
+is "near miss: without the line that ends the move there is no time" "$(boot_seconds "$scratch/no-move-end.txt"; echo "exit $?")" "exit 1"
 
 # --- the handler's failure --------------------------------------------------------------------
 holds "the failure names priority_tuples" "$(handler_failure_line "$data/base-handler-failure.txt" priority_tuples)" \
@@ -168,6 +194,33 @@ awk '/plan of the census of the priority tuples:/ { on = 1 }
   on && /Index Scan using graph_tuples_as_of_out on graph_tuples/ { sub(/Index Scan using graph_tuples_as_of_out on graph_tuples/, "Seq Scan on graph_tuples"); on = 0 }
   { print }' "$data/census-explain.out" >"$scratch/seq-scan.out"
 is "near miss: a plan that reads graph_tuples by Seq Scan" "$(seq_scan_statement "$scratch/seq-scan.out")" "priority tuples"
+
+# --- the reads before and after the move -----------------------------------------------------
+# The kept priorities read is read_fixtures': the list less each priority's work.
+history="$data/read-history.json"
+jq -S '.priorities | map(del(.work))' "$data/read-priorities.json" >"$scratch/priorities.json"
+priorities="$scratch/priorities.json"
+is "a read equals itself" "$(compare_read "$history" "$history" "" '[]')" ""
+jq '.[0].proven = true' "$history" >"$scratch/history-added.json"
+holds "near miss: a field the read after adds that added_fields does not name differs" \
+  "$(compare_read "$history" "$scratch/history-added.json" "" '[]')" 'differs {"before":'
+is "a field the read after adds that added_fields names is ignored" \
+  "$(compare_read "$history" "$scratch/history-added.json" "rank proven" '[]')" ""
+jq '.[0].proven = false' "$history" >"$scratch/history-held.json"
+holds "near miss: a field added_fields names that the read before holds too still differs" \
+  "$(compare_read "$scratch/history-held.json" "$scratch/history-added.json" "proven" '[]')" 'differs {"before":'
+jq 'del(.[0])' "$history" >"$scratch/history-less.json"
+holds "near miss: with no write after the inventory, an act whose issue is empty is no row left out" \
+  "$(compare_read "$history" "$scratch/history-less.json" "" '[]')" 'differs {"before":'
+jq '.[0].title = "Retitled"' "$priorities" >"$scratch/priorities-retitled.json"
+is "a row whose id a write after the inventory touched is left out and named" \
+  "$(compare_read "$priorities" "$scratch/priorities-retitled.json" "" '["held-open-capture"]')" "left held-open-capture"
+holds "near miss: the same row, which no write touched, differs" \
+  "$(compare_read "$priorities" "$scratch/priorities-retitled.json" "" '["another-priority"]')" '"title":"Retitled"'
+jq 'map(. + {advances_revision: 3})' "$priorities" >"$scratch/priorities-revision-3.json"
+jq 'map(. + {advances_revision: 9})' "$priorities" >"$scratch/priorities-revision-9.json"
+is "advances_revision is no difference" \
+  "$(compare_read "$scratch/priorities-revision-3.json" "$scratch/priorities-revision-9.json" "" '[]')" ""
 
 if [[ "${#failures[@]}" -gt 0 ]]; then
   printf 'stores-moved.test.sh: %d of %d checks failed: %s\n' "${#failures[@]}" "$checks" "${failures[*]}"

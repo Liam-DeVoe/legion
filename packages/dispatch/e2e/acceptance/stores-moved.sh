@@ -80,6 +80,8 @@ readonly move_application='envoy-dispatch stores move'
 readonly gave_up_words="an attempt of the stores' swap gave up waiting for a lock"
 readonly moved_nothing_words='are in the graph store already; the boot moves nothing'
 readonly stopped_words="the stores' move stopped after the batches its test setting allows"
+readonly migrations_began_words="msg=\"dispatch: the boot's migrations begin\""
+readonly move_ended_words='msg="dispatch: the move of the priority store and the workflow store into the graph store ended"'
 # The bound of every wait for a state: 60 seconds, polled every tenth of a second.
 readonly state_limit=600
 # The two migrations of the base whose rows of schema_migrations the steps of pending migrations
@@ -209,17 +211,45 @@ slog_seconds() {
   date -d "$at" +%s.%N
 }
 
-# boot_seconds LOG: the seconds from a boot's first line, which it writes before its migrations
-# (it writes none at their start), to its line that ends the move, so the time holds the boot's
-# pending migrations and the move. It fails where either line is missing.
+# boot_seconds LOG: the seconds from the line that begins a boot's migrations to its line that ends
+# the move, so the time holds the boot's pending migrations and the move, and nothing the boot did
+# before its migrations. It fails where either line is missing.
 boot_seconds() {
-  local first ended
-  first="$(awk 'NR == 1' "$1")"
-  ended="$(log_line "$1" 'msg="dispatch: the move of the priority store and the workflow store into the graph store ended"')"
-  [[ -n "$first" && -n "$ended" ]] || return 1
-  first="$(slog_seconds "$first")" || return 1
+  local began ended
+  began="$(log_line "$1" "$migrations_began_words")"
+  ended="$(log_line "$1" "$move_ended_words")"
+  [[ -n "$began" && -n "$ended" ]] || return 1
+  began="$(slog_seconds "$began")" || return 1
   ended="$(slog_seconds "$ended")" || return 1
-  awk -v a="$first" -v b="$ended" 'BEGIN { printf "%.3f\n", b - a }'
+  awk -v a="$began" -v b="$ended" 'BEGIN { printf "%.3f\n", b - a }'
+}
+
+# compare_read BEFORE AFTER ADDED TOUCHED: one read kept before the move (the JSON file BEFORE)
+# against the same read after it (AFTER). It prints `left <key>` for each row it leaves out, and
+# then `differs <json>` where the two differ, or nothing more where they are the same. It leaves out
+# advances_revision at every depth, and each row of a top-level array whose key, id or issue is one
+# of TOUCHED (a JSON array of issue keys and priority ids). ADDED is the read's list of fields this
+# head adds (added_fields), space-separated: a field of that list that the read after holds where
+# the read before holds none, at the same place, is no difference. Any other field the read after
+# adds is one.
+compare_read() {
+  jq -nr --slurpfile b "$1" --slurpfile a "$2" --arg added "$3" --argjson touched "$4" '
+    def names: $added | split(" ") | map(select(length > 0));
+    def scrub: walk(if type == "object" then del(.advances_revision) else . end);
+    def key_of: if type == "object" then (.key // .id // .issue // "") else "" end;
+    def touched: key_of as $k | $k != "" and ($touched | index($k)) != null;
+    def rows_left: if type == "array" then [.[] | select(touched) | key_of] else [] end;
+    def untouched: if type == "array" then map(select(touched | not)) else . end;
+    def added($e): if type == "object" and ($e | type) == "object"
+      then with_entries(select(.key as $k | ($e | has($k)) or (names | index($k)) == null)
+        | .key as $k | if $e | has($k) then .value |= added($e[$k]) else . end)
+      elif type == "array" and ($e | type) == "array" and length == ($e | length)
+      then [range(0; length) as $i | .[$i] | added($e[$i])]
+      else . end;
+    ($b[0] | scrub) as $before | ($a[0] | scrub) as $after
+    | ((($before | rows_left) + ($after | rows_left) | unique | .[] | "left " + .),
+       (($before | untouched) as $e | ($after | untouched | added($e)) as $l
+        | if $l == $e then empty else "differs " + ({before: $e, after: $l} | tojson) end))'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -562,34 +592,56 @@ read_fixtures() {
   cp "$work/body" "$dir/plans.json"
 }
 
-# same_reads SECTION BEFORE AFTER: each read kept in BEFORE equals the one in AFTER, but for
-# advances_revision, and for the rows of an issue or a priority that a write after the inventory
-# touched (touched_issues, touched_priorities), which the driver reads back on their own.
+# added_fields: the fields this head's answer to each read that read_fixtures keeps holds and the
+# release before's does not, by name, read by read (the read is the kept file's name up to its
+# first dot). same_reads ignores each of them where the read before holds none, and fails on any
+# other field the read after adds. Each list is empty: no field of these reads that this head
+# answers is missing from either base's answer. Measured on 2026-11-23 by comparing, for each
+# route, the response type its row of api/routes_shapes.go names and every type under it
+# (model/model.go and model/display_tree.go), and the handler that writes it, at this head and at
+# each base: the check's real base, `git merge-base origin/main HEAD` (51d1a21f), and 93625c08,
+# the base the pod run used.
+#   priorities  GET /api/v1/priorities, .priorities less work: model.Priority, Actor and
+#               DisplayTree, the same at all three.
+#   history     GET /api/v1/priorities/{id}/history: model.PriorityAct and Actor, the same.
+#   advances    GET /api/v1/issues, each row's key, advances, advances_revision and
+#               inherited_advances: model.IssueSummary adds needs and drops blocked_by since
+#               51d1a21f, neither of them among the four, and IssueAdvance is the same. No answer
+#               names inherited_advances, so the read holds it null at all three.
+#   steps       GET /api/v1/issues/{key}/steps: model.IssueSteps, StepTask and StepRecord, the same.
+#   plans       GET /api/v1/projects/{key}/plans: model.ProjectPlans, FinishedIssue, PlanRecord,
+#               PlanTask and PlanRating, the same.
+readonly -A added_fields=([priorities]="" [history]="" [advances]="" [steps]="" [plans]="")
+
+# same_reads SECTION BEFORE AFTER: each read kept in BEFORE equals the one in AFTER (compare_read),
+# but for advances_revision, for the fields added_fields names, and for the rows of an issue or a
+# priority that a write after the inventory touched (touched_issues, touched_priorities), which
+# the driver reads back on their own. Its PASS line names each field it ignores and each row it
+# leaves out.
 same_reads() {
-  local section="$1" before="$2" after="$3" file name differs
-  local touched
-  touched="$(printf '%s\n' "${touched_issues[@]}" "${touched_priorities[@]}" | jq -R . | jq -sc .)"
+  local section="$1" before="$2" after="$3" file name read compared touched key reads=0 ignored="" rows
+  local -a left=()
+  touched="$(jq -cn '$ARGS.positional' --args "${touched_issues[@]}" "${touched_priorities[@]}")" ||
+    fail "$section" "list the rows writes after the inventory touched" "jq failed"
   for file in "$before"/*.json; do
-    name="${file##*/}"
+    name="${file##*/}" read="${name%%.*}"
     [[ -r "$after/$name" ]] || fail "$section" "read $name again" "no such read after"
-    differs="$(jq -n --slurpfile b "$file" --slurpfile a "$after/$name" --argjson touched "$touched" '
-      def scrub: walk(if type == "object" then del(.advances_revision) else . end);
-      def untouched: if type == "array"
-        then map(select((type != "object") or ((.key // .id // .issue // "") as $k | ($touched | index($k)) | not)))
-        else . end;
-      # project(e): the later value read on the shape of the earlier one, e: a field the later
-      # read adds is no difference, and a field the earlier read holds that differs is.
-      def project($e): if ($e | type) == "object" and type == "object"
-        then with_entries(select(.key as $k | $e | has($k)) | .key as $k | .value |= project($e[$k]))
-        elif ($e | type) == "array" and type == "array" and length == ($e | length)
-        then [range(0; length) as $i | .[$i] | project($e[$i])]
-        else . end;
-      ($b[0] | scrub | untouched) as $e | ($a[0] | scrub | untouched) as $l
-      | if ($l | project($e)) == $e then empty else {before: $e, after: ($l | project($e))} end')" ||
+    [[ -v "added_fields[$read]" ]] || fail "$section" "compare $name" "added_fields holds no list for the read $read"
+    compared="$(compare_read "$file" "$after/$name" "${added_fields[$read]}" "$touched")" ||
       fail "$section" "compare $name" "jq failed"
-    [[ -z "$differs" ]] || fail "$section" "the read $name equals its read before" "$differs"
+    if grep -q '^differs ' <<<"$compared"; then
+      fail "$section" "the read $name equals its read before" "$(sed -n 's/^differs //p' <<<"$compared")"
+    fi
+    while read -r key; do
+      left+=("$name $key")
+    done < <(sed -n 's/^left //p' <<<"$compared")
+    reads=$((reads + 1))
   done
-  pass "$section" "every read before ($(find "$before" -name '*.json' | wc -l) reads) reads the same, advances_revision aside"
+  for read in "${!added_fields[@]}"; do
+    [[ -z "${added_fields[$read]}" ]] || ignored+="${ignored:+; }$read: ${added_fields[$read]}"
+  done
+  rows="$(printf '%s\n' "${left[@]}" | awk 'NF { printf "%s%s", sep, $0; sep = ", " }')"
+  pass "$section" "every read before ($reads reads) reads the same, advances_revision aside; the fields this head adds that it ignores: ${ignored:-none}; the rows it leaves out, which writes after the inventory touched: ${rows:-none}"
 }
 
 # take_inventory SECTION URL: every row of the four tables, copied into the schema stores_inventory
@@ -897,7 +949,11 @@ read_back() {
 }
 
 # wrote KIND SUBJECT [OBJECT]: one write after the inventory, which read_back reads and the
-# driver's census and same_reads leave out.
+# driver's census and same_reads leave out. A priority touches its own row of the priorities read.
+# An advances relation and a run touch the rows of their issue: its row in each issue list, and
+# each act of a priority's history that names it (compare_read keys a row by its key, id or
+# issue). The priority a relation names keeps its row, which the relation does not change once
+# the priorities read drops work.
 wrote() {
   written_after+=("$1 $2 ${3:-}")
   case "$1" in
@@ -1144,10 +1200,12 @@ swap_waits() {
 # the same database while the base server serves, and each step on the state pg_locks shows.
 roll_swap() {
   local hold="$work/move.hold" t1 t2 run_a run_b lines session_name
-  # This head's migrations run before the transactions open: its concurrent index build waits for
-  # every transaction that writes graph_nodes or is older than its snapshot, and the driver's
-  # transactions end only once the swap waits. So the move holds stores-moved, before its copy,
-  # until the driver has opened them.
+  # The four transactions of the release before open after this head's migrations end and before
+  # the move, held by `DISPATCH_TEST_STORES_MOVE_HOLD_FILE`. The migrations cannot run while the
+  # transactions stand: their concurrent index build waits for every transaction that writes
+  # graph_nodes or is older than its snapshot, and the driver's transactions end only once the swap
+  # waits. So the driver opens them once the move holds stores-moved, which it takes after the
+  # migrations and holds, before its copy, until the hold file exists.
   spawn head-roll "$head_binary" "$database_url" DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_STORES_MOVE_BATCH=2 \
     DISPATCH_TEST_STORES_MOVE_HOLD_FILE="$hold"
   head_pid="$spawned_pid" head_log="$spawned_log"
@@ -1582,8 +1640,9 @@ volume_section() {
   spawn head-volume "$head_binary" "$url"
   head_pid="$spawned_pid" head_log="$spawned_log"
   listening volume head-volume "$head_pid" "$head_log" 600
-  seconds="$(boot_seconds "$head_log")" || fail volume "read the boot's time" "its log holds no line that ends the move"
-  printf "this head's boot took %ss from its first line, before its migrations, to the end of the move\n" "$seconds"
+  seconds="$(boot_seconds "$head_log")" ||
+    fail volume "read the boot's time" "its log holds no line that begins its migrations or no line that ends the move"
+  printf "this head's boot took %ss from the line that begins its migrations to the end of the move\n" "$seconds"
   awk -v s="$seconds" 'BEGIN { exit !(s <= 300) }' || fail volume "the boot's migrations and move take at most 5 minutes" "they took ${seconds}s"
   pass volume "the boot's migrations and move took ${seconds}s, within 5 minutes"
   stop "$head_pid"
