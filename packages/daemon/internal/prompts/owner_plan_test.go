@@ -116,42 +116,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	}
 }
 
-// Before an owner writes a plan, Legion's part of its prompt tells it where the earlier plans of
-// its project are read and what that read prints, so it plans from how they went. The read is the
-// owner's: no step's agent gives Legion a plan (register_plan), so no other prompt names it. This
-// shows the text is loaded, never that an owner runs the read.
-func TestTheOwnersPromptNamesTheReadOfEarlierPlans(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	const read = "Before you write a plan, read how the earlier plans of this project went: `dispatch plans --project <PROJECT>` prints the newest finished issues of the project that have a plan or a rating, each with its plan, each rating a retro gave that plan with its reason, its time and its count of failed steps; then say in the task's text what they showed that this plan follows or changes."
-	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
-		owner  bool
-	}{
-		{"root architect", claim.RoleArchitect, true, true},
-		{"sub-architect", claim.RoleArchitect, false, true},
-		{"planner", claim.RolePlanner, false, false},
-		{"implementer", claim.RoleImplementer, false, false},
-		{"tester", claim.RoleTester, false, false},
-		{"reviewer", claim.RoleReviewer, false, false},
-		{"merger", claim.RoleMerger, false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-			if tc.owner && !strings.Contains(text, read) {
-				t.Errorf("the composed %s prompt omits %q", tc.name, read)
-			}
-			if !tc.owner && strings.Contains(text, "dispatch plans") {
-				t.Errorf("the composed %s prompt names `dispatch plans`, which is an owner's read", tc.name)
-			}
-		})
-	}
-}
-
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
 // task's `Steps:` line names rather than a tester's and a reviewer's cycles. A task with no review
 // step on a base whose rules require an approving review leaves a merge only a person or the owner

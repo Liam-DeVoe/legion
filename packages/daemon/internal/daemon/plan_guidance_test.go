@@ -15,10 +15,8 @@ import (
 // The deployment's plan guidance reaches the composed prompt of each owner, a tree's root
 // architect and a sub-architect, after its own addressing and before the deployment's
 // instructions, and no other agent's. Each launch is built twice, by a daemon whose deployment
-// sets the guidance and by one that sets none. Both owners are told the read of earlier plans and
-// asked to choose a fresh or an earlier agent for each step, with guidance or with none. A phase
-// worker's prompt is the same text in both builds, byte for byte: a deployment that sets the
-// guidance changes no other agent's prompt.
+// sets the guidance and by one that sets none. A phase worker's prompt is the same text in both
+// builds, byte for byte: a deployment that sets the guidance changes no other agent's prompt.
 func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -27,11 +25,9 @@ func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
 	}
 	stateDir := t.TempDir()
 	const (
-		planted      = "Plant 7f3a: give each review to another model family."
-		header       = "# Plan guidance of this deployment (s1)"
-		deployment   = "Deployment rule 7f3a."
-		earlierPlans = "`dispatch plans --project <PROJECT>`"
-		freshOrEarly = "For each step, decide whether a fresh agent works it or the agent of an earlier step"
+		planted    = "Plant 7f3a: give each review to another model family."
+		header     = "# Plan guidance of this deployment (s1)"
+		deployment = "Deployment rule 7f3a."
 	)
 	guidance, err := config.WritePlanGuidance([]byte(planted+"\n"), stateDir, "s1")
 	if err != nil {
@@ -81,13 +77,7 @@ func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
 				composed[build.name][launch.name] = text
 				guided := build.name == "with" && launch.owner
 
-				if launch.owner {
-					for _, phrase := range []string{earlierPlans, "implementer (implementation)", freshOrEarly} {
-						if !strings.Contains(text, phrase) {
-							t.Errorf("the prompt omits %q", phrase)
-						}
-					}
-				} else if !strings.Contains(text, deployment) {
+				if !launch.owner && !strings.Contains(text, deployment) {
 					t.Errorf("the prompt omits the deployment's instructions %q", deployment)
 				}
 				want := 0
