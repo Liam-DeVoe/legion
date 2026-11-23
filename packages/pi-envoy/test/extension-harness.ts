@@ -1,12 +1,13 @@
-// The harness `extensions/envoy.test.ts`, `extensions/consumer-delivery.test.ts` and
-// `extensions/stopping-registration.test.ts` share: the NATS stand-in the extension dials, the fetch
+// The harness `extensions/envoy.test.ts`, `extensions/consumer-delivery.test.ts`,
+// `extensions/stopping-registration.test.ts`, `extensions/heartbeat-registration.test.ts` and
+// `extensions/role-give-back.test.ts` share: the NATS stand-in the extension dials, the fetch
 // that records every registration, the host modules the suites mock, the reset every row starts and
 // ends with, and the helpers the suites call. Bun evaluates an imported module once per process, so
 // the files drive this one set of state, and `mock.module` replaces a module for the whole process.
 // For the same reason this module registers no hook in its body: a hook here would take the scope
 // of whichever test file imported it first. Each file calls `useExtensionHarness()` at its own
 // module scope instead.
-import { afterAll, afterEach, beforeAll, beforeEach, jest, mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -873,6 +874,10 @@ export function targetedDispatchEnvelope(
 
 /** The stream id every registration answer and relay frame of these suites names. */
 export const TEST_STREAM_ID = "stream-test";
+
+/** The client instance id one extension instance mints, read by its shape alone: a test that
+ *  needs the id itself reads it off a request the extension made. */
+export const ANY_CLIENT_INSTANCE = expect.stringMatching(/^[0-9a-f]{32}$/);
 
 /** A server's answer, typed as Dispatch and the listener type theirs: a client reads a body as
  *  JSON only where the answer says it is JSON (`DispatchClient`'s `#response`). */
