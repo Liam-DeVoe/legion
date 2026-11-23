@@ -264,6 +264,20 @@ has no such input, and the deployment sets none. A refused paused candidate stay
 once the operator's replay has overwritten its operation, named by no record and holding a slot
 of the stream's consumer limit, until the cutover hold's streams census removes it as an orphan.
 
+Two limits of where the protocol runs. On nats-server 2.10.29 a consumer created by start
+sequence on a replicated stream can deliver from before its start: every replica that creates
+the consumer with no stored state clamps a start past its own last stream sequence to that
+sequence plus one (2.10.29's server/consumer.go, `selectStartingSeqNo`), so a replica that had not
+yet stored the stream's last messages when it created the consumer redelivers from its own last
+sequence plus one once it leads the consumer. That is redelivery, never loss, and it comes to
+fixed and fresh names alike. nats-server 2.15.1, the hub's version, clamps only a consumer created
+with no start sequence, so it does not redeliver so; the forced-order rows on 2.10.29 wait for
+every copy to store the stream's last message before each such create. And a hub whose only
+fresh-mode listeners are edge listeners never leaves replay mode after a recovery: only a shared
+listener's sweep ends it (Recovery, below), so every key with no record keeps starting at
+`replay_from`, never at its first-create rule, until a shared listener's sweep runs there or the
+operator rewrites the sentinel.
+
 A key never written, while the sentinel is present, is a new name, and the family's first-create
 rule applies. A family can refuse that too (`Config.MissingRecord`): Dispatch's two durables, and a
 daemon's checkpoint with no record. `IsSelectionStateLost` reports the lost-state errors together.
