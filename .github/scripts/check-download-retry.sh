@@ -932,12 +932,13 @@
 #          count two of those six.
 #        * each call of the function the call sits in, and the loops around those calls. A
 #          page read written once in a function that a seven-pass loop calls is seven ladders
-#          and not one. check-pr-text.sh reads like that instance and is not it: its page read
-#          sits in read_list's `while :`, a loop this check cannot count, so the fold stops
-#          there and never reaches the `for ((…))` over `lists` that runs read_list once per
-#          list, whose passes this check reads no more than it reads the `while :`'s. The three
-#          lists are carried by hand instead, in that script's DeclaredArithmetic entry below
-#          that names the `while :`, which writes the 3 x in its own sum.
+#          and not one. check-pr-text.sh reads like that instance and is not it: its GraphQL
+#          read sits in graphql(), which two loops call, the rounds' `while :` and the `while`
+#          over a review thread's later pages (main's #4956), and neither is a loop this check
+#          can count, so the fold stops at the first of those calls, the `while :`'s. The rounds
+#          and the pages are carried by hand instead, in that script's DeclaredArithmetic entry
+#          below that names the `while :`, which writes how many of the read's ladders it holds
+#          in its own sum.
 #        * the loop a step wraps around the script it runs. The script's whole arithmetic is
 #          the step's once per pass, as a call written in the `run:` would be.
 #
@@ -5246,8 +5247,9 @@ class DeclaredArithmetic:
     could not read, as the file writes it, its indentation aside. It then answers for the sites
     of that loop alone, so one file, step and verb can hold as many such loops as there are
     entries naming them, each with a figure of its own: check-pr-text.sh holds three `gh api`
-    loops, read_list's pages and the two main's #4256 added, the releases its issue-key rule
-    reads and the new commits it reads the files of (dispatch://INFRA-1545). An entry naming no
+    loops, the rounds of its GraphQL read (main's #4956) and the two main's #4256 added, the
+    releases its issue-key rule reads and the new commits it reads the files of
+    (dispatch://INFRA-1545). An entry naming no
     loop answers for every loop of its file, step and verb that no entry names, and a loop's
     line that changes leaves the entry naming it matching nothing, which fails this check."""
 
@@ -5337,17 +5339,18 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
     # the `for path in scripts:` loop below passes step="-". check-pr-text.sh's three `gh api`
     # loops each name their loop, since one file and one verb hold all three.
     DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 900,
-                       "the page read of one list route, over the three lists this script "
-                       "reads. read_list's loop reads pages until a short one, which is no "
-                       "count this check can make, and a pull request carrying more than 100 "
-                       "reviews or more than 100 comments reads another page at the "
-                       "per_page=100 the call asks for; the budgets reaching it are written "
-                       "for the one page the common pull request answers. The "
-                       "`for ((i = 0; i < ${#lists[@]}; i += 2))` under it runs read_list "
-                       "once for each of three lists, so three lists at one page each is "
-                       "3 x 1 x (5 x 30 + 150) = 900 s. The reads this script writes outside "
-                       "its three loops are counted where they are written and are no part "
-                       "of this figure",
+                       "the GraphQL read of the pull request's text (main's #4956), graphql(), "
+                       "which the rounds' `while :` calls once a round and the `while` over a "
+                       "review thread's later comments once a page. A round follows while a "
+                       "list holds more than the 100 a page asks for, and a page while a thread "
+                       "holds more than the 20 comments its first page gives, neither a count "
+                       "this check can make; a pull request with no more than 100 of each list "
+                       "and no thread of more than 20 comments is read in one call. The figure "
+                       "is three of the read's ladders, its one round and two more, "
+                       "3 x (5 x 30 + 150) = 900 s, the figure this entry wrote when the read "
+                       "was three REST list routes at one page each. The reads this script "
+                       "writes outside its three loops are counted where they are written and "
+                       "are no part of this figure",
                        loop="while :; do"),
     DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 600,
                        "the release read of the issue-key rule's cutoff (main's #4256), one "
@@ -5362,8 +5365,9 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
     DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 7200,
                        "the files read of each commit the issue-key rule reads (main's "
                        "#4256): one per commit of the pull request dated at or after the "
-                       "cutoff that is no merge, which the `while read` over the compare "
-                       "route's commits makes as many times as the pull request holds such "
+                       "cutoff that is no merge, which the `while read` over the pull request's "
+                       "commits (THE READ's comparison, or the compare route's where that comes "
+                       "back short) makes as many times as the pull request holds such "
                        "commits, no count this check can make. The budgets reaching it are "
                        "written for the 24 the common pull request holds: the 30 most recently "
                        "merged pull requests of cybermonklabs/legion on 2026-11-19 held 1 to "

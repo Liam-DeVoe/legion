@@ -57,6 +57,9 @@ fi
 #                empty file until that read is done (2 s at most).
 #   answer       what a route answers once the budget is back: 200 or 404.
 #   body         the body of a 200.
+#   graphql-rate-limited  present: while the budget is spent, POST /graphql is answered as GraphQL
+#                answers a spent budget, HTTP 200 and an error of type RATE_LIMITED, with words that
+#                name no rate limit, so that the type alone tells.
 #   release      present: the release routes answer v1 as a release whose name and body must
 #                reach no log (RELEASE below), each answer held `release-delay` seconds (0.3 by
 #                default), and POST /graphql answers gh's draft lookup at once with no draft. gh
@@ -229,6 +232,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits",
                 "status": status},
                 [] if retry_after == "none" else [("retry-after", retry_after)])
+        elif spent and path == "/graphql" and os.path.exists(os.path.join(state, "graphql-rate-limited")):
+            self.answer(200, {"data": None, "errors": [
+                {"type": "RATE_LIMITED", "message": "Something went wrong while executing your query."}]})
         elif spent:
             self.answer(403, {"message": "API rate limit exceeded for installation ID 1.",
                               "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
@@ -696,6 +702,41 @@ check "fails as gh does" "$(is "$status" 1)"
 check "after five attempts" "$(is "$(calls /repos/o/r/pulls/1)" 5)"
 check "having slept nothing but the ladder's own four waits" "$(is "$(sleeps)" "$ladder_slept")"
 check "and read no rate limit" "$(is "$(calls /rate_limit)" 0)"
+
+# GraphQL answers a spent budget with HTTP 200 and an error of type RATE_LIMITED, and gh prints that
+# answer on stdout and fails. GitHub's words for it name the rate limit, which gh prints on stderr;
+# these rows give words that do not, so the helper reads the error's type or nothing. Bare, the
+# answer is the run's stdout. Composed, retry_fetch hands no failed attempt's stdout on and copies
+# the last attempt's to stderr, inside that attempt's block, where the helper reads it.
+echo '{"query": "query { viewer { login } }"}' > "$work/request.json"
+
+echo "case: a GraphQL answer of type RATE_LIMITED whose words name no rate limit is waited out"
+github 10
+touch "$work/state/graphql-rate-limited"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api graphql --input request.json'
+reset=$(spent_until)
+check "exits 0" "$(is "$status" 0)"
+check "prints the answer of the call it made after the wait" "$(is "$out" '{"title":"t"}')"
+check "calls GraphQL twice: refused, then answered" "$(is "$(calls /graphql)" 2)"
+check "reads the reset from the rate_limit route once" "$(is "$(calls /rate_limit)" 1)"
+check "makes the second call no sooner than the reset" "$(at_least "$(nth_at /graphql 2)" "$reset")"
+
+echo "case: composed, a GraphQL answer of type RATE_LIMITED whose words name no rate limit is waited out"
+github 60
+touch "$work/state/graphql-rate-limited"
+rm -f "$work/sleeps"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- "$LADDER"'gh_wait_reset retry_fetch "the viewer" 5 -- gh api graphql --input request.json'
+reset=$(spent_until)
+check "exits 0" "$(is "$status" 0)"
+check "prints the answer of the ladder run after the wait" "$(is "$out" '{"title":"t"}')"
+check "calls GraphQL six times: the ladder's five, refused, then one after the wait" \
+  "$(is "$(calls /graphql)" 6)"
+check "reads the reset from the rate_limit route once" "$(is "$(calls /rate_limit)" 1)"
+check "the sixth no sooner than the reset" "$(at_least "$(nth_at /graphql 6)" "$reset")"
+check "the ladder's four sleeps, then one wait of gh_wait_reset's own" \
+  "$(is "$(sed '$d' <<<"$(sleeps)")|$(tail -n 1 <<<"$(sleeps)" | cut -d' ' -f1)" "$ladder_slept|gh_wait_reset")"
+check "and no ::error:: outside a block annotates the step" "$(is "$(bare_errors)" 0)"
+rm -f "$work/request.json"
 
 # A secondary rate limit spends no budget: GitHub's answer names how long to wait in a retry-after
 # header, and its documentation says to wait at least a minute where the answer names none.

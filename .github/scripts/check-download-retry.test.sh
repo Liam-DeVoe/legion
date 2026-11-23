@@ -285,9 +285,10 @@ jobs:
             retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- gh cache delete "$id"
           done <<<"$ids"
 YAML
-  # check-pr-text.sh's three `gh api` loops, read_list's pages and the two main's #4256 added,
-  # each of which a DECLARED_LOOPS entry names by its first line, so every fixture carries all
-  # three and each entry matches its own.
+  # check-pr-text.sh's three loops that hold a `gh api` read, each of which a DECLARED_LOOPS entry
+  # names by its first line: `while :; do` (main's #4956 made it the GraphQL rounds; this fixture
+  # keeps a page loop under that first line) and the two main's #4256 added. Every fixture
+  # carries all three, so each entry matches its own.
   cat > "$root/.github/scripts/check-pr-text.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

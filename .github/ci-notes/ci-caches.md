@@ -71,7 +71,9 @@ go-envoy-test entries every job restored on 2026-11-22 had been saved on 2026-11
 them had to compile again 312 of the daemon module's 335 packages and 573 of the envoy module's
 618 (`go list -test -deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and
 321. The refill-superseded job deletes the other entries of the family once the new one is
-listed, so each family keeps one entry per runner, as it did before. A job that is downloading
+listed, three a run at most, newest first, so that its deletes are three priced ladders inside
+the job's budget that check-download-retry.sh can read (#the-refill-superseded-job); a common run
+supersedes one, so each family keeps one entry per runner, as it did before. A job that is downloading
 a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the job goes
 on, compiling what the entry would have given it, so it is slower, not failed.
 The build cache in an entry does not grow with each fill: Go deletes the objects no build has

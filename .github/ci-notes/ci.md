@@ -2193,10 +2193,16 @@ check run carries its `name:` expression's own text and not `pr-title`
 
 ## What the pr-title job's scopes are for
 
-What the two scripts this job runs, find-pr-payload.sh and check-pr-text.sh, read through gh, and nothing else: the pull request's commits
-from the compare route (`contents: read`), the pull request itself, its reviews and its
-review comments (`pull-requests: read`, which find-pr-payload.sh's read of the pull request
-a queue branch names needs too), and its issue comments (`issues: read`). No
+What the two scripts this job runs, find-pr-payload.sh and check-pr-text.sh, read through gh, and nothing else, through
+GitHub's GraphQL API, whose budget is apart from the REST one the rest of CI spends: the
+pull request's commits, from GitHub's comparison of its base branch with its head, and the
+commits of its base branch that touch .github/issue-key-cutoff (`contents: read`; the REST
+compare route reads the commits instead when that comparison is short, as it is past 1000
+commits), the pull request itself, its reviews and its review comments (`pull-requests: read`,
+which find-pr-payload.sh's read of the pull request a queue branch names needs too), and its
+issue comments (`issues: read`). The issue-key rule's releases and diffs are REST reads, made
+only once that rule is active (`contents: read`, and `pull-requests: read` for the pull request's
+files). No
 `checks: write`, since this job posts no check run, and no `actions: read`, since it carries
 no ci-ok-report step: CI_OK_EXEMPT holds it outside ci-ok's accounting (this file's env says
 why).
@@ -2222,13 +2228,14 @@ check-pr-text.sh runs check-private-names.sh from its own directory.
 
 The step's own budget is its retry arithmetic (dispatch://INFRA-1545), so an exhausted read fails
 the step by name rather than being cut part way by the job, each `gh api` read at
-5 x 30 + 150 = 300 s: find-pr-payload.sh's one, and check-pr-text.sh's - the pull request, the
-compare, the page read of read_list, which the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it
-runs once for each of the three lists, 900 s, and the issue-key rule's (main's #4256): the
-marker's commits and the pull request's files, one each, the releases' loop at 600 s and the new
-commits' files loop at 7200 s, the figures .github/scripts/check-download-retry.sh's
-DECLARED_LOOPS derives for those two. 300 + 300 + 300 + 900 + 300 + 300 + 600 + 7200 = 10200 s,
-a whole number of minutes, so the budget is the next one strictly above it, 171 minutes.
+5 x 30 + 150 = 300 s: find-pr-payload.sh's one GraphQL read, and check-pr-text.sh's - its GraphQL
+read (main's #4956), which the rounds' `while :` calls once a round and the `while` over a review
+thread's later comments once a page, at 900 s, three of its ladders, the figure
+.github/scripts/check-download-retry.sh's DECLARED_LOOPS writes for it; the compare route, read
+when GitHub's GraphQL comparison comes back short, one; and the issue-key rule's (main's #4256):
+the pull request's files, one, the releases' loop at 600 s and the new commits' files loop at
+7200 s, the figures DECLARED_LOOPS derives for those two. 300 + 900 + 300 + 300 + 600 + 7200 =
+9600 s, a whole number of minutes, so the budget is the next one strictly above it, 161 minutes.
 
 ## The merge queue's cancel act. Main's queue builds each group on top
 
@@ -2589,9 +2596,9 @@ from its own filter's output (the download_retry section of these notes says why
 ## The pr-title job's budget
 
 600 s, the 10 minutes this job carried, plus its slowest retried step alone (the Budgets note of
-.github/ci-budgets.md): the text check's `gh api` ladders, 10200 s (that step's section sums them),
-a whole number of minutes, so that step's own budget takes one more, 10260 s, and this job takes
-it too. 600 + 10260 = 10860 s -> 182 min, the whole minute above a sum that is itself a whole
+.github/ci-budgets.md): the text check's `gh api` ladders, 9600 s (that step's section sums them),
+a whole number of minutes, so that step's own budget takes one more, 9660 s, and this job takes
+it too. 600 + 9660 = 10260 s -> 172 min, the whole minute above a sum that is itself a whole
 number of minutes.
 
 ## The cancel-started job's budget

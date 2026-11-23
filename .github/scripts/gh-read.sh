@@ -49,7 +49,11 @@
 #
 # The two limits, told apart by the API's own message, which gh prints for a 403 or a 429:
 #   * The hourly budget ("API rate limit exceeded for installation ID <n>", or "already
-#     exceeded" from GraphQL). The refusal's x-ratelimit-reset header names its reset, and the
+#     exceeded" from GraphQL, which answers a spent budget with HTTP 200 and an error of type
+#     RATE_LIMITED, read from gh's stdout as well, where gh prints that answer, and in the
+#     composed form from the copy of it retry_fetch prints on stderr, the last attempt's output,
+#     since retry_fetch hands no failed attempt's output to stdout). The refusal's
+#     x-ratelimit-reset header names its reset, and the
 #     helper reads the same reset off GET /rate_limit, which GitHub serves free of the budget it
 #     reports ("Accessing this endpoint does not count against your REST API rate limit",
 #     docs.github.com, REST API, "Rate limit"), so a command it does not run as gh itself has one
@@ -135,7 +139,7 @@ gh_wait_reset() {
   fi
   dir=$(mktemp -d) || return 1
   _gh_read_run "$dir" "$@" || status=$?
-  kind=$(_gh_read_refusal "$status" "$dir/err")
+  kind=$(_gh_read_refusal "$status" "$dir/err" "$dir/out")
   if [ -n "$kind" ]; then
     if [ "$kind" = budget ] && ! reset=$(_gh_read_reset 2> "$dir/probe"); then
       failure="GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets ($(head -n 1 "$dir/probe"))"
@@ -204,7 +208,7 @@ gh_wait_reset() {
       fi
       status=0
       _gh_read_run "$dir" "$@" || status=$?
-      if [ -n "$(_gh_read_refusal "$status" "$dir/err")" ]; then
+      if [ -n "$(_gh_read_refusal "$status" "$dir/err" "$dir/out")" ]; then
         if [ "$kind" = budget ] && [ "$reset" -gt 0 ]; then
           failure="the API budget is still spent after the wait for its reset at $(_gh_read_utc "$reset"); re-run the job once GitHub's rate_limit route shows it back"
         elif [ "$kind" = secondary ]; then
@@ -289,14 +293,22 @@ _gh_read_run() {
   return "$status"
 }
 
-# _gh_read_refusal <status> <stderr file>: `budget` when a failed run's stderr carries GitHub's
-# refusal for the hourly API budget, as gh prints the API's message for REST ("API rate limit
-# exceeded for ...") and GraphQL ("API rate limit already exceeded for ..."); `secondary` for a
-# secondary rate limit ("You have exceeded a secondary rate limit", or the older "abuse detection
-# mechanism"); nothing otherwise.
+# _gh_read_refusal <status> <stderr file> <stdout file>: `budget` when a failed run's stderr
+# carries GitHub's refusal for the hourly API budget, as gh prints the API's message for REST ("API
+# rate limit exceeded for ...") and GraphQL ("API rate limit already exceeded for ..."), or when a
+# GraphQL answer with an error of type RATE_LIMITED, which GraphQL answers with HTTP 200 and whose
+# words gh prints as they come, is its stdout or a line of its stderr. The stderr line is the
+# composed form's: retry_fetch puts no failed attempt's output on stdout, and copies the last
+# attempt's to stderr, inside that attempt's block, after a line of its own and before the block's
+# close, which opens with a newline, so gh's one-line answer is a line there (cut at 4096 bytes,
+# far past the length of such an answer). `secondary` for a secondary rate limit ("You have
+# exceeded a secondary rate limit", or the older "abuse detection mechanism"); nothing otherwise.
 _gh_read_refusal() {
   [ "$1" -ne 0 ] || return 0
-  if grep -qiE 'rate limit (already )?exceeded' "$2"; then
+  if grep -qiE 'rate limit (already )?exceeded' "$2" ||
+    jq -e 'try any(.errors[]?; .type == "RATE_LIMITED") catch false' "$3" > /dev/null 2>&1 ||
+    jq -nRe 'any(inputs | try fromjson catch null; try any(.errors[]?; .type == "RATE_LIMITED") catch false)' \
+      "$2" > /dev/null 2>&1; then
     echo budget
   elif grep -qiE 'secondary rate limit|abuse detection mechanism' "$2"; then
     echo secondary

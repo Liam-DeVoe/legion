@@ -884,10 +884,10 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci.md#the-pr-title-jobs-budget
-    # 600 + 10260 = 10860 s -> 182 min.
-    timeout-minutes: 182
+    # 600 + 9660 = 10260 s -> 172 min.
+    timeout-minutes: 172
     env:
-      JOB_TIMEOUT_MINUTES: 182 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 172 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
     permissions:
       contents: read
@@ -913,12 +913,12 @@ jobs:
 
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
-        # 300 + 300 + 300 + 900 + 300 + 300 + 600 + 7200 = 10200 s -> 171 min.
-        timeout-minutes: 171
+        # 300 + 900 + 300 + 300 + 600 + 7200 = 9600 s -> 161 min.
+        timeout-minutes: 161
         env:
           GH_TOKEN: ${{ github.token }}
           PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
-          STEP_TIMEOUT_MINUTES: 171 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+          STEP_TIMEOUT_MINUTES: 161 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         run: |
           payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
           GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"

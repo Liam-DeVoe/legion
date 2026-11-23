@@ -147,10 +147,12 @@ fi
 # calls review round 54 of dispatch://INFRA-1545 changed), or runs a command that prints nothing
 # on standard output when it succeeds (`go mod download`, `go install`, `gh api --silent`,
 # `gh cache delete`, `crane copy`, `curl --silent --output`). Second, a caller that captures an
-# answer and prints a value out of it prints it outside any block: check-pr-text.sh:255, :278
-# and :280 (the base branch's name), :335 (the release read's status line), :346 and :353 (a
-# release's published_at) and :362 (the pull request's created_at); ci-ok-reconcile.sh:133,
-# :137, :143, :151 and :154 (a ci-ok check run's status, conclusion and external_id);
+# answer and prints a value out of it prints it outside any block: check-pr-text.sh:316, :328,
+# :497 (in the refusals of `whole`, :283 and :291), :501, :524 and :526 (the base branch's name,
+# GitHub's GraphQL baseRefName since main's #4956), :581 (the release read's status line), :592
+# and :599 (a release's published_at) and :608 (the pull request's createdAt);
+# ci-ok-reconcile.sh:133, :137, :143, :151 and :154 (a ci-ok check run's status, conclusion and
+# external_id);
 # ci-ok-report.sh:165 (the tip of the queue's branch, main's #4983); ci-ok-hold.sh:125 (this run's
 # creation time), :153 (the group branch's commit) and :157 (the tip of the queue's branch, main's
 # #5186); dequeued.yaml:168 (the
