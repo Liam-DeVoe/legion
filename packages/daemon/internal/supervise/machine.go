@@ -469,11 +469,8 @@ type Claim struct {
 	// registered (register), and a process in no pod (a tmux pane, a locator with no pod) adds
 	// nothing. Nothing takes a pod out of it, not a session lost or forgotten, a let-go, or a
 	// relaunch into another pod, since an agent that registered in a pod had a worker there, and
-	// what that worker did not push was on that pod's disk. One pod goes in with no registration:
-	// the pod that the first launch of a role an idle release suspended, an agent of which had run,
-	// went into or was refused for (addRestoringPod), whose disk holds the release's saved work
-	// before any agent of the claim registers there. The daemon's update round reads the set to
-	// name a member that lost work (internal/daemon's workOnRoundPod).
+	// what that worker did not push was on that pod's disk. The daemon's update round reads the
+	// set to name a member that lost work (internal/daemon's workOnRoundPod).
 	//
 	// A machine built over a stored claim does not know where the claim registered before it was
 	// built, so it reads the set off the stored claim (bootRegisteredPods). It is memory only, as
@@ -1686,39 +1683,9 @@ type Machine struct {
 	awaitsPod *runtime.Locator
 	// registeredPods is the set of pods an agent of the claim registered a session in: what
 	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
-	// (bootRegisteredPods), register adds to it, and so does the first launch of a role an idle
-	// release suspended, an agent of which had run (addRestoringPod); nothing else writes it, so
-	// neither letGo nor a launch takes a pod out of it. Memory only, as awaitsPod is.
+	// (bootRegisteredPods), and register adds to it; nothing else writes it, so neither letGo nor a
+	// launch takes a pod out of it. Memory only, as awaitsPod is.
 	registeredPods RegisteredPods
-	// releaseUnrestored is the release's mark: an idle release suspended this role, a suspension
-	// by SuspendedByReleased that no project pause asked for (RequestSuspend.Pause is 0), and the
-	// bundle it saved has not been restored to a pod that runs the role. The release's suspension
-	// sets it (suspended). It follows the bundle, not the source of a later suspension
-	// (INFRA-1484's architect, 2026-11-23T04:05Z): no suspension clears it, so a pause's stop, a
-	// daemon's suspension or an operator's of the claim before the restore, a takeover of the
-	// released claim among them (suspendedAgain), keeps the role the release's. A pause's stop
-	// suspends as released too, but it keeps the pod and saves no bundle, so it sets nothing, and
-	// neither does a held idle release that a pause's stop took over before the hold ran
-	// (holdSuspension, holdSuspendUntilReady), since the hold then runs as the pause's. It is
-	// cleared only where a launch of the claim comes up in a pod or is refused for one
-	// (addRestoringPod): the issue's next pod restored the bundle into that pod, or it is the
-	// round's pod the claim waits on, and the bundle is sent once, at that pod's start
-	// (store.TakeWorkspaceBundleForRestore), so that launch meets both the restore and the one try
-	// that can lose the bundle. The machine holds no state of the bundle and nothing tells it that
-	// a bundle was lost, so nothing else clears it. It decides, with whether an agent of the claim
-	// had run, whether the claim's next resume marks its launch (markRestoringLaunch). Memory
-	// only: a restarted daemon reads it false, so such a claim gains no pod, and its stored
-	// session reads its set Unknown in any case (bootRegisteredPods).
-	releaseUnrestored bool
-	// restoringLaunch is whether the claim's next launch is the first launch of a role an idle
-	// release suspended, an agent of which had run, since that release: resume, resumeByRule and
-	// deliverResuming set it as they relaunch such a claim (markRestoringLaunch), whatever
-	// suspension stands by then. Every suspension takes it off (suspended), since the launch it
-	// marked is not the claim's next one any more, and the resume after that suspension marks its
-	// own launch again from the release's mark (releaseUnrestored), which no suspension clears. The
-	// pod that launch goes into or is refused for takes it off too (addRestoringPod). Memory only,
-	// as registeredPods is.
-	restoringLaunch bool
 	// podLoad is the gate's hold of the session load of the claim's process in its issue pod, from
 	// that process's start until its load ends, at its settle after the registration or at an end
 	// of the process before it (podStarted, endPodLoad), nil for none and for every claim the pod
@@ -3169,10 +3136,6 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			// it names, so a claim that records that process always records the mark with it.
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
-			// The first launch of a role an idle release suspended, an agent of which had run, came
-			// up in the pod that holds the release's work, before any agent of it registers there
-			// (addRestoringPod).
-			m.addRestoringPod(locatorPod(&loc))
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
 				"resumed", way != wayNone, "resumedBy", string(way))
@@ -3402,8 +3365,7 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
-// retry is due. A refusal of the first launch of a role an idle release suspended, an agent of
-// which had run, puts that pod in the claim's set (addRestoringPod).
+// retry is due.
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
@@ -3416,7 +3378,6 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 	if errors.As(cause, &refusal) {
 		pod := refusal.Pod
 		m.awaitsPod = &pod
-		m.addRestoringPod(locatorPod(&pod))
 	}
 	return errors.Join(err, m.persist(ctx))
 }
@@ -3424,9 +3385,8 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 // RegisteredPods is the set of pods in which an agent of a claim registered a session, as its
 // machine knows it (Claim.RegisteredPods).
 type RegisteredPods struct {
-	// Pods is the uid of each pod an agent of the claim registered a session in, and of the pod
-	// that the first launch of a role an idle release suspended, an agent of which had run, went
-	// into or was refused for (addRestoringPod), each once, in the order each went in.
+	// Pods is the uid of each pod an agent of the claim registered a session in, each once, in the
+	// order each registered.
 	Pods []string
 	// Unknown is whether an agent of the claim may have registered in a pod that Pods does not
 	// name: a machine built over a stored claim that shows a session it held cannot say where
@@ -3467,49 +3427,6 @@ func (s RegisteredPods) clone() RegisteredPods {
 // always shows a session it held, its set is Unknown, and the update round names it for every pod.
 func bootRegisteredPods(c Claim) RegisteredPods {
 	return RegisteredPods{Unknown: c.Session != "" || c.Abandoned.Session != ""}
-}
-
-// markRestoringLaunch marks the launch that resume, resumeByRule or deliverResuming, each the
-// resume of a suspended claim, is about to raise where it is the first launch of a role an idle
-// release suspended, an agent of which had run (restoringLaunch): the release's mark stands
-// (releaseUnrestored), whatever suspension stands now, and the claim has a session or a pod in its
-// set. Every other launch is left unmarked. The mark follows the release's bundle, not the source
-// of a later suspension: a pause's stop of the first launch after the release before it reached
-// any pod, and a daemon's or an operator's suspension before the restore, a takeover of the
-// released claim among them (suspendedAgain), each leave it standing, so the launch that resumes
-// the claim after them is marked. A project pause's stop that followed no idle release suspends
-// as released too, but the pause keeps the pod and saves no bundle, so no work is restored onto
-// the claim's next pod, and it sets no mark. And a claim that never ran an agent anywhere, as one
-// refused for a pod with no session, has no work of its own in the bundle or on the volume,
-// whatever suspended it and whatever wakes it.
-func (m *Machine) markRestoringLaunch() {
-	m.restoringLaunch = m.releaseUnrestored && (m.claim.Session != "" || len(m.registeredPods.Pods) > 0)
-}
-
-// addRestoringPod is a launch of the claim that came up in pod, or that the runtime refused for
-// it. Where that launch is the first launch of a role an idle release suspended, an agent of which
-// had run (restoringLaunch), it puts pod in the claim's set (registeredPods). The release saved
-// the unpushed work of the workspace every role of the issue shares as a bundle and took the pod,
-// and the issue's next pod restored that bundle before any role started in it, or mounts the kept
-// volume that the work was taken off. So the claim's work is on the disk of the pod its next
-// launch goes into, or waits on, before any agent of it registers there, and the daemon's update
-// round names the claim for that pod as it names one whose agent registered there
-// (internal/daemon's workOnRoundPod). The pods later launches go into wait for a registration, as
-// every other pod does.
-//
-// It takes the launch's mark off (restoringLaunch), and a pod takes the release's mark off too
-// (releaseUnrestored), whether or not it added that pod: the bundle is sent once, at the start of
-// the issue's next pod, so the pod a launch of the claim comes up in or waits on is where the
-// bundle was restored, or lost, and no later pod is sent it. pod is "" for a process in no pod,
-// which restores nothing: it adds nothing, and the release's mark stays.
-func (m *Machine) addRestoringPod(pod string) {
-	if m.restoringLaunch {
-		m.registeredPods.add(pod)
-	}
-	m.restoringLaunch = false
-	if pod != "" {
-		m.releaseUnrestored = false
-	}
 }
 
 // locatorPod is the uid of the pod loc names, and "" for none and for a process in no pod (a tmux

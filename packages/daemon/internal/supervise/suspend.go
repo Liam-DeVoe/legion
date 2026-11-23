@@ -256,10 +256,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // suspended, so the rule resumes it no more until the operator does, and a daemon's or an
 // operator's suspend of a claim whose idle pod was released, so the linger, park, close or
 // hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
-// nothing, and an operator's suspension is never taken over. A takeover changes the source alone
-// and leaves the release's mark as it stands (Machine.releaseUnrestored): it restores no bundle,
-// so a claim whose release's bundle is still unrestored stays the release's, and the launch that
-// resumes it, whoever resumes it, still puts its pod in the claim's set (markRestoringLaunch).
+// nothing, and an operator's suspension is never taken over.
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -427,24 +424,12 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
 //
-// The suspension that stands is this one. An idle release's, by released with no pause's stop,
-// sets the release's mark (Machine.releaseUnrestored), and no suspension clears it: the mark
-// follows the release's bundle, not the source of a later suspension, so a pause's stop, a
-// daemon's suspension or an operator's of a claim whose bundle is still unrestored keeps the claim
-// the release's. A mark an earlier resume left for a launch this suspension stopped goes with it
-// (Machine.restoringLaunch): that launch is not the claim's next one any more, and the resume
-// after this suspension marks its own launch from the release's mark (markRestoringLaunch).
-//
 // A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
 // decision, so the start the gate grants next names a suspension as what ended its wait
 // (endPodPark, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	if by == SuspendedByReleased && stop == nil {
-		m.releaseUnrestored = true
-	}
-	m.restoringLaunch = false
 	if stop != nil {
 		return m.persistStop(ctx, *stop)
 	}

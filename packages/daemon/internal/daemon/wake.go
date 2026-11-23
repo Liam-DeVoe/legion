@@ -492,8 +492,10 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 
 // dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
 // saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
+// nothing should. It deletes the record of the pods that took an idle release's work too
+// (store.DeleteWorkspaceBundlePods), which the issue's update rounds read (workOnRoundPod): no
+// round of the issue's pods is left to name a role by it. A linger and a park keep both, because
+// their issue comes back. A runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
@@ -501,5 +503,8 @@ func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
 	}
 	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
 		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteWorkspaceBundlePods(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the pods that took an idle release's work of a finished issue", "issue", issue, "error", err)
 	}
 }

@@ -115,6 +115,12 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // The row stays. A bundle nothing restored holds the issue's pod (workflow.IdleHoldBundleUnrestored)
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
+//
+// A take that sends the bundle records in its own transaction that the pod of podUID took the
+// release's work (workspace_bundle_pods, holdReleasedWork): its disk holds the whole shared
+// workspace's work once the launcher restores it, before any role starts, and the confirmed
+// restore deletes the bundle's row. A take refused as older than the save, and one that found no
+// bundle, record no pod.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if err := restoreAsk.check(project, issue, podUID, podCreated); err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
@@ -139,8 +145,16 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
-		found = err == nil
-		return err
+		if err != nil {
+			return err
+		}
+		if outcome == "sent" {
+			if err := holdReleasedWork(ctx, tx, issue, podUID, b.Release); err != nil {
+				return err
+			}
+		}
+		found = true
+		return nil
 	})
 	if !found && err == nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
@@ -186,7 +200,9 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a
 // workspace with nothing unpushed, or the issue's work is over. A cancelled release deletes its
 // own bundle in its cancel's transaction (CancelIssueRelease), not here. Deleting one the table
-// does not hold is success, so a retried delete finishes.
+// does not hold is success, so a retried delete finishes. It leaves the record of the pods that
+// took an earlier release's work (DeleteWorkspaceBundlePods): a release that saved nothing
+// unpushed takes none of that work off the pod that holds it.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue)
@@ -196,6 +212,53 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 		return fmt.Errorf("delete the workspace bundle of %s: %w", issue, err)
 	}
 	return nil
+}
+
+// PodTookWorkspaceBundle is whether the pod of podUID took the work of one of issue's idle
+// releases (workspace_bundle_pods): a take sent it that release's bundle
+// (TakeWorkspaceBundleForRestore), or it mounts the kept volume the work was taken off and the
+// drop deleted the saved copy (DropHeldWorkspaceBundle). The release saved the whole workspace
+// that every role of the issue shares, so that pod's disk holds the unpushed work of every role
+// the release saved, a role that was not running at the release included. internal/daemon's
+// update round reads it at each end of a round over the pod (workOnRoundPod). The record is the
+// store's, so it holds across a daemon restart, and it stands until the issue's work is over
+// (DeleteWorkspaceBundlePods).
+func (s *Store) PodTookWorkspaceBundle(ctx context.Context, issue, podUID string) (bool, error) {
+	var took bool
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from workspace_bundle_pods where issue = $1 and pod_uid = $2)`,
+			issue, podUID).Scan(&took)
+	})
+	if err != nil {
+		return false, fmt.Errorf("read whether the pod %s of %s took the work of an idle release: %w", podUID, issue, err)
+	}
+	return took, nil
+}
+
+// DeleteWorkspaceBundlePods drops the record of every pod of issue that took the work of one of
+// its idle releases (PodTookWorkspaceBundle): the issue's work is over, so no round of its pods is
+// left to name a role by it (outbox's dropReleasedWork). Deleting rows the table does not hold is
+// success, so a retried delete finishes.
+func (s *Store) DeleteWorkspaceBundlePods(ctx context.Context, issue string) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `delete from workspace_bundle_pods where issue = $1`, issue)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("delete the pods that took the work of an idle release of %s: %w", issue, err)
+	}
+	return nil
+}
+
+// holdReleasedWork records, in tx, that the pod of podUID took the work issue's release saved:
+// the take that sent it the bundle or the drop of a bundle its kept volume holds, each in its own
+// transaction (PodTookWorkspaceBundle). It is an upsert on the issue and the pod, so a run of that
+// transaction again finishes, and it keeps the latest release and time.
+func holdReleasedWork(ctx context.Context, tx pgx.Tx, issue, podUID string, release int64) error {
+	_, err := tx.Exec(ctx, `insert into workspace_bundle_pods (issue, pod_uid, release_id, at) values ($1, $2, $3, now())
+		on conflict (issue, pod_uid) do update set release_id = excluded.release_id, at = excluded.at`,
+		issue, podUID, release)
+	return err
 }
 
 // DeleteRestoredWorkspaceBundle drops the bundle of release, which a pod's launcher has reported
@@ -247,6 +310,11 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // The drop refuses an empty project, an empty podUID and a zero keptSince, as the take refuses its
 // own (bundleAsk.check). It runs until one run commits (transactUntilCommitted), as the take does:
 // a run that committed deleted the row, so a second run would answer that nothing was dropped.
+//
+// A drop that deletes the bundle records in its own transaction that the pod of podUID took the
+// release's work (workspace_bundle_pods, holdReleasedWork): the pod mounts the volume the work was
+// taken off, so its disk holds that work as a restored pod's does. A drop that deletes nothing
+// records no pod.
 func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
 	if err := dropAsk.check(project, issue, podUID, keptSince); err != nil {
 		return runtime.WorkspaceBundle{}, false, err
@@ -264,8 +332,14 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, pod
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
-		dropped = err == nil
-		return err
+		if err != nil {
+			return err
+		}
+		if err := holdReleasedWork(ctx, tx, issue, podUID, held.Release); err != nil {
+			return err
+		}
+		dropped = true
+		return nil
 	})
 	if err != nil {
 		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)

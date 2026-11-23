@@ -144,6 +144,8 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
 // every row it finds. So the design news stays the last word of that check.
+// dispatch://INFRA-4425's pods that took an idle release's work (20261123234016) are applied after
+// all of these; the migration creates workspace_bundle_pods and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -155,6 +157,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
+	20261123234016,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

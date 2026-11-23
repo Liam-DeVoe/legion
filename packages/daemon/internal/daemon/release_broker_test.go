@@ -63,16 +63,16 @@ const (
 	releaseWarning = "supervise: the secrets broker did not release a claim's session names; they stay held"
 )
 
-// newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
-// BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go-race job, which runs internal/daemon,
-// names its Postgres service there, and a silent skip would let these tests stop running
-// unnoticed.
-func newBrokerRig(t *testing.T) *ciphertest.Rig {
+// newBrokerRig is ciphertest.NewRig with options, failing rather than skipping on GitHub Actions
+// when BROKER_TEST_DATABASE_URL is unset: the daemon-go-race job of
+// .github/workflows/ci-job-daemon-go.yaml, which runs internal/daemon, names its Postgres service
+// there, and a silent skip would let these tests stop running unnoticed.
+func newBrokerRig(t *testing.T, options ...ciphertest.Option) *ciphertest.Rig {
 	t.Helper()
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go-race job names its Postgres service")
+		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: the daemon-go-race job of .github/workflows/ci-job-daemon-go.yaml names its Postgres service")
 	}
-	return ciphertest.NewRig(t)
+	return ciphertest.NewRig(t, options...)
 }
 
 // releaseProxy stands between the daemon's agent-secrets client and the rig's broker: it passes
