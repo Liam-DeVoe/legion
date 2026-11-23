@@ -232,7 +232,7 @@ func (r *refresh) servedWalks(ctx context.Context) ([]walkKey, error) {
 		return nil, err
 	}
 	var keys []walkKey
-	if r.settings != nil && served(serving, walkKey{family: walkDelivery}) {
+	if r.delivers() && served(serving, walkKey{family: walkDelivery}) {
 		keys = append(keys, walkKey{family: walkDelivery})
 	}
 	for _, project := range r.projects {
@@ -394,7 +394,7 @@ func (r *refresh) walkRebuild(ctx context.Context, walks map[walkKey]walkState) 
 	pending := false
 	for _, family := range []dayFamily{deliveryFamily, legionFamily} {
 		for _, key := range rb.walksOf(family.walk) {
-			if family.walk == walkDelivery && r.settings == nil {
+			if family.walk == walkDelivery && !r.delivers() {
 				continue
 			}
 			if !r.caughtUp(walks, r.serving, family.walk) {
@@ -719,8 +719,18 @@ const stageRowsStatement = `
 		via_repository = excluded.via_repository, built_by = excluded.built_by, updated_at = excluded.updated_at`
 
 // stageRows stages rows in tx, those of each op in statements of at most statementBytes of
-// parameters (dayRowRuns), each a `u` row with rb's build, as the flip writes it.
+// parameters (dayRowRuns), each a `u` row with rb's build, as the flip writes it. The owner key of
+// each `u` row is recorded first (recordOwners), so the rebuild's fold reads its staged rows.
 func stageRows(ctx context.Context, tx pgx.Tx, rb *rebuildState, rows []stagedRow) error {
+	var owners []string
+	for _, one := range rows {
+		if one.op == "u" && isOwner(one.row.ProjectKey) {
+			owners = append(owners, one.row.ProjectKey)
+		}
+	}
+	if err := recordOwners(ctx, tx, owners); err != nil {
+		return err
+	}
 	for _, op := range []string{"u", "d"} {
 		var of []DayRow
 		for _, one := range rows {
@@ -958,8 +968,9 @@ func (s *Store) overlayFiguresStart(ctx context.Context, rb int64, project strin
 	var first *time.Time
 	if err := s.database.Pool.QueryRow(ctx, `
 		select least(
-			(select min(day) from eval_days where project_key = $1 and listed),
-			(select min(day) from eval_rebuild_days where rebuild_id = $2 and project_key = $1 and op = 'u' and listed))
+			(select min(d.day) from eval_project_owners o join eval_days d on d.project_key = o.owner where o.project_key = $1 and d.listed),
+			(select min(s.day) from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
+				where o.project_key = $1 and s.rebuild_id = $2 and s.op = 'u' and s.listed))
 	`, project, rb).Scan(&first); err != nil {
 		return nil, fmt.Errorf("read the first day row of %s a rebuild holds: %w", project, err)
 	}
@@ -1004,8 +1015,8 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 		return err
 	}
 	stagedCuts, err := pool.Query(ctx, `
-		select distinct repo, deploy_repo from eval_rebuild_days
-		where rebuild_id = $1 and project_key = $2 and op = 'u' and listed and day >= $3 and day < $4
+		select distinct s.repo, s.deploy_repo from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
+		where o.project_key = $2 and s.rebuild_id = $1 and s.op = 'u' and s.listed and s.day >= $3 and s.day < $4
 	`, rb.id, project, read.From, read.To)
 	if err != nil {
 		return fmt.Errorf("read the repositories of %s's staged rows: %w", project, err)
@@ -1252,7 +1263,9 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 // ones: each stored row of a computed eval a staged row of its key stands for is left out, and
 // each staged `u` row that is listed takes its place or is added. A logged eval's rows are the
 // readings write's, which no rebuild stages. A cut is one repository's rows of one deploy
-// repository, so a key within it is an eval, a series and a day.
+// repository, so a key within it is an owner (the project's own key, or an owner key of the
+// repository it publishes, owners.go), an eval, a series and a day: a staged row of an owner key
+// stands for that owner's row alone, beside the project's own row of the same series and day.
 func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
@@ -1272,35 +1285,37 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if cut.repo != "" {
 		repos = []string{cut.repo}
 	}
-	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), repos, r, nil)
 	if err != nil {
 		return nil, err
 	}
 	type rowKey struct {
-		eval, series string
-		day          time.Time
+		owner, eval, series string
+		day                 time.Time
 	}
 	shadowed := map[rowKey]bool{}
 	var added []WindowRow
 	if len(computed) > 0 {
 		rows, err := q.Query(ctx, `
-			select op, listed, eval_id, series, day, n, sum, num, den, max, samples, last_value, last_at, nullif(counts, '{}'), via_repository, updated_at
-			from eval_rebuild_days
-			where rebuild_id = $1 and project_key = $2 and eval_id = any($3) and repo = $4 and deploy_repo = $5 and day >= $6::date and day < $7::date
+			select s.project_key, s.op, s.listed, o.project_key || substr(s.eval_id, length(o.owner) + 1), s.series, s.day, s.n, s.sum, s.num,
+				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), s.via_repository, s.updated_at
+			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
+			where o.project_key = $2 and s.rebuild_id = $1 and o.project_key || substr(s.eval_id, length(o.owner) + 1) = any($3)
+				and s.repo = $4 and s.deploy_repo = $5 and s.day >= $6::date and s.day < $7::date
 		`, rb, scope.project, computed, cut.repo, cut.deployRepo, r.From.UTC(), r.To.UTC())
 		if err != nil {
 			return nil, fmt.Errorf("read the staged rows of %s: %w", scope.project, err)
 		}
-		var op string
+		var op, owner string
 		var listed bool
 		var row WindowRow
 		part := &row.Part
-		if _, err := pgx.ForEachRow(rows, []any{&op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
 			&part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
-			row.Range, row.UpdatedAt = RangeWindow, row.UpdatedAt.UTC()
+			row.Range, row.UpdatedAt, row.owner = RangeWindow, row.UpdatedAt.UTC(), owner
 			part.LastRecordedAt, part.LastReading = nil, ""
 			utcPart(part)
-			shadowed[rowKey{eval: row.EvalID, series: part.Series, day: part.Day}] = true
+			shadowed[rowKey{owner: owner, eval: row.EvalID, series: part.Series, day: part.Day}] = true
 			if op == "u" && listed {
 				added = append(added, row)
 			}
@@ -1312,7 +1327,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	}
 	byEval := map[string][]WindowRow{}
 	for _, row := range live {
-		if !shadowed[rowKey{eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
+		if !shadowed[rowKey{owner: row.owner, eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
 			byEval[row.EvalID] = append(byEval[row.EvalID], row)
 		}
 	}
@@ -1365,8 +1380,8 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 		named := make([]*namedDay, 0, len(days))
 		for _, one := range days {
 			switch {
-			case family.walk == walkDelivery && r.settings == nil:
-				// No delivery settings, no delivery row: the day holds none.
+			case family.walk == walkDelivery && !r.delivers():
+				// No project has delivery on, no delivery row: the day holds none.
 				named = append(named, &namedDay{project: one.project, day: one.day, raw: ProjectDay{Project: one.project, Day: one.day}})
 			case family.walk == walkDelivery:
 				read, err := r.readDelivery(ctx, one.day, nil)
@@ -1374,7 +1389,7 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 					return false, err
 				}
 				named = append(named, &namedDay{project: one.project, day: one.day, raw: read.Rows(one.project),
-					zeros: ZeroDeliveryDay(*r.settings, one.project, one.day, read.repos).Rows})
+					zeros: ZeroDeliveryDay(one.project, one.day, read.rules).Rows})
 			default:
 				read, err := r.store.ReadLegionDay(ctx, one.project, one.day)
 				if err != nil {
@@ -1518,7 +1533,8 @@ func (r *refresh) walkBack(ctx context.Context, rb *rebuildState, family dayFami
 // eval_days change of each eval whose figures the rebuild staged, which widens the change its rows
 // logged in the transaction where they moved; and the serving records, the walks and the figures'
 // marker. The refresher's lease keeps every other writer of the rebuild's record out of the
-// transaction. A staged row of a project deleted since is left.
+// transaction. A staged row of a project deleted since is left; an owner key's (owners.go) belongs
+// to its repository, no project, and is written.
 var flipStatements = []struct{ what, sql string }{
 	{"rebuild flipped", `update eval_rebuilds set state = 'flipped', updated_at = now() where id = $1 and state = 'building'`},
 	{"day rows written", `
@@ -1526,8 +1542,8 @@ var flipStatements = []struct{ what, sql string }{
 			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by, updated_at)
 		select s.project_key, s.eval_id, '` + writerComputation + `', s.deploy_repo, s.series, s.repo, s.day, s.listed, s.n, s.sum, s.num, s.den,
 			s.max, s.samples, s.last_value, s.last_at, s.last_recorded_at, s.last_reading, s.counts, s.via_repository, s.built_by, s.updated_at
-		from eval_rebuild_days s join projects p on p.key = s.project_key
-		where s.rebuild_id = $1 and s.op = 'u'
+		from eval_rebuild_days s
+		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, ':') or s.project_key in (select key from projects))
 		order by s.project_key collate "C", s.eval_id collate "C", s.deploy_repo collate "C", s.series collate "C", s.repo collate "C", s.day
 		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den, max = excluded.max,
@@ -1547,8 +1563,8 @@ var flipStatements = []struct{ what, sql string }{
 	{"members written", `
 		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
 		select s.project_key, s.family, s.deploy_repo, s.row_key, s.day, s.repo, s.shipped_by
-		from eval_rebuild_members s join projects p on p.key = s.project_key
-		where s.rebuild_id = $1 and s.op = 'u'
+		from eval_rebuild_members s
+		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, ':') or s.project_key in (select key from projects))
 		order by s.project_key collate "C", s.family collate "C", s.deploy_repo collate "C", s.row_key collate "C"
 		on conflict (project_key, family, deploy_repo, row_key) do update
 		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by

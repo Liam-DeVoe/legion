@@ -876,7 +876,7 @@ func TestGetDeliveryTimelineSurfacesReconcileErrorOnFreshness(t *testing.T) {
 	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
-	if err := delivery.RecordReconcileError(ctx, database.Pool, "the installation lacks Actions: read on acme/widgets"); err != nil {
+	if err := delivery.RecordReconcileError(ctx, database.Pool, "acme/widgets", "the installation lacks Actions: read on acme/widgets"); err != nil {
 		t.Fatalf("seed reconcile error: %v", err)
 	}
 

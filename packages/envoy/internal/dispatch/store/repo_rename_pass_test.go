@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 
@@ -546,5 +547,97 @@ func TestTheRenamePassWritesNothingOnceRepoProjectsIsDropped(t *testing.T) {
 	}
 	if got := readText(t, store, `select string_agg(coalesce(repo, ''), ' ' order by key) from issues`); got != "SJawhar/Legion sjawhar/legion sjawhar/legion-smoke sjawhar/dotfiles" {
 		t.Errorf("issues.repo with no pairs = %s, want each as the seed wrote it", got)
+	}
+}
+
+// projectDeliveryRenameSeed writes, under the old name sjawhar/legion, each project's delivery
+// settings the pass writes (dispatch://INFRA-978): an excluded repository of TOOLS among others, a
+// deploy source of TOOLS that names it, a source of SMOKE that names it beside one that names the
+// new name already, and the reconcile progress of its run steps (delivery's repoStep names), one
+// of them under a step whose new name a row holds already, beside the search's progress and a run
+// step of sjawhar/legion-smoke, which only begins like the old name.
+const projectDeliveryRenameSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
+		('SMOKE', 'Smoke', 'alice', 'sjawhar/legion-smoke'),
+		('TOOLS', 'Tools', 'alice', 'acme/tools');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('SJawhar/Legion', 'INFRA', '{"kind":"user","id":"alice"}', 'CybermonkLabs/Legion');
+	insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, updated_by, updated_at) values
+		('INFRA', true, '{octocat}', '{sjawhar/dotfiles}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
+		('SMOKE', true, '{octocat}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
+		('TOOLS', true, '{hubot}', '{acme/sandbox,SJawhar/Legion,sjawhar/legion-smoke}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z');
+	insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path) values
+		('INFRA', 0, 'github_workflow', null, 'deploy.yml', '{release}', 'pr.yml'),
+		('TOOLS', 0, 'github_workflow', 'acme/tools', 'deploy.yml', '{release}', 'pr.yml'),
+		('TOOLS', 1, 'github_workflow', 'sjawhar/legion', 'ship.yml', '{ship}', 'ci.yml'),
+		('SMOKE', 0, 'github_workflow', 'sjawhar/legion', 'deploy.yml', '{release}', 'pr.yml'),
+		('SMOKE', 1, 'github_workflow', 'cybermonklabs/legion', 'deploy.yml', '{release}', 'pr.yml'),
+		('SMOKE', 2, 'github_workflow', null, 'deploy.yml', '{release}', 'pr.yml');
+	insert into delivery_reconcile_progress (step, scope, through, updated_at) values
+		('runs/deploy/sjawhar/legion', 'sjawhar/legion deploy.yml', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+		('backfill/runs/pr_checks/sjawhar/legion', 'sjawhar/legion pr.yml', '2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z'),
+		('backfill/created_at/deploy/sjawhar/legion', 'sjawhar/legion deploy.yml', '2026-01-03T00:00:00Z', '2026-01-01T00:00:00Z'),
+		('backfill/created_at/deploy/cybermonklabs/legion', 'cybermonklabs/legion deploy.yml', '2026-01-04T00:00:00Z', '2026-01-01T00:00:00Z'),
+		('runs/deploy/sjawhar/legion-smoke', 'sjawhar/legion-smoke deploy.yml', '2026-01-05T00:00:00Z', '2026-01-01T00:00:00Z'),
+		('merged_pull_requests/installation/1', 'authors=octocat,hubot excluded=sjawhar/dotfiles,acme/sandbox,SJawhar/Legion,sjawhar/legion-smoke deploy=sjawhar/legion,acme/tools,sjawhar/legion-smoke',
+			'2026-01-06T00:00:00Z', '2026-01-01T00:00:00Z');
+`
+
+// The pass writes the new name into each project's delivery settings and the reconcile progress
+// of the repository's run steps (dispatch://INFRA-978, T6): an excluded repository in its place
+// and every other one as it was, a source that names the old name, and the name and the scope of
+// each run step of the old name with its progress kept, so the reconcile resumes the renamed
+// repository's steps and imports nothing again. A source whose project names the new name already
+// is deleted, and so is a run step whose new name a row holds already: the rows under the new name
+// stay. A step that only begins like the old name, and the steps' times, are left as they were. A
+// second pass writes nothing.
+func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, projectDeliveryRenameSeed)
+	logs := capturePassLogs(t)
+
+	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if pass.Deleted != 2 || pass.Failures != 0 || pass.Left != noneLeft || pass.Err() != nil {
+		t.Fatalf("the pass = %+v (%v), want 2 rows deleted, no failure and nothing left", pass, pass.Err())
+	}
+	for query, want := range map[string]string{
+		`select string_agg(project_key || '=' || excluded_repos::text, ' ' order by project_key) from project_delivery_settings`: "INFRA={sjawhar/dotfiles} SMOKE={} TOOLS={acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke}",
+		`select string_agg(project_key || '#' || position || '=' || coalesce(repo, 'default'), ' ' order by project_key, position) from project_deploy_sources`: "INFRA#0=default SMOKE#1=cybermonklabs/legion SMOKE#2=default TOOLS#0=acme/tools TOOLS#1=cybermonklabs/legion",
+		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`: "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke TOOLS=acme/tools",
+		`select string_agg(step || '=' || scope || '@' || to_char(through at time zone 'UTC', 'MM-DD'), ' | ' order by step) from delivery_reconcile_progress`: "" +
+			"backfill/created_at/deploy/cybermonklabs/legion=cybermonklabs/legion deploy.yml@01-04 | " +
+			"backfill/runs/pr_checks/cybermonklabs/legion=cybermonklabs/legion pr.yml@01-02 | " +
+			"merged_pull_requests/installation/1=authors=octocat,hubot excluded=sjawhar/dotfiles,acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke deploy=cybermonklabs/legion,acme/tools,sjawhar/legion-smoke@01-06 | " +
+			"runs/deploy/cybermonklabs/legion=cybermonklabs/legion deploy.yml@01-01 | " +
+			"runs/deploy/sjawhar/legion-smoke=sjawhar/legion-smoke deploy.yml@01-05",
+		`select string_agg(to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD'), ' ' order by project_key) from project_delivery_settings`: "2026-01-01 2026-01-01 2026-01-01",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	written, deleted := map[string]float64{}, map[string]int{}
+	records := logs()
+	for _, record := range named(records, rewroteLine) {
+		written[record["field"].(string)] += record["rows"].(float64)
+	}
+	for _, record := range named(records, deletedLine) {
+		deleted[record["table"].(string)]++
+	}
+	for field, want := range map[string]float64{
+		"project_delivery_settings.excluded_repos": 1, "project_deploy_sources.repo": 1,
+		"delivery_reconcile_progress.step": 2, "delivery_reconcile_progress.scope": 3,
+	} {
+		if written[field] != want {
+			t.Errorf("logged %v rows of %s, want %v (every line: %v)", written[field], field, want, written)
+		}
+	}
+	if want := map[string]int{"project_deploy_sources": 1, "delivery_reconcile_progress": 1}; !maps.Equal(deleted, want) {
+		t.Errorf("logged deletions %v, want %v", deleted, want)
+	}
+	if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) {
+		t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
 	}
 }

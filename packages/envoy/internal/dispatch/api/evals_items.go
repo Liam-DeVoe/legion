@@ -145,19 +145,21 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, the delivery settings the delivery and CI rows are read under (evals.BuiltSettingsIn:
-// those the stored rows stand built under, so the items a row's value counts are read by the rule
-// that counted them), nil where the deployment has set none, which leaves no such row to read,
-// the reads the range's readers share (evalRangeReads), and tx, the answer's one snapshot, which
-// every read of the answer reads in.
+// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), the
+// delivery settings the delivery and CI rows are read under (evals.BuiltSettingsIn of the first
+// repository the project's own sources read: those the stored rows stand built under, so the items
+// a row's value counts are read by the rule that counted them), nil where the project has none
+// recorded, which leaves no such row to read, the reads the range's readers share
+// (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
 type evalItemsRead struct {
-	project  string
-	entry    evals.Entry
-	request  evalItemsRequest
-	rng      evalItemsRange
-	settings *delivery.DeliverySettings
-	shared   *evalRangeReads
-	tx       pgx.Tx
+	project     string
+	entry       evals.Entry
+	request     evalItemsRequest
+	rng         evalItemsRange
+	deployRepos *evals.DeployRepos
+	settings    *delivery.DeliverySettings
+	shared      *evalRangeReads
+	tx          pgx.Tx
 }
 
 // evalRangeReads is the reads two readers of one range make alike, each made once a range and
@@ -321,9 +323,15 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 			days: *request.ranges.compare, start: request.ranges.compareFrom, end: request.ranges.compareTo, label: evals.RangeCompare,
 		})
 	}
-	settings, err := evals.BuiltSettingsIn(ctx, tx)
+	deployRepos, err := evals.DeployReposIn(ctx, tx)
 	if err != nil {
 		return nil, err
+	}
+	var settings *delivery.DeliverySettings
+	if owned := deployRepos.Owned(project); len(owned) > 0 {
+		if settings, err = evals.BuiltSettingsIn(ctx, tx, owned[0]); err != nil {
+			return nil, err
+		}
 	}
 	definition := entry.Definition
 	var sources []evalItemSource
@@ -332,7 +340,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		if rng.label != evals.RangeWindow {
 			shared = &evalRangeReads{}
 		}
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: shared, tx: tx}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, settings: settings, shared: shared, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !request.keeps(kind.kind) {
@@ -391,27 +399,18 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 }
 
 // evalDaysOf is the eval's day rows of read's range (evals.EvalDaysIn, of the request's series
-// and repositories, and of the deploy repository recorded with the rows where the eval reads it),
-// read once a range (evalRangeReads): the day-row source and pr-ci's job rows both read them.
+// and repositories, and of the deploy repositories recorded with the rows where the eval reads
+// them), read once a range (evalRangeReads): the day-row source and pr-ci's job rows both read
+// them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepo(), read.request.series, read.request.repos, read.rng.days)
+		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepos, read.request.series, read.request.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}
 		read.shared.days, read.shared.read = days, true
 	}
 	return read.shared.days, nil
-}
-
-// deployRepo is the deploy repository the rows stand recorded under, "" where the deployment has
-// set none: the repository whose rows and items a read of an eval that reads it reads
-// (evals.DeployRepoOf, evals.BuiltSettingsIn).
-func (read evalItemsRead) deployRepo() string {
-	if read.settings == nil {
-		return ""
-	}
-	return read.settings.DeployRepo
 }
 
 // mergedRowsOf is the pull requests merged in read's range with the deploy runs created from its
@@ -543,12 +542,32 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		}
 		return keys
 	}
+	// A row whose issue owns no repository is stored under legionfacts.DefaultRepo, which stands
+	// for the project's published default repository (evals.PublishedDefaultIn): the items read
+	// shows and filters that repository, so a default move moves the cut and rewrites no row.
+	published, err := evals.PublishedDefaultIn(ctx, read.tx, read.project)
+	if err != nil {
+		return nil, err
+	}
+	resolve := func(repos map[string]string) map[string]string {
+		for key, repo := range repos {
+			if repo == legionfacts.DefaultRepo {
+				if published == "" {
+					delete(repos, key)
+					continue
+				}
+				repos[key] = published
+			}
+		}
+		return repos
+	}
 	var repos map[string]string
 	if len(read.request.repos) > 0 {
-		var err error
-		if repos, err = legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed)); err != nil {
+		stored, err := legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed))
+		if err != nil {
 			return nil, err
 		}
+		repos = resolve(stored)
 		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
 		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
 	}
@@ -561,10 +580,11 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		keys := keysOf(pageFilings, pageClosed)
 		pageRepos := repos
 		if pageRepos == nil {
-			var err error
-			if pageRepos, err = legionfacts.ReadRepos(ctx, read.tx, keys); err != nil {
+			stored, err := legionfacts.ReadRepos(ctx, read.tx, keys)
+			if err != nil {
 				return nil, 0, err
 			}
+			pageRepos = resolve(stored)
 		}
 		issues, err := legionfacts.ReadItemIssues(ctx, read.tx, keys)
 		if err != nil {
@@ -606,7 +626,7 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 }
 
 // counted is the row keys of the items family's day rows of the project counted on the days of
-// days, under the deploy repository the eval's read reads (evals.DeployRepoOf), those of the
+// days, under the deploy repositories the eval's read reads (evals.DeployRepoOf), those of the
 // repositories the request names where it names any. Those of the range's own days are read once
 // a range (evalRangeReads), since two readers of change-fail-rate read them.
 func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string]bool, error) {
@@ -614,7 +634,7 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
 	}
-	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.request.repos, days)
+	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepos), read.request.repos, days)
 	if err != nil {
 		return nil, err
 	}

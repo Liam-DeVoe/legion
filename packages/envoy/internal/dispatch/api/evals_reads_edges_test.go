@@ -164,12 +164,13 @@ func TestAnItemsLinkKeepsItsRepository(t *testing.T) {
 }
 
 // TestALegionItemShowsTheRepositoryItIsFilteredBy: a Legion eval's issue row shows the repository
-// its repo filter keeps it by, the one the day rows cut it by: the repository the issue resolves
-// to when the route reads it (legionfacts.ReadRepos). The stored row holds the repository its
-// facts pass resolved, so a move of the project's default repository that no pass has carried into
-// the row yet would show one repository while filtering by another. After the move the row reads
-// the new repository unfiltered, answers the new one's filter showing the new one, and answers
-// the old one's filter with nothing.
+// its repo filter keeps it by, the one the day rows cut it by. An issue that owns no repository
+// (its own, or an ancestor's) is stored and cut under legionfacts.DefaultRepo, which stands for
+// its project's published default repository (eval_days_defaults, which the refresher's page
+// commit moves), so the items read shows and filters by that published repository: a person's
+// write of projects.default_repo shows nothing until the commit publishes it, and the row then
+// reads the new repository unfiltered, answers the new one's filter showing the new one, and
+// answers the old one's filter with nothing. No row is rewritten by either.
 func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
@@ -182,38 +183,60 @@ func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 	}
 	actor := `{"kind":"user","id":"alice"}`
 	exec("give EVL a default repository", `update projects set default_repo = 'acme/old' where key = 'EVL'`)
+	exec("publish it", `insert into eval_days_defaults (project_key, repo) values ('EVL', 'acme/old')`)
 	exec("write the issue", `insert into issues (key, project_key, number, title, status, rank, created_by) values ('EVL-1', 'EVL', 1, 'Shipped', 'done', 'U', $1)`, actor)
 	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
 	closed := day.Add(12 * time.Hour)
-	// The row as the facts pass wrote it while acme/old was the default.
+	// The row as the facts pass wrote it: the issue owns no repository, so it is stored under
+	// legionfacts.DefaultRepo and no default move rewrites it.
 	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: "EVL", Whole: true, Rows: []legionfacts.Row{{
-		Project: "EVL", Issue: "EVL-1", Repo: "acme/old", ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+		Project: "EVL", Issue: "EVL-1", Repo: legionfacts.DefaultRepo, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
 			OpenedAt: closed.Add(-3 * time.Hour), ClosedAt: &closed, Root: true, Tree: "EVL-1", WorkHours: 2,
 			PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
 		}},
 	}}}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
-	// The default moves, and no facts pass runs here to carry it into the stored row.
-	exec("move EVL's default repository", `update projects set default_repo = 'acme/new' where key = 'EVL'`)
+	stamped := func(what string) string {
+		var repo string
+		if err := database.Pool.QueryRow(ctx, `select repo from issue_facts where project_key = 'EVL' and issue_key = 'EVL-1'`).Scan(&repo); err != nil {
+			t.Fatalf("read the stored repository %s: %v", what, err)
+		}
+		return repo
+	}
+	before := stamped("before the move")
 
-	for _, read := range []struct{ filter, want string }{{"", "acme/new"}, {"acme/new", "acme/new"}, {"acme/old", ""}} {
-		query := url.Values{"row_kind": {"issue"}, "from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)}}
-		if read.filter != "" {
-			query.Set("repo", read.filter)
+	// The person's write, which no page has published: the read answers the published default.
+	exec("move EVL's default repository", `update projects set default_repo = 'acme/new' where key = 'EVL'`)
+	reads := func(moment string, cases []struct{ filter, want string }) {
+		t.Helper()
+		for _, read := range cases {
+			query := url.Values{"row_kind": {"issue"}, "from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)}}
+			if read.filter != "" {
+				query.Set("repo", read.filter)
+			}
+			items := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/legion-work-time/items?"+query.Encode())
+			var shown []string
+			for _, row := range items.Items {
+				shown = append(shown, fmt.Sprintf("%s in %v", row.RowKey, row.Cols[legionfacts.ColumnRepo]))
+			}
+			want := []string{}
+			if read.want != "" {
+				want = []string{"EVL-1 in " + read.want}
+			}
+			if strings.Join(shown, ", ") != strings.Join(want, ", ") {
+				t.Errorf("%s, the items read with repo %q answers %v, want %v", moment, read.filter, shown, want)
+			}
 		}
-		items := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/legion-work-time/items?"+query.Encode())
-		var shown []string
-		for _, row := range items.Items {
-			shown = append(shown, fmt.Sprintf("%s in %v", row.RowKey, row.Cols[legionfacts.ColumnRepo]))
-		}
-		want := []string{}
-		if read.want != "" {
-			want = []string{"EVL-1 in " + read.want}
-		}
-		if strings.Join(shown, ", ") != strings.Join(want, ", ") {
-			t.Errorf("the items read with repo %q answer %v, want %v", read.filter, shown, want)
-		}
+	}
+	reads("before the page publishes the move", []struct{ filter, want string }{{"", "acme/old"}, {"acme/old", "acme/old"}, {"acme/new", ""}})
+
+	// The page's commit publishes it.
+	exec("publish the move", `update eval_days_defaults set repo = 'acme/new' where project_key = 'EVL'`)
+	reads("once the page has published it", []struct{ filter, want string }{{"", "acme/new"}, {"acme/new", "acme/new"}, {"acme/old", ""}})
+	if after := stamped("after the move"); after != before || after != legionfacts.DefaultRepo {
+		t.Errorf("the stored row holds %q after the move, where it held %q; want %s either way: a default move rewrites no Legion row",
+			after, before, legionfacts.DefaultRepo)
 	}
 }
 
@@ -229,6 +252,11 @@ func TestALegionItemsPageIsThatPageOfTheWholeRead(t *testing.T) {
 	actor := `{"kind":"user","id":"alice"}`
 	if _, err := database.Pool.Exec(ctx, `update projects set default_repo = 'acme/web' where key = 'EVL'`); err != nil {
 		t.Fatalf("give EVL a default repository: %v", err)
+	}
+	// The refresher's page publishes it, which is what a read of the items takes its repositories
+	// from (evals.PublishedDefaultIn): every issue below owns none, so each is read under it.
+	if _, err := database.Pool.Exec(ctx, `insert into eval_days_defaults (project_key, repo) values ('EVL', 'acme/web')`); err != nil {
+		t.Fatalf("publish EVL's default repository: %v", err)
 	}
 	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
 	var rows []legionfacts.Row
@@ -246,7 +274,7 @@ func TestALegionItemsPageIsThatPageOfTheWholeRead(t *testing.T) {
 			}, Root: key}})
 			continue
 		}
-		rows = append(rows, legionfacts.Row{Project: "EVL", Issue: key, Repo: "acme/web", ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+		rows = append(rows, legionfacts.Row{Project: "EVL", Issue: key, Repo: legionfacts.DefaultRepo, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
 			OpenedAt: at.Add(-time.Hour), ClosedAt: &at, Root: true, Tree: key, WorkHours: float64(number),
 			PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
 		}}})

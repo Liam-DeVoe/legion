@@ -36,7 +36,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	compare := Range{From: at(1, 0, 0), To: at(4, 0, 0)}
 
-	days, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), "", nil, window, &compare)
+	days, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the window and the compare range: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the read answers %v, want %v", got, want)
 	}
 
-	repoDays, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), "", []string{"acme/web"}, window, &compare)
+	repoDays, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's window and compare range: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the repository's read answers %v, want %v", got, want)
 	}
 
-	windowOnly, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, "", nil, window, nil)
+	windowOnly, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read another eval's window: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fold visits as a quantile: %v", err)
 	}
-	quantiles, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), "", []string{"acme/web"}, window, &compare)
+	quantiles, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's rows of a quantile: %v", err)
 	}
@@ -149,15 +149,15 @@ func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 		{"logged", logged, []string{"window 2026-11-04 7 no samples"}, "2026-11-04"},
 		{"computed", computed, []string{"window 2026-11-03 3 no samples", "window 2026-11-04 3 no samples"}, "2026-11-03"},
 	} {
-		days, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{test.entry}, "", nil, window, nil)
+		days, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{test.entry}, nil, nil, window, nil)
 		if err != nil {
 			t.Fatalf("%s: read the window: %v", test.as, err)
 		}
-		firsts, err := r.registry.FirstDays(t.Context(), []Entry{test.entry}, "")
+		firsts, err := r.registry.FirstDays(t.Context(), []Entry{test.entry}, nil)
 		if err != nil {
 			t.Fatalf("%s: read the first days: %v", test.as, err)
 		}
-		items, err := r.registry.EvalDays(t.Context(), test.entry.Definition, "", "", nil, window)
+		items, err := r.registry.EvalDays(t.Context(), test.entry.Definition, nil, "", nil, window)
 		if err != nil {
 			t.Fatalf("%s: read the items' day rows: %v", test.as, err)
 		}
@@ -230,15 +230,15 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	statements := &sentStatements{}
 	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
 	window, compare := Range{From: day, To: day.AddDate(0, 0, 1)}, Range{From: day.AddDate(0, 0, -7), To: day.AddDate(0, 0, -6)}
-	days, err := traced.DayWindow(t.Context(), []string{r.project}, entries, "", nil, window, &compare)
+	days, err := traced.DayWindow(t.Context(), []string{r.project}, entries, nil, nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the day rows of %d evals: %v", page, err)
 	}
-	firsts, err := traced.FirstDays(t.Context(), entries, "")
+	firsts, err := traced.FirstDays(t.Context(), entries, nil)
 	if err != nil {
 		t.Fatalf("read the first days of %d evals: %v", page, err)
 	}
-	if _, err := traced.ReadStoredFigures(t.Context(), []string{r.project}, entries, "", "", window, &compare); err != nil {
+	if _, err := traced.ReadStoredFigures(t.Context(), []string{r.project}, entries, nil, "", window, &compare); err != nil {
 		t.Fatalf("read the stored figures of %d evals: %v", page, err)
 	}
 	sent := r.measured(t, statements.take())

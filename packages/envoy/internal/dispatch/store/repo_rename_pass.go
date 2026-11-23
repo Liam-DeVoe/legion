@@ -20,7 +20,7 @@ import (
 //
 // The fields are the lines of repoRenameLines, read from the schema, and the pass writes them in
 // that order. Each line is one transaction, so a line that fails leaves the lines before it
-// written and does not stop the lines after it. A field matches by one of three rules:
+// written and does not stop the lines after it. A field matches by one of four rules:
 //
 //   - a name matches when its lower case is the pair's old name, and the pass writes the new
 //     name;
@@ -28,7 +28,10 @@ import (
 //     one and keeps every other character;
 //   - a token of delivery_reconcile_progress.scope matches the old name, in any case, after the
 //     start, a space, `=` or `,` and before the end, a space or `,`. That is how delivery's
-//     searchProgressScope and runsProgressScope write a repository into a scope.
+//     searchProgressScope and runsProgressScope write a repository into a scope;
+//   - a run step's name in delivery_reconcile_progress.step matches when it begins `runs/` or
+//     `backfill/` and ends with `/` and the old name, in any case, and the pass writes the new name
+//     in place of that end. That is how delivery's repoStep names one repository's run step.
 //
 // The pass writes no other column, updated_at included, and appends no event. It never writes
 // repo_projects, the event log, the text of documents, comments, asks and messages, the reference
@@ -399,6 +402,62 @@ func nameLine(table, column string) repoRenameLine {
 	}
 }
 
+// ownerNamed is true where column, an owner key of the eval day rows (evals.OwnerKey), holds the
+// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers.
+func ownerNamed(r repoRename, column string) string {
+	return `lower(split_part(` + column + `, '|', 1)) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
+}
+
+// ownerRenamed is column, an owner key, with the new name for its repository.
+func ownerRenamed(r repoRename, column string) string {
+	return QuoteLiteral(":"+r.To) + ` || substr(` + column + `, length(split_part(` + column + `, '|', 1)) + 1)`
+}
+
+// ownerWrite writes the new name in the owner key of table's project_key, and, where the table
+// holds eval ids under that key (eval_days), in the eval id's project too.
+func ownerWrite(r repoRename, table string, evalIDs bool) repoRenameStep {
+	where := ownerNamed(r, "project_key")
+	set := `project_key = ` + ownerRenamed(r, "project_key")
+	if evalIDs {
+		set += `, eval_id = ` + ownerRenamed(r, "project_key") + ` || substr(eval_id, length(project_key) + 1)`
+	}
+	return repoRenameStep{
+		table: table,
+		where: where,
+		write: "project_key",
+		sql:   `update ` + table + ` set ` + set + ` where ` + where,
+	}
+}
+
+// ownerCollisions deletes each row of table under an owner key of the old name whose key, with the
+// new name for its repository, is the key of another row, as collisions does for a repo column.
+// The eval id of a row holds its owner key too (ownerWrite rewrites both), so the keys compare
+// the slug that follows it rather than the id.
+func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep {
+	same := ""
+	key := `'project_key', d.project_key`
+	for _, column := range keys {
+		if column == "eval_id" {
+			same += ` and substr(t.eval_id, length(t.project_key) + 1) = substr(d.eval_id, length(d.project_key) + 1)`
+		} else {
+			same += ` and t.` + column + ` = d.` + column
+		}
+		key += `, '` + column + `', d.` + column + `::text`
+	}
+	return repoRenameStep{
+		table:   table,
+		where:   ownerNamed(r, "project_key"),
+		deletes: true,
+		sql: `delete from ` + table + ` d
+			where ` + ownerNamed(r, "d.project_key") + `
+			  and exists (
+				select 1 from ` + table + ` t
+				where (t.project_key = ` + ownerRenamed(r, "d.project_key") + `
+					or (` + ownerNamed(r, "t.project_key") + ` and t.project_key < d.project_key))` + same + `)
+			returning jsonb_build_object(` + key + `)::text`,
+	}
+}
+
 // citedNamed is true where a delivery pull request cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
@@ -407,6 +466,30 @@ func citedNamed(r repoRename) string {
 // excludedNamed is true where the delivery settings exclude the old name.
 func excludedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(excluded_repos) e(repo) where ` + r.named("e.repo") + `)`
+}
+
+// excludedWrite rewrites each excluded repository of table that is the old name, in its place, and
+// drops none, so the search scope that lists them (delivery's searchProgressScope) stays the scope
+// the progress line writes into the stored progress.
+func excludedWrite(r repoRename, table string) repoRenameStep {
+	where := excludedNamed(r)
+	return repoRenameStep{table: table, where: where, write: "excluded_repos", sql: `
+		update ` + table + ` set excluded_repos = array(
+			select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
+			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
+		where ` + where}
+}
+
+// stepNamed is true where column, a step of delivery_reconcile_progress, is a run step of the old
+// name (delivery's repoStep): it begins `runs/` or `backfill/` and ends with `/` and the old name.
+func stepNamed(r repoRename, column string) string {
+	end := QuoteLiteral("/" + r.From)
+	return `((starts_with(` + column + `, 'runs/') or starts_with(` + column + `, 'backfill/')) and right(lower(` + column + `), length(` + end + `)) = ` + end + `)`
+}
+
+// renamedStep is column, a run step of the old name, with the new name in place of its end.
+func renamedStep(r repoRename, column string) string {
+	return `left(` + column + `, length(` + column + `) - length(` + r.from() + `)) || ` + r.to()
 }
 
 // repoRenameLines are the stored repository fields of Dispatch, in the order the pass writes them,
@@ -420,6 +503,42 @@ var repoRenameLines = []repoRenameLine{
 	// as an issue_facts change (20261117100002), so the day-row refresher writes that issue's
 	// Legion day rows again, under the new name.
 	nameLine("issue_facts", "repo"),
+	// What a repository attributes is kept under its owner key in the eval day rows, their
+	// members and their owed days (evals.OwnerKey, migration 20261117100006): the key holds the
+	// repository's name, and so does the eval id of each row, so the pass rewrites both. A row
+	// under the new name already (a repository renamed to one that holds rows) is left, and the
+	// old name's row of the same key goes, as every other line's collision does. The day-row
+	// refresher writes the new name's rows again from their input, and the eval_days change each
+	// write logs wakes the views that read them.
+	{
+		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			var steps []repoRenameStep
+			for _, one := range []struct {
+				table string
+				keys  []string
+			}{
+				{"eval_days", []string{"eval_id", "writer", "deploy_repo", "series", "repo", "day"}},
+				{"eval_day_members", []string{"family", "deploy_repo", "row_key"}},
+				{"eval_days_owed", []string{"family", "day"}},
+			} {
+				steps = append(steps, ownerCollisions(r, one.table, one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+			}
+			return append(steps,
+				repoRenameStep{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), deletes: true,
+					sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
+						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)
+						returning jsonb_build_object('owner', d.owner)::text`,
+				},
+				repoRenameStep{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
+					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
+						` where ` + ownerNamed(r, "owner"),
+				},
+				nameWrite(r, "eval_days_defaults", "repo"))
+		},
+	},
 	nameLine("check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower
@@ -522,33 +641,56 @@ var repoRenameLines = []repoRenameLine{
 	},
 	nameLine("delivery_changes", "repo"),
 	{
-		// Each excluded repository is rewritten in its place, and none is dropped, so the scope
-		// searchProgressScope writes from the settings stays the scope the line after this one
-		// writes into the stored progress.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
 		steps: func(r repoRename) []repoRenameStep {
-			where := excludedNamed(r)
 			return []repoRenameStep{
 				nameWrite(r, "delivery_settings", "deploy_repo"),
-				{table: "delivery_settings", where: where, write: "excluded_repos", sql: `
-					update delivery_settings set excluded_repos = array(
-						select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
-						from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
-					where ` + where},
+				excludedWrite(r, "delivery_settings"),
 			}
 		},
 	},
 	{
-		// The scope says which settings a step's stored progress was measured against, and the
-		// reconcile backfills a step afresh when its scope differs from the one it writes now. So
-		// the scope gets the new name wherever the settings got it, and the progress stays.
-		fields: "delivery_reconcile_progress.scope",
+		// A project's github_workflow sources read one repository each
+		// (project_deploy_sources_one_per_repo), so a source under the old name whose project has
+		// one under the new name is deleted, and that one stays. A source that names none reads its
+		// project's default repository, which the projects line writes.
+		fields: "project_deploy_sources.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			where := `scope ~* ` + r.token()
-			return []repoRenameStep{{table: "delivery_reconcile_progress", where: where, write: "scope", sql: `
-				update delivery_reconcile_progress
-				set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
-				where ` + where}}
+			return []repoRenameStep{
+				collisions(r, "project_deploy_sources", "project_key"),
+				nameWrite(r, "project_deploy_sources", "repo"),
+			}
+		},
+	},
+	{
+		fields: "project_delivery_settings.excluded_repos",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{excludedWrite(r, "project_delivery_settings")}
+		},
+	},
+	{
+		// A run step's name carries its repository (delivery's repoStep) and its scope names it
+		// too, and the reconcile backfills a step afresh when it finds no row under the step's name
+		// or a row whose scope differs from the one it writes now. So the step's name and the scope
+		// get the new name wherever the settings got it, and the progress stays: the renamed
+		// repository imports nothing again. step is the table's key, so a step of the old name
+		// whose new name a row holds already is deleted, and the row under the new name stays.
+		fields: "delivery_reconcile_progress.step, .scope",
+		steps: func(r repoRename) []repoRenameStep {
+			named, scoped := stepNamed(r, "step"), `scope ~* `+r.token()
+			return []repoRenameStep{
+				{table: "delivery_reconcile_progress", where: named, deletes: true, sql: `
+					delete from delivery_reconcile_progress d
+					where ` + stepNamed(r, "d.step") + `
+					  and exists (select 1 from delivery_reconcile_progress t where t.step = ` + renamedStep(r, "d.step") + `)
+					returning jsonb_build_object('step', d.step)::text`},
+				{table: "delivery_reconcile_progress", where: named, write: "step", sql: `
+					update delivery_reconcile_progress set step = ` + renamedStep(r, "step") + ` where ` + named},
+				{table: "delivery_reconcile_progress", where: scoped, write: "scope", sql: `
+					update delivery_reconcile_progress
+					set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
+					where ` + scoped},
+			}
 		},
 	},
 	{

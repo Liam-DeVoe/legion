@@ -205,10 +205,12 @@ func (s *server) readProjectTimeline(ctx context.Context, project string, from, 
 // of the window (readDeliveryPopulation, with its waiting line and the pull requests each of its
 // deploys ships first), kept to the rows project counts by root R27, by the rule the eval
 // registry's day rows count them by (evals.Attribution, read for every issue those rows name): a
-// pull request merged in the window or waiting at its start that counts for project, and a deploy
-// run started in the window that counts for it by the pull requests it ships first. The runs
+// pull request merged in the window or waiting at its start that counts for project, through its
+// issue or, naming none, through its repository as project's published default; and a deploy run
+// started in the window that counts for it by the pull requests it ships first, or, shipping none
+// (a failed run among them), as the project whose deploy source reads its repository. The runs
 // started outside the window stay, since a pull request of the window can ship with one; a run of
-// the window that counts for another project alone ships none of project's first.
+// the window that counts for other projects alone ships none of project's first.
 func (s *server) projectTimelinePopulation(ctx context.Context, settings delivery.DeliverySettings, project string, from, to time.Time, query url.Values) (deliveryPopulation, error) {
 	pop, err := s.readDeliveryPopulation(ctx, settings, from, to, query, true)
 	if err != nil {
@@ -244,7 +246,7 @@ func (s *server) projectTimelinePopulation(ctx context.Context, settings deliver
 		return !attribution.CountsPullRequest(pr.DeliveryPullRequest, project)
 	})
 	kept.applyRuns, kept.jobsByRun = runsWhere(pop.applyRuns, pop.jobsByRun, func(run delivery.DeliveryRun) bool {
-		return run.StartedAt.Before(from) || !run.StartedAt.Before(to) || attribution.CountsDeploy(pop.windowShipped[run.RunID], project)
+		return run.StartedAt.Before(from) || !run.StartedAt.Before(to) || attribution.CountsDeploy(run.Repo, pop.windowShipped[run.RunID], project)
 	})
 	// The measures' runs are no row of the timeline, and would move its expiry (nextExpiry).
 	kept.windowRuns, kept.windowJobs, kept.windowShipped = nil, nil, nil

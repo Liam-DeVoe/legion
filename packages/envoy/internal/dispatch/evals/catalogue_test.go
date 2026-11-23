@@ -231,10 +231,10 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		built[SlugLegionSplitting] = append(built[SlugLegionSplitting], children)
 		unwritten++
 	}
-	settings := delivery.DeliverySettings{StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
+	settings := delivery.DeliverySettings{DeployRepo: "acme/deploy", StagingE2EJobName: new("e2e"), StagingApplyJobName: new("staging-apply")}
 	// One repository kept as the deploy repository, whose zero rows are those of the evals that
 	// read it; the evals that read none have theirs once.
-	zero := ZeroDeliveryDay(settings, "EVAL", day, []string{"acme/deploy"})
+	zero := ZeroDeliveryDay("EVAL", day, []delivery.DeliverySettings{settings})
 	for _, row := range zero.Rows {
 		slug := strings.TrimPrefix(row.EvalID, "EVAL/")
 		built[slug] = append(built[slug], row.Series)

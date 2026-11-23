@@ -303,6 +303,10 @@ type WindowRow struct {
 	EvalID    string
 	Part      measures.DayPart
 	UpdatedAt time.Time
+	// owner is the key the row is stored under (owners.go): the reading project's own, or an owner
+	// key of the repository it publishes, whose row of one series and day can stand beside the
+	// project's; a rebuild's overlay of staged rows replaces each owner's row alone.
+	owner string
 }
 
 // The two ranges a DayWindow read answers rows for.

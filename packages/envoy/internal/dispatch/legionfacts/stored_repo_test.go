@@ -8,13 +8,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// TestEachStoredRowNamesTheRepositoryTheIssuePageResolves: a stored row's repo is the repository
-// the issue resolves to by the server's one rule, which the issue page reads and
-// refs.IssueRepository reads for one key: the issue's own, the nearest one up its parent chain,
-// else its project's default repository (projects.default_repo). The history's project has a
-// default repository; the first tree's implemented child names another as its own, so it reads
-// that one while the rest of its tree reads the default.
-func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
+// TestEachStoredRowNamesTheRepositoryItOwns: a stored row's repo is the repository the issue owns
+// by the server's one rule — its own, or the nearest one up its parent chain — and DefaultRepo
+// (':default') where its chain names none, which stands for its project's default repository and
+// is what the issue page resolves to there (refs.IssueRepository). The history's project has a
+// default repository; the first tree's implemented child names another as its own, so it stores
+// that one while the rest of its tree stores ':default'.
+func TestEachStoredRowNamesTheRepositoryItOwns(t *testing.T) {
 	seeded := seed(t, 2)
 	project := seeded.fixture.Project
 	own := seeded.fixture.Keys[1]
@@ -44,43 +44,52 @@ func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve the repository of %s: %v", key, err)
 		}
-		want := ""
+		shown := ""
 		if resolved != nil {
-			want = *resolved
+			shown = *resolved
 		}
-		if got := stored[key].Repo; got != want {
-			t.Errorf("%s stores the repository %q, want the %q the issue page resolves", key, got, want)
+		got := stored[key].Repo
+		// A row that owns no repository stores ':default', which the issue page resolves to the
+		// project's default repository; every other row stores what the page resolves.
+		want := shown
+		if got == DefaultRepo {
+			want = "acme/widgets"
 		}
-		byRepo[stored[key].Repo]++
+		if shown != want {
+			t.Errorf("%s stores the repository %q while the issue page resolves %q", key, got, shown)
+		}
+		byRepo[got]++
 	}
-	if stored[own].Repo != "acme/gadgets" || byRepo["acme/widgets"] == 0 {
-		t.Errorf("%s stores %q and %d rows store the default, want its own acme/gadgets and the rest the default",
-			own, stored[own].Repo, byRepo["acme/widgets"])
+	if stored[own].Repo != "acme/gadgets" || byRepo[DefaultRepo] == 0 {
+		t.Errorf("%s stores %q and %d rows store %s, want its own acme/gadgets and the rest %s",
+			own, stored[own].Repo, byRepo[DefaultRepo], DefaultRepo, DefaultRepo)
 	}
 	t.Logf("%s: %d stored rows read against refs.IssueRepository, by repository %v", project, len(stored), byRepo)
 }
 
-// TestADefaultRepositoryChangeReResolvesEveryStoredRepository: a stored row's repository falls
-// back to its project's default repository, so the pass that reads a write of the project's row
-// (the project.updated event PUT /api/v1/projects/{key}/default-repository appends) resolves the
-// stored rows of the project's issues again: once the project gains a default repository, the
-// closed issues' rows, which no feed names, store what refs.IssueRepository answers, as the open
-// ones do.
-func TestADefaultRepositoryChangeReResolvesEveryStoredRepository(t *testing.T) {
+// TestADefaultRepositoryChangeRewritesNoStoredRepository (dispatch://INFRA-2916, R15 and plan
+// D1 (vi)): a stored row's repo is the repository the issue owns, else DefaultRepo, so a write of
+// the project's default repository (the project.updated event
+// PUT /api/v1/projects/{key}/default-repository appends) resolves no row again and rewrites none.
+// Only the cut of the Legion day rows that reach a repository through the default moves, at read
+// time, under the published default the evals' reads take (evals.DayWindowIn).
+func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 	c := newConsumer(t, 3)
 	c.pass(t)
 	project := c.fixture.Project
 	closed := 0
+	before := map[string]string{}
 	for key, row := range c.rows(t) {
-		if row.Repo != "" {
-			t.Fatalf("%s stores %q before the project has a default repository", key, row.Repo)
+		if row.Repo != DefaultRepo {
+			t.Fatalf("%s stores %q, want %s: no issue of the history owns a repository", key, row.Repo, DefaultRepo)
 		}
+		before[key] = row.Repo
 		if row.ClosedAt != nil {
 			closed++
 		}
 	}
 	if closed == 0 {
-		t.Fatal("the history holds no closed issue's row, so this test checks no row only the re-resolve reaches")
+		t.Fatal("the history holds no closed issue's row, so this test checks no row only a re-resolve would reach")
 	}
 	// The route's write: the project's row, then its project.updated event, in one transaction.
 	c.exec(t, "give the project a default repository", `
@@ -91,25 +100,23 @@ func TestADefaultRepositoryChangeReResolvesEveryStoredRepository(t *testing.T) {
 		from written
 	`, project)
 	changed := c.pass(t)
-	byRepo := map[string]int{}
 	for key, row := range c.rows(t) {
 		resolved, err := refs.IssueRepository(t.Context(), c.database.Pool, key)
 		if err != nil {
 			t.Fatalf("resolve the repository of %s: %v", key, err)
 		}
-		if resolved == nil || row.Repo != *resolved || row.Repo != "acme/widgets" {
+		if row.Repo != before[key] || resolved == nil || *resolved != "acme/widgets" {
 			shown := "none"
 			if resolved != nil {
 				shown = *resolved
 			}
-			t.Errorf("%s (closed %t) stores %q after its project's default repository became acme/widgets; the issue page resolves %s", key, row.ClosedAt != nil, row.Repo, shown)
-		}
-		if row.ClosedAt != nil {
-			byRepo[row.Repo]++
+			t.Errorf("%s (closed %t) stores %q after its project's default repository became acme/widgets, where it stored %q; the issue page resolves %s",
+				key, row.ClosedAt != nil, row.Repo, before[key], shown)
 		}
 	}
-	if len(changed) == 0 {
-		t.Error("the pass after the default repository's write changed no row")
+	if len(changed) != 0 {
+		t.Errorf("the pass after the default repository's write changed %d rows, want none", len(changed))
 	}
-	t.Logf("the pass after the default repository's write changed %d rows; the %d closed rows by repository: %v", len(changed), closed, byRepo)
+	t.Logf("the pass after the default repository's write changed no row; its %d rows, %d of them closed, still store %s",
+		len(before), closed, DefaultRepo)
 }

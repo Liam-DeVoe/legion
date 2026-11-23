@@ -30,7 +30,7 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: settings.DeployRepo, deploys: true, rule: deployRule(t, r.database.Pool, settings.DeployRepo)}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -68,6 +68,14 @@ func line(family, project string, day time.Time) string {
 //     merge days of the pull requests it now ships (delivery.FirstShippingApply over the history's
 //     applies and the new one);
 //   - a session group, a version of a definition and a write of day rows rewrite no day.
+//
+// What no issue attributes counts for its repository's owner key (owners.go, R15): a pull request
+// that names no issue, and a deploy run that ships one, under the key whose sharers are the
+// projects it counts for through issues; a deploy run that ships none counts for the project whose
+// deploy source reads its repository alone (dispatch://INFRA-978, R12). So a deploy run's day is
+// rewritten in each owner key it counted for before or after the change where the key moved or the
+// run's row in it did, and a key whose first input the change brings writes its zero rows through
+// today, as one that no input counts for any more deletes every row it held (keyDays).
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -108,12 +116,21 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		return index
 	}
-	// A pull request counts for its issue's project and one with no issue for none.
+	// projectOf is the project a pull request counts for through its issue, "" where it names no
+	// issue the history holds.
 	projectOf := func(pr delivery.DeliveryPullRequest) string {
 		if pr.IssueKey != nil {
 			return issueProjects[*pr.IssueKey]
 		}
 		return ""
+	}
+	// countsFor is what a pull request counts for (attribution.of): its issue's project, and its
+	// repository's owner key where it names no issue the history holds.
+	countsFor := func(pr delivery.DeliveryPullRequest) string {
+		if project := projectOf(pr); project != "" {
+			return project
+		}
+		return OwnerKey(pr.Repo, nil)
 	}
 	shipper := func(pr delivery.DeliveryPullRequest) *delivery.Apply {
 		if pr.Repo != deliveries.DeployRepo {
@@ -121,17 +138,46 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		return delivery.FirstShippingApply(*pr.MergedAt, applies)
 	}
-	// runDayProjects is every project a deploy run's start day counts it for: the projects of the
-	// pull requests it ships, which its CI rows count for too, and none where it ships none of a
-	// project.
-	runDayProjects := func(runID int64) map[string]bool {
-		projects := map[string]bool{}
+	runRepos := map[int64]string{}
+	for _, run := range deliveries.Runs {
+		runRepos[run.RunID] = run.Repo
+	}
+	// runCount is what a deploy run's start day counts it for (attribution.deploy): the projects
+	// of the pull requests it ships through their issues, which its CI rows count for too; where it
+	// ships a pull request no issue attributes, its repository's owner key with those projects as
+	// its sharers, whose row of the day holds whether the run reached production and those pull
+	// requests; and, where it ships none, the project whose deploy source reads its repository,
+	// main, and no other (dispatch://INFRA-978, R12).
+	type runCount struct {
+		projects map[string]bool
+		owner    string
+		reached  bool
+		unissued string
+	}
+	runCounts := func(runID int64) runCount {
+		count := runCount{projects: map[string]bool{}, reached: slices.ContainsFunc(applies, func(a delivery.Apply) bool { return a.RunID == runID })}
+		ships := false
+		var unissued []string
 		for _, pr := range prs {
-			if apply := shipper(pr); apply != nil && apply.RunID == runID && projectOf(pr) != "" {
-				projects[projectOf(pr)] = true
+			if apply := shipper(pr); apply == nil || apply.RunID != runID {
+				continue
+			}
+			ships = true
+			if project := projectOf(pr); project != "" {
+				count.projects[project] = true
+			} else {
+				unissued = append(unissued, PullRequestMember(pr.Repo, pr.Number))
 			}
 		}
-		return projects
+		switch {
+		case !ships:
+			count.projects[main] = true
+		case len(unissued) > 0:
+			slices.Sort(unissued)
+			count.owner = OwnerKey(runRepos[runID], slices.Collect(maps.Keys(count.projects)))
+			count.unissued = strings.Join(unissued, " ")
+		}
+		return count
 	}
 	// The deployed pull request to move and the one to merge again a day earlier are two that one
 	// deploy ships: once the first counts for the other project that deploy counts for both, and
@@ -182,6 +228,71 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		return slices.Sorted(maps.Keys(all))
 	}
+	// runLines is the lines of a deploy run's start day day that a change writes, where the run
+	// counted as then and counts as now (runCounts): each project of either, each owner key of
+	// either where the key moved, and the key where the run's row in it moved.
+	runLines := func(day time.Time, then, now runCount) []string {
+		set := lines(day, then.projects, now.projects)
+		switch {
+		case then.owner != now.owner:
+			for _, owner := range []string{then.owner, now.owner} {
+				if owner != "" {
+					set = append(set, line(walkDelivery, owner, day))
+				}
+			}
+		case now.owner != "" && (then.reached != now.reached || then.unissued != now.unissued):
+			set = append(set, line(walkDelivery, now.owner, day))
+		}
+		return union(set)
+	}
+	// counted reports whether an input of the history counts for the owner key key as it stands: a
+	// deploy run whose day counts there, or a pull request that names no issue.
+	counted := func(key string) bool {
+		for _, run := range deliveries.Runs {
+			if run.Kind == delivery.DeliveryRunKindDeploy && runCounts(run.RunID).owner == key {
+				return true
+			}
+		}
+		return slices.ContainsFunc(prs, func(pr delivery.DeliveryPullRequest) bool { return pr.MergedAt != nil && countsFor(pr) == key })
+	}
+	// keyDays is want, the lines a change writes, with the days of each owner key it names that the
+	// change writes as the key's rows begin or end: a key that held no row before (before) writes
+	// its zero rows from the first day want names of it through today, and one that no input counts
+	// for any more (counted) deletes every row it held.
+	keyDays := func(want []string, before map[string]DayRow) []string {
+		firsts := map[string]time.Time{}
+		for _, one := range want {
+			rest := strings.TrimPrefix(one, walkDelivery+" ")
+			at := strings.LastIndex(rest, " ")
+			if key := rest[:at]; isOwner(key) {
+				day, err := time.Parse(time.DateOnly, rest[at+1:])
+				if err != nil {
+					t.Fatalf("read the day of %q: %v", one, err)
+				}
+				if first, held := firsts[key]; !held || day.Before(first) {
+					firsts[key] = day
+				}
+			}
+		}
+		all := slices.Clone(want)
+		for key, first := range firsts {
+			var held []string
+			for _, row := range before {
+				if row.ProjectKey == key {
+					held = append(held, line(walkDelivery, key, row.Day))
+				}
+			}
+			switch {
+			case len(held) == 0:
+				for day := first; !day.After(refresherToday); day = day.AddDate(0, 0, 1) {
+					all = append(all, line(walkDelivery, key, day))
+				}
+			case !counted(key):
+				all = append(all, held...)
+			}
+		}
+		return union(all)
+	}
 
 	// The undeployed pull request moved to the other project: the day it merged on is written in
 	// the project that counts it now and, through eval_day_members alone, in the one it left.
@@ -204,7 +315,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	if deploy == nil {
 		t.Fatalf("%s is deployed by the day's read and by no apply of the history", moved.member)
 	}
-	deployedBefore := runDayProjects(deploy.RunID)
+	deployedBefore := runCounts(deploy.RunID)
 	r.exec(t, "make an issue of "+other, `
 		insert into issues (key, project_key, number, title, status, rank, created_by)
 		values ($1, $2, 900, 'Work moved here', 'in_progress', '00000900', '{"kind":"user","id":"alice"}')`, other+"-900", other)
@@ -213,7 +324,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	issueProjects[other+"-900"] = other
 	movedPR.IssueKey = new(other + "-900")
 	prs[at(moved.member)] = movedPR
-	want := union(lines(movedDay, map[string]bool{main: true, other: true}), lines(runDay(deploy.RunID), deployedBefore, runDayProjects(deploy.RunID)))
+	want := union(lines(movedDay, map[string]bool{main: true, other: true}), runLines(runDay(deploy.RunID), deployedBefore, runCounts(deploy.RunID)))
 	// Its PR-checks runs count for its project, so each start day of one is written in both.
 	mustMove := []string{line(walkDelivery, main, movedDay), line(walkDelivery, other, movedDay), line(walkDelivery, other, runDay(deploy.RunID))}
 	for _, check := range deliveries.Runs {
@@ -226,28 +337,28 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 			}
 		}
 	}
-	before = r.expectDays(t, "a pull request moved to "+other, before, want, mustMove)
+	before = r.expectDays(t, "a pull request moved to "+other, before, keyDays(want, before), mustMove)
 
 	// The pull request of the repository's project merged again a day earlier: the deploy that
 	// ships it now is the first apply GitHub created after the new merge, and the one that shipped
 	// it before no longer counts it among the pull requests it ships.
 	redatedPR := prs[at(redated.member)]
 	oldDeploy := shipper(redatedPR)
-	shippedThen := runDayProjects(oldDeploy.RunID)
+	shippedThen := runCounts(oldDeploy.RunID)
 	newMerge := redatedPR.MergedAt.AddDate(0, 0, -1)
 	redatedPR.MergedAt = &newMerge
 	newDeploy := shipper(redatedPR)
 	if newDeploy == nil || newDeploy.RunID == oldDeploy.RunID {
 		t.Fatalf("%s merged a day earlier ships with %v, the run that shipped it before (%d): this case would not move its deploy", redated.member, newDeploy, oldDeploy.RunID)
 	}
-	deployedThen := runDayProjects(newDeploy.RunID)
+	deployedThen := runCounts(newDeploy.RunID)
 	r.exec(t, "merge "+redated.member+" a day earlier", `
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour') where repo = $1 and number = $2
 	`, redatedPR.Repo, redatedPR.Number, newMerge)
 	prs[at(redated.member)] = redatedPR
 	want = union(lines(redatedDay, map[string]bool{main: true}), lines(measures.Midnight(newMerge), map[string]bool{main: true}),
-		lines(runDay(newDeploy.RunID), deployedThen, runDayProjects(newDeploy.RunID)),
-		lines(runDay(oldDeploy.RunID), shippedThen, runDayProjects(oldDeploy.RunID)))
+		runLines(runDay(newDeploy.RunID), deployedThen, runCounts(newDeploy.RunID)),
+		runLines(runDay(oldDeploy.RunID), shippedThen, runCounts(oldDeploy.RunID)))
 	// A change of the pull request names the start day of each of its PR-checks runs too, in its
 	// project, whose rows its merge does not move.
 	for _, check := range deliveries.Runs {
@@ -257,7 +368,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	}
 	t.Logf("%s moves from run %d (started %s) to run %d (started %s)", redated.member, oldDeploy.RunID, runDay(oldDeploy.RunID).Format(time.DateOnly),
 		newDeploy.RunID, runDay(newDeploy.RunID).Format(time.DateOnly))
-	before = r.expectDays(t, "a pull request merged a day earlier", before, want,
+	before = r.expectDays(t, "a pull request merged a day earlier", before, keyDays(want, before),
 		[]string{line(walkDelivery, main, redatedDay), line(walkDelivery, main, measures.Midnight(newMerge))})
 
 	// A deploy run of the outage, whose production job failed, now completes it: the run ships the
@@ -286,16 +397,16 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	if run.RunID == 0 {
 		t.Fatal("the history holds no deploy run whose failed production job, once completed, ships a pull request")
 	}
-	// What a run's change touches, read off the history before and after it: the run's day in the
-	// projects it counted for then and counts for now; and for every pull request it shipped then
-	// or ships now, that pull request's merge day and the day of each run that ships it then and
-	// now, in those runs' projects then and now.
+	// What a run's change touches, read off the history before and after it: the run's day as it
+	// counted then and counts now (runLines); and for every pull request it shipped then or ships
+	// now, that pull request's merge day where it counts (countsFor), and the day of each run that
+	// ships it then and now, as those runs counted then and count now.
 	type shipping struct {
-		by       map[string]int64
-		projects map[int64]map[string]bool
+		by   map[string]int64
+		runs map[int64]runCount
 	}
 	snapshot := func() shipping {
-		now := shipping{by: map[string]int64{}, projects: map[int64]map[string]bool{}}
+		now := shipping{by: map[string]int64{}, runs: map[int64]runCount{}}
 		for _, pr := range prs {
 			if apply := shipper(pr); apply != nil {
 				now.by[PullRequestMember(pr.Repo, pr.Number)] = apply.RunID
@@ -303,13 +414,13 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		for _, candidate := range deliveries.Runs {
 			if candidate.Kind == delivery.DeliveryRunKindDeploy {
-				now.projects[candidate.RunID] = runDayProjects(candidate.RunID)
+				now.runs[candidate.RunID] = runCounts(candidate.RunID)
 			}
 		}
 		return now
 	}
 	runOracle := func(id int64, then, now shipping) ([]string, int) {
-		want := lines(runDay(id), then.projects[id], now.projects[id])
+		want := runLines(runDay(id), then.runs[id], now.runs[id])
 		touched := 0
 		for _, pr := range prs {
 			member := PullRequestMember(pr.Repo, pr.Number)
@@ -317,10 +428,10 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 				continue
 			}
 			touched++
-			want = union(want, lines(measures.Midnight(*pr.MergedAt), map[string]bool{projectOf(pr): true}))
+			want = union(want, lines(measures.Midnight(*pr.MergedAt), map[string]bool{countsFor(pr): true}))
 			for _, other := range []int64{then.by[member], now.by[member]} {
 				if other != 0 && other != id {
-					want = union(want, lines(runDay(other), then.projects[other], now.projects[other]))
+					want = union(want, runLines(runDay(other), then.runs[other], now.runs[other]))
 				}
 			}
 		}
@@ -335,7 +446,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	after := snapshot()
 	want, shipped := runOracle(run.RunID, then, after)
 	t.Logf("run %d (started %s) now ships %d pull requests", run.RunID, runDay(run.RunID).Format(time.DateOnly), shipped)
-	before = r.expectDays(t, "a deploy run that now reaches production", before, want, lines(runDay(run.RunID), after.projects[run.RunID]))
+	before = r.expectDays(t, "a deploy run that now reaches production", before, keyDays(want, before), lines(runDay(run.RunID), after.runs[run.RunID].projects))
 
 	// A deploy run that reached production and shipped pull requests stops reaching it (its
 	// production job is run again and fails): the pull requests it shipped ship with the next
@@ -376,7 +487,8 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 	}
 	t.Logf("run %d (started %s) stops shipping its %d pull requests, merged on %v", stopped.RunID, runDay(stopped.RunID).Format(time.DateOnly), shipped, mergeDays)
-	before = r.expectDays(t, "a deploy run that stops reaching production", before, want, append(mergeDays, lines(runDay(stopped.RunID), now.projects[stopped.RunID])...))
+	before = r.expectDays(t, "a deploy run that stops reaching production", before, keyDays(want, before),
+		append(mergeDays, lines(runDay(stopped.RunID), now.runs[stopped.RunID].projects)...))
 
 	for _, kind := range []string{"session_group", "eval_versions", "eval_days"} {
 		r.exec(t, "log a "+kind+" change", `select delivery_change_log($1, null, $2, $3, null, null)`, kind, main, EvalID(main, SlugDeployFrequency))
@@ -702,14 +814,16 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 // TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: once every day is walked,
 // every pull request one repository merged on one day is merged again a day earlier, so the
 // repository's last pull request leaves that day. The one pass after it deletes each of the
-// repository's rows of that day, in every project that held one, where it kept them as zero rows
-// before; it logs an eval_days change spanning that day for the eval of each (migration
-// 20261117100014's delete trigger), so a view of that repository's numbers wakes; it creates no
-// repository row of a day that never held that repository's input; and the database then holds the
-// delivery and CI rows, the members and the stored figures a second database holds that made the
-// same move before its first walk, so the rows do not depend on whether the walk read the history
-// before the move or after it. Then the settings stop making the staging gate's card: one pass
-// deletes every row of that card, where a whole walk under the new settings holds none.
+// repository's rows of that day, in every project and owner key (owners.go) that held one, where
+// it kept them as zero rows before; it logs an eval_days change spanning that day for the eval of
+// each, an owner key's under each project that reads the key and none where no project does
+// (migration 20261117100014's delete trigger), so a view of that repository's numbers wakes; it
+// creates no repository row of a day that never held that repository's input; and the database
+// then holds the delivery and CI rows, the members and the stored figures a second database holds
+// that made the same move before its first walk, so the rows do not depend on whether the walk
+// read the history before the move or after it. Then the settings stop making the staging gate's
+// card: one pass deletes every row of that card, where a whole walk under the new settings holds
+// none.
 func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -754,7 +868,8 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 		}
 		evalsDeleted[before[key].EvalID] = true
 	}
-	for evalID := range evalsDeleted {
+	// An owner key's change is logged under each project that reads the key (readerEvals).
+	for _, evalID := range readerEvals(slices.Collect(maps.Keys(evalsDeleted)), r.ownerReaders(t)) {
 		if !slices.ContainsFunc(changes, func(change string) bool {
 			first, last, found := strings.Cut(strings.TrimPrefix(change, evalID+" "), "..")
 			return strings.HasPrefix(change, evalID+" ") && found && first <= day.Format(time.DateOnly) && last >= day.Format(time.DateOnly)
@@ -795,7 +910,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 		rig.putSettings(t, settings, alice)
 	}
 	r.pass(t)
-	walk.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walk.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
 	walk.settle(t)
 	if left := r.count(t, `select count(*) from eval_days where eval_id = $1`, gate); left != 0 {
 		t.Errorf("%s holds %d rows once the settings stop making its card, want none", gate, left)
@@ -858,14 +973,14 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		t.Fatalf("%s has no deploy-frequency eval", main)
 	}
 	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
-	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, repo)
+	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, DeployReposOf(main, repo))
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, repo, nil, window, nil)
+		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, DeployReposOf(main, repo), nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}

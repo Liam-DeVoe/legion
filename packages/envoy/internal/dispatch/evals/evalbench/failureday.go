@@ -74,12 +74,12 @@ func AddFailureDay(ctx context.Context, pool *store.Pool, spec Spec, day Failure
 	case day.Jobs < day.Runs || day.Jobs > maxFailedJobsPerRun*day.Runs:
 		return AddedFailureDay{}, fmt.Errorf("%d failed runs hold %d to %d failed jobs, not %d", day.Runs, day.Runs, maxFailedJobsPerRun*day.Runs, day.Jobs)
 	}
-	settings, err := delivery.GetSettings(ctx, pool)
+	settings, err := delivery.GetProjectSettings(ctx, pool, Project)
 	if err != nil {
 		return AddedFailureDay{}, fmt.Errorf("read the delivery settings Load writes: %w", err)
 	}
-	if settings.DeployRepo != Repos[0] {
-		return AddedFailureDay{}, fmt.Errorf("the delivery settings name %s, not the history's deploy repository %s", settings.DeployRepo, Repos[0])
+	if rules := settings.Rules(); len(rules) != 1 || rules[0].DeployRepo != Repos[0] {
+		return AddedFailureDay{}, fmt.Errorf("%s's delivery settings read %d deploy repositories, not the history's deploy repository %s alone", Project, len(rules), Repos[0])
 	}
 	var held int64
 	if err := pool.QueryRow(ctx, `select count(*) from delivery_runs where repo = $1 and run_id >= $2`, Repos[0], FailureDayFirstRunID).Scan(&held); err != nil {

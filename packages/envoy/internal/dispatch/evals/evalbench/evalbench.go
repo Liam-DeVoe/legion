@@ -247,7 +247,7 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 // resetConsumers deletes what the consumers of the loaded feeds committed over the empty store
 // (Load): the Legion facts consumer's cursors and project marks, and this head's day-row
 // refresher's cursors, walks, serving records, rebuilds with their staging, and record of the
-// delivery settings its rows stand built under, and the stored figures it folded, whose mark of a
+// rules its rows stand built under (eval_days_rules), and the stored figures it folded, whose mark of a
 // project's built figures would otherwise survive its walks. Each statement names its table, so
 // the item-row census (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a write
 // of no item row. At this head it then writes the keyword fill's cursor as caught up with the
@@ -256,7 +256,7 @@ func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
 	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`}
 	if !base {
 		statements = append(statements, `delete from eval_days_cursor`, `delete from eval_days_walks`, `delete from eval_days_serving`,
-			`delete from eval_days_settings`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`, `delete from eval_rebuild_firsts`,
+			`delete from eval_days_rules`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`, `delete from eval_rebuild_firsts`,
 			`delete from eval_rebuild_days`, `delete from eval_rebuild_members`, `delete from eval_rebuild_range_figures`,
 			`delete from eval_rebuild_day_figures`, `delete from eval_rebuild_reverify`,
 			`delete from eval_figures_built`, `delete from eval_range_figures`, `delete from eval_day_figures`)

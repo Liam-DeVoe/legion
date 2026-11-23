@@ -2,6 +2,7 @@ package measures
 
 import (
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -452,6 +453,43 @@ func TestDeployJobTimingsFollowEachNamedJob(t *testing.T) {
 		t.Errorf("never-run timing = {job %q, %d days}, want its name and 7 days", never.Job, len(never.Days))
 	}
 	assertCell(t, "never-run.total", never.Total, 0, nil, nil, 0, 0, 0, nil)
+}
+
+// TestDeployCardsReadTheRepositorysOwnRule: each source repository's deploy cards are its own
+// rule's (dispatch://INFRA-978, T7). Of the two repositories one project's sources read, one naming
+// staging jobs and one naming an apply step, DeployCards of each repository's rule
+// (delivery.DeployRules) follows that repository's production jobs, apply step and staging jobs
+// alone.
+func TestDeployCardsReadTheRepositorysOwnRule(t *testing.T) {
+	rules := delivery.DeployRules([]delivery.ProjectSettings{{
+		Project: "ACME", Delivery: true, DefaultRepo: new("acme/widgets"),
+		Sources: []delivery.DeploySource{
+			{
+				Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new("deploy.yml"), ProductionJobNames: []string{productionApplyJob},
+				StagingE2EJobName: new(stagingE2EJob), StagingApplyJobName: new(stagingApplyJob), PRChecksWorkflowPath: new("ci.yml"),
+			},
+			{
+				Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/gadgets"), DeployWorkflowPath: new("ship.yml"), ProductionJobNames: []string{"ship"},
+				ProductionApplyStepName: new("Apply gadgets"), PRChecksWorkflowPath: new("ci.yml"),
+			},
+		},
+	}})
+	want := map[string][]DeployJobCard{
+		"acme/gadgets": {{CardID: CardProductionApply, Production: delivery.Production{JobNames: []string{"ship"}, ApplyStep: new("Apply gadgets")}}},
+		"acme/widgets": {
+			{CardID: CardProductionApply, Production: delivery.Production{JobNames: []string{productionApplyJob}}},
+			{CardID: CardStagingE2E, Production: delivery.Production{JobNames: []string{stagingE2EJob}}},
+			{CardID: CardStagingApply, Production: delivery.Production{JobNames: []string{stagingApplyJob}}},
+		},
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("DeployRules = %+v, want one rule for each of %d repositories", rules, len(want))
+	}
+	for _, rule := range rules {
+		if got := DeployCards(rule); !reflect.DeepEqual(got, want[rule.DeployRepo]) {
+			t.Errorf("DeployCards of %s = %+v, want its own rule's %+v", rule.DeployRepo, got, want[rule.DeployRepo])
+		}
+	}
 }
 
 // TestTheProductionCardMergesItsNamesAndCountsOnlyAppliedJobs proves one card follows both names

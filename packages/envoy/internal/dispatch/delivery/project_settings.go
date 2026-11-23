@@ -131,6 +131,138 @@ func DeployRules(projects []ProjectSettings) []DeliverySettings {
 	return rules
 }
 
+// Population is LEGION-294's population rule as a reader of a merged pull request applies it: the
+// authors whose merges count and the repositories whose merges do not. With per-project settings it
+// is the union of every delivery-on project's authors and excluded repositories (dispatch://INFRA-978,
+// T7): a pull request is stored once, whichever project's rule admits it, and an excluded repository
+// is excluded for every project. Both lists are sorted and hold each value once.
+type Population struct {
+	Authors       []string
+	ExcludedRepos []string
+}
+
+// Admits reports whether a merged pull request of repo by author is in the population: author is
+// one of Authors exactly, as GitHub writes a login ([bot] suffix included), and repo is none of
+// ExcludedRepos in any case. The window and the task-label rule are IsPopulationPR's.
+func (p Population) Admits(repo, author string) bool {
+	if slices.ContainsFunc(p.ExcludedRepos, func(excluded string) bool { return strings.EqualFold(excluded, repo) }) {
+		return false
+	}
+	return slices.Contains(p.Authors, author)
+}
+
+// SourceRules is what one read of every project's delivery settings gives a reader of runs and pull
+// requests: the rule of each source repository (DeployRules), found by its repository (For), and the
+// population (Population). The settings cache holds one for the intakes, and each reconcile pass
+// reads its own (ReadSourceRules).
+type SourceRules struct {
+	rules      []DeliverySettings
+	byRepo     map[string]int
+	population Population
+	// defaults is the default repository, as this read found it, of each delivery-on project with a
+	// github_workflow source that names no repository: a move of one moves that source's repository
+	// (SourceRepoOf), so the settings cache reads the rules again when one moved (defaultsMoved).
+	defaults map[string]*string
+	// searchScope is the merged pull request search's progress scope of this read
+	// (searchProgressScope).
+	searchScope string
+}
+
+// NewSourceRules is the rules of projects: every delivery-on project's github_workflow sources
+// (DeployRules), and the union of the delivery-on projects' populations. The search's progress
+// scope lists the populations and the source repositories in the order of projects
+// (ListProjectSettings answers them by key) and of each project's own lists and sources, each value
+// once, so a rename pass that writes a repository's new name in its place leaves the scope the one
+// this read makes of the renamed settings (searchProgressScope).
+func NewSourceRules(projects []ProjectSettings) *SourceRules {
+	var authors, excluded, repos []string
+	defaults := map[string]*string{}
+	for _, project := range projects {
+		if !project.Delivery {
+			continue
+		}
+		authors = append(authors, project.PopulationAuthors...)
+		excluded = append(excluded, project.ExcludedRepos...)
+		for _, rule := range project.Rules() {
+			repos = append(repos, strings.ToLower(rule.DeployRepo))
+		}
+		for _, source := range project.Sources {
+			if source.Kind == SourceKindGitHubWorkflow && source.Repo == nil {
+				defaults[project.Project] = project.DefaultRepo
+			}
+		}
+	}
+	rules := newSourceRules(DeployRules(projects), Population{Authors: sortedSet(authors), ExcludedRepos: sortedSet(excluded)}, defaults)
+	rules.searchScope = searchProgressScopeOf(firstOfEach(authors), firstOfEach(excluded), firstOfEach(repos))
+	return rules
+}
+
+// newSourceRules is the SourceRules of rules, ordered by repository, and population.
+func newSourceRules(rules []DeliverySettings, population Population, defaults map[string]*string) *SourceRules {
+	byRepo := make(map[string]int, len(rules))
+	for i, rule := range rules {
+		byRepo[strings.ToLower(rule.DeployRepo)] = i
+	}
+	return &SourceRules{rules: rules, byRepo: byRepo, population: population, defaults: defaults}
+}
+
+// ReadSourceRules reads every project's delivery settings in q (ListProjectSettings) and answers
+// their SourceRules.
+func ReadSourceRules(ctx context.Context, q Querier) (*SourceRules, error) {
+	projects, err := ListProjectSettings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return NewSourceRules(projects), nil
+}
+
+// For is the rule of repo, in any case, and false where no delivery-on project's source reads it.
+// A nil SourceRules holds no rule.
+func (r *SourceRules) For(repo string) (DeliverySettings, bool) {
+	if r == nil {
+		return DeliverySettings{}, false
+	}
+	i, ok := r.byRepo[strings.ToLower(repo)]
+	if !ok {
+		return DeliverySettings{}, false
+	}
+	return r.rules[i], true
+}
+
+// All is every source repository's rule, ordered by repository.
+func (r *SourceRules) All() []DeliverySettings {
+	if r == nil {
+		return nil
+	}
+	return r.rules
+}
+
+// Population is the union of the delivery-on projects' populations.
+func (r *SourceRules) Population() Population {
+	if r == nil {
+		return Population{}
+	}
+	return r.population
+}
+
+// sortedSet is values sorted, each once.
+func sortedSet(values []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(values)))
+}
+
+// firstOfEach is values in their order, each at its first place alone.
+func firstOfEach(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	once := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			once = append(once, value)
+		}
+	}
+	return once
+}
+
 func deref(value *string) string {
 	if value == nil {
 		return ""
@@ -511,13 +643,45 @@ func replaceSources(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, 
 			moved = append(moved, repo)
 		}
 	}
-	// The kept rows move out of the way first, past every position a project can hold, so the unique
-	// (project_key, position) never meets two rows at one position while they take their new places.
-	if _, err := tx.Exec(ctx, `update project_deploy_sources set position = position + $2 where project_key = $1`, input.Project, maxSources); err != nil {
-		return fmt.Errorf("reorder the deploy sources of %s: %w", input.Project, err)
+	// A kept row whose position moves steps out of the way first, past every position a project can
+	// hold, so the unique (project_key, position) never meets two rows at one position while they take
+	// their new places. A kept row already at its new position is not written at all, so a save that
+	// changes nothing writes no source and logs no change (the trigger logs every write of a column
+	// other than the bookkeeping, position included).
+	positions := map[string]int{}
+	rows, err := tx.Query(ctx, `select id::text, position from project_deploy_sources where project_key = $1`, input.Project)
+	if err != nil {
+		return fmt.Errorf("read the positions of the deploy sources of %s: %w", input.Project, err)
+	}
+	for rows.Next() {
+		var id string
+		var position int
+		if err := rows.Scan(&id, &position); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the positions of the deploy sources of %s: %w", input.Project, err)
+		}
+		positions[id] = position
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the positions of the deploy sources of %s: %w", input.Project, err)
+	}
+	var shifted []string
+	for i, id := range kept {
+		if id != "" && positions[id] != i {
+			shifted = append(shifted, id)
+		}
+	}
+	if len(shifted) > 0 {
+		if _, err := tx.Exec(ctx, `update project_deploy_sources set position = position + $2 where id = any($1::uuid[])`, shifted, maxSources); err != nil {
+			return fmt.Errorf("reorder the deploy sources of %s: %w", input.Project, err)
+		}
 	}
 	for i, source := range input.Sources {
 		if kept[i] != "" {
+			if !slices.Contains(shifted, kept[i]) {
+				continue
+			}
 			if _, err := tx.Exec(ctx, `update project_deploy_sources set position = $2 where id = $1`, kept[i], i); err != nil {
 				return fmt.Errorf("reorder a deploy source of %s: %w", input.Project, err)
 			}
@@ -643,27 +807,43 @@ func nonNilList(list []string) []string {
 
 // ReconciledThrough is how far the reconcile has imported rule's repository: the earliest recorded
 // progress of its deploy workflow's and its pull-request checks workflow's run listings (their
-// repoStep rows under runsProgressScope), and nil until each has a row. A source saved at T has imported
-// its backfill window once this is later than T, which is what a reader waits on before it reads
-// the source's numbers (dispatch://INFRA-978, D3); last_reconcile_at moves after the first regular
-// pass, long before that.
+// runsStep rows under runsProgressScope) and of every installation's merged-pull-request search,
+// and nil until each listing has a row and every installation's search row is under the search's
+// current scope (searchProgressScope of the rules q holds now): a change of the population or of
+// the set of source repositories searches every installation afresh, and a source's numbers count
+// the pull requests that search stores. A source saved at T has imported its backfill window once
+// this is later than T, which is what a reader waits on before it reads the source's numbers
+// (dispatch://INFRA-978, D3); last_reconcile_at moves after the first regular pass, long before
+// that.
 func ReconciledThrough(ctx context.Context, q Querier, rule DeliverySettings) (*time.Time, error) {
+	rules, err := ReadSourceRules(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	// The reconcile lists the pull-request checks workflow on its own only where it is another file
 	// than the deploy workflow (runOnce), so a source with one workflow waits for one listing.
-	steps := [][2]string{{repoStep(runsStep(DeliveryRunKindDeploy), rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}}
+	steps := [][2]string{{runsStep(DeliveryRunKindDeploy, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.DeployWorkflowPath)}}
 	if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
-		steps = append(steps, [2]string{repoStep(runsStep(DeliveryRunKindPRChecks), rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath)})
+		steps = append(steps, [2]string{runsStep(DeliveryRunKindPRChecks, rule.DeployRepo), runsProgressScope(rule.DeployRepo, rule.PRChecksWorkflowPath)})
 	}
 	names, scopes := make([]string, len(steps)), make([]string, len(steps))
 	for i, step := range steps {
 		names[i], scopes[i] = step[0], step[1]
 	}
 	var through *time.Time
-	err := q.QueryRow(ctx, `
-		select case when count(*) = cardinality($1::text[]) then min(p.through) end
-		from delivery_reconcile_progress p
-		join unnest($1::text[], $2::text[]) as want(step, scope) on want.step = p.step and want.scope = p.scope
-	`, names, scopes).Scan(&through)
+	err = q.QueryRow(ctx, `
+		with runs as (
+			select p.through from delivery_reconcile_progress p
+			join unnest($1::text[], $2::text[]) as want(step, scope) on want.step = p.step and want.scope = p.scope
+		), search as (
+			select through, scope = $4 as current from delivery_reconcile_progress where starts_with(step, $3)
+		)
+		select case
+			when (select count(*) from runs) = cardinality($1::text[])
+				and exists (select from search) and not exists (select from search where not current)
+			then least((select min(through) from runs), (select min(through) from search))
+		end
+	`, names, scopes, mergedPullRequestsStepPrefix, searchProgressScope(rules)).Scan(&through)
 	if err != nil {
 		return nil, fmt.Errorf("read how far %s is reconciled: %w", rule.DeployRepo, err)
 	}

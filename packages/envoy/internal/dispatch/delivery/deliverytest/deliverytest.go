@@ -7,14 +7,15 @@
 // share test-only code across packages), and a command can write the same history through Write.
 //
 // Write stores the rows GitHub intake and the reconcile leave behind: the one delivery_settings
-// row, two projects and the issues the pull requests name, the first project's default repository
-// (the deploy repository), the pull requests merged into three repositories, the deploy
-// workflow's push runs on main of the deploy repository, and the PR-checks workflow's pull_request
-// runs of that same repository (the one repository whose runs Dispatch reads), each run with its
-// jobs. Every value comes from one math/rand/v2 PCG source seeded by Spec.Seed and every time from
-// Spec.Now, so one spec writes the same history on every run. Each table is one statement that
-// unnests its columns as arrays, as legiontest writes its tables: a history of eighty thousand
-// jobs written a statement per row takes minutes against a real Postgres.
+// row and the first project's own delivery settings (one deploy source reading its default
+// repository, SaveRules), two projects and the issues the pull requests name, the first project's
+// default repository (the deploy repository), the pull requests merged into three repositories,
+// the deploy workflow's push runs on main of the deploy repository, and the PR-checks workflow's
+// pull_request runs of that same repository (the one repository whose runs Dispatch reads), each
+// run with its jobs. Every value comes from one math/rand/v2 PCG source seeded by Spec.Seed and
+// every time from Spec.Now, so one spec writes the same history on every run. Each table is one
+// statement that unnests its columns as arrays, as legiontest writes its tables: a history of
+// eighty thousand jobs written a statement per row takes minutes against a real Postgres.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -26,8 +27,8 @@
 // still waiting at its end. A pull request of the other two repositories is never tracked by a
 // deploy (ComputeDeployedStatus), as in production.
 //
-// One database holds one such history: delivery_settings is a single row, so a second Write
-// replaces the first one's settings.
+// One database holds one such history per project: delivery_settings is a single row, so a second
+// Write replaces the first one's singleton, while each project keeps its own delivery settings.
 package deliverytest
 
 import (
@@ -194,7 +195,8 @@ type Fixture struct {
 	// deploy repository first.
 	DeployRepo string
 	Repos      []string
-	// Settings is the delivery_settings row as Write gave it to delivery.PutSettings.
+	// Settings is the deploy repository's rule, as Write gave it to delivery.PutSettings (the
+	// singleton row) and to SaveRules (the project's own settings, one source reading its default).
 	Settings delivery.DeliverySettings
 	// From and To are the two ends of the history: To is the Spec's Now, From is Days days
 	// before it. Every pull request merged, and every run was created, in [From, To).
@@ -750,13 +752,16 @@ func (s *seeding) judge() {
 }
 
 // write stores the history, one statement per table: the settings through delivery.PutSettings,
-// the one write of that row, and every other table as arrays unnested into one insert, so a
-// history of eighty thousand jobs costs a handful of round trips. The tables go in the order their
-// foreign keys need: projects and issues before the pull requests that name them, and the runs
-// before their jobs. A project that has a row already keeps it, so the history can join a project
-// another history made first, and takes the history's default repository only where it has none.
-// A project it makes names alice as its default assignee, the column every project fills (store
-// migration 20261111210103); no delivery measure reads it.
+// the one write of the singleton row the readers not yet moved to per-project settings read, and
+// through SaveRules, the project's own delivery settings with one source reading its default
+// repository, the deploy repository; and every other table as arrays unnested into one insert, so
+// a history of eighty thousand jobs costs a handful of round trips. The tables go in the order
+// their foreign keys need: projects before their delivery settings, issues before the pull
+// requests that name them, and the runs before their jobs. A project that has a row already keeps
+// it, so the history can join a project another history made first, and takes the history's
+// default repository only where it has none. A project it makes names alice as its default
+// assignee, the column every project fills (store migration 20261111210103); no delivery measure
+// reads it.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -779,6 +784,9 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		projects, nextNumbers, defaults); err != nil {
 		return err
 	}
+	if _, err := SaveRules(ctx, pool, s.fixture.Project, s.fixture.Settings); err != nil {
+		return fmt.Errorf("write the delivery settings of %s: %w", s.spec.Project, err)
+	}
 	if err := s.writeIssues(exec, actor); err != nil {
 		return err
 	}
@@ -786,6 +794,45 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		return err
 	}
 	return s.writeRuns(exec)
+}
+
+// SaveRules saves rules as project's delivery settings and answers what it stored: delivery on,
+// one github_workflow source per rule, in order, naming the rule's repository, or none where that
+// is the project's default repository, so the source reads the default and moves with it; the
+// population (the authors and excluded repositories) is the first rule's, as one project holds one.
+// The project must exist. Two projects saved with a rule each give two repositories two rules (a
+// repository is the source of one delivery-on project at most, delivery.PutProjectSettings).
+func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...delivery.DeliverySettings) (delivery.ProjectSettings, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var defaultRepo *string
+	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
+	}
+	input := delivery.ProjectSettingsInput{Project: project, Delivery: true}
+	if len(rules) > 0 {
+		input.PopulationAuthors, input.ExcludedRepos = rules[0].PopulationAuthors, rules[0].ExcludedRepos
+	}
+	for _, rule := range rules {
+		source := delivery.SourceInput{
+			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+		}
+		if defaultRepo == nil || !strings.EqualFold(*defaultRepo, rule.DeployRepo) {
+			source.Repo = new(rule.DeployRepo)
+		}
+		input.Sources = append(input.Sources, source)
+	}
+	saved, err := delivery.PutProjectSettings(ctx, tx, input, system)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	return saved, tx.Commit(ctx)
 }
 
 // writeIssues stores every issue. An issue closes half an hour after the last pull request

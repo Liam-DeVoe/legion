@@ -11967,16 +11967,6 @@
           },
           "204": {
             "description": "No Content"
-          },
-          "405": {
-            "description": "Method Not Allowed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
           }
         },
         "x-auth": "any",
@@ -12032,16 +12022,6 @@
           },
           "204": {
             "description": "No Content"
-          },
-          "405": {
-            "description": "Method Not Allowed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
           }
         },
         "x-auth": "any",

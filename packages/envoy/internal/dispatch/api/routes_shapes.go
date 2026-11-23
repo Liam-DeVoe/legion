@@ -69,9 +69,9 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal answers beyond the errorBody ones every route can give,
-	// each with its status: a body richer than errorBody, or a status the route answers in place
-	// of a success (the 405 of a reading's change).
+	// Refusals are this route's refusal answers whose body is richer than the errorBody every
+	// route can give, each with its status. A refusal with the plain body is in none, whatever its
+	// status: the default answer covers it, the 405 of a reading's change included.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
@@ -783,13 +783,10 @@ var routeShapes = map[string]routeShape{
 		Refusals: evalRefusals,
 	},
 	// The two rows that refuse every change of a reading answer no success: 204 is the shape a
-	// success with no body would take, and the one answer either gives is the 405.
-	"PUT /api/v1/projects/{key}/evals/{slug}/readings/{id}": {
-		Status: http.StatusNoContent, Refusals: []routeAnswer{{Status: http.StatusMethodNotAllowed, Body: errorBody{}}},
-	},
-	"DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}": {
-		Status: http.StatusNoContent, Refusals: []routeAnswer{{Status: http.StatusMethodNotAllowed, Body: errorBody{}}},
-	},
+	// success with no body would take, and the one answer either gives is the 405, with the plain
+	// error body the default answer covers.
+	"PUT /api/v1/projects/{key}/evals/{slug}/readings/{id}":    {Status: http.StatusNoContent},
+	"DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}": {Status: http.StatusNoContent},
 	"GET /api/v1/evals": {
 		Status: http.StatusOK, Response: evalListResponse{}, Params: evalsQuery{},
 	},

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -121,7 +122,7 @@ func (p *pageDays) projects() []string {
 func (r *refresh) nameDelivery(days *pageDays, read deliveryRead, project string, explicit bool) {
 	days.add(&namedDay{
 		project: project, day: read.Day, raw: read.Rows(project),
-		zeros: ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, explicit: explicit,
+		zeros: ZeroDeliveryDay(project, read.Day, read.rules).Rows, explicit: explicit,
 	})
 }
 
@@ -672,9 +673,16 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	family := days.family
 	projects := days.projects()
 	if family.walk == walkDelivery {
-		// A deploy counts for the projects of the pull requests it ships, so the delivery days of
-		// one project can move another's: every project's are judged together.
-		projects = r.projects
+		// A deploy counts for the projects of the pull requests it ships and its repository's
+		// owner key, so the delivery days of one owner can move another's: every owner's are
+		// judged together, a repository's own owner key among them though the store holds no row
+		// of it yet (trackKept tracks it with the rest).
+		if kept != nil {
+			for _, repo := range kept.is {
+				r.noteOwners([]string{OwnerKey(repo.name, nil)})
+			}
+		}
+		projects = r.owners
 	}
 	firsts, nexts := map[string]map[evalKey]time.Time{}, map[string]*time.Time{}
 	for _, project := range projects {
@@ -811,8 +819,10 @@ func firstOr(values []string, none string) string {
 func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, firsts map[string]map[evalKey]time.Time) {
 	for _, repo := range slices.Sorted(maps.Keys(covered)) {
 		span := covered[repo]
-		for _, project := range r.projects {
-			for _, zero := range ZeroDeliveryDay(*r.settings, project, r.today, []string{repo}).Rows {
+		rule, _ := r.ruleOf(repo)
+		// Each owner's, a repository's own owner key among them (writeNamed).
+		for _, project := range r.owners {
+			for _, zero := range ZeroDeliveryDay(project, r.today, []delivery.DeliverySettings{rule}).Rows {
 				key := keyOf(zero)
 				if key.deployRepo != repo {
 					continue
@@ -916,7 +926,7 @@ func (r *refresh) compareSpan(ctx context.Context, b *rebuild, built spanBuilt, 
 			days = append(days, at.day)
 		}
 	}
-	held, err := r.store.readMembers(ctx, r.projects, b.family.families, repos, days)
+	held, err := r.store.readMembers(ctx, r.owners, b.family.families, repos, days)
 	if err != nil {
 		return err
 	}
@@ -998,19 +1008,18 @@ func deleteDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow) error {
 // deliverySpanInput is the input of the delivery days a span builds that no change names, read
 // once over the history as the settings rewrite reads it (rewriteSettings): every population pull
 // request and, for each repository a tracked key reads as the deploy repository, every deploy run
-// on main with its jobs of the names the production rule judges by and the deploy cards follow
+// on main with its jobs of the names its rule judges by and its deploy cards follow
 // (delivery.ReadHistoryRows), the projects of the issues the pull requests name (readAttribution),
-// and containment over each repository's history (historyOf). A day's rows are each repository's
-// DeliveryDay of it as readDeliveryDay builds it from those rows, and the pull requests' alone
-// where a key no deploy repository moves is active. The PR-checks runs, which the history does
-// not hold, are read of a day only where a pr-ci key is active on it and the repository holds one
-// that day (checkDays, one read of a repository's days), by the read the walk's day makes
-// (delivery.ReadCIRows), with the projects of their pull requests (readAttribution).
+// and containment over each repository's history under its rule (historyOf); of an events
+// repository, its project's posted deploys from the span's start on (postedDeploys). A day's rows
+// are each repository's DeliveryDay of it as readDeliveryDay builds it from those rows, and the
+// pull requests' alone where a key no deploy repository moves is active. The PR-checks runs, which
+// the history does not hold, are read of a day only where a pr-ci key is active on it and the
+// repository holds one that day (checkDays, one read of a repository's days), by the read the
+// walk's day makes (delivery.ReadCIRows), with the projects of their pull requests
+// (readAttribution).
 func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[evalKey]*trackedKey, reach time.Time) (spanInput, error) {
 	pool := r.store.database.Pool
-	next := *r.settings
-	cards, production := measures.DeployCards(next), next.Production()
-	cardNames := measures.DeployCardJobNames(cards)
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
 		return spanInput{}, err
@@ -1030,16 +1039,29 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 		}
 	}
-	var repos []keptRepo
+	// A pull request counts its lead times at the first deploy to ship it, a GitHub one or a posted
+	// one (firstShipped), so where both kinds of repository are kept every one is read to compare.
+	compare := slices.ContainsFunc(kept, func(repo keptRepo) bool { _, posted := eventsProject(repo.name); return posted }) &&
+		slices.ContainsFunc(kept, func(repo keptRepo) bool { _, posted := eventsProject(repo.name); return !posted })
+	var repos, events []keptRepo
+	var judged []string
 	for _, repo := range kept {
-		if needed[repo.name] {
-			repos = append(repos, repo)
+		if !needed[repo.name] && !compare {
+			continue
 		}
+		if _, posted := eventsProject(repo.name); posted {
+			events = append(events, repo)
+			continue
+		}
+		repos = append(repos, repo)
+		judged = append(judged, repo.rule.Production().JudgedJobNames()...)
+		judged = append(judged, measures.DeployCardJobNames(measures.DeployCards(repo.rule))...)
 	}
 	names := deployRepoNames(repos)
-	judged := slices.Compact(slices.Sorted(slices.Values(slices.Concat(production.JudgedJobNames(), cardNames))))
+	judged = slices.Compact(slices.Sorted(slices.Values(judged)))
 	var history delivery.HistoryRows
 	checkDays := map[string]map[time.Time]bool{}
+	posted := make([][]prodevents.Event, len(events))
 	reads := []func(context.Context) error{
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, reach.AddDate(0, 0, 1))
@@ -1052,6 +1074,14 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 					return err
 				}
 				checkDays[repo] = days
+			}
+			return nil
+		},
+		func(ctx context.Context) (err error) {
+			for i, repo := range events {
+				if posted[i], err = postedDeploys(ctx, pool, repo.rule.Project, start, postedEnd); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -1077,7 +1107,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	histories := make(map[string]repoHistory, len(repos))
 	for _, repo := range repos {
-		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, production)
+		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, repo.rule.Production())
 	}
 	checks := map[string]map[time.Time]checkDay{}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
@@ -1095,22 +1125,30 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 		}
 		read := deliveryRead{Day: day}
+		var merged []delivery.DeliveryPullRequest
+		for _, i := range prsByDay[day] {
+			merged = append(merged, prs[i])
+		}
 		if alone {
-			one := DeliveryDay{Day: day, cards: cards}
-			for _, i := range prsByDay[day] {
+			one := DeliveryDay{Day: day}
+			for _, pr := range merged {
 				// A partial row, whose opening is not known yet, as readDeliveryDay leaves it out.
-				if prs[i].CreatedAt != nil {
-					one.prs = append(one.prs, attribute.pullRequest(prs[i], nil, nil))
+				if pr.CreatedAt != nil {
+					one.prs = append(one.prs, attribute.pullRequest(pr, nil, nil))
 				}
 			}
 			read.days = append(read.days, one)
 		}
-		for _, name := range names {
-			if !as[name] {
+		var built []DeliveryDay
+		var rules []delivery.DeliverySettings
+		var shown []bool
+		for _, repo := range repos {
+			name := repo.name
+			if !as[name] && !compare {
 				continue
 			}
 			h := histories[name]
-			one := DeliveryDay{Day: day, deployRepo: h.repo, since: h.since, cards: cards}
+			one := DeliveryDay{Day: day, deployRepo: h.repo, since: h.since, cards: measures.DeployCards(repo.rule)}
 			for _, i := range prsByDay[day] {
 				if prs[i].CreatedAt != nil {
 					one.prs = append(one.prs, attribute.pullRequest(prs[i], h.containing[i], h.runByID))
@@ -1118,13 +1156,13 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 			for _, run := range h.deploysByDay[day] {
 				_, reached := h.applied[run.RunID]
-				one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID]))
+				one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID], repo.rule.Project))
 			}
 			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
 			if ci[name] {
 				held, read := checks[name][day]
 				if !read {
-					ciRows, err := delivery.ReadCIRows(ctx, pool, name, day, day.AddDate(0, 0, 1), cardNames)
+					ciRows, err := delivery.ReadCIRows(ctx, pool, name, day, day.AddDate(0, 0, 1), measures.DeployCardJobNames(one.cards))
 					if err != nil {
 						return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 					}
@@ -1140,7 +1178,19 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				}
 				one.checks, one.checkJobs = held.runs, held.jobs
 			}
-			read.repos, read.days = append(read.repos, name), append(read.days, one)
+			built, rules, shown = append(built, one), append(rules, repo.rule), append(shown, as[name])
+		}
+		for i, repo := range events {
+			if as[repo.name] || compare {
+				built, rules = append(built, postedDayAs(day, merged, posted[i], repo)), append(rules, repo.rule)
+				shown = append(shown, as[repo.name])
+			}
+		}
+		firstShipped(built)
+		for i := range built {
+			if shown[i] {
+				read.rules, read.days = append(read.rules, rules[i]), append(read.days, built[i])
+			}
 		}
 		rows := make(map[string]ProjectDay, len(active))
 		for project := range active {
@@ -1160,11 +1210,12 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		}
 		rows, built := zeroRows[key.deployRepo]
 		if !built {
-			var as []string
+			var as []delivery.DeliverySettings
 			if key.deployRepo != "" {
-				as = []string{key.deployRepo}
+				rule, _ := r.ruleOf(key.deployRepo)
+				as = []delivery.DeliverySettings{rule}
 			}
-			rows = ZeroDeliveryDay(next, project, day, as).Rows
+			rows = ZeroDeliveryDay(project, day, as).Rows
 			zeroRows[key.deployRepo] = rows
 		}
 		return rowsOf(rows, key)

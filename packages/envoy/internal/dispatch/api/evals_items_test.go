@@ -425,16 +425,24 @@ func TestTheFailedJobsListEqualsTheBasesFailingJobs(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("read %s's pr-ci: found %t, %v", project, found, err)
 	}
-	settings, err := evals.BuiltSettingsIn(ctx, tx)
+	deployRepos, err := evals.DeployReposIn(ctx, tx)
+	if err != nil {
+		t.Fatalf("read the deploy repositories the rows stand recorded under: %v", err)
+	}
+	owned := deployRepos.Owned(project)
+	if len(owned) == 0 {
+		t.Fatalf("%s's own sources read no repository the rows stand recorded under", project)
+	}
+	settings, err := evals.BuiltSettingsIn(ctx, tx, owned[0])
 	if err != nil || settings == nil {
-		t.Fatalf("read the settings the rows stand built under: %+v, %v", settings, err)
+		t.Fatalf("read the settings the rows of %s stand built under: %+v, %v", owned[0], settings, err)
 	}
 	days := evalDaysOf(f.from, f.end)
 	ci, err := delivery.ReadCIRows(ctx, tx, settings.DeployRepo, days.From, days.To, nil)
 	if err != nil {
 		t.Fatalf("read every run of the range: %v", err)
 	}
-	counted, err := evals.CountedIn(ctx, tx, project, evals.KindCI, evals.DeployRepoOf(entry.Definition, settings.DeployRepo), nil, days)
+	counted, err := evals.CountedIn(ctx, tx, project, evals.KindCI, evals.DeployRepoOf(entry.Definition, deployRepos), nil, days)
 	if err != nil {
 		t.Fatalf("read the runs the range's CI day rows counted: %v", err)
 	}

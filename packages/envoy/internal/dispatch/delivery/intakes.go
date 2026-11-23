@@ -72,9 +72,11 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // caller while it wires itself rather than here, so that a configuration these intakes are idle
 // in reserves the same callers as one they run in.
 //
-// Both intakes route by one SettingsCache, which reads delivery_settings at start and again each
-// time settingsWake is signalled -- in the server, the shared listener's wake on SettingsChannel --
-// so no message and no timer reads the row. A nil settingsWake reads it once.
+// Both intakes route by one SettingsCache, which reads every project's delivery settings at start
+// and again each time settingsWake is signalled -- in the server, the shared listener's wake on
+// SettingsChannel -- and each time projectsWake is signalled -- the listener's wake on the events
+// channel (api.EventsChannel) -- and a default repository a deploy source reads has moved, so no
+// message and no timer reads the settings. Nil wakes read them once.
 //
 // attributor is the Attributor of the rename pairs the process read at boot. Intake attributes
 // each pull request and keys its head row with it.
@@ -101,7 +103,7 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake, projectsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -115,7 +117,7 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake)
+	settings := newSettingsCache(pool, settingsWake, projectsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)

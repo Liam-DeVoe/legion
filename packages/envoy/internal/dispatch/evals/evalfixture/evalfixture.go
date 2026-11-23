@@ -81,6 +81,7 @@ var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_
 var BaseLacks = []string{
 	"issue_filings", "session_titles", "session_titles_backfill", "eval_versions", "eval_series",
 	"eval_readings", "eval_days", "eval_day_members", "eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings",
+	"eval_days_rules",
 	"eval_rebuilds", "eval_rebuild_walks", "eval_rebuild_firsts", "eval_rebuild_days", "eval_rebuild_members",
 	"eval_rebuild_range_figures", "eval_rebuild_day_figures", "eval_rebuild_reverify",
 	"eval_range_figures", "eval_day_figures", "eval_figures_built",
@@ -386,12 +387,51 @@ func nextMidnight(at time.Time) time.Time {
 	return day
 }
 
-// deliverySettingsOf is the delivery_settings row the Attribution mode writes, naming deployRepo,
-// its production job and its PR-checks workflow, and author as the one population author.
+// deliverySettingsOf is the rule the Attribution mode's source holds, naming deployRepo, its
+// production job and its PR-checks workflow, and author as the one population author.
 func deliverySettingsOf(deployRepo string) delivery.DeliverySettings {
 	return delivery.DeliverySettings{
 		DeployRepo: deployRepo, DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{productionJob}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{author}, ExcludedRepos: []string{},
 	}
+}
+
+// PutDeliverySettings saves settings as project's delivery settings (project_delivery_settings and
+// project_deploy_sources, through delivery.PutProjectSettings in a transaction of its own):
+// delivery on, settings' population rule, and one github_workflow source holding settings' rule,
+// which names no repository where settings.DeployRepo is the project's default repository, so it
+// reads that default and moves with it, and names settings.DeployRepo otherwise. The project's row
+// exists first.
+func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings, by model.Actor) (delivery.ProjectSettings, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("begin the delivery settings of %s: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
+	var defaultRepo *string
+	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
+	}
+	source := delivery.SourceInput{
+		Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(settings.DeployWorkflowPath),
+		ProductionJobNames: settings.ProductionJobNames, ProductionApplyStepName: settings.ProductionApplyStepName,
+		StagingE2EJobName: settings.StagingE2EJobName, StagingApplyJobName: settings.StagingApplyJobName,
+		PRChecksWorkflowPath: new(settings.PRChecksWorkflowPath), PRChecksRollupJobName: settings.PRChecksRollupJobName,
+	}
+	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
+		source.Repo = new(settings.DeployRepo)
+	}
+	saved, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: []delivery.SourceInput{source},
+		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
+	}, by)
+	if err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("commit the delivery settings of %s: %w", project, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of the fixture's delivery settings")
+	return saved, nil
 }

@@ -84,23 +84,27 @@ func (s *server) readProjectDeployRun(ctx context.Context, project, repo string,
 	}
 	if !counts {
 		return delivery.DeliveryRunDetailView{}, errorf(http.StatusNotFound, "NOT_FOUND",
-			"run %d of %s ships first no pull request project %s counts, so no row of its timeline lists it", runID, rule.DeployRepo, project)
+			"run %d of %s is no deploy project %s counts, so no row of its timeline lists it", runID, rule.DeployRepo, project)
 	}
 	return deliveryRunDetail(ctx, pool, run)
 }
 
 // deployRunCountsFor is whether run, a run of rule's repository, counts for project as the project
-// timeline keeps its run rows (projectTimelinePopulation): a deploy run on main counts by the pull
-// requests it ships first, through the rule the eval registry's day rows count a deploy by
-// (evals.Attribution.CountsDeploy). What it ships first is delivery.Deploys.ShippedBy over the
-// rows delivery.ReadWindowRows reads for a window holding the run's start alone, which reads the
-// deploys before it and the pull requests they leave to it as a wider window's read does. Any other
-// run is no deploy of a window and ships nothing, so it counts for no project.
+// timeline keeps its run rows (projectTimelinePopulation): a deploy run on main counts by the rule
+// the eval registry's day rows count a deploy by (evals.Attribution.CountsDeploy), through the pull
+// requests it ships first, or, shipping none, as the project whose deploy source reads its
+// repository. What it ships first is delivery.Deploys.ShippedBy over the rows
+// delivery.ReadWindowRows reads for a window holding the run's start alone, which reads the deploys
+// before it and the pull requests they leave to it as a wider window's read does. Any other run is
+// no deploy of a window, which no row of a timeline lists, so it counts for no project.
 func (s *server) deployRunCountsFor(ctx context.Context, rule delivery.DeliverySettings, run delivery.DeliveryRun, project string) (bool, error) {
 	// Postgres keeps microseconds, so the window ends a microsecond past the start it holds.
 	merged, deploys, err := delivery.ReadWindowRows(ctx, s.deps.Store.Pool, rule, run.StartedAt, run.StartedAt.Add(time.Microsecond), false, true)
 	if err != nil {
 		return false, fmt.Errorf("read what run %d of %s ships: %w", run.RunID, run.Repo, err)
+	}
+	if !slices.ContainsFunc(deploys.Started.Runs, func(started delivery.DeliveryRun) bool { return started.RunID == run.RunID }) {
+		return false, nil
 	}
 	shipped := deploys.ShippedBy(merged, rule)[run.RunID]
 	var keys []string
@@ -113,5 +117,5 @@ func (s *server) deployRunCountsFor(ctx context.Context, rule delivery.DeliveryS
 	if err != nil {
 		return false, fmt.Errorf("read the projects run %d of %s counts for: %w", run.RunID, run.Repo, err)
 	}
-	return attribution.CountsDeploy(shipped, project), nil
+	return attribution.CountsDeploy(run.Repo, shipped, project), nil
 }

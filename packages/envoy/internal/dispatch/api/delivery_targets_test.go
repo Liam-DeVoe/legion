@@ -57,9 +57,10 @@ func showTargets(targets measures.Targets) string {
 }
 
 // TestTheDeliveryVerdictsAreTheirEvalsVerdicts (R5): the measures answer and the Pipeline judge
-// their figures by the targets of the delivery evals of the project whose default repository is
-// the deploy repository, which a person sets, so after register writes that move three targets onto figures of
-// a day-aligned window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
+// their figures by the targets of the delivery evals of the project whose published default
+// repository is the deploy repository (which a person sets and the evals refresher's page commit
+// publishes), so after register writes that move three targets onto figures of a day-aligned
+// window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
 // and turn deploy-frequency's off, each verdict of the measures answer and of the Pipeline's
 // lead-time cards is the verdict the eval route states for the same window, and each target the
 // answer states is the eval's: value, inclusiveness, direction and the statistics its verdict
@@ -174,10 +175,12 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 			answer.Targets.DeploysPerDay, showVerdict(answer.Status.DeploysPerDay))
 	}
 
-	// With the deploy repository no project's default, the catalogue's targets judge both answers.
+	// With the deploy repository no project's default, once the refresher's page commit publishes
+	// that (publishDefaultRepos), the catalogue's targets judge both answers.
 	if _, err := database.Pool.Exec(t.Context(), `update projects set default_repo = null where key = $1`, project); err != nil {
 		t.Fatalf("clear %s's default repository: %v", project, err)
 	}
+	publishDefaultRepos(t, database.Pool)
 	unmapped := getDeliveryMeasures(t, handler, window)
 	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
 	if want := catalogueTargets(); !reflect.DeepEqual(unmapped.Targets, want) || !reflect.DeepEqual(unmappedPipeline.Targets, want) {
@@ -242,11 +245,12 @@ func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 }
 
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
-// and judges in the project the deploy repository is mapped to reaches an open measures view and
-// an open Pipeline view: the write's version marks both, and each delta lands on its GET route's
-// body, which states the new target, its inclusiveness, the eval's direction and the judge the
-// write named. The Pipeline view is pinned at the test's start, the at its GET route reads, since
-// that route reads at alone and the hub's clock runs on.
+// and judges in the project whose published default repository is the deploy repository (which
+// the test publishes as the evals refresher's page commit does, publishDefaultRepos) reaches an
+// open measures view and an open Pipeline view: the write's version marks both, and each delta
+// lands on its GET route's body, which states the new target, its inclusiveness, the eval's
+// direction and the judge the write named. The Pipeline view is pinned at the test's start, the
+// at its GET route reads, since that route reads at alone and the hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -254,6 +258,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
 		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
+	publishDefaultRepos(t, rig.database.Pool)
 	now := rig.clock.Now()
 	upsertPR(t, rig.database, hubPR(1, now.Add(-3*time.Hour)))
 	conn := newFakeLiveConn()

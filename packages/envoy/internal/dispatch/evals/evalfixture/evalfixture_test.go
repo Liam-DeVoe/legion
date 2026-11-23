@@ -284,7 +284,7 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 	if attributed == 0 {
 		t.Fatal("the case attributes no row to any project")
 	}
-	deployRepo, err := evals.DeployRepoIn(ctx, database.Pool)
+	deployRepos, err := evals.DeployReposIn(ctx, database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 		if len(entries) != len(series) {
 			t.Fatalf("%s holds %d of the evals %v", project, len(entries), slices.Sorted(maps.Keys(series)))
 		}
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, window, nil)
+		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepos, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
 		}
