@@ -2785,6 +2785,9 @@ function InboxBody({
       <ControlRow
         chips={chips}
         display={displayMenu}
+        // The drawer is at most 28rem wide at every window size, which a line of the search box,
+        // Filter, New message, the needs-you control and View does not fit.
+        narrow={!pane}
         onClear={clearFilters}
         search={
           <SearchBox

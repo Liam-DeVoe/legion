@@ -51,16 +51,24 @@ function Slot({
   children,
   className,
   gives = false,
+  narrow = false,
   wraps = false,
 }: {
   children: ReactNode;
   className?: string;
   gives?: boolean;
+  narrow?: boolean;
   wraps?: boolean;
 }): ReactNode {
   if (children === undefined || children === null) return null;
-  const width = gives ? "min-w-0 flex-1 basis-64" : wraps ? "min-w-0 sm:shrink-0" : "shrink-0";
-  const wrap = wraps ? "flex-wrap sm:flex-nowrap" : "flex-nowrap";
+  const width = gives
+    ? "min-w-0 flex-1 basis-64"
+    : wraps
+      ? narrow
+        ? "min-w-0"
+        : "min-w-0 sm:shrink-0"
+      : "shrink-0";
+  const wrap = wraps ? (narrow ? "flex-wrap" : "flex-wrap sm:flex-nowrap") : "flex-nowrap";
   const own = `flex items-center gap-2 ${wrap} ${width}`;
   return (
     <div className={className === undefined ? own : `${own} ${className}`} data-row-slot="">
@@ -257,6 +265,10 @@ export interface ControlRowProps {
    *  chip, and right after the trigger while there is none (the project List's search text and
    *  the open statuses it opens on draw no chip in the row). */
   readonly onClear?: () => void;
+  /** The row stands in a box narrower than `sm` at every window size - the Inbox drawer, at most
+   *  28rem (`md:max-w-md`) - so its first line, and the slot of the page's own controls, wrap as
+   *  they do below `sm`, at every width. */
+  readonly narrow?: boolean;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;
   /** How much room the row's own controls take (`ControlSize`): **Clear filters** and `+N more`.
@@ -351,6 +363,7 @@ export function ControlRow({
   children,
   className,
   display,
+  narrow = false,
   onClear,
   search,
   size = "comfortable",
@@ -461,7 +474,7 @@ export function ControlRow({
     >
       {/* One line from `sm` up, which is where R1's two widths are; below it the line wraps,
           because a search box holding three characters beside a trigger is no search box. */}
-      <div className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
+      <div className={`flex min-w-0 flex-wrap items-start gap-2 ${narrow ? "" : "sm:flex-nowrap"}`}>
         <Slot gives>{search}</Slot>
         <Slot>
           {chipsOn || clear === null ? (
@@ -473,7 +486,9 @@ export function ControlRow({
             </>
           )}
         </Slot>
-        <Slot wraps>{children}</Slot>
+        <Slot narrow={narrow} wraps>
+          {children}
+        </Slot>
         <Slot className="ml-auto">{display}</Slot>
       </div>
       {chipsOn ? (
