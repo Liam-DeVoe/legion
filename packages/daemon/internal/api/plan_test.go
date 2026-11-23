@@ -374,15 +374,17 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
-// register_plan reads each task block's `parent` against the document it registers, as a
-// reference to one of its blocks names it (documentReference): `dispatch://<KEY>/spec` for the
-// issue's primary document, and `dispatch://<KEY>/artifact/<slug>` for any other. So a `parent` in
-// the registered document's form puts its block under the block it names, and the other form names
-// another document, whatever its id. Validate's refusals of an element and of a `parent` that names
-// a block the version does not hold reach the answer among its reasons, and record nothing. The
-// fault is a route that reads a `parent` against no document, or against the wrong one. The
-// control is planAt given the artifact form of the primary document: version 1 is refused as two
-// tasks that no task needs, and version 3 refused as an element with steps.
+// register_plan reads each task block's `parent` against the document it registers (plan.ParentOf),
+// as a reference to one of its blocks names it (documentReference): `dispatch://<KEY>/spec` for
+// the issue's primary document, and `dispatch://<KEY>/artifact/<slug>` for any other. So a
+// `parent` in the registered document's form puts its block under the block it names, and the
+// other form names another document, whatever its id. Validate's refusals of an element and of a
+// `parent` that names a block the version does not hold reach the answer among its reasons. A
+// `parent` that is not one reference, and task blocks under each other, are a plan Legion cannot
+// read, answered with one reason. None records anything. The fault is a route that reads a
+// `parent` against no document, or against the wrong one. The control is planAt given the artifact
+// form of the primary document: version 1 is refused as two tasks that no task needs, and version
+// 3 refused as an element with steps.
 func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -401,6 +403,8 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), parented(taskBlock("e1", "implementer"), spec))
 	statuses.givePlan(planDoc, 3, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), artifact))
 	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/spec#b-gone"))
+	statuses.givePlan(planDoc, 5, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), spec+" "+spec))
+	statuses.givePlan(planDoc, 6, parented(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/spec#b-b"), parented(taskBlock("b", "implementer reviewer"), spec))
 
 	if taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1); taken.Code != http.StatusOK {
 		t.Fatalf("register version 1 = %d %s, want 200: e1 is an element of a, which names nothing only a task carries out", taken.Code, taken.Body)
@@ -410,6 +414,10 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), twoSinks,
 		PlanReason{Task: "b", Reason: "task block b names gone as its parent, which no typed block of version 4 of the plan holds. " +
 			"Name a typed block of this version in parent, or leave parent out."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 5),
+		PlanReason{Reason: `task block b: its parent "` + spec + ` ` + spec + `" is not one dispatch:// reference.`})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
+		PlanReason{Reason: "task blocks a, b stand under each other, so none of them has a place in the plan."})
 
 	// The same document, filed under a slug and not as the primary one: the artifact form names it.
 	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 9, Slug: "plan-md"}

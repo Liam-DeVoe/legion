@@ -93,12 +93,18 @@ type Task struct {
 	// block's order, as FromBlocks leaves them. Legion does not carry out an element, so no task
 	// waits for one, and Validate refuses each one.
 	ElementNeeds []string
-	// PartOf is the task this task is a part of, "" for a task at the top (Places). Owner is
-	// `owner` as the block writes it, "" when unset.
+	// PartOf is the task this task is a part of, "" for a task at the top (Places): what Legion
+	// carries out. Owner is `owner` as the block writes it, "" when unset.
 	PartOf, Owner string
-	// MissingParent is the id that the block's `parent` names in the plan's own document, where
-	// no block of the version holds it, or the word whole where its id does not decode. The block
-	// is then a task at the top, and Validate refuses it.
+	// ParentRef is who the block's parent is, as the read gave it at the version: before
+	// Dispatch serves the tree, the reference its `parent` writes, whole, "" for none. It names a
+	// parent of any document, so it tells two parents apart where PartOf is "" for both, such as
+	// two requirements. Nothing compares or stores it yet.
+	ParentRef string
+	// MissingParent is the block's Parent where no block of the version holds that id, as
+	// FromBlocks leaves it: a block of the plan's document that the version lacks, or a heading's,
+	// which the version Dispatch gives holds no id of. The block is then a task at the top, and
+	// Validate refuses it.
 	MissingParent string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool
