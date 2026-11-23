@@ -20,11 +20,13 @@ import (
 // id it derives for the run (PUT /api/v1/issues/{key}/steps/{id}), and which every reader of the
 // project reads (GET /api/v1/issues/{key}/steps). A retro's record also takes the rating the agent
 // that did the retro gave the plan, and its reason, through a route of its own
-// (PUT /api/v1/issues/{key}/steps/{id}/rating): decodeJSON ignores a member a body's route does
-// not declare, so a rating sent as a member of the step write to a Dispatch older than it would be
-// dropped in silence, where a route that Dispatch does not serve answers its router's NOT_FOUND,
-// which the daemon sends again until Dispatch serves it. All three live in
-// internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
+// (PUT /api/v1/issues/{key}/steps/{id}/rating), and a run's record takes the commits its task's
+// head was at when it started and when it ended, with the CI check a fix run fixes, through
+// another (PUT /api/v1/issues/{key}/steps/{id}/commits): decodeJSON ignores a member a body's
+// route does not declare, so a rating or a commit sent as a member of the step write to a
+// Dispatch older than it would be dropped in silence, where a route that Dispatch does not serve
+// answers its router's NOT_FOUND, which the daemon sends again until Dispatch serves it. All four
+// live in internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
 // Each write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its
 // actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
@@ -91,6 +93,25 @@ type stepRatingInput struct {
 	RatingReason *string `json:"rating_reason" required:"true"`
 }
 
+// stepCommitsInput is the body PUT /api/v1/issues/{key}/steps/{id}/commits takes: the writer, the
+// commits the run's task's head was at when the run started and when it ended, the block id of the
+// CI check a fix run fixes, and the run's identity, which makes the record where its start and end
+// have not landed yet. A field the body leaves out, or sends null or "", states nothing. The kind's
+// enum is the step route's (TestTheStepRouteNamesContractsWords).
+type stepCommitsInput struct {
+	Actor       *model.Actor `json:"actor"`
+	StartCommit *string      `json:"start_commit"`
+	EndCommit   *string      `json:"end_commit"`
+	FixCheck    *string      `json:"fix_check"`
+	Task        *string      `json:"task"`
+	Step        *int         `json:"step"`
+	Kind        *string      `json:"kind" enum:"step,retro,merge"`
+	Role        *string      `json:"role"`
+	Type        *string      `json:"type"`
+	Agent       *string      `json:"agent"`
+	Generation  *int64       `json:"generation"`
+}
+
 // putIssueStep writes one run of one step of an issue and answers its record as it stands after
 // the write, with the attempt the read gives it. A write sets each field the record does not hold
 // yet and leaves every field it holds, so a start and an end land in either order and a write
@@ -140,8 +161,29 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	s.writeIssueStep(w, r, write, actor, key)
 }
 
-// writeIssueStep is the one write of a step record behind both routes, by actor to the issue key,
-// each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
+// putIssueStepCommits writes the commits of a run, and the check a fix run fixes, with the run's
+// identity the body states, as putIssueStep writes its fields: each is set once, by the first
+// write that names it, and the record is made where the run's start and end have not landed yet.
+// Any run takes its commits, and only a run of kind step a fix_check (workflowstore.PutStep).
+func (s *server) putIssueStepCommits(w http.ResponseWriter, r *http.Request) {
+	var input stepCommitsInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
+		return
+	}
+	s.writeIssueStep(w, r, workflowstore.StepWrite{
+		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
+		Generation: input.Generation, Place: input.Step,
+		StartCommit: input.StartCommit, EndCommit: input.EndCommit, FixCheck: input.FixCheck,
+	}, actor, key)
+}
+
+// writeIssueStep is the one write of a step record behind the three routes, by actor to the issue
+// key, each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
 // Issue and Project filled here from the path and the issue row) is written, and the record is
 // answered as the read lists it.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
@@ -278,23 +320,30 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report and a nil
-// Rating are a run that has none, which the answer carries as null, the rating and its reason
-// both; a return to place 0 carries 0.
+// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report, commit or
+// fix_check and a nil Rating are a run that has none, which the answer carries as null, the rating
+// and its reason both; a return to place 0 carries 0.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
 		Role: step.Role, Type: step.Type, Agent: step.Agent, Session: step.Session, Model: step.Model,
 		Generation: step.Generation, Attempt: step.Attempt, StartedAt: step.StartedAt,
 		EndedAt: step.EndedAt, Result: step.Result, ReturnedTo: step.ReturnedTo,
-	}
-	if step.Report != "" {
-		report := step.Report
-		record.Report = &report
+		Report: textOrNull(step.Report), StartCommit: textOrNull(step.StartCommit),
+		EndCommit: textOrNull(step.EndCommit), FixCheck: textOrNull(step.FixCheck),
 	}
 	if step.Rating != nil {
 		rating := *step.Rating
 		record.Rating, record.RatingReason = &rating.Rating, &rating.Reason
 	}
 	return record
+}
+
+// textOrNull is a text field of a record as the answer carries it: null where the record holds
+// none.
+func textOrNull(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

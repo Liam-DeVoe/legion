@@ -17,23 +17,27 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
 // no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
 // (roleRule), and so is the role a plan's step names before its key. The agent, the session and
 // the model are printable ASCII with no space, at most 128 characters
-// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces.
+// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces. A
+// commit is a whole commit id, as a check result's (commitRule).
 var (
 	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
+	commitForm    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// taskRule and roleRule are taskForm and roleForm as a refusal states them.
+// taskRule, roleRule and commitRule are taskForm, roleForm and commitForm as a refusal states them.
 const (
-	taskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64"
-	roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
+	taskRule   = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64"
+	roleRule   = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
+	commitRule = "40 lowercase hexadecimal digits"
 )
 
 var (
@@ -57,7 +61,8 @@ var (
 // sets the report states the `reports` relation to that handoff. A type and a rating are judged
 // against the kind the write names and against the kind the node holds (typeOfKind,
 // ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
-// it.
+// it, and so is a fix_check (fixCheckOfKind), which a run made as a retro or a merge never takes.
+// The commits and the fix_check are set once, as every other field is.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -68,7 +73,8 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		kind: KindStep, id: id, issue: write.Issue, stated: stated, makes: len(missing) == 0,
 		actor: actor, at: at,
 		check: func(held map[string]json.RawMessage) error {
-			if write.Type == nil && write.Rating == nil {
+			fixes := write.FixCheck != nil && *write.FixCheck != ""
+			if write.Type == nil && write.Rating == nil && !fixes {
 				return nil
 			}
 			kind, err := heldString(held, AttributeKind)
@@ -82,6 +88,11 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 			}
 			if write.Rating != nil {
 				if err := ratingOfKind(id, kind); err != nil {
+					return err
+				}
+			}
+			if fixes {
+				if err := fixCheckOfKind(id, kind); err != nil {
 					return err
 				}
 			}
@@ -387,6 +398,22 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		canonical := report.String()
 		stated = append(stated, attribute{AttributeReport, canonical, canonical})
 	}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{{AttributeStartCommit, write.StartCommit}, {AttributeEndCommit, write.EndCommit}} {
+		if commit := text(field.name, field.value); commit != "" && !commitForm.MatchString(commit) {
+			return "", nil, refusal(ErrStepInput, "%s %q is not a commit: %s", field.name, commit, commitRule)
+		}
+	}
+	if check := text(AttributeFixCheck, write.FixCheck); check != "" {
+		if err := fixCheckForm(check); err != nil {
+			return "", nil, err
+		}
+		if err := fixCheckOfKind(id, kind); err != nil {
+			return "", nil, err
+		}
+	}
 	rated, err := write.rating(id, kind)
 	if err != nil {
 		return "", nil, err
@@ -462,6 +489,25 @@ func ratingOfKind(id, kind string) error {
 	return nil
 }
 
+// fixCheckOfKind refuses a fix_check for run id of kind retro or merge: a fix is a run of a step
+// of the plan that fixes a CI check failed at its task's head.
+func fixCheckOfKind(id, kind string) error {
+	if kind != "" && kind != StepKindStep {
+		return refusal(ErrStepInput, "fix_check names the CI check a fix fixes, and a fix is a run of kind %s, where step %s is a run of kind %s", StepKindStep, id, kind)
+	}
+	return nil
+}
+
+// fixCheckForm refuses a fix_check that is no block id: the check is a block of the issue's
+// Verification document, and a block id is any text a row can store (pmdoc's storedBlockID), so
+// any but one holding U+0000, which PostgreSQL's text cannot hold (text.Storable).
+func fixCheckForm(check string) error {
+	if !text.Storable(check) {
+		return refusal(ErrStepInput, "fix_check %q is not a block id: a block id holds no U+0000 and is UTF-8", check)
+	}
+	return nil
+}
+
 // refusal is a write refused as sentinel, its text the rule format and args state.
 func refusal(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: %s", sentinel, fmt.Sprintf(format, args...))
@@ -525,6 +571,9 @@ type stepAttributes struct {
 	Report       string     `json:"report"`
 	Rating       int        `json:"rating"`
 	RatingReason string     `json:"rating_reason"`
+	StartCommit  string     `json:"start_commit"`
+	EndCommit    string     `json:"end_commit"`
+	FixCheck     string     `json:"fix_check"`
 }
 
 // stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
@@ -539,6 +588,7 @@ func stepFrom(id string, attributes []byte) (Step, error) {
 		Role: held.Role, Type: held.Type, Agent: held.Agent, Session: held.Session, Model: held.Model,
 		Result: held.Result, Report: held.Report, Generation: held.Generation, Place: held.Step,
 		ReturnedTo: held.ReturnedTo, StartedAt: held.StartedAt, EndedAt: held.EndedAt,
+		StartCommit: held.StartCommit, EndCommit: held.EndCommit, FixCheck: held.FixCheck,
 	}
 	if held.Rating != 0 {
 		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}
