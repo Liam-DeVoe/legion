@@ -392,7 +392,7 @@ Each item below names a script, then what it proves.
 
 - `agents.sh`
 
-  one key of an owner's plan is one agent in one session across roles, one role at two steps of a task is one agent in one session, and a second agent of one role is an agent in a session of its own, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues whose owners give their plans:
+  one key of an owner's plan is one agent in one session across roles, one role at two steps of a task that carry one key is one agent in one session, and a second agent of one role, at a step with no key, is an agent in a session of its own, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues whose owners give their plans:
   `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
   `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
   the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own;
@@ -5121,7 +5121,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/agents.sh     # → "agents e2e: PASS in <n>s", exit 0
 ```
 
-The live proof that one key of an owner's plan is one agent in one session across roles, that one role at two steps of a task is one agent in one session, and that a second agent of one role is an agent in a session of its own, run before the change merges.
+The live proof that one key of an owner's plan is one agent in one session across roles, that one role at two steps of a task that carry one key is one agent in one session, and that a second agent of one role, at a step with no key, is an agent in a session of its own, run before the change merges.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
