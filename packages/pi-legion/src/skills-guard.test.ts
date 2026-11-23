@@ -728,7 +728,8 @@ test("an implementer and reviewer task has the implementer prove the surface and
       /implementation step's agent opens the pull request[^.]*a task with no such step has none/,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
-      /implementer with no tester step[^.;]*real surface/,
+      /with no tester step the implementation step's agent[^.;]*real surface/,
+      /with neither step, the retro's agent sends it during retro/,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
       /no tester step[^.;]*the implementer's evidence[^.;]*read/,
@@ -945,6 +946,7 @@ test("each duty a role skill routes to a reference stands in that reference", ()
     ]),
     ...lacks("legion-worker/references/results.md", [
       /The implementer re-runs once a red check whose failure is not in this pull request's code/,
+      /under `off`, or on an issue with no pull request, nothing records it/,
     ]),
     ...lacks("legion-worker/references/pr-body.md", [
       /only the deploy can show it[^.]*plan names its observation/,

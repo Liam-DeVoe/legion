@@ -47,4 +47,4 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete.
 The architect has it built in this tree and resumes you.
-A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded after the merge by the role the project's `production_check` names (under `off` nothing records it), unless the implementer can run it against a development stack before then.
+A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded after the merge by the role the project's `production_check` names (under `off`, or on an issue with no pull request, nothing records it), unless the implementation step's agent can run it against a development stack before then.

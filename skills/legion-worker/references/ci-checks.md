@@ -56,10 +56,10 @@ When the head's checks have settled and no run of the name answers:
 2. A held-back job reads `skipped`, not absent: the label cures it.
 
 3. Otherwise the check's words are wrong.
-   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.
+   Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the retro's agent sends it during retro.
    No role fails the round or requests changes for it.
 
 ## What the evidence is
 
 The named job is the check's proof at the head, and no role repeats it, even when it is a unit or integration suite.
-It proves only that the job passed there: the tester, or the implementer with no tester step, still proves the real surface with the checks CI cannot run.
+It proves only that the job passed there: the tester, or with no tester step the implementation step's agent, still proves the real surface with the checks CI cannot run.
