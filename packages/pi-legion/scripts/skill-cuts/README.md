@@ -647,7 +647,14 @@ output's list named as the last part of its working directory, or of the nearest
 any listed repository when one repository alone has that name and its tree at its commit holds the
 working directory's path below that parent (a parent's name alone decides nothing: otherwise none,
 and the evidence says why, or names the repositories that matched); the checkout's root is that
-directory. The profile names that
+directory. A working directory directly inside such a parent whose path the tree does not hold is a
+workspace of that repository (a jj or git worktree, such as `<dir>/<repo>/<workspace>`) and the
+checkout's root, when a file the session read by an absolute path under it is a file of the tree at
+its path below the working directory (a read of `<dir>/<repo>/<workspace>/CLAUDE.md` where the
+tree holds `CLAUDE.md`): the evidence item `session repository <repo>` says it is a workspace of
+that repository named `<workspace>` and names the read and the file. Where the session read no
+such file, or the working directory is two or more levels below that parent, there is none, and
+the evidence says why. The profile names that
 repository and its commit at the session's start (`sessionRepository`), and lists the
 repository's project skills at that commit, as Oh My Pi 18.18.6 lists them, provider by provider:
 each `<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each

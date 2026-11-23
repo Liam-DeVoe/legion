@@ -206,20 +206,18 @@ function readFrom(dir: string) {
   };
 }
 
-/** A change of F1 that puts a read of `url` (`skill://<name>`) and its successful result, which
- *  starts `[Skill file: <header>]` and then holds `text`, after F1's prompt: the two lines' ids are
- *  `<id>1` and `<id>2`. */
-function readFirst(id: string, url: string, header: string, text: string) {
+/** A change of F1 that puts a read call of `target` (its id `callId`) and its successful result,
+ *  whose text is `text`, after F1's prompt: the two lines' ids are `<id>1` and `<id>2`. */
+function readAfterPrompt(id: string, callId: string, target: string, text: string) {
   return (lines: Record<string, unknown>[]) => {
     const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
-    const callId = `toolu_${url.slice("skill://".length)}`;
     const call = {
       type: "message",
       id: `${id}1`,
       timestamp: "2026-11-20T01:59:45.000Z",
       message: {
         role: "assistant",
-        content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: url } }],
+        content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: target } }],
       },
     };
     const result = {
@@ -231,12 +229,20 @@ function readFirst(id: string, url: string, header: string, text: string) {
         toolCallId: callId,
         toolName: "read",
         isError: false,
-        content: [{ type: "text", text: `[Skill file: ${header}]\n${text}` }],
+        content: [{ type: "text", text }],
       },
     };
     insertAfter(lines, prompt, call);
     insertAfter(lines, call, result);
   };
+}
+
+/** A change of F1 that puts a read of `url` (`skill://<name>`) and its successful result, which
+ *  starts `[Skill file: <header>]` and then holds `text`, after F1's prompt: the two lines' ids are
+ *  `<id>1` and `<id>2`. */
+function readFirst(id: string, url: string, header: string, text: string) {
+  const callId = `toolu_${url.slice("skill://".length)}`;
+  return readAfterPrompt(id, callId, url, `[Skill file: ${header}]\n${text}`);
 }
 
 /** Where the renamed-plugin session reads zeta: Oh My Pi's cache of the plugin zeta-tools of the
@@ -1152,7 +1158,7 @@ const SLOT_RULE =
 /** How a dev-box session's repository is found from its working directory, as a profile's
  *  evidence says it. */
 const CHECKOUT_RULE =
-  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing";
+  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing; where the tree does not hold that path and the working directory is directly inside that parent, the working directory is a workspace of that repository (a jj or git worktree) and the checkout's root when a file the session read by an absolute path under the working directory is a file of the tree at its path below the working directory";
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -5523,8 +5529,10 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     // Legion context session's evidence `the worker image's commit of acme/skills` (cause C2).
     // Since then that item's text says the project file was read first, and its rule says so, and
     // the item `the daemon image's commit of acme/skills` follows it: with that item's old text
-    // and without the new item, the summary's digest is c16018d2…, the one pinned before.
-    "profiles summary": "1d3be7ef98954326114e69a5d53bb69de43592a64a28759c64eb40e74f994584",
+    // and without the new item, the summary's digest is c16018d2…, the one pinned before. Since
+    // then the dev-box checkout rule in each session repository item's evidence names the
+    // workspace case; with the rule's old text the digest is 1d3be7ef…, the one pinned before.
+    "profiles summary": "4a8dfab6e7b27a184963b0b5206e27a97cc27c80225e9653b652e6561c23650b",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -5569,6 +5577,17 @@ const inDirectory = (text: string, cwd: string) =>
       return entry.type === "session" ? JSON.stringify({ ...entry, cwd }) : line;
     })
     .join("\n");
+
+/** The good session's transcript in the working directory `cwd`, with a successful read of the
+ *  file `file` by its absolute path after its prompt (its messages 1 and 2). */
+function readingIn(cwd: string, file: string): string {
+  const lines = sessionText("good")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  readAfterPrompt("f11e000", "toolu_file", file, "# Made-up notes\n")(lines);
+  return inDirectory(lines.map((line) => `${JSON.stringify(line)}\n`).join(""), cwd);
+}
 
 test("a session repository whose whole tree GitHub cuts short is read one directory at a time, only where Oh My Pi reads a project, so build-cases --reprofile gives its case that repository's project skill and context file", async () => {
   const legion = (await profileCases()).find(
@@ -5686,13 +5705,111 @@ test("a dev-box session in the checkout whose .claude/ devboxClaudeConfigDir nam
   const missing = evidenceOf("/sessions/proj-missing.jsonl");
   expect(missing["session repository acme/proj"]).toBeUndefined();
   expect(missing["no session repository"]).toBe(
-    `${CHECKOUT_RULE}. The working directory /home/dev/src/proj/missing/dir is under /home/dev/src/proj, named as acme/proj, whose tree at ${SHA} holds no missing/dir, so that name alone does not make the directory a checkout of it`
+    `${CHECKOUT_RULE}. The working directory /home/dev/src/proj/missing/dir is under /home/dev/src/proj, named as acme/proj, whose tree at ${SHA} holds no missing/dir, so that name alone does not make the directory a checkout of it; and it is not directly inside /home/dev/src/proj, so it is not taken as a workspace of acme/proj`
   );
   expect(
     cases.find((c) => c.source.pathHash === pathHash("/sessions/proj-missing.jsonl"))?.profile
       .sessionRepository
   ).toBeUndefined();
 }, 120_000);
+
+/** A directory named as acme/proj, and three sessions in directories below it that acme/proj's
+ *  tree does not hold, each with its working directory and the file it read there by its absolute
+ *  path: directly inside it, one read of a file the tree's root holds (CLAUDE.md) and one of a
+ *  file the tree holds nowhere (notes.md); two levels below it, a read of CLAUDE.md. */
+const PROJ_DIR = "/home/dev/src/proj";
+const BELOW_PROJ: Record<string, { readonly cwd: string; readonly read: string }> = {
+  "/sessions/lane-held.jsonl": { cwd: `${PROJ_DIR}/lane-3`, read: `${PROJ_DIR}/lane-3/CLAUDE.md` },
+  "/sessions/lane-unheld.jsonl": {
+    cwd: `${PROJ_DIR}/lane-4`,
+    read: `${PROJ_DIR}/lane-4/notes.md`,
+  },
+  "/sessions/lane-deep.jsonl": {
+    cwd: `${PROJ_DIR}/lanes/lane-5`,
+    read: `${PROJ_DIR}/lanes/lane-5/CLAUDE.md`,
+  },
+};
+
+/** Of the case build-cases built from the session `file` of BELOW_PROJ (one run for all three,
+ *  made once), its profile and its evidence by item. */
+async function belowProj(file: string) {
+  const out = path.join(scratch, "below-proj", "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore("below-proj", (files) => {
+      for (const [session, { cwd, read }] of Object.entries(BELOW_PROJ)) {
+        (files.store_a ?? {})[session] = readingIn(cwd, read);
+      }
+    });
+    const list = path.join(setupDir, "below-proj.jsonl");
+    writeFileSync(
+      list,
+      Object.keys(BELOW_PROJ)
+        .map(
+          (each) => `${JSON.stringify({ store: "store_a", hash: fileHash(each), path: each })}\n`
+        )
+        .join("")
+    );
+    const args = buildArgs(list, out, "1");
+    args[args.indexOf("--config") + 1] = store;
+    expect(await main(args, io([]))).toBe(EXIT.ok);
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(file));
+  return {
+    profile: c?.profile,
+    evidence: Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []),
+  };
+}
+
+// Catches (a dev-box profile-build fault found in a load task's rebuilt context): a session in a
+// workspace of a repository, a jj or git worktree `<dir>/<repo>/<workspace>` whose root is the
+// working directory, that the tree check refused as a checkout because the repository's tree does
+// not hold `<workspace>`, so its profile held none of the repository's project skills.
+test("a dev-box session directly inside a directory named as acme/proj whose tree does not hold it, that read a file of the tree there, is in a workspace of acme/proj at its root: it gets acme/proj's root project skills and CLAUDE.md, and the evidence names the read and the file", async () => {
+  const { profile, evidence } = await belowProj("/sessions/lane-held.jsonl");
+  expect(profile?.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
+  expect(profile?.workingDirectory).toBeUndefined();
+  // As a session in /home/dev/src/proj gets them.
+  expect(profile?.skills).toEqual([
+    { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older", namespace: "agent" },
+    { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+    { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+    {
+      repo: "acme/proj",
+      commit: SHA,
+      path: ".claude/skills/beta",
+      name: "beta",
+      namespace: "claude",
+    },
+    { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
+    { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+    { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+  ]);
+  expect(profile?.contextFiles).toEqual([
+    { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+    { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+  ]);
+  expect(evidence["session repository acme/proj"]).toBe(
+    `${CHECKOUT_RULE}. The working directory ${PROJ_DIR}/lane-3 is under ${PROJ_DIR}, named as acme/proj, whose tree at ${SHA} holds no lane-3; it is a workspace of acme/proj named lane-3, a checkout of it at its root: message 2 reads ${PROJ_DIR}/lane-3/CLAUDE.md, and the tree holds CLAUDE.md`
+  );
+}, 60_000);
+
+test("a dev-box session directly inside a directory named as acme/proj whose tree does not hold it, that read no file of the tree there, gets no session repository, and the evidence says so", async () => {
+  const { profile, evidence } = await belowProj("/sessions/lane-unheld.jsonl");
+  expect(profile?.sessionRepository).toBeUndefined();
+  expect(profile?.skills.some((skill) => skill.repo === "acme/proj")).toBe(false);
+  expect(evidence["no session repository"]).toBe(
+    `${CHECKOUT_RULE}. The working directory ${PROJ_DIR}/lane-4 is under ${PROJ_DIR}, named as acme/proj, whose tree at ${SHA} holds no lane-4, so that name alone does not make the directory a checkout of it; and no file the session read by an absolute path under it is a file of that tree at its path there (it read 1 such file), so nothing shows it is a workspace of acme/proj`
+  );
+}, 60_000);
+
+test("a dev-box session two levels below a directory named as acme/proj whose tree does not hold its path gets no session repository though it read a file of the tree there, and the evidence says why", async () => {
+  const { profile, evidence } = await belowProj("/sessions/lane-deep.jsonl");
+  expect(profile?.sessionRepository).toBeUndefined();
+  expect(profile?.skills.some((skill) => skill.repo === "acme/proj")).toBe(false);
+  expect(evidence["no session repository"]).toBe(
+    `${CHECKOUT_RULE}. The working directory ${PROJ_DIR}/lanes/lane-5 is under ${PROJ_DIR}, named as acme/proj, whose tree at ${SHA} holds no lanes/lane-5, so that name alone does not make the directory a checkout of it; and it is not directly inside ${PROJ_DIR}, so it is not taken as a workspace of acme/proj`
+  );
+}, 60_000);
 
 // Catches (the misses diagnosis, cause C1): a project skill of .agent/skills, .agents/skills or
 // .github/skills, or one whose directory is a symbolic link in .claude/skills, missing from the
@@ -6772,6 +6889,49 @@ test("build-tasks --reprofile of a task whose session is now in a checkout of ac
   expect(summary.counts).toMatchObject({ changed: 1, unchanged: 9 });
   expect(lines.join("")).toContain("build-tasks: t1: profile changed");
 }, 120_000);
+
+// Catches (a dev-box profile-build fault found in a load task's rebuilt context): a session in a
+// workspace of a repository whose tree does not hold the workspace's name, rebuilt from every read
+// of its branch with no session repository and so none of the repository's project skills.
+test("build-tasks --reprofile of a task whose session is now directly inside a directory named as acme/proj whose tree does not hold it, where it read the root's CLAUDE.md, gives it acme/proj's profile at its root, as a workspace of acme/proj", async () => {
+  const from = await profiledTasks();
+  const lane = `${PROJ_DIR}/lane-3`;
+  const moved = changedStore("reprofile-workspace", (files) => {
+    (files.store_a ?? {})["/sessions/task-4.jsonl"] = readingIn(lane, `${lane}/CLAUDE.md`);
+  });
+  const dir = path.join(scratch, "reprofile-workspace", "profiles");
+  expect(await main(reprofileArgs(moved, from, dir), io([]))).toBe(EXIT.ok);
+  const t1 = tasksOf(from).find((task) => task.id === "t1");
+  const before = JSON.parse(readFileSync(String(t1?.profile), "utf8"));
+  expect(JSON.parse(readFileSync(path.resolve(dir, "t1.json"), "utf8"))).toEqual({
+    ...before,
+    skills: [
+      { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older", namespace: "agent" },
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      {
+        repo: "acme/proj",
+        commit: SHA,
+        path: ".claude/skills/beta",
+        name: "beta",
+        namespace: "claude",
+      },
+      { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+    ],
+    contextFiles: [
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+    ],
+    sessionRepository: { repo: "acme/proj", commit: SHA },
+  });
+  const record = reprofileSummary(dir).profiles.tasks.find((each) => each.task === "t1");
+  expect(
+    record?.differs.added.find((each) => each.item === "session repository acme/proj")?.source
+  ).toBe(
+    `${CHECKOUT_RULE}. The working directory ${lane} is under ${PROJ_DIR}, named as acme/proj, whose tree at ${SHA} holds no lane-3; it is a workspace of acme/proj named lane-3, a checkout of it at its root: message 2 reads ${lane}/CLAUDE.md, and the tree holds CLAUDE.md`
+  );
+}, 60_000);
 
 test("build-tasks --reprofile gives each written task the profile of the --context-session it is given, in place of the session the tasks file's summary names, and lists the evidence items that differ", async () => {
   const from = await profiledTasks();

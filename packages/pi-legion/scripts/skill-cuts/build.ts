@@ -323,10 +323,14 @@
  *   context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/<workspace>/…`);
  *   for a dev box, the repository of the copies output's list (repositories.tsv) named as the last
  *   part of its working directory, or of the nearest parent named as any listed repository, when
- *   one alone has that name (otherwise none, and the evidence names the repositories that
- *   matched); the checkout's root is that directory. The profile names it and its commit at the
- *   session's start (`sessionRepository`; load.ts places its `.claude/skills` project skills in
- *   Claude Code's checkout by it). Its project skills, read at its commit with
+ *   one alone has that name and, for a parent, its tree holds the working directory's path below
+ *   that parent (otherwise none, and the evidence says why or names the repositories that
+ *   matched); the checkout's root is that directory. A working directory directly inside such a
+ *   parent whose tree does not hold it is a workspace of that repository (a jj or git worktree)
+ *   and the checkout's root, where a file the session read by an absolute path under it is a file
+ *   of the tree at its path there (DEVBOX_CHECKOUT_RULE). The profile names it and its commit at
+ *   the session's start (`sessionRepository`; load.ts places its `.claude/skills` project skills
+ *   in Claude Code's checkout by it). Its project skills, read at its commit with
  *   the units' repositories (when it is no unit's repository, only where Oh My Pi reads a project,
  *   one directory a call, `GithubReads.project`, so a repository whose whole tree GitHub cuts
  *   short is read too): each `<level>/.omp/skills/<name>/SKILL.md` that has a description,
@@ -370,9 +374,10 @@
  * it did.
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
- * case and its session's head: its store, the `[Skill file: …]` lines of its messages and the
- * paths of its whole reads by path of its `pathCopy`, its start, whether it carries a recorded
- * prompt, and the working directory the header in the session's head
+ * case and its session's head: its store, the `[Skill file: …]` lines of its messages, the
+ * paths of its whole reads by path of its `pathCopy` and of its reads by an absolute path, its
+ * start, whether it carries a recorded prompt, and the working directory the header in the
+ * session's head
  * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
  * store, each head saved under `<out>.sessions/`), at the time the profile is read: its root's
  * prompt builds (digest-times.sql, one query per store), with a top-level case's step's message
@@ -1736,6 +1741,29 @@ function profileReads(
   return [...shownReads(messages), ...byPath].sort((a, b) => a.index - b.index);
 }
 
+/** A successful read result of a read call that names an absolute path: its index in the
+ *  messages, and the path Oh My Pi's read opened (cases.ts's `resolvedReadPath`, its read selector
+ *  taken off), normalized. */
+interface AbsoluteRead {
+  readonly index: number;
+  readonly path: string;
+}
+
+/** Each successful read result of `messages` whose call names an absolute path, any file's, in
+ *  order. */
+function absoluteReads(messages: readonly SessionMessage[]): AbsoluteRead[] {
+  const targets = readTargets(messages);
+  return messages.flatMap((message, index) => {
+    if (message.role !== "toolResult" || message.toolName !== "read" || message.isError === true) {
+      return [];
+    }
+    const target = targets.get(message.toolCallId ?? "");
+    const read =
+      target === undefined ? undefined : resolvedReadPath(target.replace(READ_SELECTOR, ""), {});
+    return read === undefined ? [] : [{ index, path: path.posix.normalize(read) }];
+  });
+}
+
 /** The lines of each base file in `files` that a successful read of it in `reads` holds whole
  *  (`readText`: its text after the `[Skill file: …]` line, or less Oh My Pi's rows for a read by
  *  path; each line trimmed, as the builder's check of a proposed line compares them; blank lines
@@ -2482,6 +2510,8 @@ export class GithubReads {
   private readonly held = new Map<string, Promise<RepositoryAt>>();
   private readonly projects = new Map<string, Promise<ProjectRead>>();
   private readonly blobs = new Map<string, Promise<string>>();
+  /** One level of a directory of a tree (`firstFile`), by repository, commit and path. */
+  private readonly dirs = new Map<string, Promise<TreeEntry[]>>();
 
   constructor(
     private readonly gh: Gh,
@@ -2837,6 +2867,34 @@ export class GithubReads {
     };
   }
 
+  /** The first of `files`, paths in the repository, that the tree of `repo` at `commit` holds as a
+   *  file (a blob, a symbolic link too), or undefined when it holds none of them: read from the
+   *  root down, one level of each directory on the way to a file a call by its tree id, each
+   *  directory of a commit read once. */
+  async firstFile(
+    repo: string,
+    commit: string,
+    files: readonly string[]
+  ): Promise<string | undefined> {
+    for (const file of files) {
+      let entry: TreeEntry | undefined = { path: "", mode: "040000", type: "tree", sha: commit };
+      for (const part of file.split("/")) {
+        if (entry?.type !== "tree") {
+          entry = undefined;
+          break;
+        }
+        const dir: TreeEntry = entry;
+        const level = await readOnce(this.dirs, [repo, commit, dir.path].join("\0"), () =>
+          this.level(repo, dir.sha, dir.path)
+        );
+        const name = dir.path === "" ? part : `${dir.path}/${part}`;
+        entry = level.find((each) => each.path === name);
+      }
+      if (entry?.type === "blob") return file;
+    }
+    return undefined;
+  }
+
   /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). A SKILL.md or
    *  manifest whose read failed is a fault of the result, unless it failed for a transient reason
    *  on every try: then this rejects with that failure. */
@@ -2959,7 +3017,9 @@ interface PinnedVersion {
 /** The session repository: the repository the session's working directory is a checkout of
  *  (`sessionRepository`), or undefined; the working directory's path inside that checkout (`rel`,
  *  `""` at its root); the evidence of it; and, where a parent's name gave it, that parent
- *  (`byParent`), whose repository's tree must hold `rel` before it is taken (`caseProfile`). */
+ *  (`byParent`), whose repository's tree must hold `rel` before it is taken, else, for a `rel` of
+ *  one directory, a file the session read under the working directory, which makes the working
+ *  directory a workspace of the repository at its root (`caseProfile`). */
 interface Checkout {
   readonly repo: string | undefined;
   readonly rel: string;
@@ -2969,16 +3029,21 @@ interface Checkout {
 
 /** What the profile of one case is built from: its store, its context (the store's, for a
  *  subagent) and project, each successful read result of its messages whose first line is
- *  `[Skill file: <path>]` (any skill's), the session's start, its working directory, whether
- *  its session recorded its own system prompt (a subagent's), which holds its context files, and
- *  the session repository when it is known already (`--reprofile` of a case whose session the
- *  store no longer holds: the old case's evidence of it), else it is found from the working
- *  directory. */
+ *  `[Skill file: <path>]` (any skill's), each of its successful reads by an absolute path (any
+ *  file's), the session's start, its working directory, whether its session recorded its own
+ *  system prompt (a subagent's), which holds its context files, and the session repository when
+ *  it is known already (`--reprofile` of a case whose session the store no longer holds: the old
+ *  case's evidence of it), else it is found from the working directory. */
 interface ProfileInput {
   readonly store: string;
   readonly context: string;
   readonly project: string | undefined;
   readonly reads: readonly ShownRead[];
+  /** Each successful read of its messages by an absolute path (`absoluteReads`): a file of them
+   *  under the working directory that the session repository's tree holds at its path there makes
+   *  a working directory directly inside a parent named as that repository a workspace of it
+   *  (DEVBOX_CHECKOUT_RULE). */
+  readonly absoluteReads: readonly AbsoluteRead[];
   readonly sessionStart: string;
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
@@ -2998,7 +3063,7 @@ const SESSION_REPOSITORY = "session repository ";
 const NO_SESSION_REPOSITORY = "no session repository";
 /** How a dev-box session's repository is found from its working directory. */
 const DEVBOX_CHECKOUT_RULE =
-  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing";
+  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing; where the tree does not hold that path and the working directory is directly inside that parent, the working directory is a workspace of that repository (a jj or git worktree) and the checkout's root when a file the session read by an absolute path under the working directory is a file of the tree at its path below the working directory";
 /** Which units a dev-box profile installs beside those its session's reads come from. */
 const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
@@ -3814,8 +3879,10 @@ function unitNamespace(unit: string): string | undefined {
  * the dev box's own repository `home` where `cwd` is in its checkout (`home.dir`), else the
  * repository of `repositories` (the copies output's list) named as the last part of `cwd`, else
  * of its nearest parent named as any of them, when one alone is named so; a parent's is marked
- * (`byParent`), and `caseProfile` takes it only where its tree holds the path below that parent.
- * Otherwise none, and the evidence says which repositories matched.
+ * (`byParent`), and `caseProfile` takes it only where its tree holds the path below that parent,
+ * or, for a path of one directory, where a file the session read under `cwd` is a file of the
+ * tree at its path there: then `cwd` is a workspace of the repository, at its root. Otherwise
+ * none, and the evidence says which repositories matched.
  */
 function sessionRepository(
   context: string,
@@ -4120,7 +4187,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is pushed where it is below.
   const devboxRepo = input.context.startsWith("legion:") ? undefined : devboxHome(copies, []);
   const claudeDir = run.config.devboxClaudeConfigDir;
-  const checkout =
+  let checkout =
     input.checkout ??
     sessionRepository(
       input.context,
@@ -4132,7 +4199,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     );
   evidence.push(checkout.line);
   // A checkout a parent's name gave is taken only where its repository's tree holds the working
-  // directory's path below that parent (`byParent`, checked once the repository is read).
+  // directory's path below that parent, else, for a working directory directly inside that parent,
+  // where a file the session read under it is a file of the tree: then it is a workspace of the
+  // repository at its root (`byParent`, checked once the repository is read).
   let notCheckout = false;
   if (input.readTime !== undefined) evidence.push(input.readTime.line);
   // The time each repository is read at: a subagent's at its root's last prompt build before it
@@ -4157,18 +4226,21 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
   // the working directory and then, for a kind read at each level, under each parent up to the
-  // checkout's root; at each level the kind's directories in order.
-  const levels = [checkout.rel];
+  // checkout's root (`levels`); at each level the kind's directories in order. A workspace found
+  // once the session repository is read (below) is read at its root alone.
+  const projectDirsAt = (at: readonly string[]) =>
+    PROJECT_SKILLS.flatMap((kind) =>
+      (kind.at === "cwd" ? at.slice(0, 1) : at).flatMap((level) =>
+        kind.dirs.map((dir) => ({ ...kind, dir: level === "" ? dir : `${level}/${dir}` }))
+      )
+    );
+  let levels = [checkout.rel];
   for (let level = checkout.rel; level !== ""; ) {
     const parent = path.posix.dirname(level);
     level = parent === "." ? "" : parent;
     levels.push(level);
   }
-  const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
-    (kind.at === "cwd" ? levels.slice(0, 1) : levels).flatMap((level) =>
-      kind.dirs.map((dir) => ({ ...kind, dir: level === "" ? dir : `${level}/${dir}` }))
-    )
-  );
+  let projectDirs = projectDirsAt(levels);
   /** The commit of `repo` at the session's start, and the evidence for it; or no commit, when
    *  GitHub gives none then (NoCommitThen), and the evidence item that leaves it out, whose
    *  source names the read (the caller says what is not read). repositories.tsv names the ref the
@@ -4591,13 +4663,55 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const { repo, commit, at, reads: treeReads, project } of values) {
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
-    if (repo === checkout.repo && checkout.byParent !== undefined && checkout.rel !== "") {
-      const missing = project?.missing ?? [];
-      if (missing.includes(checkout.rel)) {
+    const { byParent, rel } = checkout;
+    if (
+      repo === checkout.repo &&
+      byParent !== undefined &&
+      rel !== "" &&
+      (project?.missing ?? []).includes(rel)
+    ) {
+      const line = evidence.indexOf(checkout.line);
+      const named = `${DEVBOX_CHECKOUT_RULE}. The working directory ${input.cwd} is under ${byParent}, named as ${repo}, whose tree at ${commit.sha} holds no ${rel}`;
+      // Directly inside that parent, it is a workspace of the repository at its root where a file
+      // the session read by an absolute path under it is a file of the tree at its path there.
+      const direct = !rel.includes("/");
+      const { cwd } = input;
+      const underCwd =
+        !direct || cwd === undefined
+          ? []
+          : input.absoluteReads.flatMap((read) => {
+              const file = path.posix.relative(cwd, read.path);
+              return file === "" || file === ".." || file.startsWith("../")
+                ? []
+                : [{ ...read, file }];
+            });
+      const files = [...new Set(underCwd.map((read) => read.file))];
+      const first =
+        files.length === 0 ? undefined : await github.firstFile(repo, commit.sha, files);
+      const shown = underCwd.find((read) => read.file === first);
+      if (shown !== undefined) {
+        checkout = {
+          repo,
+          rel: "",
+          line: {
+            item: `${SESSION_REPOSITORY}${repo}`,
+            source: `${named}; it is a workspace of ${repo} named ${rel}, a checkout of it at its root: message ${shown.index} reads ${shown.path}, and the tree holds ${shown.file}`,
+          },
+        };
+        evidence[line] = checkout.line;
+        levels = [""];
+        projectDirs = projectDirsAt(levels);
+      } else {
         notCheckout = true;
-        evidence[evidence.indexOf(checkout.line)] = {
+        const readCount =
+          files.length === 0 ? "none" : `${files.length} such file${files.length === 1 ? "" : "s"}`;
+        evidence[line] = {
           item: NO_SESSION_REPOSITORY,
-          source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${input.cwd} is under ${checkout.byParent}, named as ${repo}, whose tree at ${commit.sha} holds no ${checkout.rel}, so that name alone does not make the directory a checkout of it`,
+          source: `${named}, so that name alone does not make the directory a checkout of it; and ${
+            direct
+              ? `no file the session read by an absolute path under it is a file of that tree at its path there (it read ${readCount}), so nothing shows it is a workspace of ${repo}`
+              : `it is not directly inside ${byParent}, so it is not taken as a workspace of ${repo}`
+          }`,
         };
       }
     }
@@ -5830,6 +5944,7 @@ async function sessionProfile(
         "at any time, the profile being read at the build the earliest of them was spawned under",
     };
   }
+  const messages = t.items.map((item) => item.slim);
   const profiled = await caseProfile(run, {
     store: store.name,
     context: store.context,
@@ -5838,7 +5953,8 @@ async function sessionProfile(
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
     ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
-    reads: shownReads(t.items.map((item) => item.slim)),
+    reads: shownReads(messages),
+    absoluteReads: absoluteReads(messages),
     readTime,
   });
   const secrets = scrubbed({ systemPrompt: init?.systemPrompt });
@@ -6090,11 +6206,9 @@ async function caseOf(
     recordedPrompt: init !== undefined,
     ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
   };
-  const reachableReads = profileReads(
-    readable.map((item) => item.slim),
-    run.skill,
-    sourceCopies
-  );
+  const reachableMessages = readable.map((item) => item.slim);
+  const reachableReads = profileReads(reachableMessages, run.skill, sourceCopies);
+  const reachableAbsolute = absoluteReads(reachableMessages);
   let ships = false;
   for (const readTime of reach) {
     try {
@@ -6102,6 +6216,7 @@ async function caseOf(
         ...profileInput,
         readTime,
         reads: reachableReads,
+        absoluteReads: reachableAbsolute,
       });
       ships = reachable.shipped.has(`${run.cut.repo}\0${run.skill}`);
     } catch (error) {
@@ -6333,6 +6448,7 @@ async function caseOf(
       ...profileInput,
       readTime,
       reads: profileReads(messages, run.skill, pathCopy === undefined ? [] : [pathCopy]),
+      absoluteReads: absoluteReads(messages),
     });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
@@ -6757,6 +6873,7 @@ async function reprofileCases(
         context: store.context,
         project: legion ? store.context.slice("legion:".length) : undefined,
         reads: profileReads(c.messages, c.skill, c.pathCopy === undefined ? [] : [c.pathCopy]),
+        absoluteReads: absoluteReads(c.messages),
         sessionStart: c.sessionStart,
         cwd: held
           ? (head?.cwd ?? undefined)
