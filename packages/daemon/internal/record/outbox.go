@@ -204,10 +204,10 @@ var pauseHolds = []pauseHold{
 // PauseHeldRow is one row a project's pause holds, as the state lists it and the resume logs it
 // (Postgres.PauseHeldRows, Postgres.MarkPauseHeldRows). Claim is the claim the row is for where
 // the row names one, and empty where it names none: an architect's notice is routed when it runs
-// (the daemon's readNoticeRoute: an owner-step to its issue's own architect, every other notice up
-// the tree's walk to the architect that owns its issue), and a
-// production check's rows name no role. WaitedSeconds counts from the moment the row came due
-// (next_at), as api.HeldOutboxRow's do in the state.
+// (the daemon's noticeArchitect: a catch-up to the architect of its own issue, an owner-step to
+// its issue's own architect, the owner of its step, and every other notice up the tree's walk to
+// the architect that owns its issue), and a production check's rows name no role. WaitedSeconds
+// counts from the moment the row came due (next_at), as api.HeldOutboxRow's do in the state.
 type PauseHeldRow struct {
 	OutboxRow
 	Claim         claim.Token
