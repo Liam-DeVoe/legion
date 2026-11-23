@@ -13,7 +13,7 @@ Legion repository.
 
 ## Research steps
 
-- **Use only `read`, `grep`, `web_search`, `envoy_publish`, and `task` with `scout` or `oracle`:** the daemon's boot gate checks that the agents Legion's prompts name exist.
+- **Use only `read`, `grep`, `web_search`, `envoy_publish`, and `task` with `scout` or `oracle`:** the daemon's boot gate refuses to start when a prompt names an agent that Oh My Pi cannot find.
 - **`wait` for each `task` result:** each `task` runs as a job of its own. Answer from what came back.
 
 1. **Research role first.** If your deployment instructions name a role that answers research questions, send it the question first with `envoy_publish(topic="notifications.role.<name>", expects_reply="required")`. Then end your turn: the reply starts your next one. When the publish says Envoy only kept the question because no session holds the role, put the publish's answer in your output. Then research at once.
