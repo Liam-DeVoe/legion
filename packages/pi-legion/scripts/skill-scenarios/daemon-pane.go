@@ -22,10 +22,11 @@
 //	                         of a deployment that sets no `gates.design`, as such a launch's does
 //	prompt step <prompt_file> [<role>]
 //	                         prints the system prompt a launch of a step of a role of the rig's
-//	                         deployment starts with (stepPrompt), the checker's or the role named,
-//	                         whose prompt_file is the file given, for the rig's claim on a child
-//	                         issue, byte for byte as the daemon writes its prompt file; where the
-//	                         checkout's daemon has no key `roles` it exits 1 and prints no prompt
+//	                         deployment starts with (stepPrompt), the checker's or the role named.
+//	                         That role's prompt_file is the file given. The prompt is for the
+//	                         rig's claim on a child issue, byte for byte as the daemon writes its
+//	                         prompt file. Where the checkout's daemon has no key `roles`, it
+//	                         exits 1 and prints no prompt
 package main
 
 import (
@@ -211,7 +212,7 @@ var legionStepRoles = []rigRole{
 // `<name> (<type>)`, with ` with the model <model>` where the role names one. It restates the
 // daemon's daemon.DeploymentRolesFragment, since one program runs against each label's checkout of
 // the daemon module, and an older one lacks that function and config.Role. It is that function's
-// sentence at the commit this file is part of, which daemon-pane_test.go holds it equal to; a
+// sentence at the commit this file is part of, which daemon-pane_test.go holds it equal to. A
 // checkout whose daemon tells another is composed with that checkout's own copy of this program.
 func deploymentRolesLine(roles []rigRole) string {
 	entries := make([]string, 0, len(legionStepRoles)+len(roles))
@@ -231,7 +232,7 @@ func deploymentRolesLine(roles []rigRole) string {
 // phase worker ends with (worker-common.md). It restates prompts.Composer.ComposeStep, since one
 // program runs against each label's checkout of the daemon module, and an older one lacks that
 // method. It is that method's paths at the commit this file is part of, which daemon-pane_test.go
-// holds it equal to; a checkout whose daemon composes a step otherwise is composed with that
+// holds it equal to. A checkout whose daemon composes a step otherwise is composed with that
 // checkout's own copy of this program.
 func stepPromptPaths(stateDir string, composer *prompts.Composer, promptFile string) []string {
 	return []string{

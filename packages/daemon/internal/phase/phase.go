@@ -63,8 +63,9 @@ var All = []Phase{
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
 // MovesBack says whether to is a phase of today's line, Order, before from. Both must stand in
-// Order: a phase outside it, step among them, is no part of the forward line, so this answers no
-// move into or out of it; a task in another order moves back by its own (workflow's Walk.MovesBack).
+// Order. A phase outside it, step among them, is no part of the forward line, so this answers no
+// move into or out of it. A task in another order moves back by its own (workflow's
+// Walk.MovesBack).
 func MovesBack(from, to Phase) bool {
 	toIndex := slices.Index(Order, to)
 	return toIndex >= 0 && toIndex < slices.Index(Order, from)

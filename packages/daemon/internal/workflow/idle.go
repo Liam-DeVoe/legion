@@ -114,7 +114,7 @@ const (
 	// operator's resume brings that role back into this pod.
 	IdleHoldUnownedOperatorSuspended
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
-	// the pod, and the delivery is what brings a role back into it; a start that waits for its pod
+	// the pod, and the delivery is what brings a role back into it. A start that waits for its pod
 	// is none, since the next pod serves it.
 	IdleHoldUnownedDelivery
 	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
