@@ -114,8 +114,9 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // it; and each step after the implementer's whose role d gives the type implementation, in step
 // order. The owner does the accepting step in this release, so a key on it but owner would name an
 // agent Legion does not run it in. An agent other than the owner is named by the role it starts
-// with, and this release runs one agent of each role for an issue, so a second agent of one first
-// role has no name; the owner's claim is the tree's architect, and it takes no name.
+// with, and this release runs one agent that starts with each role for an issue, so a second agent
+// of one first role has no name, while an agent that starts with another role can work a step of
+// that role; the owner's claim is the tree's architect, and it takes no name.
 func stepReasons(t Task, d Deployment) []string {
 	var keys, unnamed []string
 	agentSeen := map[Agent]bool{}
@@ -135,7 +136,7 @@ func stepReasons(t Task, d Deployment) []string {
 			agentSeen[agent] = true
 			role := step.Role // the agent's first step, so the role it starts with
 			if first, taken := startsAt[role]; taken {
-				unnamed = append(unnamed, fmt.Sprintf("step %d of task %s needs an agent of its own beside the agent of step %d, and both agents start with the role %s, and this release runs one agent of each role for an issue.",
+				unnamed = append(unnamed, fmt.Sprintf("step %d of task %s needs an agent of its own beside the agent of step %d, and both agents start with the role %s, and this release runs one agent that starts with each role for an issue.",
 					at, t.ID, first, role))
 			} else {
 				startsAt[role] = at

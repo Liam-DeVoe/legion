@@ -1839,11 +1839,11 @@ func RunningTaskChanged(task string) plan.Refusal {
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
 // would take name — the name its key held in an earlier version, or its role's — which another
 // agent of the plan holds from an earlier version (record.NameAgents, record.UnnamedAgents). This
-// release runs one agent of each role for an issue, so such a version is refused as a plan before
-// anything is written, never as an error of the write.
+// release names each agent of an issue for a role and gives each name to one agent, so such a
+// version is refused as a plan before anything is written, never as an error of the write.
 func AgentUnnamed(task string, place int, name string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s, which this step's agent would take, "+
-		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
+		"from an earlier version; this release names each agent of an issue for a role and gives each name to one agent. This release of Legion does not carry it out yet.", place, task, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2071,8 +2071,9 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
-// (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another step's row of the role
-// holds (record.OtherStepsEntry), 0 for a role at one step; served is the claim the role's row on
+// (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another row of the role
+// holds, the row of another of its steps or the implementer's retro row (record.OtherStepsEntry),
+// 0 where the role has no other row; served is the claim the role's row on
 // the served entry names (record.ServedClaim) and holder the claim the row on current names
 // (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
 // holds, and pending the claim's queued task, which only the route reads.
@@ -2252,7 +2253,8 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // transition that raised it, so the rule reads the move rather than guessing at it from the heads
 // (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 //
-// Unless the entry the completion serves is of another step of the role (otherStep). A role can
+// Unless the entry the completion serves is of another of the role's steps or its retro, or of an
+// earlier run of this step that the task left for one of them (otherStep). A role can
 // stand at two steps of a task, one agent doing both, and a forward move enters the later one: the
 // reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer step 3 at the
 // head step 1 left, while the agent's turn of step 1 can still be open. The two steps ask for
@@ -2267,7 +2269,8 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
 // the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
 // that the entry the phase stands on was raised by a move back, and where otherStep, that the entry
-// served is of another step of the role, each of which refuses this completion whatever those two
+// served is of another of the role's steps or its retro, or of a run of this step that the task
+// left for one of them, each of which refuses this completion whatever those two
 // heads read.
 func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack, otherStep bool) string {
 	if !recordBacked {
@@ -2293,7 +2296,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
 	}
 	if otherStep {
-		clause += ", and the entry this completion serves is of another step of this role, whose work is not the work of the step the task stands at, so no verdict on either head answers for it"
+		clause += ", and the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them, whose work is not the work the task stands at now, so no verdict on either head answers for it"
 	}
 	return clause
 }

@@ -37,12 +37,12 @@ type completionPosition struct {
 
 // completingRun is the run a completion of a role is of, read from its position: the phase entry
 // that run is on (record.PhaseRow.Entry, 0 on a row no start has stamped), whether the start that
-// raised it moved the issue back (record.PhaseRow.EntryMovedBack), the highest entry another step's
-// row of that role holds (record.OtherStepsEntry), the claim of that run's agent
-// (record.PhaseRow.Claim, holder) and the task of the step its row runs (record.PhaseRow.StepTask,
-// "" for a row of no step), the claim of the run the served entry is of (record.ServedClaim,
-// served), and the place of its step where the task names the role at two places (0 otherwise),
-// which the completion's key names.
+// raised it moved the issue back (record.PhaseRow.EntryMovedBack), the highest entry another row
+// of that role holds, another step's or the implementer's retro row (record.OtherStepsEntry), the
+// claim of that run's agent (record.PhaseRow.Claim, holder) and the task of the step its row runs
+// (record.PhaseRow.StepTask, "" for a row of no step), the claim of the run the served entry is of
+// (record.ServedClaim, served), and the place of its step where the task names the role at two
+// places (0 otherwise), which the completion's key names.
 type completingRun struct {
 	entry           int64
 	entryMovedBack  bool

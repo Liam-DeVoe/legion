@@ -130,7 +130,7 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 			message := refused(t, answer, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
 				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
-				"the entry this completion serves is of another step of this role",
+				"the entry this completion serves is of another of this role's steps or its retro, or of a run of this step that the task left for one of them",
 				"nothing was recorded",
 			} {
 				if !strings.Contains(message, want) {
