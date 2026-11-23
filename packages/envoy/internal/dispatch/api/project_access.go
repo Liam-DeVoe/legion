@@ -540,8 +540,8 @@ var (
 // the owner's check passed: 409 PASSKEY_SIGNIN_OFF where passkey sign-in is off, and 403
 // BROWSER_SESSION_REQUIRED for a caller that is not a browser's session cookie, unless tokenLetIn
 // says the route takes the caller's token; nil otherwise. The link takes the owner's personal token
-// that lists the project (personalTokenListing); the Reset takes no token, so a personal token, a
-// broker token or the shared token never resets a person.
+// that lists the project (personalTokenListsProject); the Reset takes no token, so a personal
+// token, a broker token or the shared token never resets a person.
 func (s *server) passkeyOwnerRefusal(by model.Actor, tokenLetIn bool) error {
 	if s.deps.Passkeys == nil {
 		return errPasskeySignInOff
@@ -559,18 +559,18 @@ func atBrowserAs(actor model.Actor) bool {
 	return actor.Act == nil
 }
 
-// personalTokenListing reports whether credential, the request's own (resolvedCredential), is a
-// personal token whose own list names project key: a token a person minted, which names itself
-// (model.Credential.TokenID; a broker-issued token never does), listing key among the projects its
-// person chose for it (model.Credential.Projects, agent_tokens.projects). Such a token of the
-// project's owner makes the project's link where it passed the route's scope gate, which holds it
-// to approve (routeScopes), and the owner's check (inOwnerWrite). It adds one power to what a
-// token holding approve already has over its person's projects - name and take off anyone, give the
-// project away, approve a machine login, mint another token - a passkey for a person the list names,
-// and only on the projects its person listed for it. The token test is the route's own, beside the
-// gate's: no broker token holds approve (brokerTokenActor), and one that did would still make no
-// link.
-func personalTokenListing(credential *model.Credential, key string) bool {
+// personalTokenListsProject reports whether credential, the request's own (resolvedCredential),
+// is a personal token whose own list names project key: a token a person minted, which names
+// itself (model.Credential.TokenID; a broker-issued token never does), listing key among the
+// projects its person chose for it (model.Credential.Projects, agent_tokens.projects). Such a
+// token of the project's owner makes the project's link where it passed the route's scope gate,
+// which holds it to approve (routeScopes), and the owner's check (inOwnerWrite). It adds one power
+// to what a token holding approve already has over its person's projects - name and take off
+// anyone, give the project away, approve a machine login, mint another token - a passkey for a
+// person the list names, and only on the projects its person listed for it. The token test is the
+// route's own, beside the gate's: no broker token holds approve (brokerTokenActor), and one that
+// did would still make no link.
+func personalTokenListsProject(credential *model.Credential, key string) bool {
 	return credential != nil && credential.TokenID != "" && slices.Contains(credential.Projects, key)
 }
 
@@ -602,7 +602,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 
 // createInvitation is POST /api/v1/projects/{key}/access/people/{email}/invitations: the project's
 // owner, in a browser session or with a personal token of theirs that lists the project
-// (passkeyOwnerRefusal, personalTokenListing), makes a single-use link for a person its list
+// (passkeyOwnerRefusal, personalTokenListsProject), makes a single-use link for a person its list
 // names directly, at an address on no domain of the company's Workspace and of no full member
 // (namedPerson), whom no project of another owner names directly (store.ListedByAnotherOwner,
 // 409 LISTED_BY_ANOTHER_OWNER: a passkey reads every project that names its person, so one owner
@@ -615,7 +615,7 @@ func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, err
 func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var answer invitationAnswer
 	if !s.inOwnerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) ([]model.Event, error) {
-		if err := s.passkeyOwnerRefusal(by, personalTokenListing(resolvedCredential(ctx), key)); err != nil {
+		if err := s.passkeyOwnerRefusal(by, personalTokenListsProject(resolvedCredential(ctx), key)); err != nil {
 			return nil, err
 		}
 		login, err := namedPerson(ctx, tx, key, r.PathValue("email"))

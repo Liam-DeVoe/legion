@@ -826,12 +826,12 @@ func TestASignInCeremonyAllowsOneFinish(t *testing.T) {
 //
 // Controls, one per condition, each failing its row: the link's scopes person alone
 // (routeScopes), and the token holding person alone makes a link; the token's list not read
-// (personalTokenListing skipping its list), and the token listing OTHER alone makes one; the owner
-// not read (inOwnerWrite's owner check answering every caller as the owner), and dana's token
-// makes one; the Reset letting in the token the link lets in (resetProjectAccessPerson passing
-// personalTokenListing), and the token resets the outsider. Here the scope gate refuses every
-// broker-issued token before the link's own test of a personal token reads it, so that test's row
-// is api's TestOnlyAPersonalTokenThatListsTheProjectIsLetInToMakeItsLink.
+// (personalTokenListsProject skipping its list), and the token listing OTHER alone makes one; the
+// owner not read (inOwnerWrite's owner check answering every caller as the owner), and dana's
+// token makes one; the Reset letting in the token the link lets in (resetProjectAccessPerson
+// passing personalTokenListsProject), and the token resets the outsider. Here the scope gate
+// refuses every broker-issued token before the link's own test of a personal token reads it, so
+// that test's row is api's TestOnlyAPersonalTokenThatListsTheProjectIsLetInToMakeItsLink.
 func TestTheOwnersPersonalTokenThatListsTheProjectMakesItsLink(t *testing.T) {
 	ctx := context.Background()
 	r := newPasskeyRig(t, nil)
