@@ -559,6 +559,98 @@ test("IssuePage says a refused Details write under the header while Details is c
   }
 });
 
+// A repository write Dispatch refuses shows its words and a Retry in its row. With Details closed
+// the header says the words alone, named by the row: no Retry, which nothing there can press.
+test("IssuePage says a repository write Dispatch refused under the closed Details by its words alone, with no Retry", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "repo acme/widgets is not allowed" })
+  );
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const box = within(details).getByLabelText(`Repository of ${issue.key}`);
+    await user.clear(box);
+    await user.type(box, "acme/widgets{Enter}");
+    const row = within(details).getByTestId("issue-details-repository");
+    expect(await within(row).findByText("repo acme/widgets is not allowed")).toBeDefined();
+    expect(within(row).getByRole("button", { name: "Retry" })).toBeDefined();
+
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    const refusals = await screen.findByTestId("issue-details-refusals");
+    expect(refusals.textContent).toBe("Repository: repo acme/widgets is not allowed");
+    expect(within(refusals).queryByRole("button")).toBeNull();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A failed read is no refusal: the priorities that could not be read say so in their row, and
+// the closed header says nothing of it.
+test("IssuePage keeps a failed read of the priorities in its Details row, not under the closed header", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({
+    ...issue,
+    advances: [{ id: "priority-1", inherited: false }],
+  } as IssueDetails);
+  const priorities = spyOn(api, "listPriorities").mockRejectedValue(
+    new ApiError(500, { code: "SERVER_ERROR", error: "boom" })
+  );
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const row = within(details).getByTestId("issue-details-advances");
+    expect(await within(row).findByText("Could not load the priorities.")).toBeDefined();
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    expect(details).not.toBeVisible();
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Closing Details gives up an Advances pick not added, as it gives up a route or parent edit:
+// opened again, Details shows the add control, and its form starts with no pick.
+test("IssuePage's Details, closed over an open Advances form, closes the form and drops its pick", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    priorities: [{ id: "priority-1", order: 1, project: "CORE", title: "Ship the layout rule" }],
+  } as never);
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const row = within(details).getByTestId("issue-details-advances");
+    await user.click(within(row).getByRole("button", { name: `Add a priority to ${issue.key}` }));
+    const picker = await within(row).findByLabelText("Priority to advance");
+    await within(row).findByRole("option", { name: /Ship the layout rule/ });
+    await user.selectOptions(picker, "priority-1");
+    expect(picker).toHaveValue("priority-1");
+
+    const toggle = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(toggle);
+    await user.click(toggle);
+    expect(within(row).queryByLabelText("Priority to advance")).toBeNull();
+    await user.click(within(row).getByRole("button", { name: `Add a priority to ${issue.key}` }));
+    expect(await within(row).findByLabelText("Priority to advance")).toHaveValue("");
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 // The route's warnings speak for the saved route: they hide only while a route save is in
 // flight, and a refused save leaves the saved route, so its warning is back at once, with Details
 // open or closed.

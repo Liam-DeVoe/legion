@@ -6,6 +6,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -116,6 +117,9 @@ function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
 
 const headerGroup = "flex min-w-0 max-w-full flex-wrap items-center gap-2";
 
+/** The Details rows whose control writes and can be refused. */
+type DetailsRefusalRow = "advances" | "components" | "repository";
+
 /**
  * Today's issue header. It draws its elements in these groups, in this order, each element in one
  * group; when the header is too narrow a group moves to the next line whole (`headerGroup`), and
@@ -160,6 +164,24 @@ export function IssueHeader({
     }
   }, [routeEditing]);
   const [parentEditing, setParentEditing] = useState(false);
+  /** Whether the Advances add form in Details is open; Details closing closes it. */
+  const [advancesAdding, setAdvancesAdding] = useState(false);
+  /** The refusal each Details row with a write holds, which the header says while Details is
+   *  closed. Each row's control reports its own (`onRefusal`). */
+  const [detailsRefusals, setDetailsRefusals] = useState<
+    Partial<Record<DetailsRefusalRow, string>>
+  >({});
+  const reportRefusal = useMemo(() => {
+    const report = (row: DetailsRefusalRow) => (refusal: string | null) =>
+      setDetailsRefusals((current) =>
+        (current[row] ?? null) === refusal ? current : { ...current, [row]: refusal ?? undefined }
+      );
+    return {
+      advances: report("advances"),
+      components: report("components"),
+      repository: report("repository"),
+    };
+  }, []);
   const parentInputRef = useRef<HTMLInputElement>(null);
   // Same focus handoff as the route editor: the trigger button unmounts when the form opens.
   useEffect(() => {
@@ -422,12 +444,22 @@ export function IssueHeader({
       drafts.discardParent();
       setParentEditing(false);
     }
+    setAdvancesAdding(false);
   };
   const detailsRows: HeaderDetailsRow[] = [
     {
       id: "advances",
       label: "Advances",
-      value: <IssuePriorityLine disabled={isClosed} issue={issue} />,
+      refusal: detailsRefusals.advances,
+      value: (
+        <IssuePriorityLine
+          adding={advancesAdding}
+          disabled={isClosed}
+          issue={issue}
+          onAddingChange={setAdvancesAdding}
+          onRefusal={reportRefusal.advances}
+        />
+      ),
     },
     ...(issue.created_by == null
       ? []
@@ -615,10 +647,12 @@ export function IssueHeader({
     {
       id: "repository",
       label: "Repository",
+      refusal: detailsRefusals.repository,
       value: (
         <RepoControl
           disabled={isClosed || updateIssue.isPending}
           issueKey={issue.key}
+          onRefusal={reportRefusal.repository}
           project={issue.project}
           repo={issue.repo}
           resolvedRepo={issue.resolved_repo}
@@ -628,7 +662,8 @@ export function IssueHeader({
     {
       id: "components",
       label: "Components",
-      value: <IssueComponentsLine issue={issue} />,
+      refusal: detailsRefusals.components,
+      value: <IssueComponentsLine issue={issue} onRefusal={reportRefusal.components} />,
     },
     ...[
       { id: "pull-requests", label: "Pull requests", links: pullRequests },

@@ -111,6 +111,8 @@ export function isPullRequestLink(link: ExternalLink): boolean {
  * issue or pull request is shown as its number and title (the repository while the title is
  * unknown — loading, or no GitHub App installation for the repository), never as the raw address,
  * so it fits its row on a phone; the title is truncated and carried in full by the link's tooltip.
+ * The link is one group: the number and the title (or the address), then a pull request's state
+ * and its checks, which stay beside them.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
  * `title`, so what the tooltip said is drawn instead: a GitHub

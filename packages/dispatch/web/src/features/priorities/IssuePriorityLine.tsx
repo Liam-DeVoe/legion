@@ -81,7 +81,9 @@ function RemoveCross(): ReactNode {
 /**
  * The `Advances` item of the issue header's Details (INFRA-2947, R16 and R3): each
  * priority this issue advances, named by its order and title and linking to that priority's own
- * page, with the control that adds one beside them and a remove on each.
+ * page, with the control that adds one beside them and a remove on each. Its groups, in this
+ * order: each priority with its remove (one group each); the add control or its form (one
+ * group); then the line that says a failed read or a refused save.
  *
  * An issue that advances none carries no label and no empty line — only the control that places
  * it under a priority, which is how a person acts on a row of the page's first fault list. A
@@ -106,23 +108,42 @@ function RemoveCross(): ReactNode {
  * add control while the issue advances none.
  */
 export function IssuePriorityLine({
+  adding: hostAdding,
   disabled,
   inRow = false,
   issue,
+  onAddingChange,
+  onRefusal,
 }: {
+  /** Whether the add form is open, where the host holds it: today's header closes it with
+   *  Details. Without it the line holds its own. */
+  adding?: boolean;
   disabled: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issue: Pick<Issue, "advances" | "advances_revision" | "key">;
+  onAddingChange?: (adding: boolean) => void;
+  /** Told the words of a refused save while one stands, and null once none does: today's header
+   *  says them while Details is closed. A stopped save and a failed read are no refusal. */
+  onRefusal?: (refusal: string | null) => void;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
-  const [adding, setAdding] = useState(false);
+  const [ownAdding, setOwnAdding] = useState(false);
+  const adding = hostAdding ?? ownAdding;
+  const setAdding = (next: boolean) => {
+    setOwnAdding(next);
+    onAddingChange?.(next);
+  };
   const [picked, setPicked] = useState("");
+  // A form closed by its host drops its pick, as one closed here does.
+  useEffect(() => {
+    if (!adding) setPicked("");
+  }, [adding]);
   const selectId = useId();
   const queryClient = useQueryClient();
   const priorities = useQuery({
@@ -243,6 +264,10 @@ export function IssuePriorityLine({
       })
     : apiErrorMessage(write.error, notSaved);
   const failureIsPageWords = stopped || saveFailure === notSaved;
+  const refusal = write.error !== null && !stopped ? saveFailure : null;
+  useEffect(() => {
+    onRefusal?.(refusal);
+  }, [onRefusal, refusal]);
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));

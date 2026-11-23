@@ -1397,8 +1397,7 @@ const VACANCY =
  * Every `title` each mount carries on `main`, in document order, as `main`'s files write them
  * (read at the merge-base), and none for a mount whose files set none. The three mounts of
  * `MOUNTS` whose instants move with the clock are read here through their twins at fixed
- * instants. A claim's holder also carries its whole name as the `title` of the `TruncatedText`
- * it ellipsizes in (dispatch://INFRA-5200).
+ * instants.
  */
 const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
@@ -1505,7 +1504,6 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       LIVE_SESSION,
       "Running state unknown",
       `Claimed by ${UNNAMED_SESSION} · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} Couldn't check whether that session is still running: Envoy listener unreachable.`,
-      UNNAMED_SESSION,
       LIVE_SESSION,
       "Running state unknown",
       localTime(CLAIMED_AT),
@@ -1520,22 +1518,18 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     claimsAtFixedInstants,
     [
       `Claimed by Implementer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS}`,
-      "Implementer",
       RUNNING_READING,
       localTime(CLAIMED_AT),
       `Claimed by ${UNNAMED_SESSION} · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session is no longer running, so anyone may claim it.`,
-      UNNAMED_SESSION,
       GONE_SESSION,
       "Not running",
       localTime(CLAIMED_AT),
       `Claimed by Reviewer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session has missed its heartbeats without ending, last seen ${localTime(HEARD_AT)}. It keeps this issue until ${localTime(FREE_FROM)}, when another agent may take it.`,
-      "Reviewer",
       UNRESPONSIVE_READING,
       localTime(CLAIMED_AT),
       localTime(HEARD_AT),
       localTime(FREE_FROM),
       `Claimed by Reviewer · since ${localTime(CLAIMED_AT)}. ${CLAIM_EXPLAINS} That session has missed its heartbeats without ending, last seen ${localTime(HEARD_AT)}. It kept this issue until ${localTime(FREED_AT)}, so another agent may take it now. It has not ended, and may yet answer.`,
-      "Reviewer",
       UNRESPONSIVE_READING,
       localTime(CLAIMED_AT),
       localTime(HEARD_AT),

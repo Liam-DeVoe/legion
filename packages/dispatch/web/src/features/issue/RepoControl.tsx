@@ -181,12 +181,15 @@ export type RepoControlFailure = {
  * `No repository` when none does. Outside `NoTooltips` the control is the value of the Repository
  * row of today's issue header's Details, which names it, so it draws no `Repository:` of its own;
  * the box fills the row up to 28 rem and ends a longer name, the project's default it shows as a
- * placeholder among them, with an ellipsis.
+ * placeholder among them, with an ellipsis. Its groups, in this order: the box (or the text in
+ * its place) with its clear control, one group; the words that say the repository is inherited;
+ * then the line that says a refusal (`owner/name`, or Dispatch's).
  */
 export function RepoControl({
   disabled = false,
   inRow = false,
   issueKey,
+  onRefusal,
   project,
   projectsFreshness,
   repo: hostRepo,
@@ -198,6 +201,10 @@ export function RepoControl({
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issueKey: string;
+  /** Told the words of a refusal while one stands - a value that is not `owner/name`, or a write
+   *  Dispatch refused - and null once none does: today's header says them while Details is
+   *  closed. A stopped write is no refusal. */
+  onRefusal?: (refusal: string | null) => void;
   project: string;
   /** The options of the read of the project list the suggestion comes from (`projectsQuery`), in
    *  place of the app's defaults. A host whose reads events keep fresh passes their options,
@@ -229,6 +236,14 @@ export function RepoControl({
    *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
   const write = useIssueRepo(issueKey, hostRepo);
+  const refusal = refused
+    ? NOT_OWNER_NAME
+    : write.failed && write.stopped === undefined
+      ? (write.error ?? `Could not update the repository of ${issueKey}.`)
+      : null;
+  useEffect(() => {
+    onRefusal?.(refusal);
+  }, [onRefusal, refusal]);
   // The issue's own repository and the one it resolves to, as every part of the control draws
   // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
   // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for

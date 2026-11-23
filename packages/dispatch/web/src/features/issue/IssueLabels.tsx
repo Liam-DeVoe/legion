@@ -118,8 +118,10 @@ export interface IssueLabelsProps {
 }
 
 /** The issue header's labels: the current chips and the shared `MultiSelect`, which stages a
- *  draft while open and saves the final draft once, when it closes. Inside `NoTooltips`
- *  (`components/tooltips.tsx`) it says the new issue page's words with their marks. */
+ *  draft while open and saves the final draft once, when it closes. Its groups, in this order:
+ *  the chips with their "+N" (outside `NoTooltips`, at most 10 before it), then the control that
+ *  edits them. Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words
+ *  with their marks. */
 export function IssueLabels({
   chipClassName,
   disabled,

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -87,7 +87,9 @@ export function componentsControlName(
  *
  * Outside `NoTooltips` it is the value of the Components row of today's issue header's Details,
  * which names it: no `Components:` of its own, a line that wraps inside its row, and at most 10
- * components before a "+N" that shows the rest (`CappedGroup`).
+ * components before a "+N" that shows the rest (`CappedGroup`). Its groups, in this order: the
+ * components with their "+N" (or the inherited set, or the reason there is none); the ancestor
+ * the set is inherited from; the picker; then the line that says a refused save.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) it says that page's
  * words with their marks and carries no `title`. There `inRow` draws it as the value of a row
@@ -98,11 +100,15 @@ export function componentsControlName(
 export function IssueComponentsLine({
   inRow = false,
   issue,
+  onRefusal,
 }: {
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
+  /** Told the words of a refused save while one stands, and null once none does: today's header
+   *  says them while Details is closed. A stopped save is no refusal. */
+  onRefusal?: (refusal: string | null) => void;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
@@ -129,6 +135,10 @@ export function IssueComponentsLine({
   // a refused save the failed red.
   const quiet = page === null ? textMutedOnSurface : pageQuietText;
   const write = useIssueComponents(issue);
+  const refusal = write.stopped ? null : write.error;
+  useEffect(() => {
+    onRefusal?.(refusal);
+  }, [onRefusal, refusal]);
   const inheritedFrom =
     components.inherited_from === null ? null : (
       <span className={`${part} text-xs ${quiet}`} {...page?.pageChrome}>
