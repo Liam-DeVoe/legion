@@ -121,19 +121,19 @@ func StartLeft(rows []PhaseRow, role claim.Role, entry int64) (int64, bool) {
 }
 
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
-// at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
-// each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
-// one of the role's places in the task: its step at at where the step there is the role's; else
-// its latest place before at, the retro, the implementer's (phase.RoleFor), and the merge, the
-// merger's, standing after every step; else its first place after at, so a read or a write before
-// the role's first step reaches the row of that step, as the one row of a role did; and place 0
-// where the task gives the role no place, so every write of such a role lands on one row. Where
-// the row of that place does not stand yet, the role's row of no step (StepTask "", a row a new
-// generation cleared or the release before wrote) is the role's row, as it was before a step was
-// written on it, and the step's entry moves it to the step (workflow's enter). Where neither
-// stands, it is the zero row stamped with role, task and that place, which a caller that writes it
-// back writes as that row. For an issue with no plan rows (task ""), each role has one row,
-// PhaseRowOf's.
+// at, whose steps are steps. A role can stand at two steps of a task, one agent doing both or one
+// agent each, and each run of a step keeps a row of its own (StepTask, StepPlace), so the row read
+// is the row of one of the role's places in the task: its step at at where the step there is the
+// role's; else its latest place before at, the retro, the implementer's (phase.RoleFor), and the
+// merge, the merger's, standing after every step; else its first place after at, so a read or a
+// write before the role's first step reaches the row of that step, as the one row of a role did;
+// and place 0 where the task gives the role no place, so every write of such a role lands on one
+// row. Where the row of that place does not stand yet, the role's row of no step (StepTask "", a
+// row a new generation cleared or the release before wrote) is the role's row, as it was before a
+// step was written on it, and the step's entry moves it to the step (workflow's enter). Where
+// neither stands, it is the zero row stamped with role, task and that place, which a caller that
+// writes it back writes as that row. For an issue with no plan rows (task ""), each role has one
+// row, PhaseRowOf's.
 //
 // It is the one reading of a role's row where a walk is known: the engine's (workflow's phaseRow,
 // enter and reportsBefore) and the completion route's, which knows the place it was handed. A
