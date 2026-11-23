@@ -132,9 +132,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // comes, and a tree that is not running runs nothing yet. Nor does it name any other child's own
 // architect: while that claim does not hold its role (the daemon's holdsRole), the architect
 // above it takes the child's notices, all but an owner-step, which goes to the child's own
-// architect alone (the daemon's noticeArchitect): it waits while that claim is suspended, and one
-// sent while the claim has failed or retired finishes undelivered, its next launch's catch-up
-// telling it that step again. A later start of the role brings the claim back, as
+// architect alone (the daemon's noticeArchitect): it waits while that claim is suspended, and
+// when the claim has failed or retired, that architect is told the step again when it runs
+// again. A later start of the role brings the claim back, as
 // supervise's table decides for the state it stands in. The workflow queues such a start itself
 // at its child's first phase start and, for a failed one, at each later phase start
 // (StartFirstPhase, reviveArchitect); an acceptance the owner does is followed by one, since an

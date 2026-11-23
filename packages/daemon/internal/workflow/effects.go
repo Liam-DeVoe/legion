@@ -530,12 +530,12 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // failure, at most OwnerRestarts times in the step's run, and then waits for the operator's retry,
 // which the stranded list names (restartFailedOwner). Until it runs again its child's notices go
 // to the architect above it (record.OwningArchitect), all but an owner-step, which goes to that
-// architect alone (record.OwnerClaim): one sent while its claim has failed finishes undelivered,
-// and its next launch's catch-up tells it the step again (claimReady). The outbox's start
-// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
-// or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
-// session itself. A tree root's architect is admission's, started with its tree,
-// so a root revives nothing here.
+// architect alone (record.OwnerClaim): when its claim has failed, it is told that step again when
+// it runs again (claimReady's owedOwnersStep, where no owner-step of it is still queued). The
+// outbox's start retries a failed claim with fresh budgets (supervise.RequestRetry), in the
+// session it recorded, or a new one once supervise's Machine.forgetSession has dropped it. This
+// start asks for no new session itself. A tree root's architect is admission's, started with its
+// tree, so a root revives nothing here.
 //
 // The claim's state is read in the transaction, and no row carries a mark that asks for the
 // revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
