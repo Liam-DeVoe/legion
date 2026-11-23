@@ -142,7 +142,7 @@ func parkChild(t *testing.T, rig *idleRig) {
 			Generation: parked.Generation, Reason: parked.Key + " is backlog"})
 	}
 	payloads = append(payloads, record.IssueSuspend{Tree: parked.Tree, Generation: parked.Generation, TreeGeneration: 1})
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.issues.PutIssue(ctx, tx, parked); err != nil {
 			return err
 		}
