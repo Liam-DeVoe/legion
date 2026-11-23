@@ -109,6 +109,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
 	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+email\s+from\s+people\s+order\s+by\s+email\b`)},
+	// P's page lists P's reply (the seed's comments), so the route reads its list, the statement
+	// that runs only once the page is shown to the reader, and not the 404 of a page shown to nobody.
+	"GET /api/v1/people/{login}/nodes": {target: "/api/v1/people/$person/nodes",
+		statement: statementOf(`\bjoin\s+comments\s+c\s+on\s+r\.from_kind\b`)},
 	"GET /api/v1/whoami": {target: "/api/v1/whoami", fromMemory: "it answers the credential the request resolved", credential: &credentialAnswer{
 		reason:  "whoami answers the credential's own scopes: a read-only one's hold read and never approve, its writer's do not hold read",
 		members: []string{"scopes"},

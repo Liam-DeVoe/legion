@@ -115,6 +115,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/ci-reconcile/passes":                                    {Writes: readWritesNothing},
 	"GET /api/v1/me/agent-tokens":                                        {Writes: readWritesNothing},
 	"GET /api/v1/users":                                                  {Writes: readWritesNothing},
+	"GET /api/v1/people/{login}/nodes":                                   {Writes: readWritesNothing},
 	"GET /api/v1/whoami":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/dashboard/builds":                                       {Writes: readWritesNothing},
 	"GET /api/v1/priorities":                                             {Writes: readWritesNothing},

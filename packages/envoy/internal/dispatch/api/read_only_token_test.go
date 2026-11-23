@@ -516,6 +516,7 @@ func TestRegisterRefusesAGETRowWithNoReadClass(t *testing.T) {
 // token's key would be free whatever the first requests did - which is why the key table is read
 // as well.
 func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const named = "a-named-token-that-writes"

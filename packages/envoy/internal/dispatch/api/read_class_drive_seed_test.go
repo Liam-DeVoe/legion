@@ -214,6 +214,7 @@ func (w *driveWorld) seed(t *testing.T) {
 	t.Helper()
 	alice, ada := "alice", drivePerson
 	w.values["session"] = driveSession
+	w.values["person"] = drivePerson
 	w.values["project"] = driveProject
 	w.values["relatedProject"] = driveRelatedProject
 	w.values["precheckProject"] = precheckRelatedProject
@@ -307,7 +308,8 @@ func (w *driveWorld) seed(t *testing.T) {
 		t.Fatalf("the drive issue's spec holds no requirement block: %+v", blocks)
 	}
 
-	// Comments: a remark, P's reply to it and a comment anchored on the spec.
+	// Comments: a remark, P's reply to it and a comment anchored on the spec. P's reply is what
+	// ties P to a node of the graph, so P's page (GET /api/v1/people/{login}/nodes) lists it.
 	remark := createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "A remark on the drive."}, alice)
 	w.values["comment"] = remark.ID
 	createThreadComment(t, w.rig.handler, issue.Key, map[string]any{"body": "P's reply to the remark.", "in_reply_to": remark.ID}, ada)
