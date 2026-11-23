@@ -15,8 +15,6 @@
  * then reads which process is behind. Both processes hold an editor socket opened before the
  * change, so whichever turns out to be the second one has the socket the last step needs.
  */
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import {
   baseUrl,
   createIssue,
@@ -49,14 +47,14 @@ import {
   pinnedTo,
   processPinCookie,
 } from "./harness-processes";
-import { resetDatabase } from "./seed";
-import { rowKey } from "./test";
+import { type Browser, type BrowserContext, expect, type Page, rowKey, test } from "./test";
 import { signIn } from "./users";
 
+// The database's reset, once per worker, and the fakes' before every row are the `test` this file
+// imports (e2e/test.ts); the store's block schema is neither - the reset keeps the schema's own
+// nodes (`e2e/seed.ts`) - so it is put back here as well as at the row's end: a row that failed
+// before its own restore must not leave the next one, or the lane's other specs, on another schema.
 test.beforeEach(async () => {
-  await resetDatabase();
-  // Both ends of the restore: a row that failed before its own must not leave the next one, or
-  // the lane's other specs, on another schema.
   await restoreStoreSchema();
 });
 
