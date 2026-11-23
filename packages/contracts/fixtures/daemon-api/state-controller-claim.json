@@ -41,6 +41,14 @@
         "heldBy": [
           "LEGION-208"
         ]
+      },
+      {
+        "issue": "LEGION-212",
+        "reason": "unclassified"
+      },
+      {
+        "issue": "LEGION-213",
+        "reason": "unclassified"
       }
     ]
   },
@@ -178,6 +186,48 @@
       },
       "treeMovedAt": "0001-01-01T00:00:00Z",
       "quietHours": 2562047.7880152157
+    },
+    "LEGION-212": {
+      "key": "LEGION-212",
+      "generation": 1,
+      "phase": "held",
+      "status": "in_progress",
+      "tree": "LEGION-212",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "holdReason": "fix",
+      "heldFrom": "retro",
+      "workers": {},
+      "designGate": {
+        "artifactId": "artifact-LEGION-212",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "why": {
+        "state": "unlisted",
+        "reason": "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."
+      }
+    },
+    "LEGION-213": {
+      "key": "LEGION-213",
+      "generation": 1,
+      "phase": "held",
+      "status": "in_progress",
+      "tree": "LEGION-213",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "holdReason": "ci",
+      "heldFrom": "retro",
+      "workers": {},
+      "designGate": {
+        "artifactId": "artifact-LEGION-213",
+        "currentVersion": 1,
+        "approvedVersion": 1
+      },
+      "why": {
+        "state": "unlisted",
+        "reason": "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."
+      }
     }
   },
   "pendingStatusWrites": [],
