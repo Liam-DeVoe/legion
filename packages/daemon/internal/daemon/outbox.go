@@ -2616,44 +2616,30 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
-		// The start of a step whose claim still runs a process launched under an earlier
-		// definition of its role — a version of the plan taken since changed the role block's type,
-		// model or prompt (roleDefinitionChanged) — ends that process at its turn's end, keeping its
-		// session, as a re-role's does (suspendForStep), and waits; once the claim runs nothing, the
-		// resume below relaunches it on its session with the definition of the plan in force. So no
-		// task of a version goes to a process of an earlier one, whose next mint would already act
-		// as the App of the new type.
+		// The start of a step ends the process its claim still runs, at its turn's end with its
+		// session kept, as a re-role's does (suspendForStep), and waits, where that process may not
+		// serve the step: another agent's (payload.FreshSession, the workflow's enter), and the
+		// resume below starts the claim in a new session; or one launched under another definition
+		// of the role than the plan in force gives now (roleDefinitionChanged), and the resume below
+		// relaunches it on its session with that definition, so no task of a version goes to a
+		// process of an earlier one, whose next mint would already act as the App of the new type.
 		if found && payload.Entry > 0 && payload.Phase != "" {
-			changed, err := r.roleDefinitionChanged(ctx, machine)
-			if err != nil {
+			why := ""
+			if payload.FreshSession {
+				why = fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue)
+			} else if why, err = r.roleDefinitionChanged(ctx, machine, issue.Key, issue.Generation); err != nil {
 				return err
 			}
-			if changed {
-				err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("the definition of its role %s on %s changed since its process launched", payload.Role, row.Issue))
+			if why != "" {
+				err := r.suspendForStep(ctx, machine, token, row, payload, why)
 				if errors.Is(err, supervise.ErrStepLeft) {
-					r.log.Info("outbox start serves a step its issue left before the claim ended the turn of its earlier definition; finished without acting", "row", row.ID,
-						"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+					r.log.Info("outbox start serves a step its issue left before the claim ended the turn of its process; finished without acting", "row", row.ID,
+						"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "why", why)
 					return nil
 				}
 				if err != nil {
 					return err
 				}
-			}
-		}
-		// The start of a step whose agent takes the claim another agent last ran a step on asks
-		// for a fresh session (payload.FreshSession, the workflow's enter): a claim that still runs
-		// that other agent's process ends it at its turn's end, as a re-role's does
-		// (suspendForStep), and the start waits; once the claim runs nothing, the resume below
-		// starts it in a new session.
-		if found && payload.FreshSession && payload.Entry > 0 && payload.Phase != "" {
-			err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue))
-			if errors.Is(err, supervise.ErrStepLeft) {
-				r.log.Info("outbox start serves a step its issue left before the claim ended the other agent's turn; finished without acting", "row", row.ID,
-					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
-				return nil
-			}
-			if err != nil {
-				return err
 			}
 		}
 		if !found {
@@ -3288,30 +3274,52 @@ type roleDefinitions interface {
 	roleDefinition(ctx context.Context, c supervise.Claim) (string, bool, error)
 }
 
-// roleDefinitionChanged says whether machine's claim runs a process launched under another
-// definition of its role than a launch of it would run now: the definition its newest launch was
-// built for (supervise.Machine.LaunchedDefinition) against the one the supervisor's spec builder
-// resolves from the plan in force (specs.roleDefinition), both "" for a role no plan defines. A
-// claim that runs nothing has no process to compare. A daemon that built no launch of the claim
-// since it started does not know what its process runs; for a role the plan in force defines that
-// is a changed definition, so the process is relaunched once on its session rather than left on a
-// definition nobody can show is current, and for any other role it is none, as before the plan's
-// roles. A spec builder that answers no definition (a test's) changes nothing.
-func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine) (bool, error) {
+// roleDefinitionChanged is why machine's claim runs a process that may run another definition of
+// its role than a launch of it would run now, and "" where it does not. The definition its newest
+// launch was built for (supervise.Machine.LaunchedDefinition) is compared with the one the
+// supervisor's spec builder resolves from the plan in force (specs.roleDefinition), both "" for a
+// role no plan defines. A claim that runs nothing has no process to compare, and a spec builder
+// that answers no definition (a test's) changes nothing.
+//
+// A daemon that built no launch of the claim since it started does not know what its process
+// runs. Where the plan in force of issue, at generation, defines the role and was given after the
+// claim's agent last came up (supervise.Claim.LastReady), the process may predate it and run an
+// earlier definition, so it is relaunched once, with a reason of its own; where that plan was given
+// before, nothing is known to have changed since the process started, and nothing is relaunched.
+// One window is left: a launch whose spec was built before a version was taken and whose agent
+// came up after it; the next restart of the claim's process closes it.
+func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine, issue string, generation uint64) (string, error) {
 	held := machine.Claim()
 	defs, ok := r.supervisor.deps.Specs.(roleDefinitions)
 	if !ok || held.RunsNothing() {
-		return false, nil
+		return "", nil
 	}
 	current, planned, err := defs.roleDefinition(ctx, held)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	launched, known := machine.LaunchedDefinition()
-	if !known {
-		return planned, nil
+	if known {
+		if launched == current {
+			return "", nil
+		}
+		return fmt.Sprintf("the definition of its role %s on %s changed since its process launched", held.Role, issue), nil
 	}
-	return launched != current, nil
+	if !planned {
+		return "", nil
+	}
+	var stored *record.StoredPlan
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		stored, err = r.records.Plan(ctx, tx, issue, generation)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("read the plan of %s to judge the process of %s: %w", issue, held.Token, err)
+	}
+	if stored == nil || (!held.LastReady.IsZero() && !stored.Version.GivenAt.After(held.LastReady)) {
+		return "", nil
+	}
+	return fmt.Sprintf("this daemon started after the process of its role %s on %s launched, and the plan in force was given after that process came up, so it may run an earlier definition of the role", held.Role, issue), nil
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
