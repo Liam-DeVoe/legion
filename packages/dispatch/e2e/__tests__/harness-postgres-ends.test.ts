@@ -1,23 +1,28 @@
 /** What the binaries provider of e2e/harness-postgres.ts does when the postmaster it started ends
- *  while the start waits for it to answer `select 1`, as a server that crashes on its way up does.
- *  The wait (`ready`) has no bound of its own and reads the postmaster's end through
- *  `postmasterGone`: a refusal must name the server that stopped, at once, rather than wait for
- *  ever. Found by Tester4958-2, whose plant read every postmaster as running and passed every row
- *  before these (no row called `postmasterGone`), and whose probe this file's provider rows follow.
+ *  while the start waits for it to answer `select 1`, as a server that crashes on its way up does,
+ *  and when the template's server will not stop once the template is whole. The wait (`ready`) has
+ *  no bound of its own and reads the postmaster's end through `postmasterGone`: a refusal must name
+ *  the server that stopped, at once, rather than wait for ever. And a template is copied only once
+ *  its server has stopped: a stop that fails must refuse the start by name. Found by Tester4958-2,
+ *  whose plants read every postmaster as running, read a data directory with no `postmaster.pid`
+ *  as running, and let the whole template's stop fail in silence, and passed every row before these;
+ *  this file's provider rows follow that tester's probes.
  *
- *  The first row reads `postmasterGone` itself, against a pid that runs and one that ended, and
- *  runs everywhere. The two provider rows start the real binaries provider in a child of their
- *  own, the template's server and then one stack's, with a stand-in `psql` first on its PATH that
- *  answers as a server starting up does while a hold file exists and runs the real psql
- *  otherwise; once the held server's postmaster has written its pid and a held `psql` has been
- *  refused, the child SIGKILLs that postmaster and prints what the start answered. The template's
- *  row holds from the start; the stack's sets the hold as the stack's data directory appears, so
- *  the template is made by the real psql first. They need `DISPATCH_E2E_PG_BIN`, the binaries
- *  that make the databases, and a psql on PATH, and are skipped without them, saying so. A start
- *  that never reads the end is ended by the child's `oneDatabase` bound, which names it. */
+ *  The first row reads `postmasterGone` itself, against a pid that runs, one that ended, and a data
+ *  directory with no `postmaster.pid`, and runs everywhere. The provider rows start the real
+ *  binaries provider in a child of their own. Two kill a held server: a stand-in `psql` first on
+ *  the child's PATH answers as a server starting up does while a hold file exists and runs the
+ *  real psql otherwise; once the held server's postmaster has written its pid and a held `psql`
+ *  has been refused, the child SIGKILLs that postmaster and prints what the start answered. The
+ *  template's row holds from the start; the stack's sets the hold as the stack's data directory
+ *  appears, so the template is made by the real psql first. The third hands the provider a
+ *  binaries directory whose `pg_ctl` refuses to stop the template's server and runs the real one
+ *  for everything else. They need `DISPATCH_E2E_PG_BIN`, the binaries that make the databases, and
+ *  a psql on PATH, and are skipped without them, saying so. A start that never ends is ended by
+ *  the child's `oneDatabase` bound, which names it. */
 
 import { beforeAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -42,8 +47,9 @@ const child = join(stubs, "end-during-start.ts");
 beforeAll(() => {
   writeFileSync(
     child,
-    `// Starts stack 0 of the binaries provider, SIGKILLs the held server's postmaster once its
-// pid is written and a held psql was refused, and prints what the start answered.
+    `// Starts stack 0 of the binaries provider and prints what the start answered. For the
+// \`template\` and \`stack\` targets it SIGKILLs the held server's postmaster once its pid is
+// written and a held psql was refused; for \`stopfails\` it kills nothing.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -68,16 +74,18 @@ const until = async (fact) => {
   while (!fact()) await Bun.sleep(5);
 };
 const data = join(dir, target === "template" ? "template" : "worker-0", "pgdata");
-if (target === "stack") {
-  await until(() => existsSync(data) || settled);
-  writeFileSync(hold, "");
-}
-const pidFile = join(data, "postmaster.pid");
-await until(() => (existsSync(pidFile) && existsSync(calls)) || settled);
 let killed = null;
-if (!settled) {
-  killed = Number(readFileSync(pidFile, "utf8").split("\\n")[0]);
-  process.kill(killed, "SIGKILL");
+if (target !== "stopfails") {
+  if (target === "stack") {
+    await until(() => existsSync(data) || settled);
+    writeFileSync(hold, "");
+  }
+  const pidFile = join(data, "postmaster.pid");
+  await until(() => (existsSync(pidFile) && existsSync(calls)) || settled);
+  if (!settled) {
+    killed = Number(readFileSync(pidFile, "utf8").split("\\n")[0]);
+    process.kill(killed, "SIGKILL");
+  }
 }
 console.log(JSON.stringify({ killed, ...(await starting) }));
 `
@@ -85,7 +93,7 @@ console.log(JSON.stringify({ killed, ...(await starting) }));
 });
 
 test(
-  "postmasterGone reads a postmaster that runs as running and one that ended as gone",
+  "postmasterGone reads a postmaster that runs as running, and one that ended or wrote no pid as gone",
   async () => {
     const data = join(stubs, "gone-data");
     mkdirSync(data);
@@ -101,6 +109,13 @@ test(
     expect(Number.isInteger(pid) && pid > 0, `${ended.named} printed ${ended.stdout}`).toBe(true);
     writeFileSync(join(data, "postmaster.pid"), `${pid}\n${data}\n`);
     expect(postmasterGone(data)(), `pid ${pid}, which has ended, read as running`).toBe(true);
+    // A data directory with no postmaster.pid: the server pg_ctl started has gone, and a wait
+    // that read it as running would wait for ever.
+    const empty = join(stubs, "no-pid-data");
+    mkdirSync(empty);
+    expect(postmasterGone(empty)(), "a data directory with no postmaster.pid read as running").toBe(
+      true
+    );
   },
   rowLimit("short")
 );
@@ -156,3 +171,63 @@ exec "${realPsql}" "$@"
     rowLimit("oneDatabase")
   );
 }
+
+// The template is copied only once its server has stopped. A `pg_ctl` that refuses that stop -
+// exit 1, the server left running - must refuse the start by name rather than let a stack start
+// from a copy of a running server.
+test.skipIf(withoutBinaries)(
+  "the stacks' Postgres template whose server will not stop refuses the start by name",
+  async () => {
+    const dir = join(stubs, "stopfails");
+    const binaries = join(stubs, "stopfails-bin");
+    const refused = join(stubs, "stopfails-refused");
+    mkdirSync(dir);
+    mkdirSync(binaries);
+    for (const tool of readdirSync(bin)) {
+      if (tool !== "pg_ctl") symlinkSync(join(bin, tool), join(binaries, tool));
+    }
+    writeFileSync(
+      join(binaries, "pg_ctl"),
+      `#!/bin/sh
+case " $* " in
+  *" stop "*)
+    case " $* " in
+      *"/template/pgdata "*)
+        echo refused >> "${refused}"
+        echo "stand-in pg_ctl: this stop is refused" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+exec "${join(bin, "pg_ctl")}" "$@"
+`
+    );
+    chmodSync(join(binaries, "pg_ctl"), 0o755);
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: [process.execPath, child, harnessPostgres, "stopfails", dir, "", ""],
+      bound: "oneDatabase",
+      env: {
+        DISPATCH_E2E_PG_BIN: binaries,
+        HOME: process.env.HOME ?? "",
+        PATH: process.env.PATH ?? "",
+        TMPDIR: stubs,
+      },
+      from: import.meta.url,
+    });
+    expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
+    expect(
+      existsSync(refused),
+      `the stand-in pg_ctl was never asked to stop the template:\n${stdout}`
+    ).toBe(true);
+    const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
+      message?: string;
+      started?: true;
+    };
+    expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
+      "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
+        "stop, and no stack starts from a copy of a running server: "
+    );
+  },
+  rowLimit("oneDatabase")
+);

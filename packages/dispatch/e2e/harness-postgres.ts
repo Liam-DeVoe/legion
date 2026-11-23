@@ -508,9 +508,16 @@ function binariesProvider(
       await stop().catch(() => {});
       throw error;
     }
-    // The template is copied once it is stopped cleanly, so a stop that fails here is a refusal of
-    // its own.
-    await stop();
+    // The template is copied once it is stopped cleanly: a copy of a running server's data
+    // directory is no template, and its lock file names a server still running. So a stop that
+    // fails here refuses the start, by name.
+    await stop().catch((error: unknown) => {
+      throw new Error(
+        "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
+          "stop, and no stack starts from a copy of a running server: " +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    });
     return data;
   };
   return {
