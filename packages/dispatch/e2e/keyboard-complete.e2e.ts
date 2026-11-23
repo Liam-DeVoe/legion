@@ -19,6 +19,7 @@
  *  `features/issue-page/page-words.ts` with the `features/shell/key-text.ts` it reads (through
  *  `e2e/issue-page.ts`, which k-list-focus's Details row opens the page with). */
 import { CONTROL } from "../web/src/components/control-names";
+import { REF_PREVIEW_CARD_ID } from "../web/src/features/refs/ref-preview-card";
 import { openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import {
   answerAsk,
@@ -1644,6 +1645,17 @@ async function openLinkView(page: Page, seed: LinkSeed, view: LinkView): Promise
         };
   await expect(links.away, `${view} draws the web link`).toBeVisible();
   await expect(links.key, `${view} draws the key's title`).toContainText(seed.other.title);
+  // The pointer stays where the last step left it, which a new page can draw a link under: the
+  // key's title, say, which a row clicks and then opens the view again. Resting there, it opens
+  // that link's hover card (`RefPreview.tsx`), and the card covers the line below it, so a click
+  // the row makes next lands on the card - Firefox measured it, 2 of 4 runs of the first row
+  // below in the tester's pod (test handoff v14). The pointer goes to the page's corner, on no
+  // link, and the row waits out the card's close.
+  await page.mouse.move(1, 1);
+  await expect(
+    page.locator(`#${REF_PREVIEW_CARD_ID}`),
+    `${view} shows no hover card once the pointer has left its links`
+  ).toBeHidden();
   return links;
 }
 
