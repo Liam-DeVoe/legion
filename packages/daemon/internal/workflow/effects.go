@@ -1011,7 +1011,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 		if recordsSteps(issue) {
-			if place, ok := w.PlaceOf(at); ok {
+			if place, ok := w.placeIn(at); ok {
 				agent, err = e.stepToken(issue, *w, place, role)
 			} else {
 				agent, err = stepClaim(issue, issue.Key, role)
