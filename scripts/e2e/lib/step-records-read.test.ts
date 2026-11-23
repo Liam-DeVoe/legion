@@ -7,7 +7,8 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH, which prints a warning on stderr
 // where a case gives one, as the real command prints its `dispatch: <warning>` lines before its
 // answer. The answers below are the lines `dispatch steps` prints
-// (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per line.
+// (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then the line of each task of
+// the issue's plan before that task's runs, and one run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
 
@@ -46,6 +47,17 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(
       `PASS: ${key}: 10 records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model`
     );
+    expect(code).toBe(0);
+  });
+
+  // `dispatch steps` prints the line of each task of the issue's plan before that task's runs; it
+  // is no run, and the read judges the runs alone. The control is the read that takes every line
+  // after the header for a run, which answers this whole read UNKNOWN.
+  test("the line of a task of the plan is no run, and a whole answer with it passes", () => {
+    const planned =
+      "task default needs nothing: 1 planner passed, 2 implementer passed, 3 tester passed, 4 reviewer passed, 5 acceptance:owner passed";
+    const { code, stdout } = read(`${[whole[0], planned, ...whole.slice(1)].join("\n")}\n`);
+    expect(stdout).toContain(`PASS: ${key}: 10 records;`);
     expect(code).toBe(0);
   });
 

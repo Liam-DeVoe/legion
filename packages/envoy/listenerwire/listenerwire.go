@@ -234,6 +234,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its
@@ -593,10 +598,15 @@ type LegionAgentEntry struct {
 	LegionProject string `json:"legion_project"`
 	// Issue is the Dispatch issue key the session works, upper case.
 	Issue string `json:"issue"`
-	// Role is one of the six workflow roles (legionagents.Roles).
+	// Role is one of the six workflow roles (legionclaim.Roles) or a role the deployment defines
+	// in its settings: a name of the role grammar ^[a-z][a-z0-9-]{0,31}$ but controller. It is the
+	// role of the step the session's agent runs as of this entry's write, and changes as its steps
+	// do.
 	Role string `json:"role"`
-	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
-	// claim.NewToken and roleToken build.
+	// RoleToken is the claim token of the session's agent,
+	// legion-<legion_project>-<issue lower-cased>-<agent>, byte for byte what claim.AgentToken
+	// builds: the agent's name is the role of its first step, and the token stays the agent's
+	// whatever role its later steps are on. A session keeps its token for good.
 	RoleToken string `json:"role_token"`
 	// Title is the session's title as stamped (`Legion tester · ACME-71`).
 	Title string `json:"title"`

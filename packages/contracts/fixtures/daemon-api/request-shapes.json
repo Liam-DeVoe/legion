@@ -696,15 +696,7 @@
     ]
   },
   {
-    "contract": 211,
-    "route": "POST /legion/v1/children/park",
-    "fieldPaths": [
-      "grantId",
-      "issue"
-    ]
-  },
-  {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/children/rerun",
     "fieldPaths": [
       "grantId",
@@ -712,7 +704,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/activity",
     "fieldPaths": [
       "activity",
@@ -729,7 +721,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/compact",
     "fieldPaths": [
       "grantId",
@@ -738,7 +730,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/exit",
     "fieldPaths": [
       "claimToken",
@@ -749,7 +741,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/fresh-session",
     "fieldPaths": [
       "grantId",
@@ -758,7 +750,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/ready",
     "fieldPaths": [
       "capabilities",
@@ -776,7 +768,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/ready-for-update",
     "fieldPaths": [
       "claimToken",
@@ -788,7 +780,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/register",
     "fieldPaths": [
       "agentId",
@@ -799,7 +791,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/release-records",
     "fieldPaths": [
       "claimToken",
@@ -808,7 +800,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/claims/turn-outcome",
     "fieldPaths": [
       "bootToken",
@@ -822,7 +814,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/gates/register",
     "fieldPaths": [
       "artifactId",
@@ -833,7 +825,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/grants",
     "fieldPaths": [
       "issue",
@@ -843,7 +835,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/handoff/complete",
     "fieldPaths": [
       "commit",
@@ -852,14 +844,13 @@
       "handoffVersion",
       "planRating",
       "planReason",
-      "returnTo",
       "summary",
       "verdict",
       "wakeAt"
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/issues/status",
     "fieldPaths": [
       "grantId",
@@ -868,7 +859,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/phase/backward",
     "fieldPaths": [
       "grantId",
@@ -878,7 +869,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/phase/retry",
     "fieldPaths": [
       "decision",
@@ -888,17 +879,7 @@
     ]
   },
   {
-    "contract": 211,
-    "route": "POST /legion/v1/plans/register",
-    "fieldPaths": [
-      "artifactId",
-      "grantId",
-      "issue",
-      "version"
-    ]
-  },
-  {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/project/pause",
     "fieldPaths": [
       "grantId",
@@ -906,14 +887,14 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/project/resume",
     "fieldPaths": [
       "grantId"
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/roots/close",
     "fieldPaths": [
       "grantId",
@@ -922,7 +903,7 @@
     ]
   },
   {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/signoff",
     "fieldPaths": [
       "grantId",
@@ -930,16 +911,7 @@
     ]
   },
   {
-    "contract": 211,
-    "route": "POST /legion/v1/tasks/stop",
-    "fieldPaths": [
-      "grantId",
-      "issue",
-      "task"
-    ]
-  },
-  {
-    "contract": 211,
+    "contract": 205,
     "route": "POST /legion/v1/waves/release",
     "fieldPaths": [
       "grantId",
@@ -948,15 +920,7 @@
     ]
   },
   {
-    "contract": 218,
-    "route": "POST /legion/v1/children/park",
-    "fieldPaths": [
-      "grantId",
-      "issue"
-    ]
-  },
-  {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/children/rerun",
     "fieldPaths": [
       "grantId",
@@ -964,7 +928,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/activity",
     "fieldPaths": [
       "activity",
@@ -981,7 +945,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/compact",
     "fieldPaths": [
       "grantId",
@@ -990,7 +954,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/exit",
     "fieldPaths": [
       "claimToken",
@@ -1001,7 +965,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/fresh-session",
     "fieldPaths": [
       "grantId",
@@ -1010,7 +974,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/ready",
     "fieldPaths": [
       "capabilities",
@@ -1028,7 +992,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/ready-for-update",
     "fieldPaths": [
       "claimToken",
@@ -1040,7 +1004,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/register",
     "fieldPaths": [
       "agentId",
@@ -1051,7 +1015,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/release-records",
     "fieldPaths": [
       "claimToken",
@@ -1060,7 +1024,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/claims/turn-outcome",
     "fieldPaths": [
       "bootToken",
@@ -1074,7 +1038,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/gates/register",
     "fieldPaths": [
       "artifactId",
@@ -1085,7 +1049,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/grants",
     "fieldPaths": [
       "issue",
@@ -1095,7 +1059,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/handoff/complete",
     "fieldPaths": [
       "commit",
@@ -1111,7 +1075,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/issues/status",
     "fieldPaths": [
       "grantId",
@@ -1120,7 +1084,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/phase/backward",
     "fieldPaths": [
       "grantId",
@@ -1130,7 +1094,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/phase/retry",
     "fieldPaths": [
       "decision",
@@ -1140,7 +1104,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/plans/register",
     "fieldPaths": [
       "artifactId",
@@ -1150,7 +1114,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/project/pause",
     "fieldPaths": [
       "grantId",
@@ -1158,14 +1122,14 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/project/resume",
     "fieldPaths": [
       "grantId"
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/roots/close",
     "fieldPaths": [
       "grantId",
@@ -1174,7 +1138,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/signoff",
     "fieldPaths": [
       "grantId",
@@ -1182,7 +1146,7 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
     "route": "POST /legion/v1/tasks/stop",
     "fieldPaths": [
       "grantId",
@@ -1191,7 +1155,993 @@
     ]
   },
   {
-    "contract": 218,
+    "contract": 219,
+    "route": "POST /legion/v1/waves/release",
+    "fieldPaths": [
+      "grantId",
+      "issues",
+      "issues.*"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/children/rerun",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/activity",
+    "fieldPaths": [
+      "activity",
+      "activity.at",
+      "activity.backgroundWork",
+      "activity.backgroundWork.kinds",
+      "activity.backgroundWork.kinds.*",
+      "activity.backgroundWork.running",
+      "activity.phase",
+      "activity.phase.nextReminderAt",
+      "claimToken",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/compact",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/exit",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "reason",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/fresh-session",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/ready",
+    "fieldPaths": [
+      "capabilities",
+      "capabilities.elapsedMs",
+      "capabilities.measuredAt",
+      "capabilities.rows",
+      "capabilities.rows.*",
+      "capabilities.rows.*.detail",
+      "capabilities.rows.*.name",
+      "capabilities.rows.*.ok",
+      "claimToken",
+      "generation",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/ready-for-update",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "head",
+      "round",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/register",
+    "fieldPaths": [
+      "agentId",
+      "bootToken",
+      "ompSessionFile",
+      "pluginContract",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/release-records",
+    "fieldPaths": [
+      "claimToken",
+      "secret",
+      "since"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/claims/turn-outcome",
+    "fieldPaths": [
+      "bootToken",
+      "claimToken",
+      "generation",
+      "message",
+      "outcome",
+      "secret",
+      "sequence",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/gates/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "step",
+      "version"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/grants",
+    "fieldPaths": [
+      "issue",
+      "secret",
+      "sessionId",
+      "tree"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/handoff/complete",
+    "fieldPaths": [
+      "commit",
+      "grantId",
+      "handoffId",
+      "handoffVersion",
+      "planRating",
+      "planReason",
+      "returnTo",
+      "summary",
+      "verdict",
+      "wakeAt"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/issues/status",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "status"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/phase/backward",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason",
+      "returnTo",
+      "to"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/phase/retry",
+    "fieldPaths": [
+      "decision",
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/plans/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "version"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/project/pause",
+    "fieldPaths": [
+      "grantId",
+      "reason"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/project/resume",
+    "fieldPaths": [
+      "grantId"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/roots/close",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/signoff",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/tasks/stop",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 221,
+    "route": "POST /legion/v1/waves/release",
+    "fieldPaths": [
+      "grantId",
+      "issues",
+      "issues.*"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/children/rerun",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/activity",
+    "fieldPaths": [
+      "activity",
+      "activity.at",
+      "activity.backgroundWork",
+      "activity.backgroundWork.kinds",
+      "activity.backgroundWork.kinds.*",
+      "activity.backgroundWork.running",
+      "activity.phase",
+      "activity.phase.nextReminderAt",
+      "claimToken",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/compact",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/exit",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "reason",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/fresh-session",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/ready",
+    "fieldPaths": [
+      "capabilities",
+      "capabilities.elapsedMs",
+      "capabilities.measuredAt",
+      "capabilities.rows",
+      "capabilities.rows.*",
+      "capabilities.rows.*.detail",
+      "capabilities.rows.*.name",
+      "capabilities.rows.*.ok",
+      "claimToken",
+      "generation",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/ready-for-update",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "head",
+      "round",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/register",
+    "fieldPaths": [
+      "agentId",
+      "bootToken",
+      "ompSessionFile",
+      "pluginContract",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/release-records",
+    "fieldPaths": [
+      "claimToken",
+      "secret",
+      "since"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/claims/turn-outcome",
+    "fieldPaths": [
+      "bootToken",
+      "claimToken",
+      "generation",
+      "message",
+      "outcome",
+      "secret",
+      "sequence",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/gates/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "step",
+      "version"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/grants",
+    "fieldPaths": [
+      "issue",
+      "secret",
+      "sessionId",
+      "tree"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/handoff/complete",
+    "fieldPaths": [
+      "commit",
+      "grantId",
+      "handoffId",
+      "handoffVersion",
+      "planRating",
+      "planReason",
+      "returnTo",
+      "summary",
+      "verdict",
+      "wakeAt"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/issues/status",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "status"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/phase/backward",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason",
+      "returnTo",
+      "to"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/phase/retry",
+    "fieldPaths": [
+      "decision",
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/plans/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "version"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/project/pause",
+    "fieldPaths": [
+      "grantId",
+      "reason"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/project/resume",
+    "fieldPaths": [
+      "grantId"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/roots/close",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/signoff",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/tasks/stop",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 222,
+    "route": "POST /legion/v1/waves/release",
+    "fieldPaths": [
+      "grantId",
+      "issues",
+      "issues.*"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/children/rerun",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/activity",
+    "fieldPaths": [
+      "activity",
+      "activity.at",
+      "activity.backgroundWork",
+      "activity.backgroundWork.kinds",
+      "activity.backgroundWork.kinds.*",
+      "activity.backgroundWork.running",
+      "activity.phase",
+      "activity.phase.nextReminderAt",
+      "claimToken",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/compact",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/exit",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "reason",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/fresh-session",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/ready",
+    "fieldPaths": [
+      "capabilities",
+      "capabilities.elapsedMs",
+      "capabilities.measuredAt",
+      "capabilities.rows",
+      "capabilities.rows.*",
+      "capabilities.rows.*.detail",
+      "capabilities.rows.*.name",
+      "capabilities.rows.*.ok",
+      "claimToken",
+      "generation",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/ready-for-update",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "head",
+      "round",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/register",
+    "fieldPaths": [
+      "agentId",
+      "bootToken",
+      "ompSessionFile",
+      "pluginContract",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/release-records",
+    "fieldPaths": [
+      "claimToken",
+      "secret",
+      "since"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/claims/turn-outcome",
+    "fieldPaths": [
+      "bootToken",
+      "claimToken",
+      "generation",
+      "message",
+      "outcome",
+      "secret",
+      "sequence",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/gates/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "step",
+      "version"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/grants",
+    "fieldPaths": [
+      "issue",
+      "secret",
+      "sessionId",
+      "tree"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/handoff/complete",
+    "fieldPaths": [
+      "commit",
+      "grantId",
+      "handoffId",
+      "handoffVersion",
+      "planRating",
+      "planReason",
+      "returnTo",
+      "summary",
+      "verdict",
+      "wakeAt"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/issues/status",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "status"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/phase/backward",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason",
+      "returnTo",
+      "task",
+      "to"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/phase/retry",
+    "fieldPaths": [
+      "decision",
+      "grantId",
+      "issue",
+      "reason",
+      "task"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/plans/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "version"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/project/pause",
+    "fieldPaths": [
+      "grantId",
+      "reason"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/project/resume",
+    "fieldPaths": [
+      "grantId"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/roots/close",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/signoff",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/tasks/stop",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 224,
+    "route": "POST /legion/v1/waves/release",
+    "fieldPaths": [
+      "grantId",
+      "issues",
+      "issues.*"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/children/rerun",
+    "fieldPaths": [
+      "grantId",
+      "issue"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/activity",
+    "fieldPaths": [
+      "activity",
+      "activity.at",
+      "activity.backgroundWork",
+      "activity.backgroundWork.kinds",
+      "activity.backgroundWork.kinds.*",
+      "activity.backgroundWork.running",
+      "activity.phase",
+      "activity.phase.nextReminderAt",
+      "claimToken",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/compact",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/exit",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "reason",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/fresh-session",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "role"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/ready",
+    "fieldPaths": [
+      "capabilities",
+      "capabilities.elapsedMs",
+      "capabilities.measuredAt",
+      "capabilities.rows",
+      "capabilities.rows.*",
+      "capabilities.rows.*.detail",
+      "capabilities.rows.*.name",
+      "capabilities.rows.*.ok",
+      "claimToken",
+      "generation",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/ready-for-update",
+    "fieldPaths": [
+      "claimToken",
+      "generation",
+      "head",
+      "round",
+      "secret",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/register",
+    "fieldPaths": [
+      "agentId",
+      "bootToken",
+      "ompSessionFile",
+      "pluginContract",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/release-records",
+    "fieldPaths": [
+      "claimToken",
+      "secret",
+      "since"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/claims/turn-outcome",
+    "fieldPaths": [
+      "bootToken",
+      "claimToken",
+      "generation",
+      "message",
+      "outcome",
+      "secret",
+      "sequence",
+      "sessionId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/gates/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "step",
+      "version"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/grants",
+    "fieldPaths": [
+      "issue",
+      "secret",
+      "sessionId",
+      "tree"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/handoff/complete",
+    "fieldPaths": [
+      "commit",
+      "grantId",
+      "handoffId",
+      "handoffVersion",
+      "planRating",
+      "planReason",
+      "returnTo",
+      "summary",
+      "verdict",
+      "wakeAt"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/issues/status",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "status"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/phase/backward",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason",
+      "returnTo",
+      "task",
+      "to"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/phase/retry",
+    "fieldPaths": [
+      "decision",
+      "grantId",
+      "issue",
+      "reason",
+      "task"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/plans/register",
+    "fieldPaths": [
+      "artifactId",
+      "grantId",
+      "issue",
+      "version"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/project/pause",
+    "fieldPaths": [
+      "grantId",
+      "reason"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/project/resume",
+    "fieldPaths": [
+      "grantId"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/roots/close",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "reason"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/signoff",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 237,
+    "route": "POST /legion/v1/tasks/stop",
+    "fieldPaths": [
+      "grantId",
+      "issue",
+      "task"
+    ]
+  },
+  {
+    "contract": 237,
     "route": "POST /legion/v1/waves/release",
     "fieldPaths": [
       "grantId",

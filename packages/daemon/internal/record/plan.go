@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // The plan of an issue is three tables (store migration 20261117034837_issue_plans): the versions
@@ -22,7 +23,13 @@ import (
 // its generation, and no row names an issues row, because an owner can give a plan before the
 // daemon records its issue: such a plan is written at generation 0. An issue that ran before plans
 // has no rows, and goes on as it did then. The count of starts of a step is not the plan's: it lives
-// in step_starts alone, at the place TaskPlace.StepPlace names.
+// in step_starts alone, at the place TaskPlace.StepPlace names. Beside them, plan_branches holds
+// each branch name a generation of the issue gave (store migration 20261121165047_task_copies):
+// AssignTaskBranch writes it at each name it gives and decides by every generation's rows,
+// RecordBranchGiven writes the branch of each pull request of an earlier run whose row a run
+// started again deletes, a carried CarryPlan copies it, BranchGiven reads one name of one
+// generation, and neither DeleteTasks nor DeletePlan deletes it. A task's hold and the wait of the
+// step at its place are columns of its row (store migration 20261117224125_task_held).
 
 const (
 	// PlanSourceOwner is a version the issue's owner gave (register_plan), at the version of its
@@ -35,16 +42,34 @@ const (
 
 // TaskState is the state of a task (PlanTask.State). A task whose issue leaves the workflow before
 // the task is done is left: it keeps its place, and the reason it was stopped for where it was
-// stopped, and nothing starts it again, since a todo opens a new run with rows of its own.
+// stopped, and nothing starts it again, since a todo opens a new run with rows of its own. A held
+// task stands where it stood, for the reason its hold reads (PlanTask.HoldReason), until its
+// owner's retry releases it at the same place (HoldTask, ReleaseTask).
 type TaskState string
 
 // The states of a task, each the word plan_tasks.state stores.
 const (
 	TaskWaiting TaskState = "waiting"
 	TaskRunning TaskState = "running"
+	TaskHeld    TaskState = "held"
 	TaskDone    TaskState = "done"
 	TaskStopped TaskState = "stopped"
 	TaskLeft    TaskState = "left"
+)
+
+// StepWait is what the step at a running task's place waits for before its start is delivered
+// (PlanTask.StepWait): nothing, the end of its task's join, or its agent, which runs a step of
+// another task. A step that waits is no running step: nothing of it has started.
+type StepWait string
+
+const (
+	// StepWaitNone is a step that waits for nothing.
+	StepWaitNone StepWait = ""
+	// StepWaitJoin is a step that waits for the end of its task's join: the task_branch row
+	// (TaskBranch) that makes the task's branch on GitHub at the joined work of its needs.
+	StepWaitJoin StepWait = "join"
+	// StepWaitAgent is a step that waits for its agent, which runs a step of another task.
+	StepWaitAgent StepWait = "agent"
 )
 
 // The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
@@ -113,8 +138,20 @@ type ReturnCounts struct {
 
 // PlanTask is one task of a plan. PlanVersion is the version that wrote its text; BlockText, Needs,
 // PartOf, OwnerRole, Merges and StepsByDefault are what that version's block says. State,
-// StoppedReason, Place and Counts are where the task stands, which the walk writes (MoveTask,
-// StopTask, PutReturnCounts). Needs is nil where the block names none.
+// StoppedReason, HoldReason, Place and Counts are where the task stands, which the walk writes
+// (MoveTask, StopTask, HoldTask, ReleaseTask, PutReturnCounts): HoldReason is why a held task is
+// held, "" for one whose agent's claim failed and for every task that is not held. StepWait and
+// StepWaitSince are what the step at a running task's place waits for and since when, nil where it
+// waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
+// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose merge
+// GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
+// where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
+// GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
+// work there makes at a start again (SetJoinUnmerged). StartReason is why the step the task stands
+// at was started: a start again at its first step, or a move back to an earlier step
+// (SetStartReason), "" for a first start and after any later move: the step that starts after a
+// wait reads it (the workflow's startAfterWait). Needs and JoinConflicts are nil where they hold
+// none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -133,10 +170,198 @@ type PlanTask struct {
 	StoppedReason  string
 	Place          TaskPlace
 	Counts         ReturnCounts
+	Branch         string
+	JoinConflicts  []string
+	JoinUnmerged   bool
+	HoldReason     HoldReason
+	StepWait       StepWait
+	StepWaitSince  *time.Time
+	StartReason    string
+}
+
+// BranchOf is the GitHub branch task works on, for the task of the issue keyed issueKey: the branch
+// its row holds, or the issue's own branch (claim.IssueBranch) where it holds none, which is the
+// branch of every task of a release before tasks had branches of their own. Each reader of a task's
+// branch reads it here.
+func (t PlanTask) BranchOf(issueKey string) string {
+	if t.Branch == "" {
+		return claim.IssueBranch(issueKey)
+	}
+	return t.Branch
+}
+
+// AssignTaskBranch gives task of the plan of issue at generation its GitHub branch and answers it:
+// the branch its row holds already, else the first name not given, in this order: the issue's own
+// branch (claim.IssueBranch), then each give of the task's slug (claim.TaskBranchOfGive over
+// plan.TaskSlug), legion/<issue>.<slug> first. GitHub keeps a branch and its commits, so a name
+// given is never given to another task of the issue, at any generation: a name is given where any
+// generation of the issue gave it (plan_branches, which neither a later removal of the task nor a
+// carry of the plan from its start deletes, and where RecordBranchGiven keeps the branch of each
+// pull request of an earlier run whose row a run started again deletes, a run before tasks had
+// branches of their own among them), and where another task of the generation holds it. Each
+// branch another task of the generation holds is read by BranchOf: a task that a release before
+// this one started works on the issue's own branch with no branch on its row, so the issue's
+// branch counts as given while such a task stands. The one task of a plan of one task takes the
+// issue's own branch whatever an earlier generation gave it to, as an issue always did, so an
+// issue run again goes on on its branch and the open pull request a new generation keeps there
+// (ClearGeneration); a later version that adds tasks to that plan gives them names no generation
+// gave. The name is written on the task's row and among the names the generation gave. The
+// generation's task rows are locked first, so two transactions that start two tasks of the issue
+// at one time give their names one after the other. A task the plan does not hold is refused,
+// naming it.
+func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (string, error) {
+	describe := fmt.Sprintf("give task %s of %s at generation %d its branch", task, issue, generation)
+	rows, err := tx.Query(ctx, `select task, branch, state from plan_tasks where issue = $1 and generation = $2
+		order by task for update`, issue, int64(generation))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	type taskRow struct {
+		task, branch string
+		state        TaskState
+	}
+	tasks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (taskRow, error) {
+		var r taskRow
+		return r, row.Scan(&r.task, &r.branch, &r.state)
+	})
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	given := map[string]bool{}
+	held := false
+	for _, r := range tasks {
+		switch {
+		case r.task == task && r.branch != "":
+			return r.branch, nil
+		case r.task == task:
+			held = true
+		case r.state != TaskWaiting || r.branch != "":
+			given[PlanTask{Branch: r.branch}.BranchOf(issue)] = true
+		}
+	}
+	if !held {
+		return "", fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	// own is the issue's branch where the plan holds this task alone, which no name an earlier
+	// generation gave takes from it.
+	own := ""
+	if len(tasks) == 1 {
+		own = claim.IssueBranch(issue)
+	}
+	names, err := tx.Query(ctx, `select branch from plan_branches where issue = $1 and (generation = $2 or branch <> $3)`,
+		issue, int64(generation), own)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	gave, err := pgx.CollectRows(names, pgx.RowTo[string])
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	for _, name := range gave {
+		given[name] = true
+	}
+	branch := claim.IssueBranch(issue)
+	for give := 1; given[branch]; give++ {
+		branch = claim.TaskBranchOfGive(issue, plan.TaskSlug(task), give)
+	}
+	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3)`,
+		issue, int64(generation), branch); err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	if _, err := tx.Exec(ctx, `update plan_tasks set branch = $4 where issue = $1 and generation = $2 and task = $3`,
+		issue, int64(generation), task, branch); err != nil {
+		return "", fmt.Errorf("%s: %w", describe, err)
+	}
+	return branch, nil
+}
+
+// RecordBranchGiven records branch among the names generation of issue gave (plan_branches), so
+// AssignTaskBranch never gives it to a task of the issue again: the branch of a pull request of an
+// earlier run whose row the first step of a run started again deletes (the workflow's
+// closeEarlierPullRequests), which GitHub keeps with its commits while no row of the record names
+// it any longer. A name recorded already is left as it is.
+func (s *Postgres) RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error {
+	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
+		issue, int64(generation), branch); err != nil {
+		return fmt.Errorf("record %s among the names %s gave at generation %d: %w", branch, issue, generation, err)
+	}
+	return nil
+}
+
+// BranchGiven says whether generation of issue gave branch (plan_branches): to a task of it
+// (AssignTaskBranch), as the branch of a pull request of an earlier run (RecordBranchGiven), or
+// with the run a hand-over carried (CarryPlan). The workflow reads it where it records a pull
+// request on the issue's own branch that the one task of a plan of one holds before its start
+// (StoredPlan.HoldsBranchBeforeItsStart): that task takes the issue's branch at its start only
+// where its generation gave that branch to no task, so a pull request there is not its own where
+// the generation gave it to a task a later version removed.
+func (s *Postgres) BranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) (bool, error) {
+	var given bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from plan_branches where issue = $1 and generation = $2 and branch = $3)`,
+		issue, int64(generation), branch).Scan(&given); err != nil {
+		return false, fmt.Errorf("read whether %s gave %s at generation %d: %w", issue, branch, generation, err)
+	}
+	return given, nil
+}
+
+// SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose merge
+// GitHub refused as a conflict, into the branch the join of its needs is made on, in place of what
+// the row held: each task_branch row of the task joins its needs again, so the newest join is the
+// one its first step repairs. A task the plan does not hold is refused, naming it.
+func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error {
+	describe := fmt.Sprintf("write the needs whose join conflicted of task %s of %s at generation %d", task, issue, generation)
+	if needs == nil {
+		needs = []string{}
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set join_conflicts = $4 where issue = $1 and generation = $2 and task = $3`,
+		issue, int64(generation), task, needs)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	return nil
+}
+
+// SetJoinUnmerged writes whether GitHub refused as a conflict the merge of the join branch of task
+// of the plan of issue at generation into the task's branch, in place of what the row held, as
+// SetJoinConflicts writes the needs that conflicted: each task_branch row of the task joins again,
+// so the newest join is the one its first step merges by hand. A task the plan does not hold is
+// refused, naming it.
+func (s *Postgres) SetJoinUnmerged(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, unmerged bool) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set join_unmerged = $4 where issue = $1 and generation = $2 and task = $3`,
+		issue, int64(generation), task, unmerged)
+	if err != nil {
+		return fmt.Errorf("write whether the join branch of task %s of %s at generation %d merged into its branch: %w", task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write whether the join branch of task %s of %s at generation %d merged into its branch: the plan holds no such task", task, issue, generation)
+	}
+	return nil
+}
+
+// SetStartReason writes reason as why the step task of the plan of issue at generation stands at
+// was started: the start again of a stopped task at its first step, and a move back to an earlier
+// step (the report of the step that sent the work back, then the move's reason), each in the
+// transaction that moves the task there, after the move (MoveTask, which clears it at every move),
+// so the step that starts after a wait for its join or its agent is told why and counts as a move
+// back. A task that is not running, and a task the plan does not hold, are refused, naming it.
+func (s *Postgres) SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set start_reason = $4 where issue = $1 and generation = $2 and task = $3 and state = 'running'`,
+		issue, int64(generation), task, reason)
+	if err != nil {
+		return fmt.Errorf("write why the step of task %s of %s at generation %d was started: %w", task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write why the step of task %s of %s at generation %d was started: the plan holds no such task that is running", task, issue, generation)
+	}
+	return nil
 }
 
 // PlanStep is one step of a task, at its place from 1: the role that runs it, the type of its
-// role's work (plan.Type) and the agent key the plan names for it ("" for none).
+// role's work (plan.Type), the agent key the plan names for it ("" for none) and the name of its
+// agent (Agent, read through AgentName).
 type PlanStep struct {
 	Issue      string
 	Generation uint64
@@ -145,6 +370,25 @@ type PlanStep struct {
 	Role       string
 	Type       plan.Type
 	AgentKey   string
+	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
+	// gives before the step is written and nothing else writes. A step a release before the column
+	// wrote holds none.
+	Agent claim.Agent
+}
+
+// AgentName is the name of the step's agent: the last part of its claim token, and the one reader
+// of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
+// names the tree and no name on the issue. A step a release before the column wrote holds none and
+// reads as its role: that release ran each role at most once in a task and refused every key but
+// the owner's, so its role named its agent.
+func (s PlanStep) AgentName() claim.Agent {
+	switch {
+	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
+		return ""
+	case s.Agent != "":
+		return s.Agent
+	}
+	return claim.Agent(s.Role)
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
@@ -155,13 +399,164 @@ type StoredPlan struct {
 	Steps   map[string][]PlanStep
 }
 
-// Task is the plan's one task, the task its run is on whatever that task's state: this release's
-// plans hold one (plan.Supported). A plan that holds none, or more than one, is an error.
+// Task is the plan's one task, the task its run is on whatever that task's state, for a reader of
+// a plan of one task; a reader of a plan of several reads each of its Tasks. A plan that holds
+// none, or more than one, is an error.
 func (p *StoredPlan) Task() (PlanTask, error) {
 	if len(p.Tasks) != 1 {
-		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, and this release walks one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
+		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, not one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
 	}
 	return p.Tasks[0], nil
+}
+
+// MergingTask is the task of p whose work is the issue's that merges: the one task no task needs
+// (plan.Sinks), whatever the plan's count of tasks, and none (false) where the plan holds no task,
+// or more than one task no task needs, which plan.Supported refuses. It is the one rule every
+// reader of the task that merges reads by: the walk of each task (its retro and merge), the base of
+// a task's pull request (BaseOf) and the read of an issue's merge pull request (MergePullRequest).
+func (p *StoredPlan) MergingTask() (string, bool) {
+	tasks := make([]plan.Task, len(p.Tasks))
+	for i, row := range p.Tasks {
+		tasks[i] = plan.Task{ID: row.Task, Needs: row.Needs}
+	}
+	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
+		return sinks[0], true
+	}
+	return "", false
+}
+
+// TaskOf is the task of p whose id is id, and false where p holds none, or where there is no plan
+// (p nil): the one lookup of a plan's task by its id.
+func (p *StoredPlan) TaskOf(id string) (PlanTask, bool) {
+	if p == nil {
+		return PlanTask{}, false
+	}
+	if at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == id }); at >= 0 {
+		return p.Tasks[at], true
+	}
+	return PlanTask{}, false
+}
+
+// TasksOfBranch is each task of p whose branch branch is, for the issue keyed issueKey, in task id
+// order: the one rule by which a pull request on branch, and each fact of it, is a task's
+// (PullRequest.Task, TaskOfBranch, HoldsBranch). A task whose row holds branch is its only task. A
+// task whose row holds none (BranchOf reads the issue's own branch for it, claim.IssueBranch)
+// holds that branch, while no task's row holds it, in two cases alone. It started (unstarted), as
+// a task a release before tasks had branches of their own did, on that branch; each start now
+// gives a task its branch (AssignTaskBranch, which counts the issue's branch given while a started
+// task holds none). Or it is the one task of a plan of one and has not started, since it takes the
+// issue's branch at its first start, as an issue always did. A task of a plan of several that has
+// not started was given no branch, and its first start can give it another than the issue's, so it
+// holds none: no pull request on the issue's branch is its own before then, neither one a person
+// opened there nor one of an earlier run that a run started again closed. Started tasks hold the
+// branch before one that has not. In the daemon a row of a started task holds no branch only for
+// that task of the release before, which ran plans of one task (plan.Supported), so the answer is
+// one task or none; a plan whose rows name several such started tasks names each of them.
+func (p StoredPlan) TasksOfBranch(issueKey, branch string) []string {
+	if branch == "" {
+		return nil
+	}
+	var started, unstarted []string
+	for _, task := range p.Tasks {
+		switch {
+		case task.Branch == branch:
+			return []string{task.Task}
+		case task.Branch != "" || branch != claim.IssueBranch(issueKey):
+		case task.unstarted():
+			unstarted = append(unstarted, task.Task)
+		default:
+			started = append(started, task.Task)
+		}
+	}
+	if len(started) > 0 || len(p.Tasks) > 1 {
+		return started
+	}
+	return unstarted
+}
+
+// unstarted says whether t has not started its work: it waits, or a stop took it before its first
+// step, at no act (TaskPlace.Started).
+func (t PlanTask) unstarted() bool {
+	return t.State == TaskWaiting || t.State == TaskStopped && !t.Place.Started()
+}
+
+// TaskOfBranch is the task of p whose branch branch is (TasksOfBranch), for the issue keyed
+// issueKey, and whether one is: none where no task's branch it is, and none where it is several
+// tasks' branch, whose facts are no one task's.
+func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
+	if tasks := p.TasksOfBranch(issueKey, branch); len(tasks) == 1 {
+		return tasks[0], true
+	}
+	return "", false
+}
+
+// HoldsBranch says whether a pull request on branch is one of the issue keyed issueKey, whose plan
+// at its generation p is (nil, or no tasks, for an issue with no plan rows there): the one rule by
+// which the workflow records a pull request (its issueForBranch), and by which the merge of the
+// pull request of the task that merges closes the others (closeOtherTaskPullRequests). It is
+// where a task of the plan holds branch (TasksOfBranch), and the issue's own branch
+// (claim.IssueBranch) where the plan holds no task, as an issue that ran before plans did. A pull
+// request on any other branch of an issue's shape (claim.BranchIssue) is none of the issue's: a
+// person's or a fork's on a name no task was given, and one whose row the record deleted when it
+// let the pull request go, whose task a later version removed or whose run was started again. The
+// recorder reads one fact more for the one case HoldsBranchBeforeItsStart names.
+func (p *StoredPlan) HoldsBranch(issueKey, branch string) bool {
+	if p == nil || len(p.Tasks) == 0 {
+		return branch == claim.IssueBranch(issueKey)
+	}
+	return len(p.TasksOfBranch(issueKey, branch)) > 0
+}
+
+// HoldsBranchBeforeItsStart says whether the task of p that holds branch (TasksOfBranch) holds it
+// only as the one task of a plan of one that has not started: branch is the issue's own, and the
+// task's row holds no branch. Its first start gives it the issue's branch only where its
+// generation gave that branch to no task (AssignTaskBranch), which the plan's rows cannot say once
+// a later version removed the task that held it, so the workflow reads that too where it records
+// a pull request (Store.BranchGiven).
+func (p *StoredPlan) HoldsBranchBeforeItsStart(issueKey, branch string) bool {
+	return p != nil && len(p.Tasks) == 1 && p.Tasks[0].Branch == "" && p.Tasks[0].unstarted() && branch == claim.IssueBranch(issueKey)
+}
+
+// BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
+// it is the task's join branch, which the join of its needs makes (join true): the one rule the
+// join's executor, the opener of a task's pull request, the task text and the judgement of a later
+// version of the plan read. It is issue's default branch for the task that merges (MergingTask), for
+// a task that needs none and for a task none of whose steps is of the type implementation, whose
+// pull request shows the joined work of its needs, which its steps read. A task with one need is
+// based on that need's branch (BranchOf). A task with several is based on its join branch, its own
+// branch and claim.JoinBranchSuffix, where the work of its needs is joined and from which its branch
+// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
+// branch (AssignTaskBranch). A task p does not hold, and a need it does not hold, are an error naming
+// it: plan.Validate refuses such a plan, so p holding one is a defect, which no base would answer
+// truly.
+func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
+	of, ok := p.TaskOf(task)
+	if !ok {
+		return "", false, fmt.Errorf("the base of task %s of %s: its plan holds no such task", task, issue.Key)
+	}
+	var first PlanTask
+	for i, id := range of.Needs {
+		need, ok := p.TaskOf(id)
+		if !ok {
+			return "", false, fmt.Errorf("the base of task %s of %s: it needs %s, which its plan holds no task of", task, issue.Key, id)
+		}
+		if i == 0 {
+			first = need
+		}
+	}
+	if merging, merges := p.MergingTask(); len(of.Needs) == 0 || merges && merging == task || !p.Implements(task) {
+		return issue.DefaultBranch, false, nil
+	}
+	if len(of.Needs) > 1 {
+		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
+	}
+	return first.BranchOf(issue.Key), false, nil
+}
+
+// Implements says whether a step of task of p is of the type implementation: the step that opens
+// the task's pull request. A task with no such step gets its pull request from Legion.
+func (p StoredPlan) Implements(task string) bool {
+	return slices.ContainsFunc(p.Steps[task], func(step PlanStep) bool { return step.Type == plan.TypeImplementation })
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
@@ -170,7 +565,8 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 // leave beside a task that keeps its own; each refusal is made before anything is written, so the
 // transaction stays usable. A task the generation holds already takes v's text and attributes and
 // keeps where it stands, which the walk writes; a new task is written as given. The steps of each
-// task v gives are replaced by the steps v gives it.
+// task v gives are replaced by the steps v gives it, each with the name of its agent as it is given
+// (NameAgents names them before this write; PutPlan has no rule of its own).
 func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error {
 	describe := fmt.Sprintf("put version %d of the plan of %s at generation %d", v.Version, v.Issue, v.Generation)
 	given := make([]string, 0, len(tasks))
@@ -223,9 +619,9 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	for _, step := range steps {
-		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-			values ($1, $2, $3, $4, $5, $6, $7)`,
-			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey); err != nil {
+		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent)); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
 	}
@@ -236,41 +632,125 @@ const planVersionColumns = `issue, generation, version, source, artifact_id, giv
 
 // Plan is the plan of issue at generation, or nil where that generation has no plan rows.
 func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error) {
-	describe := fmt.Sprintf("read the plan of %s at generation %d", issue, generation)
-	version, err := scanPlanVersion(tx.QueryRow(ctx, "select "+planVersionColumns+` from issue_plans
-		where issue = $1 and generation = $2 order by version desc limit 1`, issue, int64(generation)))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+	plans, err := plansOf(ctx, tx, []string{issue}, []int64{int64(generation)})
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, fmt.Errorf("read the plan of %s at generation %d: %w", issue, generation, err)
 	}
-	plan := &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
+	return plans[issue], nil
+}
+
+// PlansOf is the plan of each of issues at the issue's own generation, by key, in the three
+// statements Plan asks whatever the number of issues (one where none of them has plan rows, and
+// none for no issue): a pass over many issues that reads each one's plan pays no round trip per
+// issue. An issue whose generation has no plan rows has no entry.
+func (s *Postgres) PlansOf(ctx context.Context, tx pgx.Tx, issues []Issue) (map[string]*StoredPlan, error) {
+	if len(issues) == 0 {
+		return map[string]*StoredPlan{}, nil
+	}
+	keys, generations := make([]string, len(issues)), make([]int64, len(issues))
+	for i, issue := range issues {
+		keys[i], generations[i] = issue.Key, int64(issue.Generation)
+	}
+	plans, err := plansOf(ctx, tx, keys, generations)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(issues), err)
+	}
+	return plans, nil
+}
+
+// plansOf is the body of Plan and PlansOf: the plan of the issue keys[i] at generations[i], for
+// each i, by key. Each plan is its highest version, every task ordered by its id and the steps of
+// each task ordered by place; the tasks and the steps are not read where no issue has a version.
+func plansOf(ctx context.Context, tx pgx.Tx, keys []string, generations []int64) (map[string]*StoredPlan, error) {
+	const read = `unnest($1::text[], $2::bigint[]) as read(key, gen)`
+	versions, err := tx.Query(ctx, `select distinct on (issue_plans.issue) `+planVersionColumns+` from issue_plans
+		join `+read+` on issue_plans.issue = read.key and issue_plans.generation = read.gen
+		order by issue_plans.issue, issue_plans.version desc`, keys, generations)
+	if err != nil {
+		return nil, err
+	}
+	plans := map[string]*StoredPlan{}
+	for versions.Next() {
+		version, err := scanPlanVersion(versions)
+		if err != nil {
+			versions.Close()
+			return nil, err
+		}
+		plans[version.Issue] = &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
+	}
+	versions.Close()
+	if err := versions.Err(); err != nil {
+		return nil, err
+	}
+	if len(plans) == 0 {
+		return plans, nil
+	}
 	rows, err := tx.Query(ctx, `select `+planTaskColumns+` from plan_tasks
-		where plan_tasks.issue = $1 and plan_tasks.generation = $2 order by plan_tasks.task`, issue, int64(generation))
+		join `+read+` on plan_tasks.issue = read.key and plan_tasks.generation = read.gen
+		order by plan_tasks.issue, plan_tasks.task`, keys, generations)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
 	}
-	if plan.Tasks, err = scanPlanTasks(rows); err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
-	}
-	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key
-		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
+	tasks, err := scanPlanTasks(rows)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", describe, err)
+		return nil, err
+	}
+	for _, task := range tasks {
+		if plan := plans[task.Issue]; plan != nil {
+			plan.Tasks = append(plan.Tasks, task)
+		}
+	}
+	steps, err := tx.Query(ctx, `select plan_steps.issue, plan_steps.generation, plan_steps.task, plan_steps.position, plan_steps.role,
+		plan_steps.type, plan_steps.agent_key, plan_steps.agent from plan_steps
+		join `+read+` on plan_steps.issue = read.key and plan_steps.generation = read.gen
+		order by plan_steps.issue, plan_steps.task, plan_steps.position`, keys, generations)
+	if err != nil {
+		return nil, err
 	}
 	defer steps.Close()
 	for steps.Next() {
-		step := PlanStep{Issue: issue, Generation: generation}
-		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey); err != nil {
-			return nil, fmt.Errorf("%s: %w", describe, err)
+		var step PlanStep
+		var generation int64
+		if err := steps.Scan(&step.Issue, &generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+			return nil, err
 		}
-		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
+		step.Generation = uint64(generation)
+		if plan := plans[step.Issue]; plan != nil {
+			plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
+		}
 	}
 	if err := steps.Err(); err != nil {
+		return nil, err
+	}
+	return plans, nil
+}
+
+// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its agent,
+// ordered by generation, task and place: what NameAgents reads as earlier before a version's steps
+// are written (PutPlan deletes the steps of each task it gives), so a key keeps the name an earlier
+// version or generation gave it.
+func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error) {
+	describe := fmt.Sprintf("read every step of the plans of %s", issue)
+	rows, err := tx.Query(ctx, `select generation, task, position, role, type, agent_key, agent
+		from plan_steps where issue = $1 order by generation, task, position`, issue)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	return plan, nil
+	defer rows.Close()
+	var steps []PlanStep
+	for rows.Next() {
+		step := PlanStep{Issue: issue}
+		var generation int64
+		if err := rows.Scan(&generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		step.Generation = uint64(generation)
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return steps, nil
 }
 
 // PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
@@ -300,7 +780,9 @@ func (s *Postgres) PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) (
 const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.task, plan_tasks.plan_version,
 	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
-	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told`
+	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
+	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
+	plan_tasks.step_wait_since, plan_tasks.start_reason`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -312,10 +794,14 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		var moves []byte
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
-			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
+			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
+			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
+		if len(task.JoinConflicts) == 0 {
+			task.JoinConflicts = nil
+		}
 		if len(task.Needs) == 0 {
 			task.Needs = nil
 		}
@@ -397,10 +883,16 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
 // and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
-// so each task keeps its state, its place and its counts. Without carried, the plan starts from its
-// start: each task waits at no act with every count 0. Neither copies a count of starts, which
-// step_starts keeps by place alone. Where from has no plan rows it writes nothing, so an issue that
-// ran before plans goes on as it did; a generation to that holds a plan already is refused.
+// so each task keeps its state, its hold's reason, its place, its step's wait and since when, its
+// counts, its branch and the needs whose join conflicted, and the generation every name it gave a
+// task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
+// starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
+// no branch, and to has given no name yet. The names from gave stay given to the issue
+// (AssignTaskBranch reads them at every generation), so no task of a plan of several takes one of
+// them, the issue's branch among them, while the one task of a plan of one takes the issue's
+// branch, as an issue always did. Neither copies a count of starts, which step_starts keeps by
+// place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
+// goes on as it did; a generation to that holds a plan already is refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
@@ -420,21 +912,26 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, state)
 		select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default, 'waiting'
 		from plan_tasks where issue = $1 and generation = $2`
+	var names []string
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
-			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
+			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
-			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
+			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
 			from plan_tasks where issue = $1 and generation = $2`
+		names = []string{`insert into plan_branches (issue, generation, branch)
+			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}
 	}
-	for _, statement := range []string{
+	for _, statement := range append([]string{
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-			select issue, $3, task, position, role, type, agent_key
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
+			select issue, $3, task, position, role, type, agent_key, agent
 			from plan_steps where issue = $1 and generation = $2`,
-	} {
+	}, names...) {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
@@ -479,17 +976,25 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 }
 
 // MoveTask writes where task stands in the plan of issue at generation, and its state: the one
-// write of the walk's moveTask. A stop is StopTask's, which records why, so the state stopped is
-// refused here, and a move takes a stop's reason away, but a move to left (TaskLeft): a stopped
-// task whose issue leaves the workflow keeps why it was stopped, the one record of why it was not
-// done. A place no task can stand at, a step the task does not have, a task the plan does not
-// hold and a task that left the workflow, which nothing moves again, are refused.
+// write of the walk's moveTask. A stop is StopTask's, which records why, and a hold HoldTask's, so
+// the states stopped and held are refused here. A move takes a stop's reason away, but a move to
+// left (TaskLeft): a stopped task whose issue leaves the workflow keeps why it was stopped, the one
+// record of why it was not done. A move ends a hold's reason, why the step the task stood at was
+// started (SetStartReason, which a start again and a move back write after their move) and the wait
+// of the step the task stood at, whose start it no longer waits to deliver. A move into running
+// from waiting or stopped is a start of the task, whose step waits for the join of its needs
+// (StepWaitJoin) since this transaction's moment, until the start that follows the move (the
+// workflow's Engine.start) ends that wait or the end of the join does; every other move writes no
+// wait. A place no task can stand at, a step the task does not have, a task the plan does not hold
+// and a task that left the workflow, which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
 	case TaskWaiting, TaskRunning, TaskDone, TaskLeft:
 	case TaskStopped:
 		return fmt.Errorf("%s: a stop is StopTask's, which records why", describe)
+	case TaskHeld:
+		return fmt.Errorf("%s: a hold is HoldTask's, which records why", describe)
 	default:
 		return fmt.Errorf("%s: no task has that state", describe)
 	}
@@ -497,7 +1002,10 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 		return fmt.Errorf("%s: no task stands at that place", describe)
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6,
-		stopped_reason = case when $6 = 'left' then stopped_reason else '' end
+		stopped_reason = case when $6 = 'left' then stopped_reason else '' end,
+		hold_reason = '', start_reason = '',
+		step_wait = case when $6 = 'running' and state in ('waiting', 'stopped') then 'join' else '' end,
+		step_wait_since = case when $6 = 'running' and state in ('waiting', 'stopped') then now() end
 		where issue = $1 and generation = $2 and task = $3 and state <> 'left'
 		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
 			and plan_steps.task = $3 and plan_steps.position = $5))`,
@@ -512,14 +1020,18 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 }
 
 // StopTask writes task of the plan of issue at generation stopped for reason, at the place it
-// stands, which a later start of the task reads. A stop without its reason, of a task that is done
-// or left the workflow, or of a task the plan does not hold, is refused.
+// stands, which a later start of the task reads. A stop of a held task ends its hold, and with it
+// the hold's reason. A stop ends the wait of the step at the task's place (StepWait) in the same
+// write: a stopped task's step waits for nothing, and only a later start of the task, which writes
+// its own wait (MoveTask), starts it again. A stop without its reason, of a task that is done or
+// left the workflow, or of a task the plan does not hold, is refused.
 func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
 	describe := fmt.Sprintf("stop task %s of %s at generation %d", task, issue, generation)
 	if reason == "" {
 		return fmt.Errorf("%s: a stop records why", describe)
 	}
-	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4
+	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4, hold_reason = '',
+		step_wait = '', step_wait_since = null
 		where issue = $1 and generation = $2 and task = $3 and state not in ('done', 'left')`, issue, int64(generation), task, reason)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
@@ -528,6 +1040,98 @@ func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, genera
 		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
 	return nil
+}
+
+// HoldTask writes task of the plan of issue at generation held for reason, at the place it stands:
+// "" for the failed claim of the agent at its running step, HoldEscalated where its owner escalated
+// that hold, and HoldForChildren where the task that merges waits before its retro for the issues
+// beneath its issue. A held task takes the new reason, as the failed claim its owner escalates
+// does. A hold takes only a step that was delivered, which waits for nothing (SetStepWait), so a
+// held step never waits. The reason of a stop is StopTask's, and any other reason, a task that is
+// not running or held, and a task the plan does not hold are refused, naming it.
+func (s *Postgres) HoldTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, reason HoldReason) error {
+	describe := fmt.Sprintf("hold task %s of %s at generation %d for %q", task, issue, generation, reason)
+	switch reason {
+	case "", HoldEscalated, HoldForChildren:
+	case HoldTaskStopped:
+		return fmt.Errorf("%s: a stop is StopTask's, which records why", describe)
+	default:
+		return fmt.Errorf("%s: a task is held for no such reason", describe)
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'held', hold_reason = $4
+		where issue = $1 and generation = $2 and task = $3 and state in ('running', 'held')`, issue, int64(generation), task, string(reason))
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task that is running or held", describe)
+	}
+	return nil
+}
+
+// ReleaseTask writes the held task of the plan of issue at generation running at the place it
+// stands, with no hold reason: the owner's retry, which starts its step again there. A task that
+// is not held, and a task the plan does not hold, are refused, naming it.
+func (s *Postgres) ReleaseTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) error {
+	describe := fmt.Sprintf("release task %s of %s at generation %d", task, issue, generation)
+	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'running', hold_reason = ''
+		where issue = $1 and generation = $2 and task = $3 and state = 'held'`, issue, int64(generation), task)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task that is held", describe)
+	}
+	return nil
+}
+
+// SetStepWait writes what the step at the place of the running task of the plan of issue at
+// generation waits for, since at: StepWaitJoin or StepWaitAgent with the moment its wait began,
+// and StepWaitNone with a nil at, which ends a wait. A step that waits is one whose start was not
+// delivered, which only a running task's place holds. A wait with no moment, no wait with one, a
+// wait of no kind, a task that is not running and a task the plan does not hold are refused,
+// naming it.
+func (s *Postgres) SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error {
+	describe := fmt.Sprintf("write what the step of task %s of %s at generation %d waits for, %q", task, issue, generation, wait)
+	switch {
+	case wait != StepWaitNone && wait != StepWaitJoin && wait != StepWaitAgent:
+		return fmt.Errorf("%s: a step waits for no such thing", describe)
+	case (wait == StepWaitNone) != (at == nil):
+		return fmt.Errorf("%s: a wait names the moment it began, and no wait names one", describe)
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set step_wait = $4, step_wait_since = $5
+		where issue = $1 and generation = $2 and task = $3 and state = 'running'`, issue, int64(generation), task, string(wait), at)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task that is running", describe)
+	}
+	return nil
+}
+
+// AgentWaiter is the task of the plan of issue at generation in the state running whose step has
+// waited longest for agent: of the steps that wait for their agent (StepWaitAgent) and whose agent
+// is agent, as a running step's is read (stepOfRow, PlanStep.AgentName), the one whose wait began
+// first (PlanTask.StepWaitSince), and of two that began at one moment the first in task id order.
+// It is "" where no step waits for agent. A step that waits for its join waits for no agent, and a
+// task that is not running has no step that waits, whatever its row still holds: a freed agent
+// goes to this step, and an agent with a step waiting since earlier is busy for every other step.
+func (s *Postgres) AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error) {
+	var raw []byte
+	if err := tx.QueryRow(ctx, "select "+pods.AgentWaitersColumn("$1::text", "$2::bigint"), issue, int64(generation)).Scan(&raw); err != nil {
+		return "", fmt.Errorf("read the step of %s at generation %d that waited longest for agent %s: %w", issue, generation, agent, err)
+	}
+	rows, _, err := pods.DecodeRunning(raw)
+	if err != nil {
+		return "", fmt.Errorf("read the step of %s at generation %d that waited longest for agent %s: %w", issue, generation, agent, err)
+	}
+	for _, row := range rows {
+		if agent != "" && stepOfRow(row, false).Agent == agent {
+			return row.Task, nil
+		}
+	}
+	return "", nil
 }
 
 // hasPlan says whether issue has plan rows at generation.

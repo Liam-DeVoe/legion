@@ -23,14 +23,23 @@ type Prompt struct {
 	Message    string
 }
 
-// Adoption is one working-copy adoption the daemon asked the agent's side to perform.
+// Adoption is one working-copy adoption the daemon asked the agent's side to perform: the
+// identity, the branch of the task whose working copy it is ("" for the issue's own) and the
+// budget.
 type Adoption struct {
 	Identity runtime.GitIdentity
+	Branch   string
 	Timeout  time.Duration
 }
 
 // Bundling is one workspace bundle the daemon asked the agent's side to build.
 type Bundling struct {
+	Issue   string
+	Timeout time.Duration
+}
+
+// WorkspaceWorkRead is one workspace read the daemon asked the agent's side to make.
+type WorkspaceWorkRead struct {
 	Issue   string
 	Timeout time.Duration
 }
@@ -54,6 +63,8 @@ type Conn struct {
 	// compactsHeld is how many Compact calls wait at compactGate now (CompactsHeld).
 	compactsHeld int
 	bundle       *runtime.WorkspaceBundle
+	workReads    []WorkspaceWorkRead
+	work         *runtime.WorkspaceWork
 	enrollments  []string
 	podToken     string
 	tokenReads   int
@@ -122,10 +133,10 @@ func (c *Conn) Shutdown(_ context.Context) error {
 	return c.failures["Shutdown"]
 }
 
-func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) error {
+func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, branch string, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
+	c.adoptions = append(c.adoptions, Adoption{Identity: id, Branch: branch, Timeout: timeout})
 	return c.failures["AdoptWorkingCopy"]
 }
 
@@ -239,6 +250,42 @@ func (c *Conn) Bundlings() []Bundling {
 
 // FailBundleWorkspace makes every later BundleWorkspace return err; nil clears it.
 func (c *Conn) FailBundleWorkspace(err error) { c.fail("BundleWorkspace", err) }
+
+// WorkspaceWork answers the daemon asking the agent's side whether its workspace holds work origin
+// does not hold: the reading SetWorkspaceWork gave it, recorded with the issue asked about. With
+// none given it fails, so a test that never expected the read sees the request go unanswered
+// rather than a workspace with no work.
+func (c *Conn) WorkspaceWork(_ context.Context, issue string, timeout time.Duration) (runtime.WorkspaceWork, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workReads = append(c.workReads, WorkspaceWorkRead{Issue: issue, Timeout: timeout})
+	if err := c.failures["WorkspaceWork"]; err != nil {
+		return runtime.WorkspaceWork{}, err
+	}
+	if c.work == nil {
+		return runtime.WorkspaceWork{}, errors.New("fake: the shim was asked to read its workspace, and the test set no reading (SetWorkspaceWork)")
+	}
+	work := *c.work
+	work.Commits = slices.Clone(work.Commits)
+	return work, nil
+}
+
+// SetWorkspaceWork is what the agent's side reads in its workspace from now on.
+func (c *Conn) SetWorkspaceWork(w runtime.WorkspaceWork) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.work = &w
+}
+
+// WorkspaceWorkReads is every workspace read asked over this connection, in order.
+func (c *Conn) WorkspaceWorkReads() []WorkspaceWorkRead {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.workReads)
+}
+
+// FailWorkspaceWork makes every later WorkspaceWork return err; nil clears it.
+func (c *Conn) FailWorkspaceWork(err error) { c.fail("WorkspaceWork", err) }
 
 // AgentSecretsEnrollment records the enrollment id the daemon asked the agent's shim to keep.
 func (c *Conn) AgentSecretsEnrollment(_ context.Context, enrollmentID string) error {

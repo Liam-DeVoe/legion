@@ -34,13 +34,17 @@ type RegisteredPlan struct {
 	Tasks   []RegisteredTask `json:"tasks"`
 }
 
-// RegisteredTask is one task of a plan register_plan took: its id and the steps its block names,
-// each as the plan writes it (`role` or `role:key`). A task whose block names none has no step
+// RegisteredTask is one task of a plan register_plan took: its id, the steps its block names, each
+// as the plan writes it (`role` or `role:key`), and the tasks it needs, each by its id as
+// register_plan resolved it (plan.FromBlocks). A task whose block names no steps has no step
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
-// work starts, so the answer names none rather than guessing what the project will run then.
+// work starts, so the answer names none rather than guessing what the project will run then. A
+// task that needs none has [] here, never null; the answer to a caller below tasksContract, which
+// added the field, carries none (shaping.go's withoutNeeds).
 type RegisteredTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs,omitempty"`
 }
 
 // PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
@@ -61,7 +65,7 @@ type PlanReason struct {
 // registerPlanRoute is register_plan as a refusal names it, the operation the caller retries.
 const registerPlanRoute = "register_plan"
 
-// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 211): the
+// OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 219): the
 // routes register_plan and stop_task with register_plan's answer (answers.go's
 // AnswerPlanRegister) and the `reasons` of its refusal (PlanRefusal), a failed step's returnTo on
 // handoff_complete, the hold reasons task-stopped and children of an issue's holdReason, and the
@@ -71,8 +75,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
-const OwnerPlanContract = 211
+// only with this change's own number.
+const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are
@@ -97,10 +101,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 
 // registerPlan is register_plan. It authorizes the owner (planOwner), reads the
 // document's approval for the version Dispatch has and the issue carrying it (documentOfIssue),
-// reads the plan's blocks at the version given (planAt), and refuses with one reason for each
-// cause of a plan this release does not carry out (plan.Supported) or no release can
-// (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version are the workflow's.
+// reads the plan's blocks at the version given, each need as the task it names (planAt, through
+// plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
+// carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
+// nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
+// a later version are the workflow's.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -145,9 +150,12 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Both checks run, so a plan with two causes gets two reasons: what this release does not
-	// carry out yet, then what no release can.
-	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
+	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
+	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
+	// yet, then what no release can. Each judges the plan against the deployment the daemon's
+	// settings define (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
@@ -235,9 +243,10 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as a plan (plan.FromBlocks). A block the plan's grammar cannot read is a refused plan
-// whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
-// all. Every refusal records nothing.
+// read as the plan of issue (plan.FromBlocks), so a need that is a reference into another issue is
+// no need of a task of this plan. A block the plan's grammar cannot read is a refused plan whose
+// one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all.
+// Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -257,7 +266,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
 	}
-	given, err := plan.FromBlocks(artifactID, version, blocks)
+	given, err := plan.FromBlocks(issue, artifactID, version, blocks)
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false
@@ -269,7 +278,8 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 func registeredPlan(given plan.Plan) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
-		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps)}
+		needs := append([]string{}, task.Needs...)
+		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps), Needs: &needs}
 	}
 	return RegisteredPlan{Version: given.Version, Tasks: tasks}
 }

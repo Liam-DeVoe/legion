@@ -278,7 +278,7 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4, 5 and 8 add each have a row of their own
+// elements versions 4, 5 and 11 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
 // TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
 // TestTheAttributeMergesIsUnknownToABuildOneVersionBack).
@@ -417,14 +417,14 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 }
 
-// The plan_task block's merges attribute, which manifest version 8 adds (whether the work of a
+// The plan_task block's merges attribute, which manifest version 11 adds (whether the work of a
 // plan task merges by itself, "true" or "false"), is staged by its own numbers in the same way:
 // this build reads and writes it, and a build one version back declares the plan_task block and
 // its steps but not merges, so it creates none carrying it and reads a stored plan task carrying
 // one as an element it does not know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Versions
-// 6 and 7 are other changes' numbers, so the build one version back is a build at version 7.
+// 6 to 10 are other changes' numbers, so the build one version back is a build at version 10.
 func TestTheAttributeMergesIsUnknownToABuildOneVersionBack(t *testing.T) {
-	const adds = 8
+	const adds = 11
 	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "merges"}
 	versions, declared := attribute.Versions()
 	if !declared || versions != (BlockElementVersions{Since: adds, CreatableSince: adds}) {

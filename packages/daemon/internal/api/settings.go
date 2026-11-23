@@ -79,10 +79,10 @@ type Settings struct {
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
 	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
-	// a pod's update round waits for its roles after it opens. An answer from every role ends the
-	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
-	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
-	// decimal so a live proof can drive the bound inside one run.
+	// a pod's update round waits for its roles after it opens. An answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal so a live proof can drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
 	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
@@ -134,6 +134,10 @@ type Settings struct {
 	// one default hook for a file that names no key. It carries no hook's words: see
 	// HookSettings.
 	Hooks []HookSettings `json:"hooks"`
+	// Roles is `roles`, the roles the deployment defines of its own, in the file's order, each
+	// with its name; absent while the file defines none, as RoleTypes is.
+	Roles     []RoleSettings `json:"roles,omitempty"`
+	RoleTypes []string       `json:"role_types,omitempty"`
 	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
 	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
 	// shaping.go's fixAttemptsContract). Such a reader types `max_fix_attempts` as a positive
@@ -521,6 +525,17 @@ type HookSettings struct {
 	PromptFile string `json:"prompt_file,omitempty"`
 }
 
+// RoleSettings is one role of `roles` as the state shows it: its name, its type, its model
+// (absent where the file names none), the GitHub App it works as and the path of its prompt file.
+// The words of the prompt are never shown, as a hook's are not (HookSettings).
+type RoleSettings struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Model      string `json:"model,omitempty"`
+	GitHubApp  string `json:"github_app"`
+	PromptFile string `json:"prompt_file"`
+}
+
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
@@ -615,6 +630,14 @@ func SettingsOf(cfg config.Config) Settings {
 			settings.WorkerStallBackstopHours = make(map[string]float64, len(cfg.WorkerStallBackstops))
 		}
 		settings.WorkerStallBackstopHours[string(role)] = bound.Hours()
+	}
+	for _, role := range cfg.Roles {
+		settings.Roles = append(settings.Roles, RoleSettings{
+			Name: string(role.Name), Type: string(role.Type), Model: role.Model, GitHubApp: role.GitHubApp, PromptFile: role.PromptFile,
+		})
+	}
+	for _, roleType := range cfg.RoleTypes {
+		settings.RoleTypes = append(settings.RoleTypes, string(roleType))
 	}
 	return settings
 }

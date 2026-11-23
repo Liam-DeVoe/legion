@@ -355,7 +355,8 @@ var (
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
 	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
-	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
+	// stepsRead is each of the steps read's two reads of the tuples into its issue: of its runs and
+	// of its plan nodes.
 	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
 	// plansRead is the plans read's one read of the project's finished issues, joined through
 	// their tuples to their runs and plans.
