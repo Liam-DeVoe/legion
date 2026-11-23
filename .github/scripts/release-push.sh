@@ -1137,7 +1137,7 @@ case "$command" in
         ;;
       *)
         printf -v shown '%q' "$is_draft"
-        echo "::error::gh release view $tag printed $shown for isDraft, not true or false"
+        echo "::error::gh release view $tag printed $shown for isDraft, not true or false" >&2
         exit 1
         ;;
     esac

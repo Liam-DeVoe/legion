@@ -20,11 +20,14 @@
 #
 # What it reads, and from where. Both reads go through retry_fetch, the one retry of this
 # repository's CI (.github/scripts/ci-retry.sh, which this file sources): five attempts, each
-# bounded at 30 s, the last starting 150 s after the first, so one refusal decides nothing:
+# bounded at 30 s, the last starting 150 s after the first, so one refusal decides nothing; and
+# each ladder runs through gh-read.sh's gh_wait_reset, which this file sources too, and which
+# waits out a spent API budget or a secondary rate limit only when the wait and one more ladder
+# fit within the caller's step limit and job limit, and fails by name otherwise:
 #   GET repos/{repo}/commits/{HEAD_SHA}/check-runs?filter=all&per_page=100
 #     `name`, `url` and `details_url` of every check run on this run's commit. A job's own check
 #     run is GitHub's, made when the job starts, and its `url` is the one this script reads
-#     annotations from. This is the route ci-ok-reconcile.sh:104 already reads from the ci-ok
+#     annotations from. This is the route ci-ok-reconcile.sh:110 already reads from the ci-ok
 #     job, and it is read here rather than the run's jobs route — which hands the same mapping
 #     as `check_run_url` — because this route needs only a scope the reading job already
 #     declares: the ci-ok job's `permissions:` block gives it `checks: write`, which carries
@@ -86,6 +89,8 @@
 #   HEAD_SHA           the commit this run's check runs are on: a pull request's head or
 #                      github.sha, the expression both callers' steps already pass.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run whose check runs are read.
+#   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the caller's job's and step's timeout-minutes,
+#                      the limits gh-read.sh's wait stays within.
 #   A caller's tests make `sleep` a no-op on PATH to retry without waiting, as
 #   ci-ok-report.test.sh does; ci-retry.sh's own test is what measures the waits.
 #   RUNNER_SHUTDOWN_READ_SECONDS optional: the deadline of the annotations loop, in seconds, in
@@ -99,14 +104,16 @@
 # ci-ok-report.sh:186 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
-# refused one of its reads five times or the environment above is incomplete: the caller then
-# keeps every failure a failure and the verdict stays the failing one, which is how
-# ci-ok-report.sh:272-283 answers a refused jobs list too. Every warning goes to stderr, where the
+# refused one of its reads at every attempt or the environment above is incomplete: the caller
+# then keeps every failure a failure and the verdict stays the failing one, which is how
+# ci-ok-report.sh:273-284 answers a refused jobs list too. Every warning goes to stderr, where the
 # job log holds it as retry_fetch's own attempts are held, so a caller may read the job names off
 # this function's stdout.
 
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
+# shellcheck source=.github/scripts/gh-read.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
 
 # This run's check runs, read on the first question and kept for the rest of the shell that
 # asks: a caller's `$(…)` is a subshell of its own, so what it keeps dies with that call.
@@ -176,10 +183,10 @@ runner_shutdown_kills() {
   if [ -z "$_runner_shutdown_check_runs" ]; then
     # 30 s per attempt, the bound this repository's CI gives one JSON read of a REST route
     # (ci-ok-report.sh's job list says how that call measured).
-    if ! _runner_shutdown_check_runs=$(retry_fetch "the check runs on $HEAD_SHA" 30 -- gh api --paginate \
+    if ! _runner_shutdown_check_runs=$(gh_wait_reset retry_fetch "the check runs on $HEAD_SHA" 30 -- gh api --paginate \
       "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
       --jq '.check_runs[] | {name, url, details_url}'); then
-      echo "::warning::GitHub refused the check runs on $HEAD_SHA five times, so no failure of this run can be read as a runner shutdown; every failure stands as a failure" >&2
+      echo "::warning::GitHub refused the check runs on $HEAD_SHA at every attempt, so no failure of this run can be read as a runner shutdown; every failure stands as a failure" >&2
       return 1
     fi
     _runner_shutdown_check_runs=$(jq -s --arg run "/actions/runs/$GITHUB_RUN_ID/job/" \
@@ -201,9 +208,9 @@ runner_shutdown_kills() {
         stopped=true
         break 2
       fi
-      if ! annotations=$(retry_fetch "the annotations of $job" 30 -- gh api --paginate "$url/annotations?per_page=100" \
+      if ! annotations=$(gh_wait_reset retry_fetch "the annotations of $job" 30 -- gh api --paginate "$url/annotations?per_page=100" \
         --jq '.[] | select(.annotation_level == "failure") | .message'); then
-        echo "::warning::GitHub refused the annotations of $job five times, so its failure cannot be read as a runner shutdown; it stands as a failure" >&2
+        echo "::warning::GitHub refused the annotations of $job at every attempt, so its failure cannot be read as a runner shutdown; it stands as a failure" >&2
         return 1
       fi
       # A check run with no failure annotation is a part of the job that did not fail; one that

@@ -327,12 +327,12 @@
 #      where a fetch is in its reach, as the list below says. Its lines run from its definition
 #      to its body's last command, so a command after a `}` that starts its line is the text's
 #      own; and a parameter expansion is one word to its closing `}`, as bash reads
-#      `${name##* }`, which this tree writes at ci-tools-proof.sh:1190, 1206 and 1768 and
-#      release-push.sh:1257. Until round 37 the function's lines ran to its `}`'s line, and the
+#      `${name##* }`, which this tree writes at ci-tools-proof.sh:1205, 1221 and 1783 and
+#      release-push.sh:1304. Until round 37 the function's lines ran to its `}`'s line, and the
 #      expansion was split at its blank and its `}` read as the function's own, which ended
-#      ci-tools-proof.sh's `probe` at line 1190 and `ladder_report` at line 1768; no fetch
-#      or call this check charges sat after either, so no figure moved (dispatch://INFRA-1545,
-#      round 37).
+#      ci-tools-proof.sh's `probe` at the first of those three lines and `ladder_report` at the
+#      third; no fetch or call this check charges sat after either, so no figure moved
+#      (dispatch://INFRA-1545, round 37).
 #   3. A LIBRARY'S FUNCTIONS: a library is a script a body sources, and a call of one of its
 #      fetching functions is read as a call of a function is, with the same words before it.
 #      This tree sources three, ci-retry.sh, ci-tools.sh and runner-shutdown.sh, and calls into
@@ -729,9 +729,10 @@
 # verb. That reading is true of a binary installed whole, which answers out of itself and reads
 # nothing from the network. It is false for a corepack shim: `pnpm`, `yarn` and `yarnpkg
 # --version` and `pnpx --help` download the package manager on their first run, and this check
-# reads each of them as no fetch all the same. A STATED LIMIT: the tree's four such calls are the
-# worker image's toolchain step, packages/daemon/docker/worker.Dockerfile:1600-1601, each retried
-# by its author with that Dockerfile's `retry` at 120 s, and no rule holds a new one to the floor.
+# reads each of them as no fetch all the same. A STATED LIMIT: the tree's four such calls are in
+# the worker image's `RUN` in packages/daemon/docker/worker.Dockerfile that runs `pnpm --version`,
+# `yarn --version`, `yarnpkg --version` and `pnpx --help` under that file's `retry`, each retried
+# by its author at 120 s, and no rule holds a new one to the floor.
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
 # dependency: `git clone` and `git fetch`, which move this repository's own refs rather than
@@ -1065,13 +1066,13 @@
 #          loop whose passes this check cannot read, which are charged as the library's one
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
 #          for the step or for the file whose calls they are, writes what the library
-#          contributes. ci-tools-proof.sh's `stage`, which calls ci_tools_fetch once for each
-#          of its five staged rows, is declared for the staging step at the 6832 s its budget
-#          writes and for every other step running that script at 1708 s; each of the two
-#          blob checks' loops of ci_tools_registry_head calls, one per machine's ghcr-mirror
-#          rows, at its own 4397 s; mirror-ci-tools.sh's fill at a cold fill of the five
-#          ghcr-mirror rows of the one machine its argument names, 427 + 5 x 3633 = 18592 s,
-#          which .github/ci-budgets.md derives; and
+#          contributes. ci-tools-proof.sh's `stage`, which calls ci_tools_fetch, or
+#          ci_tools_fetch_primary for uv, once for each of its ten staged rows, is declared for
+#          the staging step at the 12383 s its budget writes and for every other step running
+#          that script at 1708 s; each of the two blob checks' loops of ci_tools_registry_head
+#          calls, one per machine's ghcr-mirror rows, at its own 4397 s; mirror-ci-tools.sh's
+#          fill at a cold fill of the five ghcr-mirror rows of the one machine its argument
+#          names, 427 + 5 x 3633 = 18592 s, which .github/ci-budgets.md derives; and
 #          ci-ok-report.sh's two calls of shutdown_killed, of which a run makes one, at 780 s.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
@@ -1716,7 +1717,8 @@ APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 APT_ERROR_MODE = re.compile(r"apt::update::error-mode\s*=\s*any", re.IGNORECASE)
 # A command that answers about itself is read as no fetch, whatever its verb: true of a binary
 # installed whole, false of a corepack shim, which the header's paragraph on the wrappers names as
-# a stated limit (worker.Dockerfile:1600-1601).
+# a stated limit (the worker image's `RUN` that runs `pnpm --version`, `yarn --version`,
+# `yarnpkg --version` and `pnpx --help` under worker.Dockerfile's `retry`).
 INFORMATIONAL = {"--version", "--help", "--usage"}
 # The mise subcommands that fetch and say so: both exit 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}
@@ -3296,12 +3298,22 @@ SHELL_TEXT_REFUSAL = (
 # helper's own name; and a command after the `}` that closes a function, on a line its body
 # holds a command of. None is written in this tree. gh-read.sh's `gh_wait_reset`, a shell
 # function itself, runs the helper, and `gh_wait_reset [--stderr <file>] retry_fetch …` is no
-# such form (rule 6; dispatch://INFRA-1545, round 55).
+# such form (rule 6; dispatch://INFRA-1545, round 55). ci-log-guard.sh's `ci_log_guard` and
+# `ci_log_guard_stderr` are shell functions too, which run the helper whole (that file runs
+# `"$@"` in the shell), so a `retry_fetch` behind either is refused for another reason, which
+# RETRY_BEHIND_GUARD says (review round 36 of dispatch://INFRA-1545).
 RETRY_BEHIND = (
     "runs `retry_fetch` behind `{wrapper}`, which runs an executable and cannot run the helper, "
     "a shell function: the call fails before any attempt and fetches nothing, so this check "
     "charges it nothing. Call `retry_fetch` as a command of its own, with nothing before it but "
     "variable assignments, and write any wrapper inside it, after its `--`")
+LOG_GUARDS = ("ci_log_guard", "ci_log_guard_stderr")
+RETRY_BEHIND_GUARD = (
+    "runs `retry_fetch` behind `{wrapper}`, ci-log-guard.sh's shell function, which runs the "
+    "helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside "
+    "a block of its own, so the guard adds nothing and only hides the call from this reading, "
+    "which charges it nothing. Call `retry_fetch` as a command of its own, with nothing before "
+    "it but variable assignments")
 RETRY_UNSIGNED = (
     "calls `retry_fetch` in a form other than its signature, `retry_fetch <what> <seconds> -- "
     "<command…>` with the seconds a whole number above 0: the helper refuses such a call with "
@@ -3687,9 +3699,10 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     form this check does not read, and whether that form is a call of the helper, which then
     fetches nothing; None where it writes neither (dispatch://INFRA-1545, round 37). The wrappers
     are read as reduce_words reads them. A `retry_fetch` behind `timeout`, another retry, or any
-    wrapper but `time` is run as an executable, which the helper, a shell function, is not, but
-    in one form: `gh_wait_reset [--stderr <file>] retry_fetch …`, gh-read.sh's shell function
-    alone in front of it, which runs the helper (rule 6; dispatch://INFRA-1545, round 55); one
+    wrapper but `time` is refused: one that runs an executable cannot run the helper, a shell
+    function, and ci-log-guard.sh's two guards, which can, only hide the call (LOG_GUARDS). One
+    form passes: `gh_wait_reset [--stderr <file>] retry_fetch …`, gh-read.sh's shell function
+    alone in front of it, which runs the helper (rule 6; dispatch://INFRA-1545, round 55). One
     whose `--` is not its third word, or whose seconds are written as no whole number above 0
     and as no variable, is refused by the helper with no attempt made; and a `timeout` whose
     short options are a cluster ending in `-k` or `-s`, such as `-vk 5`, takes the next word as
@@ -3729,7 +3742,8 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
             return BUSYBOX_RUN.format(program=" ".join(rest[:2])), False, True
         if first == "retry_fetch":
             if wrapper is not None and behind != ["gh_wait_reset"]:
-                return RETRY_BEHIND.format(wrapper=wrapper), True, False
+                refusal = RETRY_BEHIND_GUARD if wrapper in LOG_GUARDS else RETRY_BEHIND
+                return refusal.format(wrapper=wrapper), True, False
             bound = rest[2] if len(rest) > 2 else ""
             if len(rest) < 4 or rest[3] != "--" or not (
                     "$" in bound or "EXPR" in bound
@@ -5445,10 +5459,11 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "fill of the one machine's rows a run fills, 18592 s, which "
                        ".github/ci-budgets.md's \"The ci-images job's "
                        "ceiling and the tool copy\" derives. "
-                       ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch once "
-                       "per row of its STAGED_ROWS, a call of a function this file defines, "
-                       "which this check charges as the file's one charge: the sixteen ladders "
-                       "those five rows make are the staging step's entry, 6832 s, derived "
+                       ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch, or "
+                       "ci_tools_fetch_primary, once per row of its STAGED_ROWS, a call of a "
+                       "function this file defines, "
+                       "which this check charges as the file's one charge: the twenty-nine "
+                       "ladders its ten rows make are the staging step's entry, 12383 s, derived "
                        "from this entry's figures"),
 ]
 
@@ -5491,14 +5506,18 @@ RUNNER_SHUTDOWN = ".github/scripts/runner-shutdown.sh"
 DECLARED_LIBRARIES: list[DeclaredLibrary] = [
     DeclaredLibrary(TOOL_FALLBACK,
                     "Stage the correct bytes of every row a case serves, before the fault",
-                    CI_TOOLS, 6832,
-                    "`stage` loops over ci-tools-proof.sh's STAGED_ROWS - crane, changie, mise, jj "
-                    "and bun-linux-x64 - and calls ci_tools_fetch once for each, the figures of "
-                    "the DECLARED_LOOPS entry for ci-tools.sh's curl: a row whose primary is a "
-                    "release asset of its own costs 1708 s, which is crane, changie and mise; the "
-                    "jj row's primary is empty, 1281 s; and bun-linux-x64 costs its one npm "
-                    "tarball, 427 s. 3 x 1708 + 1281 + 427 = 6832 s, the sum the step's own "
-                    "comment writes for its 114 minutes"),
+                    CI_TOOLS, 12383,
+                    "`stage` loops over ci-tools-proof.sh's STAGED_ROWS, ten rows, and fetches "
+                    "each once, at the figures of the DECLARED_LOOPS entry for ci-tools.sh's "
+                    "curl, one ladder 427 s: crane, changie, mise, elan and helm each a primary "
+                    "of its own and a ghcr-mirror copy, 4 ladders, 1708 s; jj, whose primary is "
+                    "empty, its copy's 3 ladders, 1281 s; bun-linux-x64's one npm tarball, "
+                    "427 s; uv, whose archive ci_tools_fetch_primary reads from its primary "
+                    "alone, 427 s; and pulumi-docker and pulumi-cli, each a primary and a second "
+                    "source of one request, 2 ladders, 854 s. 5 x 1708 + 1281 + 427 + 427 + "
+                    "2 x 854 = 12383 s, the sum the step's own comment writes for its 207 "
+                    "minutes; until review round 36 of dispatch://INFRA-1545 this entry counted "
+                    "the first five rows alone, 6832 s"),
     DeclaredLibrary(".github/scripts/ci-tools-proof.sh", None, CI_TOOLS, 1708,
                     "ci_tools_fetch and ci_tools_fetch_primary are called in `stage`'s loop and "
                     "nowhere else in this script, and only the staging step passes `stage`, "
@@ -10407,11 +10426,11 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     correct job refused, which is how a check gets silenced. `tool-fallback` derives its key
 #     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
 #     budget, part by part" states the construction, `114 was the 104 this construction gives
-#     with ten minutes added` and, at the staging step's 114 minutes, 114 + 18 = 132 and 142 with
+#     with ten minutes added` and, at the staging step's 207 minutes, 207 + 18 = 225 and 235 with
 #     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:17-19,
-#     since the merge of main's #3675) also writes the Budgets note's sum, `1727 + 6832 = 8559 s
-#     -> 143 min` since the merge of main's #5152 added the helm row's steps, which this clause
-#     reads and which the key's 8580 s strictly exceeds.
+#     since the merge of main's #3675) also writes the Budgets note's sum, `1727 + 12383 =
+#     14110 s -> 236 min` since review round 36 of dispatch://INFRA-1545 counted every staged
+#     row, which this clause reads and which the key's 14160 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
 # of them is one a reader sees in the harness rather than in the tree.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer

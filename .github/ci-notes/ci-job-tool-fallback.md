@@ -122,20 +122,30 @@ seven `base-*` installs keep: the rig's steps one `ci_tools_fetch`, 1708 s -> 29
 3416 + 450 = 3866 s -> 65 min, setup-bun 2 x 1708 = 3416 s -> 57 min, every other install of the
 head's own actions, the three `install-helm` steps among them, 1708 s -> 29 min, each blob check
 4397 s -> 74 min (the section on what each costs), the control step 9 x 427 = 3843 s -> 65 min
-(its section), and the staging step `stage`'s loop over its own STAGED_ROWS - crane, changie and
-mise at 1708 s each, the jj row, whose `primary` is empty, at 1281 s, and bun-linux-x64's one npm
-tarball at 427 s - 3 x 1708 + 1281 + 427 = 6832 s, sixteen ladders of at most 427 s -> 114 min,
-which rule 8 charges through its DECLARED_LIBRARIES entry for that step. The job's key is built
-from the part-by-part construction .github/ci-budgets.md's "The tool-fallback job's budget, part
-by part" writes: 114 + 18 = 132, with the ten minutes it always had 142, and the one minute
-review round 29 of dispatch://INFRA-1545 added when it read the key 6 s under the Budgets note's
-sum. It clears that sum too: this job's 28.7-minute run of job 129478173535, 1722 s, with the
-seven steps of the helm row added at the 5 s they took in job 137926467879 (`install-helm` 3 s,
-and cases 17 and 18 2 s in all, in the merge-group run of main's #5152), 1722 + 5 = 1727 s, plus
-the staging step's ladder: 1727 + 6832 = 8559 s -> 143 min. What the eleven minutes were derived
-from, and why a bound would have changed nothing in the incident that asked for it, is the
-paragraphs above and .github/ci-budgets.md's "What the tool-fallback job's eleven-minute
-installs are derived from".
+(its section), and the staging step `stage`'s loop over its own STAGED_ROWS, ten rows each
+fetched once - crane, changie, mise, elan and helm, each a primary of its own and a ghcr-mirror
+copy, at 1708 s each; the jj row, whose `primary` is empty, at 1281 s; bun-linux-x64's one npm
+tarball and uv's archive, which `stage` reads from uv's primary alone, at 427 s each; and
+pulumi-docker and pulumi-cli, a primary and a second source of one request each, at 854 s each -
+5 x 1708 + 1281 + 427 + 427 + 2 x 854 = 12383 s, twenty-nine ladders of at most 427 s -> 207 min,
+which rule 8 charges through its DECLARED_LIBRARIES entry for that step. Until review round 36 of
+dispatch://INFRA-1545 that figure counted the first five rows alone, 3 x 1708 + 1281 + 427 =
+6832 s -> 114 min, though elan, uv, pulumi-docker and pulumi-cli were staged since #3280 and helm
+since main's #5152. The job's key is built from the part-by-part construction
+.github/ci-budgets.md's "The tool-fallback job's budget, part by part" writes: 207 + 18 = 225,
+with the ten minutes it always had 235, and one minute more, since 235 minutes, 14100 s, falls
+10 s under the Budgets note's sum, as review round 29 of dispatch://INFRA-1545 first found the
+key 6 s under it. It clears that sum: this job's 28.7-minute run of job 129478173535, 1722 s,
+with the seven steps of the helm row added at the 5 s they took in job 137926467879
+(`install-helm` 3 s, and cases 17 and 18 2 s in all, in the merge-group run of main's #5152),
+1722 + 5 = 1727 s, plus the staging step's ladder: 1727 + 12383 = 14110 s -> 236 min. What the
+eleven minutes were derived from, and why a bound would have changed nothing in the incident that
+asked for it, is the paragraphs above and .github/ci-budgets.md's "What the tool-fallback job's
+eleven-minute installs are derived from".
+The key is above the merge queue's 180-minute check wait, so above about 180 minutes the queue's
+wait ends a queued run before this job's own limit does; that takes staged fetches that spend
+more than about 150 minutes in their ladders, a long outage of both sources (INFRA-1310's
+architect ruled the key as derived, 2026-11-23).
 
 ## Why the merge base is checked out
 

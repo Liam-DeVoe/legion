@@ -60,6 +60,8 @@
 #   CHECK_RUN_ID       this job's own check run (`job.check_run_id`), the one to leave alone.
 #   CONCLUSION         this job's own conclusion (`job.status`): success, failure or cancelled.
 #   GITHUB_SERVER_URL, GITHUB_RUN_ID, as Actions sets them: the PATCHed runs link to this job.
+#   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the ci-ok job's and this step's timeout-minutes,
+#                      from the job's env and the step's, the limits gh-read.sh's wait stays within.
 #
 # `check_name=ci-ok&filter=all` is the read: the default filter, `latest`, returns one check run
 # per name, and a head can carry several — this job's own, one an earlier attempt's job left, one
@@ -79,6 +81,8 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$script_dir/ci-retry.sh"
+# shellcheck source=.github/scripts/gh-read.sh
+. "$script_dir/gh-read.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -97,15 +101,17 @@ case $CONCLUSION in
 esac
 
 # The read goes through retry_fetch at 30 s an attempt, the bound this repository's CI gives one
-# page of a REST route (ci-budgets.md's Retries note). The redirection is this shell's own and is
-# applied once: the helper buffers each attempt's output and prints the successful attempt's
-# alone, so no refused attempt's body reaches this file (ci-retry.sh's header says what gh
-# writes there).
-if ! retry_fetch "this head's ci-ok check runs" 30 -- gh api --paginate \
+# page of a REST route (ci-budgets.md's Retries note), and the ladder runs through gh-read.sh's
+# gh_wait_reset, which waits out a spent API budget or a secondary rate limit only when the wait
+# and one more ladder fit within this step's limit and the job's, and fails by name otherwise.
+# The redirection is this shell's own and is applied once: the helper buffers each attempt's
+# output and prints the successful attempt's alone, so no refused attempt's body reaches this
+# file (ci-retry.sh's header says what gh writes there).
+if ! gh_wait_reset retry_fetch "this head's ci-ok check runs" 30 -- gh api --paginate \
   "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
   --jq '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(.external_id // "" | if . == "" then "-" else . end)"' \
   > "$work/runs"; then
-  echo "::warning::GitHub refused this head's ci-ok check runs five times, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict" >&2
+  echo "::warning::GitHub refused this head's ci-ok check runs at every attempt, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict" >&2
   exit 0
 fi
 runs=$(<"$work/runs")
@@ -145,13 +151,13 @@ while read -r id status was marker; do
       ;;
   esac
   # The loop is over the check runs to set, not over the attempts: those are the helper's, at
-  # the same 30 s an attempt as the read above.
-  if retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
+  # the same 30 s an attempt and through the same wait as the read above.
+  if gh_wait_reset retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
     gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"; then
     echo "set ci-ok check run $id from $was to $CONCLUSION"
     reconciled=$((reconciled + 1))
   else
-    echo "::warning::GitHub refused the PATCH of ci-ok check run $id five times, so it stands at $was while this attempt's verdict is $CONCLUSION" >&2
+    echo "::warning::GitHub refused the PATCH of ci-ok check run $id at every attempt, so it stands at $was while this attempt's verdict is $CONCLUSION" >&2
   fi
 done <<<"$runs"
 echo "ci-ok on $HEAD_SHA is $CONCLUSION; $reconciled other check run(s) of that name were set to it"

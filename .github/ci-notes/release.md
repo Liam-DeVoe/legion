@@ -250,7 +250,8 @@ artifact before it downloads it.
 The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev
 sessions) load the source without a build. The published tarball ships only the
 self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
-omp.extensions. Nothing restores the manifest: this job's tree is discarded.
+omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job commits a
+version, so the committed manifest keeps whatever it last held.
 
 ## Why the packed tarball's repository url is checked in the build jobs
 

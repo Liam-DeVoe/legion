@@ -81,10 +81,10 @@
 # GitHub's 180-minute check timeout took its pull request out of the queue. Every read here, and
 # the post, goes through .github/scripts/ci-retry.sh, the one retry every download and every API
 # call of this repository's CI makes (dispatch://INFRA-1545, R1 and R2): five attempts, each
-# bounded at 30 s, the last starting 150 s after the first. The tip read runs that ladder through
+# bounded at 30 s, the last starting 150 s after the first. Each runs that ladder through
 # gh-read.sh's gh_wait_reset as well, which waits out a spent API budget only when the wait and
-# one more ladder fit within the step's limit and the job's, and fails by name otherwise. Five
-# refused attempts of the post fail the step with nothing posted, and the run's other
+# one more ladder fit within the step's limit and the job's, and fails by name otherwise. A post
+# refused at every attempt fails the step with nothing posted, and the run's other
 # jobs run on — the ci-ok job then posts the verdict at the end of the run, unless
 # .github/workflows/dequeued.yaml force-cancels the run first, which leaves every `if: always()`
 # step skipped.
@@ -110,7 +110,7 @@
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, as Actions sets them.
 #   JOB_TIMEOUT_MINUTES, STEP_TIMEOUT_MINUTES  the reporting job's and the report step's
 #                      timeout-minutes, from the job's env and the step's, the limits
-#                      gh-read.sh's wait for the tip read stays within.
+#                      gh-read.sh's wait for each read and the post stays within.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
 #                      CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN are read from it and handed
@@ -255,9 +255,10 @@ JQ
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # The run's jobs, read once. The read goes through retry_fetch: five attempts, each bounded at
-# 30 s, the last starting 150 s after the first. The loop that used to stand here, and the
-# second ladder the ci-ok scripts kept beside it, were each a copy of that helper, which is
-# what dispatch://INFRA-1545's R2 refuses: one file holds the attempts for all of CI.
+# 30 s, the last starting 150 s after the first, run through gh-read.sh's gh_wait_reset as every
+# read here is. The loop that used to stand here, and the second ladder the ci-ok scripts kept
+# beside it, were each a copy of that helper, which is what dispatch://INFRA-1545's R2 refuses:
+# one file holds the attempts for all of CI.
 #
 # gh writes into a file rather than into a variable, and the redirection is this shell's own,
 # applied once: the helper buffers each attempt's output and prints the successful attempt's
@@ -269,13 +270,13 @@ trap 'rm -rf "$work"' EXIT
 # times what the call takes. This read is the dominant adder in the report step's budget, and
 # that is why the bound is the call's own size rather than a round number above it
 # (dispatch://INFRA-1545).
-if retry_fetch "the run's job list" 30 -- gh api --paginate \
+if gh_wait_reset retry_fetch "the run's job list" 30 -- gh api --paginate \
   "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
   --jq '.jobs[] | {name, status, conclusion}' > "$work/jobs"; then
   needs=$(jq -n --argjson jobs "$(jq -s . "$work/jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list five times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes" >&2
+  echo "::warning::GitHub refused this run's job list at every attempt, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes" >&2
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)

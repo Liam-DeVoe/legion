@@ -1296,10 +1296,12 @@ echo "Case: release.yaml's codex-envoy publish reads npm's E404 from \`npm view 
 # 11.19.1 printed them in round 53), on stderr and, given --json, as the object {"error":
 # {"code", "summary", "detail"}} npm 11.19.1 writes on stdout; with e504cr, a 504 whose body
 # holds a carriage return, a workflow command and a newline, which npm 11.19.1 writes on stderr
-# with the carriage return kept (round 54) and, given --json, in the summary; with held, a package
-# npm holds, as the JSON string `"@example/codex"` npm prints for it given --json; `view
-# <name>@<version> version` with a failure (no such version); and logs `publish`. Each row judges
-# what the step does, its exit, its warning and whether it publishes.
+# with the carriage return kept (round 54) and, given --json, in the summary; with nojson, a
+# failure whose stdout is text that is no JSON at all, as a proxy's page or an npm that died
+# before it wrote its object leaves, and exit 1; with held, a package npm holds, as the JSON
+# string `"@example/codex"` npm prints for it given --json; `view <name>@<version> version` with
+# a failure (no such version); and logs `publish`. Each row judges what the step does, its exit,
+# its warning and whether it publishes.
 mkdir -p "$work/codex-pub/bin"
 cat > "$work/codex-pub/bin/npm" <<'NPM'
 #!/usr/bin/env bash
@@ -1328,6 +1330,7 @@ case $NPM_PUB_TEST in
     "npm error code E504" "npm error $timeout" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
   e504cr) fail E504 "$timeout"$'\r'"::warning::injected"$'\n'"next line" \
     "npm error code E504" "npm error $timeout"$'\r'"::warning::injected" "npm error next line" ;;
+  nojson) echo '<html><body><h1>504 Gateway Time-out</h1></body></html>'; exit 1 ;;
   held) echo '"@example/codex"' ;;
 esac
 NPM
@@ -1369,6 +1372,14 @@ run_codex_step e504cr
 check "e504cr, a 504 whose summary holds a CR and a workflow command: one ::error:: line, the code and the summary" \
   "$(is "$rc|$(tr '\r' '\n' <<<"$out" | grep -c '^::')|$(grep '^::error::' <<<"$out")" \
     "1|1|::error::reading @example/codex from npm failed: E504: 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fcodex - upstream timed out ::warning::injected next line")"
+# A failure whose stdout is no JSON: `jq -r '.error.code?'` fails on it, and `|| code=` is what
+# keeps the runner's `bash -e` from ending the step there, so the step reaches its one ::error::
+# line, which names no code, and exits 1 on it (dispatch://INFRA-1545, review round 36).
+run_codex_step nojson
+check "nojson, npm exits 1 printing no JSON: the step reaches one ::error:: line, naming no code, and exits 1 after it" \
+  "$(is "$rc|$(grep -c '^::error::' <<<"$out")|$(contains "$out" '^::error::reading @example/codex from npm failed: no code: ')" "1|1|true")"
+check "nojson, npm exits 1 printing no JSON: no warning that npm has no such package, and nothing is published" \
+  "$(is "$(contains "$out" 'npm has no package')|$(published)" "false|0")"
 # npm holds the package, and not this version: the step publishes the build's tarball, once.
 run_codex_step held
 check "held, npm holds the package and not this version: the step exits 0 and publishes once" \

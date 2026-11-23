@@ -2471,7 +2471,8 @@ above it, 21 minutes. This budget matters more than most: ci-ok-reconcile.sh's o
 refused PATCH only warns, because failing that step would turn a passing verdict red, and a step
 the runner cuts does exactly that, since a cut step fails this job and ci-ok is the check main's
 ruleset requires. So that step's figure is written for the head it can meet rather than for the
-one it usually meets.
+one it usually meets. Both calls run through gh-read.sh's gh_wait_reset, so the step passes its
+21 minutes as STEP_TIMEOUT_MINUTES, the limit a rate-limit wait is held to with one more ladder.
 
 ## Why a dispatched run off main reports under names of its own
 

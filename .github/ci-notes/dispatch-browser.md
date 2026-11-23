@@ -1416,6 +1416,9 @@ limit and the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the s
 STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So
 the wait never outlives either budget, and the budgets need no room for it: a step that would
 have to wait past them fails by name instead, and a re-run after the reset reads the jobs again.
+In "Reading one, the rows" no wait can ever fit: that margin, 350 + 30 = 380 s, is more than the
+step's whole 6 min, 360 s, so a rate-limited jobs read there fails by name after its one ladder.
+The key stays at 6 min all the same: a re-run after the reset reads the jobs again.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading

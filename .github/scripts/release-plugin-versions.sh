@@ -43,11 +43,11 @@ legion=$(GITHUB_STEP_SUMMARY='' .github/scripts/release-push.sh version pi-legio
 envoy_version=$(.github/scripts/release-push.sh pair-version pi-envoy-v "$(released_of "$envoy")")
 legion_version=$(.github/scripts/release-push.sh pair-version pi-legion-v "$(released_of "$legion")")
 if [ -z "$legion_version" ]; then
-  echo "::error::Could not resolve @sjawhar/pi-legion version"
+  echo "::error::Could not resolve @sjawhar/pi-legion version" >&2
   exit 1
 fi
 if [ -z "$envoy_version" ]; then
-  echo "::error::Could not resolve @sjawhar/pi-envoy version"
+  echo "::error::Could not resolve @sjawhar/pi-envoy version" >&2
   exit 1
 fi
 {

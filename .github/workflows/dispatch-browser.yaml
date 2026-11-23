@@ -685,6 +685,8 @@ jobs:
         if: always()
         # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
         # 5 x 40 + 150 = 350 s -> 6 min.
+        # No rate-limit wait fits these 360 s: gh-read.sh's margin for the jobs read is
+        # 350 + 30 = 380 s, so a rate-limited jobs read fails by name after its one ladder.
         timeout-minutes: 6
         env:
           GH_TOKEN: ${{ github.token }}

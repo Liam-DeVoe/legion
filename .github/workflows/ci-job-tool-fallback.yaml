@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
     # 1722 + 5 = 1727 s, the measured run with main's seven helm steps added.
-    # 1727 + 6832 = 8559 s -> 143 min.
-    timeout-minutes: 143
+    # 1727 + 12383 = 14110 s -> 236 min.
+    timeout-minutes: 236
     env:
-      JOB_TIMEOUT_MINUTES: 143 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 236 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,8 +54,8 @@ jobs:
 
       - name: Stage the correct bytes of every row a case serves, before the fault
         # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
-        # 3 x 1708 + 1281 + 427 = 6832 s -> 114 min.
-        timeout-minutes: 114
+        # 5 x 1708 + 1281 + 427 + 427 + 2 x 854 = 12383 s -> 207 min.
+        timeout-minutes: 207
         run: .github/scripts/ci-tools-proof.sh stage
 
       - id: origin

@@ -2569,7 +2569,7 @@ SCRIPT_TEST_GATES = [
     # tool-fallback job (main's #3576 gave that rig a harness of its own).
     harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
         (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
-        (".github/ci-tools.yaml", "ci-tools.test.sh:1278-1287 reads every row of this repository's own manifest"),
+        (".github/ci-tools.yaml", "ci-tools.test.sh:1556-1565 reads every row of this repository's own manifest"),
     ]),
     harness("mirror_ci_tools_test", "Test the tool copy filler", f"{SCRIPTS}/mirror-ci-tools.test.sh", [
         (f"{SCRIPTS}/mirror-ci-tools.sh", "the script under test"),
@@ -2659,28 +2659,33 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok.sh:119 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
-        *ci_retry("runner-shutdown.sh:109 sources it for the retry its gh reads go through"),
+        *ci_retry("runner-shutdown.sh:114 sources it for the retry its gh reads go through"),
+        (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:116 sources it for the wait for a rate limit its "
+                                  "composed reads run through"),
     ]),
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
         (f"{SCRIPTS}/ci-ok-hold.sh", "the ci-ok job's hold step, the other script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:316 posts with it, and ci-ok-report.test.sh:475,491 runs it on its own"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:317 posts with it, and ci-ok-report.test.sh:475,491 runs it on its own"),
         *ci_retry("ci-ok-report.sh:128 and ci-ok-hold.sh:98 source it for the retry their gh and git reads go through"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:130 and ci-ok-hold.sh:100 source it for the wait for a rate limit "
-                                  "their composed reads run through, which the cases whose tip, run or refs GitHub "
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:130, ci-ok-hold.sh:100, post-check-run.sh:58 and "
+                                  "runner-shutdown.sh:116 source it for the wait for a rate limit their "
+                                  "composed calls run through, which the cases whose tip, run or refs GitHub "
                                   "refuses run through"),
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok-report.sh:132 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:292 reaches its verdict with it, and ci-ok-report.test.sh's "
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:293 reaches its verdict with it, and ci-ok-report.test.sh's "
                                 "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-reconcile.test.sh", [
         (f"{SCRIPTS}/ci-ok-reconcile.sh", "the script under test"),
-        *ci_retry("ci-ok-reconcile.sh:81 sources it for the retry its gh reads go through"),
+        *ci_retry("ci-ok-reconcile.sh:83 sources it for the retry its gh reads go through"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-reconcile.sh:85 sources it for the wait for a rate limit its "
+                                  "composed read and PATCH run through"),
     ]),
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [

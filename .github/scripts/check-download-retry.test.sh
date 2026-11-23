@@ -2950,7 +2950,7 @@ check "says what to write" "$(contains "$out" 'timeout-minutes: 30. or more')"
 # silenced (the case "a job whose comment derives its key another way is passed over" below).
 # `tool-fallback` of this repository derives its key both ways: .github/ci-budgets.md states its
 # construction, `114 was the 104 this construction gives with ten minutes added`, and the comment
-# above its key also writes `1727 + 6832 = 8559 s -> 143 min`, which the clause reads.
+# above its key also writes `1727 + 12383 = 14110 s -> 236 min`, which the clause reads.
 # The arrow rule, which is this issue's own control moved into the check: a key lowered while
 # its comment is left alone. Before it, each of the nine keys dispatch://INFRA-1545 raised could
 # be put back with its sentence untouched and this check stayed green, because the derivation
@@ -14949,6 +14949,80 @@ check "reads through gh_wait_reset to its gh api, a fetch with no retry" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.gh api. in step .Read the pull request through the wait alone. fetches with no retry")"
 check "and to its curl, a fetch without the floor" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::.curl. in step .Fetch an asset through the wait alone. fetches without the floor")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# Review round 36 of dispatch://INFRA-1545. ci-log-guard.sh's two guards are shell functions
+# that run the helper whole (that file runs `"$@"` in the shell), so the refusal of a
+# `retry_fetch` behind either says why the form is refused all the same: retry_fetch already
+# puts each attempt inside a block of its own, so the guard adds nothing and only hides the
+# call. Under RETRY_BEHIND's sentence, which says the wrapper runs an executable and cannot run
+# the helper, the two checks naming the guards and the check for that sentence fail.
+echo "case: r36 a retry_fetch behind ci_log_guard or ci_log_guard_stderr is refused naming the guard as the shell function it is"
+root=$(fixture r36-retry-behind-guard)
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Call the helper behind ci_log_guard
+        run: |
+          . .github/scripts/ci-retry.sh
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1
+      - name: Call the helper behind ci_log_guard_stderr
+        run: |
+          . .github/scripts/ci-retry.sh
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard_stderr retry_fetch "the pull request" 30 -- gh api repos/o/r/pulls/1 > pull.json
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the helper behind ci_log_guard, naming it ci-log-guard.sh's shell function, which only hides the call" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=11::step 'Call the helper behind ci_log_guard' of job 'build' runs .retry_fetch. behind .ci_log_guard., ci-log-guard.sh's shell function, which runs the helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside a block of its own, so the guard adds nothing and only hides the call from this reading")"
+check "and behind ci_log_guard_stderr, in the same words" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Call the helper behind ci_log_guard_stderr' of job 'build' runs .retry_fetch. behind .ci_log_guard_stderr., ci-log-guard.sh's shell function, which runs the helper inside a stop-commands block of its own: retry_fetch already puts each attempt inside a block of its own, so the guard adds nothing and only hides the call from this reading")"
+check "says of neither guard that it runs an executable" "$(is "$(contains "$out" 'runs an executable')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# Review round 36 of dispatch://INFRA-1545. helper_bound_word reads the seconds word after
+# `gh_wait_reset [--stderr <file>]` as it reads it after nothing, so a composed call whose seconds
+# are a variable is refused naming that variable, as a bare call is (C8 below). Without the
+# function's gh_wait_reset branch it reads no word there, and both refusals name `None`.
+echo "case: r36 a gh_wait_reset retry_fetch call whose seconds are no number is refused naming them"
+root=$(fixture r36-wait-bound-word)
+gh_read_stub "$root"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read behind the wait with its seconds a variable
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          gh_wait_reset retry_fetch "the pull request" "$READ_SECONDS" -- gh api repos/o/r/pulls/1 > pull.json
+      - name: Read behind the wait and its stderr file with its seconds a variable
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          source .github/scripts/gh-read.sh
+          gh_wait_reset --stderr "$RUNNER_TEMP/words" retry_fetch "the pull request" "$READ_SECONDS" -- gh api repos/o/r/pulls/1 > pull.json
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the seconds of gh_wait_reset retry_fetch" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::.gh api. in step 'Read behind the wait with its seconds a variable' is retried by .retry_fetch. with its seconds written as .\\\$READ_SECONDS.")"
+check "and of gh_wait_reset --stderr <file> retry_fetch" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::.gh api. in step 'Read behind the wait and its stderr file with its seconds a variable' is retried by .retry_fetch. with its seconds written as .\\\$READ_SECONDS.")"
+check "names no seconds as None" "$(is "$(contains "$out" 'written as .None.')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a

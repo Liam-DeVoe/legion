@@ -929,6 +929,7 @@ ci_ok_test: &ci_ok_test
   - '.github/scripts/runner-shutdown.sh'
   - '.github/scripts/ci-retry.sh'
   - '.github/scripts/ci-log-guard.sh'
+  - '.github/scripts/gh-read.sh'
 ci_ok_report_test: &ci_ok_report_test
   - *ci_router
   - *ci_filters_data
@@ -953,6 +954,7 @@ ci_ok_reconcile_test: &ci_ok_reconcile_test
   - '.github/scripts/ci-ok-reconcile.sh'
   - '.github/scripts/ci-retry.sh'
   - '.github/scripts/ci-log-guard.sh'
+  - '.github/scripts/gh-read.sh'
 find_pr_payload_test: &find_pr_payload_test
   - *ci_router
   - *ci_filters_data

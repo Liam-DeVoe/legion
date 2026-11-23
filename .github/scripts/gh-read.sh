@@ -7,7 +7,9 @@
 #     gh_wait_reset [--stderr <file>] retry_fetch "<what>" <bound> -- gh ...
 #
 # which .github/scripts/check-download-retry.sh reads as one ladder, as it reads a bare
-# retry_fetch, because of the margin below.
+# retry_fetch, because of the margin below. The two artifact-list reads of
+# ci-job-download-retry.yaml are the exception: they drive retry_fetch under a fault, and main
+# never ran them through this wait, so they stay bare.
 #
 # Sourced, never run: `source "$(dirname "${BASH_SOURCE[0]}")/gh-read.sh"`. It sources
 # ci-log-guard.sh, the file beside it, as ci-retry.sh does, for the block below.
@@ -25,12 +27,16 @@
 # line of its own goes to stderr; stdout holds the stdout of the run it ended on and nothing else,
 # so a run it repeats leaves no half page in the caller's hands.
 #
-# The margin is what the run after the wait, and the step after that run, may still take. For
-# `retry_fetch <what> <bound> -- ...` it is that ladder's whole, five attempts of <bound> seconds
-# and its sleeps of 10, 20, 40 and 80 s, 5 x <bound> + 150 s, plus GH_WAIT_MARGIN; for any other
-# command it is GH_WAIT_MARGIN. So the ladder this runs again never outlives the nearer of the
-# job's and the step's limit: it runs it again only when the wait, the whole ladder and
-# GH_WAIT_MARGIN end before that limit, with no wait (the budget back already) as with one.
+# The margin is the time this call may still take after the wait. For `retry_fetch <what> <bound>
+# -- ...` it is that ladder's whole run, five attempts of <bound> seconds and its sleeps of 10,
+# 20, 40 and 80 s, 5 x <bound> + 150 s, plus GH_WAIT_MARGIN's 30 s; for any other command it is
+# GH_WAIT_MARGIN alone. So the ladder this runs again never outlives the nearer of the job's and
+# the step's limit: it runs it again only when the wait, the whole ladder and GH_WAIT_MARGIN end
+# before that limit, with no wait (the budget back already) as with one.
+# A STATED LIMIT: the margin does not cover the later calls of the same step, and each of them is
+# a ladder of its own. So a wait followed by 5xx answers on those later calls can run the step to
+# its `timeout-minutes`, which the runner reports as the step's timeout, never as a pass. Main put
+# no time bound on those calls.
 #
 # Where the caller sent stdout to stderr (`gh_wait_reset ... >&2`, read as
 # `[ /dev/fd/1 -ef /dev/fd/2 ]`), the run's stdout is text for the log, and it is written inside
@@ -98,11 +104,11 @@
 # namespace, or a run outside Actions), the helper has no deadline and does not wait.
 #
 # Its callers: every GitHub call of cancel-started-act.sh, check-pr-text.sh, find-pr-payload.sh,
-# ci-ok-report.sh's tip read, ci-ok-hold.sh's run read and `git ls-remote` ref reads,
-# dispatch-browser-run-reads.sh's jobs read, and the steps of ci-caches.yaml, dequeued.yaml and
-# main-bypass-check.yaml, each in the form above; and, with no ladder, the release calls of
-# release-push.sh, which R2's exception (d) leaves unretried in the credentialed publish jobs, and
-# check-daemon-api-contract.sh's reads.
+# ci-ok-report.sh, ci-ok-reconcile.sh, post-check-run.sh and runner-shutdown.sh, ci-ok-hold.sh's
+# run read and `git ls-remote` ref reads, dispatch-browser-run-reads.sh's jobs read, and the
+# steps of ci-caches.yaml, dequeued.yaml and main-bypass-check.yaml, each in the form above; and,
+# with no ladder, the release calls of release-push.sh, which R2's exception (d) leaves unretried
+# in the credentialed publish jobs, and check-daemon-api-contract.sh's reads.
 
 if ! command -v ci_log_block_open > /dev/null 2>&1; then
   if [ -r "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh" ]; then
@@ -114,9 +120,10 @@ if ! command -v ci_log_block_open > /dev/null 2>&1; then
   fi
 fi
 
-# Seconds the deadline must leave after the repeated run's own share of the margin: the step's
-# work after it, and the whole of a repeated call that is no ladder. A gh call takes about a second
-# and a paginated read a few.
+# The 30 s the deadline must leave after this call's own run: after a ladder's 5 x <bound> + 150 s,
+# or after the one run of a call with no ladder, where a gh call takes about a second and a
+# paginated read a few. It covers no later call of the same step, each a ladder of its own (the
+# stated limit above).
 GH_WAIT_MARGIN=30
 
 # Every status is taken with `|| status=$?` and every test sits in an `if`, so a caller under

@@ -111,8 +111,8 @@ jobs:
       # directory with no go.mod, so go asks sum.golang.org for the module even when the step
       # above cached its zip, and v2.10.29 is in no module's graph here. So this step runs that
       # read first, under the one retry (ci-budgets.md's Retries note): the script's own
-      # -download, which makes every check and the download the test steps below make, with their
-      # arguments, and builds and tests nothing. The module cache then holds each zip and its
+      # -download, with the test steps' arguments, which makes every check before the download,
+      # and the download, and builds and tests nothing. The module cache then holds each zip and its
       # checksum lookup, and the test steps read no host. Measured in an issue pod with
       # GOPROXY=off and an unreachable checksum database: without this step every forced-order
       # download of this job and daemon-go's fails, and after it the script's go list of the

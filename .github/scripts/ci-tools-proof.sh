@@ -394,7 +394,7 @@ PROBE_BOUND=15
 # twenty-six installs whose control accepts a failure are the timed ones; the head's own nine,
 # which no control lets fail, are not checked against it.
 # Every install of a case carries `continue-on-error: true` and a `timeout-minutes` of its own
-# ladder's arithmetic - 13 for one `ci_tools_fetch`, 25 for setup-bun's two, 33 for install-jj's
+# ladder's arithmetic - 29 for one `ci_tools_fetch`, 57 for setup-bun's two, 65 for install-jj's
 # two and its `mise install` - and a step the runner ends at that bound leaves `outcome=failure`
 # behind it, which is the outcome `report` holds a case to, so a hung install would otherwise
 # pass as a refusal.
@@ -402,14 +402,14 @@ PROBE_BOUND=15
 # says and the control step of the `tool-fallback` job does through the `install-bound` verb,
 # and seven of those eight carry `timeout-minutes: 11`: the steps with the ids `base-crane`,
 # `base-changie`, `base-jj`, `base-bun`, `base-elan`, `base-uv` and `base-pulumi` of the
-# `tool-fallback` job of .github/workflows/ci.yaml. The eighth, `nowhere-pulumi-docker`, carries
-# 13. The bound is on the install step itself, which is a bare `uses:` with an id and no name,
-# rather than on the `Mark when the install with nowhere to go for <tool> began` step before it
-# (review round 22 of dispatch://INFRA-1545 caught this comment naming the mark). They are cited
-# by id rather than by line, because a line number in this file is wrong at the next edit of
-# that one and says nothing when it is. Eleven minutes is therefore the smallest bound any step this figure judges carries,
-# a step held to it ends at about 660 s, and the margin under that is 60 s.
-# The longest single install measured over
+# `tool-fallback` job of .github/workflows/ci-job-tool-fallback.yaml. The eighth,
+# `nowhere-pulumi-docker`, carries 29. The bound is on the install step itself, which is a bare
+# `uses:` with an id and no name, rather than on the `Mark when the install with nowhere to go
+# for <tool> began` step before it (review round 22 of dispatch://INFRA-1545 caught this comment
+# naming the mark). They are cited by id rather than by line, because a line number in this file
+# is wrong at the next edit of that one and says nothing when it is. Eleven minutes is therefore
+# the smallest bound any step this figure judges carries, a step held to it ends at about 660 s,
+# and the margin under that is 60 s. The longest single install measured over
 # 2422 executions between 2026-11-09T19:38Z and 2026-11-10T10:51Z, before the ladders stopped
 # sleeping (dispatch://INFRA-2621), is 326 s (`install-jj` on slow runs), so this leaves 274 s
 # over the slowest healthy install there has been and 60 s under the fastest a held step can

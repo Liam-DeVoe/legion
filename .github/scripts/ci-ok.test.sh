@@ -577,8 +577,8 @@ read -r -d '' clock_probe <<'SH' || true
 advance() {
   local step what
   case $BASH_COMMAND in
-    '_runner_shutdown_check_runs=$(retry_fetch'*) step=$CHECK_RUNS_ADVANCE what='the check-runs read' ;;
-    'annotations=$(retry_fetch'*) step=$ANNOTATIONS_ADVANCE what='an annotations read' ;;
+    '_runner_shutdown_check_runs=$(gh_wait_reset retry_fetch'*) step=$CHECK_RUNS_ADVANCE what='the check-runs read' ;;
+    'annotations=$(gh_wait_reset retry_fetch'*) step=$ANNOTATIONS_ADVANCE what='an annotations read' ;;
     *) return 0 ;;
   esac
   SECONDS=$((SECONDS + step))
@@ -625,7 +625,7 @@ check "fails" "$(is "$status" 1)"
 check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 check "warns that it could not tell a shutdown from a failure" \
-  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 five times')"
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 at every attempt')"
 
 echo "case: GitHub refuses the annotations of a failed job"
 # The check runs are read and typecheck's annotations read is refused, all five attempts of it:
@@ -641,6 +641,6 @@ rm -f "$work/refuse-annotations"
 check "fails" "$(is "$status" 1)"
 check "keeps it a failure" "$(contains "$out" '^typecheck: failure (selected')"
 check "warns that it could not read the job's annotations, naming the job" \
-  "$(contains "$out" '::warning::GitHub refused the annotations of typecheck five times, so its failure cannot be read as a runner shutdown; it stands as a failure')"
+  "$(contains "$out" '::warning::GitHub refused the annotations of typecheck at every attempt, so its failure cannot be read as a runner shutdown; it stands as a failure')"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"

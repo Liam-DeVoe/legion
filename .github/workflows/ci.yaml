@@ -1047,6 +1047,7 @@ jobs:
         # 300 + 480 = 780 s -> 14 min.
         timeout-minutes: 14
         env:
+          STEP_TIMEOUT_MINUTES: 14 # this step's timeout-minutes, for gh-read.sh's wait
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
@@ -1088,6 +1089,7 @@ jobs:
         # 300 + 3 x 300 = 1200 s -> 21 min.
         timeout-minutes: 21
         env:
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, for gh-read.sh's wait
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           CHECK_RUN_ID: ${{ job.check_run_id }}

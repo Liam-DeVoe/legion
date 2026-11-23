@@ -256,9 +256,9 @@ jobs:
       # directory with no go.mod, so go asks sum.golang.org for the module even when the module
       # download above cached its zip. So this step runs that read first, under the one retry
       # (ci-budgets.md's Retries note): the script's own -download, with the test step's
-      # arguments, which makes every check and the download that step makes and builds and tests
-      # nothing. envoy-go-race's step of this name says how it was measured (dispatch://INFRA-1545,
-      # round 57).
+      # arguments, which makes every check before the download, and the download, and builds and
+      # tests nothing. envoy-go-race's step of this name says how it was measured
+      # (dispatch://INFRA-1545, round 57).
       - name: Download the nats-server version forced-order.sh hooks
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18

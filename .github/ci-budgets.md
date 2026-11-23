@@ -127,11 +127,12 @@ its arithmetic is `ci-ok-report.sh`'s two `gh api` reads, of the run's jobs and 
 The first is `ci-ok-report.sh`'s own, on a merge-group run where the reporting job failed, to tell a runner shutdown from a failure of the change;
 where it finds none, the script runs `ci-ok.sh`, which makes the second for the run's failed jobs in a process of its own, so it reads the check runs again rather than reusing the first call's.
 Each call is two reads: the check runs on the head, 5 x 30 + 150 = 300 s, and the annotations loop, which one deadline of 180 s bounds and `check-download-retry.sh`'s DECLARED_LOOPS prices at that deadline plus one read's whole ladder, 180 + 300 = 480 s.
-That is 900 + 2 x (300 + 480) = 2460 s, which `check-download-retry.sh` charges, its DECLARED_LIBRARIES entry for the ci-ok-report action writing the two calls, 1560 s, since round 37 of dispatch://INFRA-1545, and the tip read's ladder since the forward merge of main's #4983 at round 55 put that read through retry_fetch, run through gh-read.sh's gh_wait_reset, which the check charges one ladder as it charges a bare retry_fetch;
+That is 900 + 2 x (300 + 480) = 2460 s, which `check-download-retry.sh` charges, its DECLARED_LIBRARIES entry for the ci-ok-report action writing the two calls, 1560 s, since round 37 of dispatch://INFRA-1545, and the tip read's ladder since the forward merge of main's #4983 at round 55 put that read through retry_fetch, run through gh-read.sh's gh_wait_reset, which the check charges one ladder as it charges a bare retry_fetch, as it charges every other read and the post here since review round 36 put each of them through that wait as well;
 until round 37 this note wrote one call, 600 + 300 + 480 = 1380 s, and a step whose first call found no shutdown went past it, and until round 55 it wrote no tip read, 600 + 2 x (300 + 480) = 2160 s, with a budget of 38 minutes.
 2460 s is a whole 41 minutes, so rule 8 would take 42 minutes, 2520 s, and the budget is 2580 s, 43 minutes, the same one minute over that the 720 s and 660 s of the two ladders alone carried.
 That step posts the required `ci-ok` check, so a budget that cut it between its ladders would lose the check run rather than report a failure, and the extra minute is what keeps the report itself from being the thing that goes missing.
-Every job's report step carries that 43, and its STEP_TIMEOUT_MINUTES with it, since the tip read's wait is held to it; a job whose slowest retried step is the report adds 2460 s, the arithmetic, to its first term; ci.yaml's ci-ok verdict step, which sources `runner-shutdown.sh` alone and makes one call, carries its two reads, 300 + 480 = 780 s -> 14 min.
+A STATED LIMIT, which gh-read.sh's header states too: a rate-limit wait on one of these calls is held to the step's limit with that call's own ladder and 30 s after it, not with the calls after it, so a wait and then 5xx answers on those later calls can still run the step to its 43 minutes, which the runner reports as the step's timeout, never as a pass.
+Every job's report step carries that 43, and its STEP_TIMEOUT_MINUTES with it, since each read's wait and the post's is held to it; a job whose slowest retried step is the report adds 2460 s, the arithmetic, to its first term; ci.yaml's ci-ok verdict step, which sources `runner-shutdown.sh` alone and makes one call, carries its two reads, 300 + 480 = 780 s -> 14 min, and its STEP_TIMEOUT_MINUTES with them.
 
 That check holds a job's own budget above each of its steps' arithmetic too, which is the half of this derivation a check can make:
 it reads the attempts and not the measurement, and a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own budget can name the site that failed.
@@ -451,10 +452,10 @@ The other 36 kept the pinned ladder: the kept case's own fetch at 63 s, which is
 That is 18, three more than the 15 this list came to at the 120 s bound, because the kept case's own ladder moved from (5) to (8), and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the limit must stand above the sum rather than at it.
 The helm row adds seven steps to that sum and no minute, the head's own `install-helm` and the corrupt, install and report steps of cases 17 and 18, for the reason .github/ci-notes/ci-job-tool-fallback.md's "The job's budget, and the bound every install step carries" gives: its tarball's four reads, about 70 MB, are less than one Bun tarball of item (3), and its two fetches of get.helm.sh under the fault are shortened to about a second each.
 IT WAS NOT DERIVED FROM THAT SUM: 114 was the 104 this construction gives with ten minutes added, the same ten the 75 before it carried over 65, when what had to fit inside it was the staging step's 5124 s, 86 minutes.
-That step is now 6832 s, 114 minutes, whose derivation is beside it in `.github/workflows/ci-job-tool-fallback.yaml` - far above these 18 minutes of steps - and the same construction gives 114 + 18 = 132, and 142 with the ten.
-The key carried 115, one minute above that construction, so that it also cleared the Budgets note's sum, and it now carries 143, one minute above the 142, for the same reason; the paragraphs below add that sum up.
+That step is now 12383 s, 207 minutes, whose derivation is beside it in `.github/workflows/ci-job-tool-fallback.yaml` - far above these 18 minutes of steps - and the same construction gives 207 + 18 = 225, and 235 with the ten.
+The key carried 115, one minute above that construction, so that it also cleared the Budgets note's sum, then 143, one minute above the 142 the staging step's old 114 minutes gave, and it now carries 236, one minute above the 235, for the same reason; the paragraphs below add that sum up.
 The sum is what runs beside that step, not the thing the limit is built from.
-This budget replaced 65 minutes with a limit of 75, then carried 114, then 115 and now 143, and 45 of those original 65 were the twenty-one steps whose primary the fault holds, allowed at 126 s each.
+This budget replaced 65 minutes with a limit of 75, then carried 114, then 115, then 143 and now 236, and 45 of those original 65 were the twenty-one steps whose primary the fault holds, allowed at 126 s each.
 That 126 s is what a negative control costs, because it drives two ladders;
 the other fourteen of those steps drive one and cost about 64 s, so the old allowance was about twice what two thirds of them could cost.
 What one ladder costs, and how it is derived, is in the comment above ci_tools_curl of .github/scripts/ci-tools.sh.
@@ -465,27 +466,28 @@ So the durations above stand and the limit does not (dispatch://INFRA-1545).
 The rule every other budget of `.github/workflows/ci.yaml` is written to (the Budgets note)
 — a job carries its measured duration plus the arithmetic of its single slowest retried step
 — is what the tool-fallback job's key now clears as well as its construction:
-the job's 28.7-minute run, job 129478173535, is 1722 s; with the helm row's seven steps added at the 5 s they took in job 137926467879 (`install-helm` 3 s, and cases 17 and 18 2 s in all, in the merge-group run of main's #5152), 1722 + 5 = 1727 s; and 1727 s and the staging step's 6832 s come to 8559 s, 21 s under the 8580 s of the 143 minutes the key carries.
-It carried 114, the construction this section gave at the staging step's 86 minutes, until review round 29 of dispatch://INFRA-1545 read that 6 s under the sum, and the one minute over the construction that closed it is the minute 143 carries over 142, at no cost to any run that finishes.
+the job's 28.7-minute run, job 129478173535, is 1722 s; with the helm row's seven steps added at the 5 s they took in job 137926467879 (`install-helm` 3 s, and cases 17 and 18 2 s in all, in the merge-group run of main's #5152), 1722 + 5 = 1727 s; and 1727 s and the staging step's 12383 s come to 14110 s, 50 s under the 14160 s of the 236 minutes the key carries.
+It carried 114, the construction this section gave at the staging step's 86 minutes, until review round 29 of dispatch://INFRA-1545 read that 6 s under the sum, and the one minute over the construction that closed it is the minute the key has carried over its construction since, 236 over 235 now, at no cost to any run that finishes.
 What keeps the job's retried steps diagnosable is still their position, which the paragraph after this one gives.
-The slowest retried step there is the staging step, whose sixteen ladders its own comment derives as 6832 s under the 114 minutes that step carries, above either blob read's 4397 s (one step per machine's five ghcr-mirror rows, as "The ci-images job's ceiling and the tool copy" says why), install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2460 s.
+The slowest retried step there is the staging step, whose twenty-nine ladders its own comment derives as 12383 s under the 207 minutes that step carries, above either blob read's 4397 s (one step per machine's five ghcr-mirror rows, as "The ci-images job's ceiling and the tool copy" says why), install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2460 s.
 The three minutes of steps this section counts for the job are all that runs before it
 — measured at 0.3 minutes in job 129478173535, a 28.7-minute run of the job
-— so a staging step that spends its whole ladder ends on its own budget at about 114 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
+— so a staging step that spends its whole ladder ends on its own budget at about 207 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
 
 THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the arithmetic above does not give it.
-A retried step is diagnosable only where its whole ladder fits before the job's limit, so a step whose ladder is N minutes has to START before minute 143 - N:
-the staging step's 6832 s needs to begin before minute 29, and a 29-minute install starting after minute 114 would be cut by the limit and would report GitHub's bare line rather than its own.
+A retried step is diagnosable only where its whole ladder fits before the job's limit, so a step whose ladder is N minutes has to START before minute 236 - N:
+the staging step's 12383 s, 207 minutes, needs to begin before minute 29, and a 29-minute install starting after minute 207 would be cut by the limit and would report GitHub's bare line rather than its own.
 What keeps every retried step of the tool-fallback job diagnosable is that the long ones run early:
 the staging step first, and no retried step of job 129478173535 reached past 41.6 minutes.
 A step added late with a ladder of its own has to be read against the job's limit rather than assumed safe by it.
 
 THE STAGING STEP'S BUDGET IS PRICED BY A DECLARATION, which is worth its own sentence:
 rule 8 reads a call of ci_tools_fetch as a call of that function and not as a call of the file defining it, so on its own it would charge the step the library once, 1708 s, and since round 37 of dispatch://INFRA-1545 it refuses a loop of such calls unless a declaration writes its figure;
-the DECLARED_LIBRARIES entry in .github/scripts/check-download-retry.sh writes this step's 6832 s, so rule 8 holds the step's 114 minutes and the job's 143 above that sum, and the job's slowest step on its `--jobs` row is this one.
+the DECLARED_LIBRARIES entry in .github/scripts/check-download-retry.sh writes this step's 12383 s, so rule 8 holds the step's 207 minutes and the job's 236 above that sum, and the job's slowest step on its `--jobs` row is this one.
 At the 120 s bound this change replaced, the same derivation gave twelve ladders of 247 s, 2964 s, and that step's key read 50;
 nothing but the bound moved it, and test round 39 of dispatch://INFRA-1545 is what found it standing 36 minutes under its own worst case.
 Before main's #4214 put a fourth ladder in each `ci_tools_fetch`, the same derivation at the 300 s bound gave twelve ladders of 427 s, 5124 s, and the step's key read 86 and the job's 115.
+Until review round 36 of dispatch://INFRA-1545 the derivation counted five of the ten staged rows, sixteen ladders, 6832 s, and the step's key read 114 and the job's 143: elan, uv, pulumi-docker and pulumi-cli, staged since #3280, and helm, staged since main's #5152, were in no figure, and their thirteen ladders are what 12383 s adds.
 
 ## What the tool-fallback job's eleven-minute installs are derived from
 
@@ -494,7 +496,7 @@ eight marks, one `echo` each before an install with nowhere to go, and the watch
 The tenth is the watch's start, 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, which the step list in "The tool-fallback job's budget, part by part" allows for;
 the watch itself is a sampler beside the job (dispatch://INFRA-2605).
 
-SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the eighth, the docker provider plugin's, 13.
+SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the eighth, the docker provider plugin's, 29, its one `ci_tools_fetch`'s 1708 s.
 Every other install of this job and of tool-fallback-arm carries its own ladder's arithmetic instead
 — 29 for one `ci_tools_fetch`, 57 for setup-bun's two, 65 for install-jj's two and its `mise install`, each the figure this change's 300 s ladder gives at a `ci_tools_fetch`'s four ladders, where the same three were 22, 43 and 51 at its three before main's #4214 and 13, 25 and 33 at the 120 s bound
 — and the twenty-six installs whose control accepts a failure are timed as well, since a step the runner ends at its own bound leaves `outcome=failure` behind it and only the wall time tells a hang from the refusal the case expects.

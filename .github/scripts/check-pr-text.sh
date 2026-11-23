@@ -554,17 +554,14 @@ else
       # empty line printf would write for it reaches nothing but that notice. `|| true` on the
       # status-line read below lets an answer with no status line at all reach the `no 200 status
       # line` UNKNOWN rather than end the script.
-      # Each attempt rewrites gh-error, so the last one's message is what UNKNOWN names, by its
-      # last line, each control character a space. On an HTTP error gh 2.98.0 ends its standard
-      # error with `gh: <message> (HTTP <code>)`, which spans lines when the message holds a
-      # newline, its last line then the message's last line and the `(HTTP <code>)`; or with
-      # `gh: HTTP <code>` when the body holds no JSON message. A string `errors` field gives
-      # `gh: <error> (<message>)`, and gh may add a line after it hinting at a token's scopes or an
-      # SSO authorization. gh alone writes gh-error, so no line of retry_fetch's own, and no marker
-      # of its stop-commands blocks, can be the line UNKNOWN names. The attempt then copies those
-      # words to its standard error, inside its block, where the log keeps them and gh_wait_reset
-      # reads a rate limit's refusal in them; it takes no --stderr here, which would send every
-      # attempt's lines, retry_fetch's own among them, to that file rather than to the log.
+      # Each attempt rewrites gh-error, so the last one's words are what UNKNOWN names: gh's last
+      # line of standard error, each control character a space. On an HTTP error that line usually
+      # carries gh's own `(HTTP <code>)`, and it can be a hint gh adds after it. gh alone writes
+      # gh-error, so no line of retry_fetch's own, and no marker of its stop-commands blocks, can be
+      # the line UNKNOWN names. The attempt then copies those words to its standard error, inside
+      # its block, where the log keeps them and gh_wait_reset reads a rate limit's refusal in them;
+      # it takes no --stderr here, which would send every attempt's lines, retry_fetch's own among
+      # them, to that file rather than to the log.
       # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
       if ! gh_wait_reset retry_fetch "the release of $tag" 30 -- bash -c \
         'response=$(gh api "$1" -i 2> "$2"); status=$?; cat "$2" >&2
