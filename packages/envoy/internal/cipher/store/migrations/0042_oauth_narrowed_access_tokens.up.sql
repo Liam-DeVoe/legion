@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0041_oauth_narrowed_access_tokens.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0042_oauth_narrowed_access_tokens.up.sql
 -- The access tokens a trade narrowed to reading: a token exchange that asked for the scope read
 -- mints a token that keeps the identity its trade would have had, holds read, and writes nothing
 -- (oauthstore.Store.CreateAccessTokenSession). Each row has oauth_access_tokens' columns and two
