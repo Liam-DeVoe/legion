@@ -627,7 +627,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
   }
 });
 
-// SLOW(>=2s): three sends, the first held two seconds by the test.
+// SLOW(>=2s): three sends, the first two each held two seconds by the test.
 test("Send is held until the answer and Done returns the focus", async ({ browser }) => {
   await setLiveSessions([builder, checker]);
   await seedAgentThread({
@@ -711,11 +711,46 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     );
     expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
 
-    // From the New message control: Done gives the focus back to it.
+    // From the New message control, to both sessions: one broadcast, its answer held two
+    // seconds.
     const control = controlRow(page).locator("[data-inbox-compose]");
     await control.click();
     await expect(dialog).toBeVisible();
-    await writeAndSend();
+    await pickRecipients(page, [builder.title, checker.title]);
+    await dialog
+      .getByRole("textbox", { name: "Broadcast message" })
+      .fill("Freeze at five, please.");
+    const mode = listTrigger(dialog, "Delivery mode");
+    await expect(mode).toHaveAccessibleName("Delivery mode BTW");
+    await page.route("**/api/v1/broadcasts", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const response = await route.fetch();
+      await sleep(2_000);
+      await route.fulfill({ response });
+    });
+    const broadcastAnswer = answerTo(page, "/api/v1/broadcasts");
+    await dialog.getByRole("button", { name: "Send to 2" }).click();
+    // While it is held, the Delivery mode list is held with Send: a click and ArrowDown open
+    // nothing, and the mode stays the one that went out.
+    await expect(mode).toHaveAttribute("aria-disabled", "true");
+    // Forced: Playwright waits for an aria-disabled control to turn enabled before it clicks,
+    // and a person's click lands at once.
+    await mode.click({ force: true });
+    await page.keyboard.press("ArrowDown");
+    // A frame and a task on, by when a list the click or the key opened is drawn. The answer is
+    // still held there.
+    await frameAndTask(page);
+    await expect(mode).toHaveAttribute("aria-disabled", "true");
+    // Read once: a read that waits passes at once on a list that has not opened yet.
+    expect(
+      await mode.getAttribute("aria-expanded"),
+      "the held Delivery mode list after a click and ArrowDown"
+    ).toBe("false");
+    await expect(mode).toHaveAccessibleName("Delivery mode BTW");
+    await (await broadcastAnswer).finished();
+    await page.unroute("**/api/v1/broadcasts");
+
+    // Done gives the focus back to the control.
     await done.click();
     await expect(dialog).toHaveCount(0);
     expect(await holdsFocus(control), `after Done the focus is on ${await focusHolder(page)}`).toBe(
