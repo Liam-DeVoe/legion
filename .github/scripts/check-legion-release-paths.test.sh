@@ -139,6 +139,24 @@ run_check "$root"
 check "exits 1 with no --" "$(is "$status" 1)"
 check "says so" "$(contains "$out" 'LEGION_VERSION_ARGS has no `--`')"
 
+echo "case: a listing longer than one environment variable can hold"
+# 500 packages with 245-character directory names make a go list output of about 180 KiB, more
+# than the 128 KiB one environment variable holds: the check handed its listing over in one once,
+# and CI's runner refused the python with "Argument list too long".
+root=$(fixture long-listing)
+pad=$(printf '%0240d' 0)
+imports=""
+for i in $(seq 1 500); do
+  mkdir -p "$root/packages/envoy/p${i}_$pad"
+  printf 'package p%s\n' "$i" > "$root/packages/envoy/p${i}_$pad/p.go"
+  imports+=$'\t_ "github.com/example/envoy/p'"${i}_$pad"$'"\n'
+done
+printf 'package main\n\nimport (\n%s)\n\nfunc main() {}\n' "$imports" > "$root/packages/daemon/cmd/legion/main.go"
+release "$root" 'packages/daemon/ packages/envoy/'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts every package" "$(contains "$out" 'covers all 501 packages of this repository')"
+
 echo "case: go list fails"
 root=$(fixture broken)
 printf 'package helper\n\nimport "github.com/example/daemon/internal/gone"\n\nfunc Help() { gone.Gone() }\n' \

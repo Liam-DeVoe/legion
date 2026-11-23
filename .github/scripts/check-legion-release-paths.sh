@@ -25,20 +25,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-errors=$(mktemp)
-trap 'rm -f "$errors"' EXIT
+# The listing goes to python in a file, not in a variable of its environment: the legion binary
+# links hundreds of packages, and their module-cache paths overran one variable's limit (128 KiB,
+# "Argument list too long") on CI's runner.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 
 # Each package go list prints that is not of the standard library: its directory, a tab, and the
 # root directory of the module it belongs to.
 format='{{if not .Standard}}{{.Dir}}{{"\t"}}{{with .Module}}{{.Dir}}{{end}}{{"\n"}}{{end}}'
-if ! listed=$(cd packages/daemon && go list -deps -f "$format" ./cmd/legion 2>"$errors"); then
+if ! (cd packages/daemon && go list -deps -f "$format" ./cmd/legion) >"$work/listed" 2>"$work/errors"; then
   echo "::error file=packages/daemon/cmd/legion::go list -deps ./cmd/legion failed in packages/daemon, so the packages the legion binary links are unknown:" >&2
-  cat "$errors" >&2
+  cat "$work/errors" >&2
   exit 1
 fi
 
-LISTED=$listed python3 <<'PY'
-import os
+python3 - "$work/listed" <<'PY'
 import sys
 from pathlib import Path
 
@@ -93,7 +95,7 @@ def ours(directory: str):
 
 
 packages, modules = set(), set()
-for line in os.environ["LISTED"].splitlines():
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
     if not line.strip():
         continue
     directory, _, module = line.partition("\t")
