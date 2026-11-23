@@ -77,6 +77,7 @@ export function ArtifactHeader({
   artifact,
   children,
   highlight,
+  documentActions = false,
   isClosed = false,
   onShowDiffChange,
   showDiff = false,
@@ -85,6 +86,12 @@ export function ArtifactHeader({
   version,
 }: {
   artifact: Artifact;
+  /** Draw Correct title and Remove where no toolbar is given. With a toolbar the header draws
+   *  them beside the document's version controls, as it always has. The new issue page gives its
+   *  opened document's header none, since it draws the version controls beside its views
+   *  (`features/issue-page/VersionControl.tsx`), and asks for these two alone (dispatch://INFRA-1196
+   *  part N's R2). Off by default, which is today's header. */
+  documentActions?: boolean;
   children: ReactNode;
   highlight: boolean;
   isClosed?: boolean;
@@ -144,10 +151,17 @@ export function ArtifactHeader({
 
   return (
     <section className="space-y-4">
+      {/* The ring is a two-second cue that the address landed here, so for two seconds this
+          header draws something the page is about to stop drawing. It is marked while it does,
+          as a Markdown body is marked while it still owes its formatting
+          (`data-markdown-pending`): a reader is meant to see the ring, and a layer that reads
+          the page as a reader does has to be able to wait for it to go. The ring is a box
+          shadow and moves nothing. */}
       <header
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-landing-ring={highlighted || undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">
@@ -292,6 +306,27 @@ export function ArtifactHeader({
                   <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
                 </div>
               </div>
+            )}
+          </div>
+        ) : null}
+        {documentActions && toolbar === undefined ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            {!correctionIsOffered(artifact) ? null : (
+              <CorrectTitle
+                artifact={artifact}
+                refusal={isClosed ? CLOSED_ISSUE_RENAME_REFUSAL : null}
+              />
+            )}
+            {issueKey === null || !removalIsOffered(artifact) ? null : (
+              <RemoveDocument
+                artifact={artifact}
+                onRemoved={() =>
+                  // As the toolbar's own Remove does: the address stays on the document the issue
+                  // no longer holds, so the page says it is gone.
+                  navigate(buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug }))
+                }
+                refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+              />
             )}
           </div>
         ) : null}

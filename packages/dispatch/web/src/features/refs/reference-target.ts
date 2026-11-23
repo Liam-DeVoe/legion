@@ -27,6 +27,7 @@ import type {
   ReferenceQuestions,
 } from "../../api/types";
 import { useMarginDrawer } from "../issue-page/margin-slot";
+import { useKnownReferenceName } from "../issue-page/reference-names";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
@@ -290,6 +291,21 @@ function blockReferenceOf(route: DispatchReferenceRoute | undefined): string | u
   return route !== undefined && "block" in route && route.block !== undefined
     ? buildDispatchReference(route)
     : undefined;
+}
+
+/**
+ * What the page has already read of the block `route` names, in its one batched read of names
+ * (`issue-page/reference-names.tsx`, dispatch://INFRA-1196 R20 and part N's R8): `name`, the
+ * block's stored words, known at once, and `headline`, what a link draws from them, which
+ * arrives a commit later. Both are undefined for a route that names no block, and on a page that
+ * read no name for it, which is every page but the new issue page. A link with a name makes no
+ * read of its own (`RefLink.tsx`). The batched read answers a block's words with no reading of
+ * them, so they are the headline's markdown fallback.
+ */
+export function useKnownBlockName(route: DispatchReferenceRoute | undefined) {
+  const name = useKnownReferenceName(blockReferenceOf(route));
+  const headline = useMarkdownHeadline(undefined, TITLE_HEADLINE_MAX, name);
+  return { headline, name };
 }
 
 /** The reference's target records, each present once its query resolved. `issue` is the issue

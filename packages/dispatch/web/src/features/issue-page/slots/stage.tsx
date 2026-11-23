@@ -8,6 +8,7 @@ import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { useStageLanding } from "../stage-landing";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
@@ -50,6 +51,10 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
  * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
  * focus back as it leaves.
+ *
+ * Part N's first branch stands before them (its R1, R6): what an item's address lands on in
+ * place of the stage, and the document or file an address opens, drawn in place of the outline
+ * and of every view, inside the same `DocumentStages` (`stage-landing.tsx`).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -64,6 +69,7 @@ export function StageSlot({
   readonly views?: ViewSlots;
 }): ReactNode {
   const { hash, search } = useLocation();
+  const landed = useStageLanding(props);
   const following = useFollowing();
   const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const { preset } = address;
@@ -101,6 +107,8 @@ export function StageSlot({
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
+  if (landed.instead !== undefined) return landed.instead;
+  if (landed.document !== undefined) return <DocumentStages>{landed.document}</DocumentStages>;
   return (
     <DocumentStages>
       <ReaderActsWatch into={acts} key={following} />

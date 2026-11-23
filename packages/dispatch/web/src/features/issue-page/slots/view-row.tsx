@@ -15,6 +15,8 @@ import { useOutlineReads } from "../outline-reads";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
+import { useIssueTree } from "../useIssueTree";
+import { useViewRowTools } from "../view-row-tools";
 
 /**
  * The view row (R2, R11): the five view controls and Keys
@@ -35,6 +37,11 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * page scrolls; above, it scrolls away with the header. While it stays it stands over the page
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
+ *
+ * Part N adds the row's three small controls, the version control, the node menu and the filter
+ * by words, before Keys, and at 760 px and below the Outline sheet that holds them with a view on
+ * or a document open too (`view-row-tools.tsx`); its props come after part D's, so its sheet
+ * stands in place of D's Outline control where it draws one.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -64,6 +71,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
+  const tools = useViewRowTools(props);
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -74,6 +82,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
         issueKey={issue.key}
         outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
         signals={signals}
+        {...tools}
       />
     </div>
   );
