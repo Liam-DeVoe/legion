@@ -96,8 +96,11 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
 // generation, and tells what passed over earlier (tellPassedOver): the project's default steps for
 // none (defaultRows), a plan of another generation carried from its start (CarryPlan without
-// carried), and the generation's own rows kept as they are. planFirstStep and the stop of a task
-// before that step (taskStopped) take the first plan through it.
+// carried), and the generation's own rows kept as they are. Each task of the run then takes a fix
+// (MarkRunFixesCI): the run starts in this release, so a check that a CI job runs and that fails
+// at a task's head starts the task's first implementation step again beside its other steps.
+// planFirstStep and the stop of a task before that step (taskStopped) take the first plan through
+// it.
 func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
@@ -110,6 +113,9 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 		if err := e.store.CarryPlan(ctx, tx, issue.Key, stored.Version.Generation, issue.Generation, false); err != nil {
 			return err
 		}
+	}
+	if err := e.store.MarkRunFixesCI(ctx, tx, issue.Key, issue.Generation); err != nil {
+		return err
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
