@@ -659,7 +659,9 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it; a root's close releases any admission
+A child's close deletes its pod, and the disk goes with it. Where the close is the child's merge
+and a production check opens, the pod and its disk go when the check's first look ends. A root's
+close releases any admission
 slot its issues still held, which happens once no other issue of its tree is still in the
 workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
