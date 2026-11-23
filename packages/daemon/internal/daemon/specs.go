@@ -342,11 +342,11 @@ type stepWorker struct {
 	token    claim.Token
 }
 
-// stepWorkersOf is each step of p, by task and place, with the claim of its agent: the token
-// claim.AgentToken spells from the name of the step's agent (record.PlanStep.AgentName), which
-// every step of a task with stored plan rows holds, its default steps included, and for a step of
-// the key owner, whose agent is the tree's architect and has no name on the issue, that
-// architect's token. A nil plan has no step.
+// stepWorkersOf is each step of p, by task and place, with the claim of its agent
+// (record.StepToken): the token of the name of the step's agent, which every step of a task with
+// stored plan rows holds, its default steps included, and for a step of the key owner, whose agent
+// is the tree's architect and has no name on the issue, that architect's token. A nil plan has no
+// step.
 func stepWorkersOf(project, issue, tree string, p *record.StoredPlan) ([]stepWorker, error) {
 	if p == nil {
 		return nil, nil
@@ -354,13 +354,7 @@ func stepWorkersOf(project, issue, tree string, p *record.StoredPlan) ([]stepWor
 	var workers []stepWorker
 	for _, task := range slices.Sorted(maps.Keys(p.Steps)) {
 		for _, step := range p.Steps[task] {
-			var token claim.Token
-			var err error
-			if name := step.AgentName(); name != "" {
-				token, err = claim.AgentToken(project, issue, name)
-			} else {
-				token, err = claim.NewToken(project, tree, claim.RoleArchitect)
-			}
+			token, err := record.StepToken(project, issue, tree, step)
 			if err != nil {
 				return nil, fmt.Errorf("the agent of step %d of task %s of %s: %w", step.Position, task, issue, err)
 			}

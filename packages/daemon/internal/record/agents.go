@@ -36,12 +36,9 @@ const maxAgentName = 32
 // agent of each role for an issue, and the caller refuses such a version before it writes anything
 // (UnnamedAgents).
 //
-// The steps of one key are one agent (plan.AgentOf), so they share one name in every task.
+// The steps of one key are one agent (PlanStep.PlanAgent), so they share one name in every task.
 func NameAgents(earlier, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
-	agentOf := func(s PlanStep) plan.Agent {
-		return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
-	}
 	keyNames := earlierKeyNames(earlier)
 	names := map[plan.Agent]claim.Agent{}
 	taken := map[claim.Agent]bool{}
@@ -52,7 +49,7 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		}
 	}
 	for _, step := range named {
-		agent := agentOf(step)
+		agent := step.PlanAgent()
 		if _, done := names[agent]; done {
 			continue
 		}
@@ -70,7 +67,7 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		}
 	}
 	for _, step := range named {
-		agent := agentOf(step)
+		agent := step.PlanAgent()
 		if agent.Key != "" {
 			continue
 		}
@@ -79,7 +76,7 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		}
 	}
 	for _, step := range named {
-		agent := agentOf(step)
+		agent := step.PlanAgent()
 		if _, ok := names[agent]; ok {
 			continue
 		}
@@ -91,7 +88,7 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		give(agent, name)
 	}
 	for i := range named {
-		named[i].Agent = names[agentOf(named[i])]
+		named[i].Agent = names[named[i].PlanAgent()]
 	}
 	return named
 }
@@ -121,7 +118,7 @@ func UnnamedAgents(earlier, named []PlanStep) []UnnamedAgent {
 	var unnamed []UnnamedAgent
 	seen := map[plan.Agent]bool{}
 	for _, step := range named {
-		agent := plan.AgentOf(step.Task, step.Position, plan.Step{Role: step.Role, Key: step.AgentKey})
+		agent := step.PlanAgent()
 		if seen[agent] || agent.Owner() {
 			continue
 		}
@@ -146,7 +143,7 @@ func earlierKeyNames(earlier []PlanStep) map[string]claim.Agent {
 	names := map[string]claim.Agent{}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		row := earlier[i]
-		agent := plan.AgentOf(row.Task, row.Position, plan.Step{Role: row.Role, Key: row.AgentKey})
+		agent := row.PlanAgent()
 		if agent.Key == "" || agent.Owner() || row.AgentName() == "" {
 			continue
 		}

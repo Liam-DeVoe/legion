@@ -152,6 +152,12 @@ type PlanStep struct {
 	Agent claim.Agent
 }
 
+// PlanAgent is the agent of the step (plan.AgentOf): the agent of its key, which every step of that
+// key shares in any task, or for a step with no key the agent of that step alone.
+func (s PlanStep) PlanAgent() plan.Agent {
+	return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
+}
+
 // AgentName is the name of the step's agent: the last part of its claim token, and the one reader
 // of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
 // names the tree and no name on the issue. A step a release before the column wrote holds none and
@@ -159,12 +165,24 @@ type PlanStep struct {
 // the owner's, so its role named its agent.
 func (s PlanStep) AgentName() claim.Agent {
 	switch {
-	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
+	case s.PlanAgent().Owner():
 		return ""
 	case s.Agent != "":
 		return s.Agent
 	}
 	return claim.Agent(s.Role)
+}
+
+// StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
+// project (already a claim.ProjectToken): the one rule of a step's token, which the workflow writes
+// when the step starts and a launch's addressing names. A step of the key owner is the tree's
+// architect's, whose token names the tree and no name on the issue; every other step's is the token
+// of its agent's name (AgentName), so the steps of one key are one claim.
+func StepToken(project, issue, tree string, step PlanStep) (claim.Token, error) {
+	if step.PlanAgent().Owner() {
+		return claim.NewToken(project, tree, claim.RoleArchitect)
+	}
+	return claim.AgentToken(project, issue, step.AgentName())
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
