@@ -868,12 +868,14 @@ func (w *walker) typePkgPath(e ast.Expr, value types.Object) bool {
 }
 
 // pkgPathOf is the package e names as reflect.TypeFor[T]().PkgPath() does, T a named type: e
-// itself, or a package-level variable whose one store is that initializer (collectStores); "" for
-// any other expression.
+// itself, or an unexported package-level variable whose one store is that initializer
+// (collectStores); "" for any other expression. collectStores reads the stores of the guard's own
+// package, and an exported variable can be stored to by any package that imports it, so an
+// exported one names no package here.
 func (w *walker) pkgPathOf(e ast.Expr) string {
 	if id, ok := ast.Unparen(e).(*ast.Ident); ok {
 		v, ok := w.info.Uses[id].(*types.Var)
-		if !ok || v.Pkg() == nil || v.Parent() != v.Pkg().Scope() || len(w.stores[v]) != 1 || w.inits[v] == nil {
+		if !ok || v.Exported() || v.Pkg() == nil || v.Parent() != v.Pkg().Scope() || len(w.stores[v]) != 1 || w.inits[v] == nil {
 			return ""
 		}
 		e = w.inits[v]

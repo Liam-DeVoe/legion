@@ -204,6 +204,7 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 		{"the receiver stored again after the guard", edit("\tuseDirect :=", "\tkvs = handle\n\tuseDirect :="), entry, clean, false, "stored to 2 times"},
 		{"the receiver's address taken", edit("\tuseDirect :=", "\t_ = &kvs\n\tuseDirect :="), entry, clean, false, "stored to 2 times"},
 		{"the guard's variable stored again", guardedRead + "\nfunc init() { libPackage = \"example.com/lib\" }\n", entry, clean, false, "does not run only under a guard"},
+		{"the guard's variable is exported, so another package can store to it", strings.ReplaceAll(guardedRead, "libPackage", "LibPackage"), entry, clean, false, "does not run only under a guard"},
 		{"a label in the function", edit("\treturn useDirect.Bool()", "\tif false {\n\t\tgoto done\n\t}\ndone:\n\treturn useDirect.Bool()"), entry, clean, false, "holds a label"},
 		{"a pointer type names no package", edit("reflect.TypeFor[lib.Conn]()", "reflect.TypeFor[*lib.Conn]()"), entry, clean, false, "does not run only under a guard"},
 		{"the entry names another package", guardedRead, &reflectionExempt{File: entry.File, Function: entry.Function, GuardedPackage: "example.com/other", Why: "test"}, clean, false, "the guard here holds the value's type to example.com/lib"},
