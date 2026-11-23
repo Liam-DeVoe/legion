@@ -239,9 +239,9 @@ func TestAdvancesRelation(t *testing.T) {
 // TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites reads the two halves of the
 // revision rule that a reading of "below the revision this issue holds" would have left open.
 //
-// The revision is a seq of `priority_tuples`, which is one `bigserial` the whole store draws
-// from, so a revision read off another issue stands above this issue's own however stale it is
-// as an answer about this issue. Such a write is refused, and so is one carrying a number no
+// The revision is a seq of `graph_tuples`, which is one `bigserial` every writer of the store
+// draws from, so a revision read off another issue stands above this issue's own however stale it
+// is as an answer about this issue. Such a write is refused, and so is one carrying a number no
 // tuple ever drew.
 //
 // The refusal is decided before the handler writes anything, so a refused write that also
@@ -305,6 +305,78 @@ func TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites(t *testing.T) {
 	}
 	if got := advanceEntries(readTestIssue(t, handler, subject.Key).Advances); !slices.Equal(got, []string{second + " own"}) {
 		t.Fatalf("%s advances %v after the accepted write, want %s alone", subject.Key, got, second)
+	}
+}
+
+// TestTheAdvancesRevisionIsTheSeqOfTheIssuesNewestStoreTuple reads the revision rule across a
+// write, over the store the relation is written to. The revision an issue answers is the seq of
+// the newest `graph_tuples` row of its own `advances` set, and 0 for an issue that holds none. A
+// whole-set write moves it to the seq of the newest tuple that write appended, and a whole-set
+// write that carries the revision read before it is refused 409 ADVANCES_REVISION, naming the
+// revision the store holds, and moves nothing.
+func TestTheAdvancesRevisionIsTheSeqOfTheIssuesNewestStoreTuple(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	createTestProject(t, handler, "REV")
+	first := createTestPriority(t, handler, map[string]any{"id": "first-goal", "title": "First goal"}, "alice").ID
+	second := createTestPriority(t, handler, map[string]any{"id": "second-goal", "title": "Second goal"}, "alice").ID
+	// newest is the seq of the issue's newest `advances` tuple in the store, read off the table
+	// rather than through the route, 0 where it holds none.
+	newest := func(key string) int64 {
+		t.Helper()
+		var seq int64
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(max(seq), 0) from graph_tuples
+			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4
+		`, prioritystore.KindIssue, key, prioritystore.RelationAdvances, prioritystore.KindPriority).Scan(&seq); err != nil {
+			t.Fatalf("read the newest advances tuple of %s: %v", key, err)
+		}
+		return seq
+	}
+
+	unplaced := createAdvancingIssue(t, handler, map[string]any{"project": "REV", "title": "Under no goal", "force": true}, "alice")
+	if got := readTestIssue(t, handler, unplaced.Key).AdvancesRevision; got != 0 || newest(unplaced.Key) != 0 {
+		t.Fatalf("%s, which states no relation, answers the revision %d over %d tuples' seq, want 0",
+			unplaced.Key, got, newest(unplaced.Key))
+	}
+
+	subject := createAdvancingIssue(t, handler, map[string]any{
+		"project": "REV", "title": "Under the first goal", "force": true, "advances": []string{first},
+	}, "alice")
+	before := readTestIssue(t, handler, subject.Key).AdvancesRevision
+	if before == 0 || before != newest(subject.Key) {
+		t.Fatalf("%s answers the revision %d, want the seq of its newest advances tuple in the store, %d",
+			subject.Key, before, newest(subject.Key))
+	}
+
+	moved := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+subject.Key, map[string]any{
+		"advances": []string{second}, "advances_revision": before,
+	}, "alice")
+	if moved.Code != http.StatusOK {
+		t.Fatalf("write the whole set at the revision the issue holds: status=%d body=%s", moved.Code, moved.Body.String())
+	}
+	after := readTestIssue(t, handler, subject.Key).AdvancesRevision
+	if after <= before || after != newest(subject.Key) {
+		t.Fatalf("%s answers the revision %d after the write, want the seq of the newest tuple the write appended, %d, above %d",
+			subject.Key, after, newest(subject.Key), before)
+	}
+
+	stale := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+subject.Key, map[string]any{
+		"advances": []string{first, second}, "advances_revision": before,
+	}, "alice")
+	code, text := refusalOf(t, stale)
+	if stale.Code != http.StatusConflict || code != codeAdvancesRevision {
+		t.Fatalf("a whole set carrying the revision read before the write: status=%d code=%s error=%q, want 409 %s",
+			stale.Code, code, text, codeAdvancesRevision)
+	}
+	if !strings.Contains(text, fmt.Sprint(after)) {
+		t.Fatalf("the refusal is %q, want it to name the revision the store holds, %d", text, after)
+	}
+	if got := advanceEntries(readTestIssue(t, handler, subject.Key).Advances); !slices.Equal(got, []string{second + " own"}) {
+		t.Fatalf("%s advances %v after the refused write, want %s alone", subject.Key, got, second)
+	}
+	if held := newest(subject.Key); held != after {
+		t.Fatalf("the refused write moved the newest advances tuple of %s to %d, want it at %d", subject.Key, held, after)
 	}
 }
 
@@ -399,15 +471,19 @@ func advanceEntries(entries []model.IssueAdvance) []string {
 	return written
 }
 
-// priorityTupleRows is the whole log as one row per seq, each written out whole, so a later
-// reading says both that no row was deleted and that no row was changed.
+// priorityTupleRows is the priority store's whole log as one row per seq, each written out whole,
+// so a later reading says both that no row was deleted and that no row was changed. The log is
+// the store's tuples out of a priority and its `advances` tuples into one: the store holds other
+// nodes' tuples beside them, which no write of the relation touches.
 func priorityTupleRows(t *testing.T, database *store.Store) map[int64]string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		select seq, from_kind || '/' || from_id || ' ' || kind || ' ' || to_kind || '/' || to_id ||
 			' at ' || at || ' by ' || who::text || ' event ' || source_event || ' asserted ' || asserted
-		from priority_tuples order by seq
-	`)
+		from graph_tuples
+		where from_kind = $1 or (from_kind = $2 and kind = $3 and to_kind = $1)
+		order by seq
+	`, prioritystore.KindPriority, prioritystore.KindIssue, prioritystore.RelationAdvances)
 	if err != nil {
 		t.Fatalf("read the priority tuples: %v", err)
 	}

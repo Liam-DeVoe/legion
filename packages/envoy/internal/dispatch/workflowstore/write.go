@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -50,6 +51,8 @@ var (
 // reported, so only the write that sets the result sets it, and a node that holds a result keeps
 // the destination its own end named, none included.
 //
+// Every write names the issue's project, which the node is kept under (its project_key), or it is
+// refused ErrStepInput and writes nothing: the read of a project finds a run by it (ProjectPlans).
 // The write that finds no node makes it, whichever of the two it is, and states the `part_of`
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
 // generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
@@ -65,7 +68,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	}
 	missing := write.missingIdentity()
 	written, err := putNode(ctx, tx, nodeWrite{
-		kind: KindStep, id: id, issue: write.Issue, stated: stated, makes: len(missing) == 0,
+		kind: KindStep, id: id, issue: write.Issue, project: *write.Project, stated: stated, makes: len(missing) == 0,
 		actor: actor, at: at,
 		check: func(held map[string]json.RawMessage) error {
 			if write.Type == nil && write.Rating == nil {
@@ -97,9 +100,9 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 			_, ended := held[AttributeResult]
 			return !ended
 		},
-		relations: func(setting map[string]string) []tuple {
+		relations: func(setting map[string]string) []relation {
 			if report, sets := setting[AttributeReport]; sets {
-				return []tuple{{kind: RelationReports, toKind: KindHandoff, toID: report}}
+				return []relation{{kind: RelationReports, toKind: KindHandoff, toID: report}}
 			}
 			return nil
 		},
@@ -117,15 +120,15 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	return stepFrom(id, written)
 }
 
-// nodeWrite is one write of one node of the store: its kind, its id and the issue it is part of,
-// the attributes it states, whether it names the node's whole identity and so may make it, and who
-// writes it when.
+// nodeWrite is one write of one node of the store: its kind, its id, the issue it is part of and
+// that issue's project, the attributes it states, whether it names the node's whole identity and
+// so may make it, and who writes it when.
 type nodeWrite struct {
-	kind, id, issue string
-	stated          []attribute
-	makes           bool
-	actor           model.Actor
-	at              time.Time
+	kind, id, issue, project string
+	stated                   []attribute
+	makes                    bool
+	actor                    model.Actor
+	at                       time.Time
 	// check judges the write against the attributes the node holds before it ({} for the node
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
@@ -135,7 +138,7 @@ type nodeWrite struct {
 	// relations are the relation tuples the write states beside its attributes and its
 	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
 	// name. Nil states none.
-	relations func(setting map[string]string) []tuple
+	relations func(setting map[string]string) []relation
 }
 
 // errNoNode is a write that finds no node and does not name the identity that would make one; the
@@ -152,48 +155,48 @@ func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " 
 // answers the node's attributes as they stand after it. It sets each attribute the write states
 // that the node does not hold yet and the write sets (sets), appending one value tuple for each,
 // and leaves each the node holds, appending nothing for it; the write that makes the node states
-// its `part_of` relation to the issue. A refusal comes before anything is moved, but the node a
-// refused write made is the caller's to roll back with its transaction.
+// its `part_of` relation to the issue. A refusal comes before anything is appended, but the node a
+// refused write made is the caller's to roll back with its transaction. Every write goes through
+// the store's one writer (graphstore.Write), as a node it restates (Node.Restates): the row keeps
+// its visibility, its state and every attribute this write does not set, and takes the ones it
+// sets laid over them.
 //
-// Two writes of one id at one time take turns: the insert that makes the node comes before the
-// read of what it holds, and that read locks the row (for update), so the second write waits for
-// the first to commit and then reads everything the first wrote.
+// It takes the node's row before it appends a tuple of that node, so the tuples of one node commit
+// in the order of their seq: it reads the row `for update` (lockNode), and where the store holds
+// none and the write may make the node, it makes it first, with no attribute, in the issue's
+// project, and reads the row `for update` again. The store states the visibility, the state and
+// the project of the node it makes, as it states them of every node (graphstore.QueueWrite), and
+// keeps the project as the row's project_key; the project stands in the row's attributes too, so
+// this write states no value tuple of its own for it. Two writes of one new id at one time take
+// turns: the second's insert of the node waits on the first's, then finds the row the first
+// committed and locks it, and its read answers everything the first wrote. So a node whose row
+// holds no issue is the node this write made: every write states the issue, and the node holds
+// none until the write that made it sets it.
 func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
-	writer, err := json.Marshal(write.actor)
+	heldText, found, err := lockNode(ctx, tx, write.kind, write.id)
 	if err != nil {
-		return nil, fmt.Errorf("encode the writer of %s %s: %w", write.kind, write.id, err)
+		return nil, err
 	}
-	made := false
-	if write.makes {
-		var inserted string
-		err := tx.QueryRow(ctx, `
-			insert into workflow_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-			values ($1, $2, $1, '`+VisibilityProject+`', '`+StateLive+`', '{}', $3, $4, $5)
-			on conflict (kind, id) do nothing
-			returning id
-		`, write.kind, write.id, write.at, writer, NoEvent).Scan(&inserted)
-		switch {
-		case err == nil:
-			made = true
-		case !errors.Is(err, pgx.ErrNoRows):
+	if !found {
+		if !write.makes {
+			return nil, errNoNode
+		}
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(nil, write.project)}, nil); err != nil {
 			return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 		}
-	}
-
-	var heldText []byte
-	err = tx.QueryRow(ctx, `
-		select attributes from workflow_nodes where kind = $1 and id = $2 for update
-	`, write.kind, write.id).Scan(&heldText)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errNoNode
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read %s %s: %w", write.kind, write.id, err)
+		if heldText, found, err = lockNode(ctx, tx, write.kind, write.id); err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("write %s %s: the store holds no row of the node it wrote", write.kind, write.id)
+		}
 	}
 	var held map[string]json.RawMessage
 	if err := json.Unmarshal(heldText, &held); err != nil {
 		return nil, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
+	_, issued := held[AttributeIssue]
+	made := !issued
 	if !made {
 		issue, err := heldString(held, AttributeIssue)
 		if err != nil {
@@ -211,7 +214,7 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 
 	setting := map[string]any{}
 	texts := map[string]string{}
-	var tuples []tuple
+	var tuples []graphstore.Tuple
 	for _, attribute := range write.stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
@@ -221,34 +224,79 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		}
 		setting[attribute.name] = attribute.value
 		texts[attribute.name] = attribute.text
-		tuples = append(tuples, tuple{kind: attribute.name, toKind: KindValue, toID: attribute.text})
+		if attribute.name != AttributeProject {
+			tuples = append(tuples, write.tuple(attribute.name, KindValue, attribute.text))
+		}
 	}
 	if made {
-		tuples = append(tuples, tuple{kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
+		tuples = append(tuples, write.tuple(RelationPartOf, KindIssue, write.issue))
 	}
 	if write.relations != nil {
-		tuples = append(tuples, write.relations(texts)...)
+		for _, related := range write.relations(texts) {
+			tuples = append(tuples, write.tuple(related.kind, related.toKind, related.toID))
+		}
 	}
 	if len(setting) == 0 {
 		return heldText, nil
 	}
 
-	moved, err := json.Marshal(setting)
+	// A node that holds no project yet takes the write's as its project_key too, which the store
+	// then states; one that holds its project keeps it, and the write names none to the store.
+	project := ""
+	if _, fills := setting[AttributeProject]; fills {
+		project = write.project
+	}
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{write.node(setting, project)}, tuples); err != nil {
+		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+	}
+	for name, value := range setting {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode the %s of %s %s: %w", name, write.kind, write.id, err)
+		}
+		held[name] = encoded
+	}
+	written, err := json.Marshal(held)
 	if err != nil {
 		return nil, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
-	var written []byte
-	if err := tx.QueryRow(ctx, `
-		update workflow_nodes set attributes = attributes || $3::jsonb
-		where kind = $1 and id = $2
-		returning attributes
-	`, write.kind, write.id, moved).Scan(&written); err != nil {
-		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
-	}
-	if err := appendTuples(ctx, tx, write.kind, write.id, tuples, writer, write.at); err != nil {
-		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
-	}
 	return written, nil
+}
+
+// lockNode reads the attributes of the node kind id and holds its row `for update` until the
+// transaction ends, and answers whether the store holds the node.
+func lockNode(ctx context.Context, tx pgx.Tx, kind, id string) ([]byte, bool, error) {
+	var held []byte
+	err := tx.QueryRow(ctx, `
+		select attributes from graph_nodes where kind = $1 and id = $2 for update
+	`, kind, id).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s %s: %w", kind, id, err)
+	}
+	return held, true, nil
+}
+
+// node is the node write writes, as a node of the store it restates: live and visible to its
+// project, made at the write's moment by its writer, with no event, holding attributes laid over
+// the ones the row holds, and in project where it is not empty.
+func (write nodeWrite) node(attributes map[string]any, project string) graphstore.Node {
+	return graphstore.Node{
+		Kind: write.kind, ID: write.id, Supertag: write.kind,
+		Visibility: VisibilityProject, State: StateLive, Project: project, Attributes: attributes,
+		MadeAt: write.at, MadeBy: write.actor, SourceEvent: NoEvent, Restates: true,
+	}
+}
+
+// tuple is one fact write states about its node, asserted, at the write's moment, by its writer
+// and with no event.
+func (write nodeWrite) tuple(kind, toKind, toID string) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: write.kind, FromID: write.id, Kind: kind, ToKind: toKind, ToID: toID,
+		At: write.at, Who: write.actor, SourceEvent: NoEvent, Asserted: true,
+	}
 }
 
 // attribute is one field a write states: its name, the value the node row holds, and the text its
@@ -271,6 +319,9 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	id := parsed.String()
 	if strings.TrimSpace(write.Issue) == "" {
 		return "", nil, refusal(ErrStepInput, "issue is required: the key of the issue step %s is part of", id)
+	}
+	if write.Project == nil || strings.TrimSpace(*write.Project) == "" {
+		return "", nil, refusal(ErrStepInput, "project is required: the key of the project of %s, which step %s is kept under", write.Issue, id)
 	}
 	stated := []attribute{{AttributeIssue, write.Issue, write.Issue}}
 	text := func(name string, value *string) string {
@@ -467,31 +518,10 @@ func heldString(held map[string]json.RawMessage, name string) (string, error) {
 	return text, nil
 }
 
-// tuple is one fact a write states about its node: an attribute, whose toKind is KindValue and
-// whose toID is the value, or a relation to the node toKind and toID address.
-type tuple struct {
+// relation is one relation a write states about its node beside its attributes and its
+// `part_of`: to the node toKind and toID address.
+type relation struct {
 	kind, toKind, toID string
-}
-
-// appendTuples appends every tuple of one write of the node fromKind fromID in one statement, in
-// the order the write states them, which is the order their seq is drawn in. Every tuple of the
-// write has one writer, one moment and no event, and asserts its fact.
-func appendTuples(ctx context.Context, tx pgx.Tx, fromKind, fromID string, tuples []tuple, writer []byte, at time.Time) error {
-	kinds := make([]string, len(tuples))
-	toKinds := make([]string, len(tuples))
-	toIDs := make([]string, len(tuples))
-	for index, stated := range tuples {
-		kinds[index], toKinds[index], toIDs[index] = stated.kind, stated.toKind, stated.toID
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into workflow_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
-		select $7, $8, stated.kind, stated.to_kind, stated.to_id, $4, $5::jsonb, $6, true
-		from unnest($1::text[], $2::text[], $3::text[]) with ordinality as stated(kind, to_kind, to_id, place)
-		order by stated.place
-	`, kinds, toKinds, toIDs, at, writer, NoEvent, fromKind, fromID); err != nil {
-		return fmt.Errorf("append %s tuples: %w", fromKind, err)
-	}
-	return nil
 }
 
 // stepAttributes is the node row's attributes as a step reads them.

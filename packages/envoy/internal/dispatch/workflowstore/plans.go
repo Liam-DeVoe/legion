@@ -29,18 +29,20 @@ var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 // again where it sends the same plan again; each field is set once, so a write that runs again
 // changes nothing, and a later write of other tasks under the same id leaves the first.
 //
-// Every write names the plan's generation, its source and its tasks, and an owner's plan its
-// document and version, or it is refused ErrPlanInput and writes nothing; a default plan holds its
-// document and version empty, so a later owner's write of its id gives it neither. The write that
-// makes the node states its `part_of` relation to the issue; an id whose node is part of another
-// issue is refused ErrPlanOtherIssue.
+// Every write names the plan's project, its generation, its source and its tasks, and an owner's
+// plan its document and version, or it is refused ErrPlanInput and writes nothing; the project is
+// what the node is kept under (its project_key), and the read of a project finds the plan by it
+// (ProjectPlans). A default plan holds its document and version empty, so a later owner's write of
+// its id gives it neither. The write that makes the node states its `part_of` relation to the
+// issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Plan{}, err
 	}
 	written, err := putNode(ctx, tx, nodeWrite{
-		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, actor: actor, at: at,
+		kind: KindPlan, id: id, issue: write.Issue, project: *write.Project, stated: stated, makes: true,
+		actor: actor, at: at,
 	})
 	var other *nodeOfAnotherIssue
 	switch {
@@ -63,9 +65,12 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	if strings.TrimSpace(write.Issue) == "" {
 		return "", nil, refusal(ErrPlanInput, "issue is required: the key of the issue plan %s is part of", id)
 	}
-	stated := []attribute{{AttributeIssue, write.Issue, write.Issue}}
-	if write.Project != nil && *write.Project != "" {
-		stated = append(stated, attribute{AttributeProject, *write.Project, *write.Project})
+	if write.Project == nil || strings.TrimSpace(*write.Project) == "" {
+		return "", nil, refusal(ErrPlanInput, "project is required: the key of the project of %s, which plan %s is kept under", write.Issue, id)
+	}
+	stated := []attribute{
+		{AttributeIssue, write.Issue, write.Issue},
+		{AttributeProject, *write.Project, *write.Project},
 	}
 
 	if write.Generation == nil {

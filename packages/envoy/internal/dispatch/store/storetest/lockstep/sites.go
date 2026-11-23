@@ -413,6 +413,21 @@ var storeWriteCallSites = map[string]string{
 	// stands under no issue. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of
 	// Write; `envoy-dispatch lens-kind-add` is its one caller.
 	"graphstore/lens_catalogue.go#AddLensKind": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The priority store's writes (dispatch://INFRA-1098's R32), every one through its Write: a
+	// create and a rank move take the order's advisory lock `priority-rank` before any row, a
+	// rename, a rank move and a delete read the priority's node row `for no key update` before the
+	// store writes it again, and a create's insert makes the row; then one Write of the node and
+	// its tuples at the sentinel, or of an issue's `advances` tuple alone, which runs under the
+	// issue's own row its caller holds (api's writeIssueAdvances). Its store write is one call of
+	// Write after the rows its path already holds, so the order to prove is Write's.
+	"prioritystore/write.go#Write": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The workflow store's write of a run of a step and of a plan (R32 too), under the issue's
+	// owner lock its route takes shared (api's lockRecordedIssue): the node's row `for update`,
+	// or, where the store holds none, one Write that makes the node and then that row `for
+	// update`; then one Write of the attributes it sets and its tuples at the sentinel. Each store
+	// write is one call of Write after the rows its path already holds, so the order to prove is
+	// Write's.
+	"workflowstore/write.go#putNode": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The test corpus loader's roles (dispatch://INFRA-1098's T8): the nodes of two roles and their
 	// pages, the pages' part_of, each role's held_by and its holder's part_of, through one Write
 	// in a transaction of its own that holds no row before it, at the sentinel and under no owner

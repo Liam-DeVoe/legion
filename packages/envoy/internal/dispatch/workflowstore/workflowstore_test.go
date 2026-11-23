@@ -2,6 +2,7 @@ package workflowstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -32,11 +33,13 @@ var t0 = time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
 func minute(n int) time.Time { return t0.Add(time.Duration(n) * time.Minute) }
 
 // implementer is the identity every write of the implementer's step of LEG-1 carries: task
-// default, step 2, kind step, role implementer, type implementation, its agent and generation 1.
+// default, step 2, kind step, role implementer, type implementation, its agent and generation 1,
+// in LEG-1's project.
 func implementer(id string) StepWrite {
 	return StepWrite{
 		ID:         id,
 		Issue:      "LEG-1",
+		Project:    new("LEG"),
 		Task:       new("default"),
 		Place:      new(2),
 		Kind:       new(StepKindStep),
@@ -88,7 +91,7 @@ func TestAStepIsANodePartOfItsIssue(t *testing.T) {
 
 	var relations int
 	if err := pool.QueryRow(context.Background(), `
-		select count(*) from workflow_tuples
+		select count(*) from graph_tuples
 		where from_kind = 'step' and from_id = $1 and kind = 'part_of'
 			and to_kind = 'issue' and to_id = 'LEG-1' and asserted
 	`, id).Scan(&relations); err != nil {
@@ -134,7 +137,7 @@ func TestTheEndWriteKeepsTheStart(t *testing.T) {
 
 	var reports int
 	if err := pool.QueryRow(context.Background(), `
-		select count(*) from workflow_tuples
+		select count(*) from graph_tuples
 		where from_kind = 'step' and from_id = $1 and kind = 'reports'
 			and to_kind = 'handoff' and to_id = $2 and asserted
 	`, id, report).Scan(&reports); err != nil {
@@ -160,7 +163,7 @@ func TestAnEmptyReportStatesNone(t *testing.T) {
 	}
 	var relations int
 	if err := pool.QueryRow(context.Background(), `
-		select count(*) from workflow_tuples where from_kind = 'step' and from_id = $1 and kind = 'reports'
+		select count(*) from graph_tuples where from_kind = 'step' and from_id = $1 and kind = 'reports'
 	`, id).Scan(&relations); err != nil {
 		t.Fatalf("count the reports tuples: %v", err)
 	}
@@ -439,6 +442,61 @@ func TestAWriteThatMakesANodeNamesItsIdentity(t *testing.T) {
 	}
 }
 
+// Every write of a run and of a plan names the project of its issue, which the store keeps the
+// node under (its project_key) and the read of a project finds it by: a write that names none, an
+// empty one or a blank one is refused ErrStepInput or ErrPlanInput naming the project, and writes
+// no node and no tuple, whether it would make the node or comes to one the store holds. The same
+// writes naming the project are taken, which is the control.
+func TestPutStepAndPutPlanRefuseAWriteThatNamesNoProject(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	heldRun, heldPlan := uuid.NewString(), uuid.NewString()
+	put(t, pool, startOf(implementer(heldRun), minute(0)), minute(0))
+	putPlan(t, pool, defaultPlan(heldPlan, "LEG-1", 1), minute(0))
+
+	for name, project := range map[string]*string{"no project": nil, "an empty project": new(""), "a blank project": new("  ")} {
+		t.Run(name, func(t *testing.T) {
+			before := wholeLog(t, pool)
+			first := startOf(implementer(uuid.NewString()), minute(1))
+			later := endOf(implementer(heldRun), ResultPassed, minute(1))
+			for what, write := range map[string]StepWrite{"a run's first write": first, "a later write of a run": later} {
+				write.Project = project
+				_, err := tryPut(pool, write, minute(1))
+				if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), "project is required") {
+					t.Errorf("%s with %s answered %v, want %v naming the project", what, name, err, ErrStepInput)
+				}
+			}
+			firstPlan, laterPlan := defaultPlan(uuid.NewString(), "LEG-1", 1), defaultPlan(heldPlan, "LEG-1", 1)
+			for what, write := range map[string]PlanWrite{"a plan's first write": firstPlan, "a later write of a plan": laterPlan} {
+				write.Project = project
+				_, err := tryPutPlan(pool, write, minute(1))
+				if !errors.Is(err, ErrPlanInput) || !strings.Contains(err.Error(), "project is required") {
+					t.Errorf("%s with %s answered %v, want %v naming the project", what, name, err, ErrPlanInput)
+				}
+			}
+			for _, id := range []string{first.ID, firstPlan.ID} {
+				if nodes := countNodes(t, pool, id); nodes != 0 {
+					t.Errorf("a refused first write left %d nodes of %s, want none", nodes, id)
+				}
+			}
+			if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused writes moved the log from %d tuples to %d, want it unchanged", len(before), len(after))
+			}
+			if step := stepOf(t, pool, "LEG-1", heldRun); step.Result != "" {
+				t.Errorf("a refused write ended the run %s %q", heldRun, step.Result)
+			}
+		})
+	}
+
+	run, plan := uuid.NewString(), uuid.NewString()
+	put(t, pool, startOf(implementer(run), minute(2)), minute(2))
+	if written := putPlan(t, pool, defaultPlan(plan, "LEG-1", 1), minute(2)); written.Project != "LEG" {
+		t.Errorf("the control plan holds the project %q, want LEG", written.Project)
+	}
+	if step := stepOf(t, pool, "LEG-1", run); step.Project != "LEG" {
+		t.Errorf("the control run holds the project %q, want LEG", step.Project)
+	}
+}
+
 // An id is one step of one issue: a write of that id naming another issue is refused
 // ErrStepOtherIssue and moves neither the node nor the log.
 func TestAnIDOfAnotherIssueIsRefused(t *testing.T) {
@@ -534,7 +592,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 	id := uuid.NewString()
 	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
 	end := func(result string, at time.Time) StepWrite {
-		return StepWrite{ID: id, Issue: "LEG-1", Result: new(result), EndedAt: new(at)}
+		return StepWrite{ID: id, Issue: "LEG-1", Project: new("LEG"), Result: new(result), EndedAt: new(at)}
 	}
 
 	first, err := pool.Begin(ctx)
@@ -742,21 +800,58 @@ func TestEveryWriteAppendsOnlyTuples(t *testing.T) {
 	}
 }
 
-// The two tables are the priority's node and tuple tables under another name: the same columns
-// with the same types, nullability and defaults, the same primary keys, and the same three read
-// indexes. So the day the graph store lands, the rows copy into it column for column.
-func TestTheTablesAreThePriorityShape(t *testing.T) {
+// A run and a plan are nodes of the graph store, each kept under its issue's project: its row's
+// supertag is its kind, it is live and visible to its project, its project_key is the project its
+// attributes name, and the store states its visibility, its state and its project once each, as
+// value tuples out of the node dated at the write that made it and signed by its writer, as it
+// states them of every node it makes. A later write of the node states none of the three again.
+func TestARunAndAPlanAreNodesOfTheStoreKeptUnderTheirProject(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	for _, pair := range [][2]string{{"priority_nodes", "workflow_nodes"}, {"priority_tuples", "workflow_tuples"}} {
-		priority, workflow := tableShape(t, pool, pair[0]), tableShape(t, pool, pair[1])
-		if len(priority.columns) == 0 || len(priority.indexes) == 0 {
-			t.Fatalf("the schema holds no table %s to compare with", pair[0])
+	ctx := context.Background()
+	run, plan := uuid.NewString(), uuid.NewString()
+	put(t, pool, startOf(implementer(run), minute(0)), minute(0))
+	put(t, pool, endOf(implementer(run), ResultPassed, minute(1)), minute(1))
+	putPlan(t, pool, defaultPlan(plan, "LEG-1", 1), minute(2))
+
+	for _, node := range []struct {
+		kind, id string
+		made     time.Time
+	}{{KindStep, run, minute(0)}, {KindPlan, plan, minute(2)}} {
+		var supertag, visibility, state, attribute string
+		var project *string
+		if err := pool.QueryRow(ctx, `
+			select supertag, visibility, state, project_key, attributes->>'project'
+			from graph_nodes where kind = $1 and id = $2
+		`, node.kind, node.id).Scan(&supertag, &visibility, &state, &project, &attribute); err != nil {
+			t.Fatalf("read the %s's node row: %v", node.kind, err)
 		}
-		if !slices.Equal(workflow.columns, priority.columns) {
-			t.Errorf("%s carries the columns\n%v\nwant %s's\n%v", pair[1], workflow.columns, pair[0], priority.columns)
+		if supertag != node.kind || visibility != VisibilityProject || state != StateLive {
+			t.Errorf("the %s's row is supertag %q, %s, %s; want %s, %s, %s", node.kind, supertag, visibility, state, node.kind, VisibilityProject, StateLive)
 		}
-		if !slices.Equal(workflow.indexes, priority.indexes) {
-			t.Errorf("%s carries the indexes\n%v\nwant %s's\n%v", pair[1], workflow.indexes, pair[0], priority.indexes)
+		if project == nil || *project != "LEG" || attribute != "LEG" {
+			t.Errorf("the %s's row holds the project_key %v and the project attribute %q, want LEG for both", node.kind, project, attribute)
+		}
+		stated := map[string][]string{}
+		for _, tuple := range wholeLog(t, pool) {
+			if tuple.fromKind != node.kind || tuple.fromID != node.id || tuple.toKind != KindValue {
+				continue
+			}
+			switch tuple.kind {
+			case "visibility", "state", "project":
+				var who model.Actor
+				if err := json.Unmarshal([]byte(tuple.who), &who); err != nil {
+					t.Fatalf("decode the writer of the %s's %s tuple: %v", node.kind, tuple.kind, err)
+				}
+				if !tuple.at.Equal(node.made) || who != daemon || tuple.sourceEvent != NoEvent {
+					t.Errorf("the %s's %s tuple is stated at %s by %s for event %d, want at %s by the daemon for none",
+						node.kind, tuple.kind, tuple.at, tuple.who, tuple.sourceEvent, node.made)
+				}
+				stated[tuple.kind] = append(stated[tuple.kind], tuple.toID)
+			}
+		}
+		want := map[string][]string{"visibility": {VisibilityProject}, "state": {StateLive}, "project": {"LEG"}}
+		if !reflect.DeepEqual(stated, want) {
+			t.Errorf("the %s's base attributes are stated as %v, want once each: %v", node.kind, stated, want)
 		}
 	}
 }
@@ -791,6 +886,7 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"type":       func(write *StepWrite) { write.Type = new("Review") },
 		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
 		"issue":      func(write *StepWrite) { write.Issue = "" },
+		"project":    func(write *StepWrite) { write.Project = nil },
 		// The agent, the session and the model are printable ASCII with no space, at most 128
 		// characters (contracts.StepAgentTextPattern): `dispatch steps` joins a record's fields with
 		// spaces, so a space or a newline in one would shift its columns or forge a line.
@@ -850,7 +946,7 @@ func TestARetroOrAMergeTakesNoType(t *testing.T) {
 			put(t, pool, start, minute(0))
 			before := wholeLog(t, pool)
 
-			later := StepWrite{ID: id, Issue: "LEG-1", Type: new("review")}
+			later := StepWrite{ID: id, Issue: "LEG-1", Project: new("LEG"), Type: new("review")}
 			_, err := tryPut(pool, later, minute(1))
 			if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), "type") {
 				t.Fatalf("a type written to the %s answered %v, want %v naming the type", kind, err, ErrStepInput)
@@ -917,18 +1013,19 @@ func stepOf(t *testing.T, pool *store.Pool, issue, id string) StepRead {
 	return steps[index]
 }
 
+// countNodes counts the nodes of a run or a plan of id the store holds.
 func countNodes(t *testing.T, pool *store.Pool, id string) int {
 	t.Helper()
 	var nodes int
 	if err := pool.QueryRow(context.Background(),
-		`select count(*) from workflow_nodes where id = $1`, id).Scan(&nodes); err != nil {
+		`select count(*) from graph_nodes where kind in ('step', 'plan') and id = $1`, id).Scan(&nodes); err != nil {
 		t.Fatalf("count the nodes of %s: %v", id, err)
 	}
 	return nodes
 }
 
-// loggedTuple is a tuple as the log holds it, read straight from the table rather than through
-// this package, for the checks that no write rewrote or removed one.
+// loggedTuple is a tuple as the log holds it, read straight from the store's table rather than
+// through this package, for the checks that no write rewrote or removed one.
 type loggedTuple struct {
 	seq                                  int64
 	fromKind, fromID, kind, toKind, toID string
@@ -938,12 +1035,14 @@ type loggedTuple struct {
 	asserted                             bool
 }
 
-// wholeLog is every tuple row of the database in the order it was appended.
+// wholeLog is every tuple out of a run or a plan the store holds, in the order it was appended:
+// the workflow store's whole log. The store holds other nodes' tuples beside them (the block
+// schema's, which a migration writes), and those are no write of this package.
 func wholeLog(t *testing.T, pool *store.Pool) []loggedTuple {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
 		select seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted
-		from workflow_tuples order by seq
+		from graph_tuples where from_kind in ('step', 'plan') order by seq
 	`)
 	if err != nil {
 		t.Fatalf("read the log: %v", err)
@@ -964,52 +1063,12 @@ func wholeLog(t *testing.T, pool *store.Pool) []loggedTuple {
 	return log
 }
 
-// shape is one table's columns and indexes as the catalogue holds them, each written with the
-// table's own prefix taken out, so two tables of one shape under two names compare equal.
-type shape struct {
-	columns []string
-	indexes []string
-}
-
-func tableShape(t *testing.T, pool *store.Pool, table string) shape {
-	t.Helper()
-	ctx := context.Background()
-	prefix, _, _ := strings.Cut(table, "_")
-	read := func(query string) []string {
-		rows, err := pool.Query(ctx, query, table)
-		if err != nil {
-			t.Fatalf("read the shape of %s: %v", table, err)
-		}
-		values, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatalf("read the shape of %s: %v", table, err)
-		}
-		for index, value := range values {
-			values[index] = strings.ReplaceAll(value, prefix+"_", "<table>_")
-		}
-		return values
-	}
-	return shape{
-		columns: read(`
-			select column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '')
-			from information_schema.columns
-			where table_schema = 'public' and table_name = $1
-			order by ordinal_position
-		`),
-		indexes: read(`
-			select indexdef from pg_indexes
-			where schemaname = 'public' and tablename = $1
-			order by indexname
-		`),
-	}
-}
-
 // valueTuples counts the value tuples the log holds of one attribute of one step.
 func valueTuples(t *testing.T, pool *store.Pool, id, attribute string) int {
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(context.Background(), `
-		select count(*) from workflow_tuples
+		select count(*) from graph_tuples
 		where from_kind = 'step' and from_id = $1 and kind = $2 and to_kind = 'value'
 	`, id, attribute).Scan(&count); err != nil {
 		t.Fatalf("count the %s tuples of step %s: %v", attribute, id, err)

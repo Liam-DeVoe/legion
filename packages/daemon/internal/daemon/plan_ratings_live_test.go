@@ -104,7 +104,7 @@ func (l *planRatingsLive) readByProject() {
 	// attempt 1 (stepRecordsTen), so this find answers that record's id.
 	deleted := want[0].steps.find("step", 4, 1).ID
 	l.deleteNode(deleted)
-	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", want[0].key, deleted)
+	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its graph_nodes row and every graph_tuples row naming it)", want[0].key, deleted)
 	out, code = l.plans()
 	if code != 0 {
 		t.Fatalf("control: `dispatch plans --project %s` after the delete exited %d: %s", l.cfg.Project, code, out)

@@ -2,7 +2,6 @@ package prioritystore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -11,24 +10,44 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// Write writes every node and appends every tuple inside the caller's transaction. It appends
-// only: no statement here updates or deletes a tuple row, so the log a read walks is whatever
-// every writer before it appended, in the order they appended it. The node row is written again
-// where it is already there, because it is the projection of its own tuples; MadeAt and MadeBy
-// stay as the row's first write left them.
+// Write writes every node and appends every tuple inside the caller's transaction, through the
+// store's one writer (graphstore.Write). It appends only: no statement updates or deletes a tuple
+// row, so the log a read walks is whatever every writer before it appended, in the order they
+// appended it, a write's relations before its attributes and each in the order the caller stated
+// it. The store writes the node rows before it appends a tuple, so a write takes each node's row
+// before it states a fact of that node. The node row is written again where it is already there,
+// because it is the projection of its own tuples; MadeAt and MadeBy stay as the row's first write
+// left them. The store's node write replaces the row's attributes whole, so a node handed here
+// carries every attribute it holds and not only the ones a write moves (SetAttributes).
+//
+// Every named write below states the base attributes it moves itself, with its own writer and
+// moment, and the store then states none of them a second time (graphstore.QueueWrite); a node a
+// caller hands here without them has them stated by the store, at the node's MadeAt and by its
+// MadeBy.
 //
 // It is the primitive the named writes below are built from, and what a caller holding a whole
 // batch at once reaches for: the seeded corpus states its `advances` relations through it, one
 // statement a batch rather than one a relation (cmd/dispatch-seed/write_priorities.go). Either
-// list may be empty, so a caller with tuples and no node passes none.
+// list may be empty, so a caller with tuples and no node passes none. It is this package's one
+// call of the store's writer, so every write of a priority is the one site the register of the
+// store's writers lists for it (store/storetest/lockstep/sites.go).
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	if err := writeNodes(ctx, tx, nodes); err != nil {
-		return err
+	written := make([]graphstore.Node, len(nodes))
+	for index, node := range nodes {
+		written[index] = graphstore.Node{
+			Kind: node.Kind, ID: node.ID, Supertag: node.Supertag,
+			Visibility: node.Visibility, State: node.State, Attributes: node.Attributes,
+			MadeAt: node.MadeAt, MadeBy: node.MadeBy, SourceEvent: node.SourceEvent,
+		}
 	}
-	return appendTuples(ctx, tx, tuples)
+	if err := graphstore.Write(ctx, tx, written, tuples); err != nil {
+		return fmt.Errorf("write priorities: %w", err)
+	}
+	return nil
 }
 
 // Create writes one priority and states what it was written with: its visibility, its state, and
@@ -37,34 +56,37 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 //
 // It refuses an id the store already holds with ErrPriorityExists rather than writing the node
 // again, because a second create is a caller's mistake and the first write's own history would
-// otherwise read as this one's.
+// otherwise read as this one's. The store's node write makes a node the store does not hold and
+// writes one it holds again, so it cannot refuse a second create itself: Create reads whether the
+// id is held first, under the order's allocation lock (lockRankAllocation), which every create
+// takes, as POST /api/v1/priorities does for the key it draws (RankAt). So a second create of one
+// id waits for the first to end, and its read then answers the row the first committed.
 func Create(ctx context.Context, tx pgx.Tx, id string, values map[string]string, actor model.Actor, at time.Time) error {
-	attributes, err := json.Marshal(values)
-	if err != nil {
-		return fmt.Errorf("encode the attributes of priority %s: %w", id, err)
+	if err := lockRankAllocation(ctx, tx); err != nil {
+		return err
 	}
-	writer, err := json.Marshal(actor)
-	if err != nil {
-		return fmt.Errorf("encode the writer of priority %s: %w", id, err)
+	var held bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from graph_nodes where kind = '`+KindPriority+`' and id = $1)
+	`, id).Scan(&held); err != nil {
+		return fmt.Errorf("read whether priority %s is written: %w", id, err)
 	}
-	var written string
-	err = tx.QueryRow(ctx, `
-		insert into priority_nodes (`+nodeColumns+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		on conflict (kind, id) do nothing
-		returning id
-	`, KindPriority, id, KindPriority, VisibilityProject, StateLive, attributes, at, writer, NoEvent).Scan(&written)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if held {
 		return fmt.Errorf("write priority %s: %w", id, ErrPriorityExists)
 	}
-	if err != nil {
-		return fmt.Errorf("write priority %s: %w", id, err)
+	attributes := make(map[string]any, len(values))
+	for name, value := range values {
+		attributes[name] = value
 	}
 	tuples := make([]Tuple, 0, 2+len(values))
 	tuples = append(tuples,
 		valueTuple(id, AttributeVisibility, VisibilityProject, actor, at),
 		valueTuple(id, AttributeState, StateLive, actor, at))
-	return appendTuples(ctx, tx, append(tuples, attributeTuples(id, values, actor, at)...))
+	return Write(ctx, tx, []Node{{
+		Kind: KindPriority, ID: id, Supertag: KindPriority,
+		Visibility: VisibilityProject, State: StateLive, Attributes: attributes,
+		MadeAt: at, MadeBy: actor, SourceEvent: NoEvent,
+	}}, append(tuples, attributeTuples(id, values, actor, at)...))
 }
 
 // SetAttributes moves the node row's attributes and appends one value tuple per attribute, in the
@@ -72,23 +94,32 @@ func Create(ctx context.Context, tx pgx.Tx, id string, values map[string]string,
 // attributes values does not name are left as they were, so a write of one attribute states one
 // fact. It refuses an id the store does not hold, and an id whose priority is gone, with
 // ErrNoPriority (liveRow), and states nothing for an empty values.
+//
+// The store's node write replaces the row's attributes whole. So the row is read under its lock
+// first (lockedNode), each attribute values names is set over the one the row holds, every other
+// is kept, and the merged whole is what the store writes: the row `attributes || values` leaves,
+// read off a version no other writer can move until this transaction ends.
 func SetAttributes(ctx context.Context, tx pgx.Tx, id string, values map[string]string, actor model.Actor, at time.Time) error {
 	if len(values) == 0 {
 		return nil
 	}
-	attributes, err := json.Marshal(values)
+	node, err := lockedNode(ctx, tx, id, liveRow)
 	if err != nil {
-		return fmt.Errorf("encode the attributes of priority %s: %w", id, err)
-	}
-	if err := moveNode(ctx, tx, `attributes = priority_nodes.attributes || $2::jsonb`, liveRow, id, attributes); err != nil {
 		return err
 	}
-	return appendTuples(ctx, tx, attributeTuples(id, values, actor, at))
+	if node.Attributes == nil {
+		node.Attributes = make(map[string]any, len(values))
+	}
+	for name, value := range values {
+		node.Attributes[name] = value
+	}
+	return Write(ctx, tx, []Node{node}, attributeTuples(id, values, actor, at))
 }
 
 // SetState moves the node row's state and appends the tuple that states it. Deleting a priority
 // is StateGone and restoring it is StateLive: no row is removed, and the history holds who ended
-// it and when.
+// it and when. The tuple carries this write's writer and moment, which is why it is stated here
+// and not left to the store, whose node write would date a state it states at the node's MadeAt.
 //
 // Writing StateLive is the one write that lands on a gone row (anyRow), because a restore is
 // what takes a priority out of that state; writing any other state, StateGone included, asks for
@@ -98,17 +129,21 @@ func SetState(ctx context.Context, tx pgx.Tx, id, state string, actor model.Acto
 	if state == StateLive {
 		rows = anyRow
 	}
-	if err := moveNode(ctx, tx, `state = $2`, rows, id, state); err != nil {
+	node, err := lockedNode(ctx, tx, id, rows)
+	if err != nil {
 		return err
 	}
-	return appendTuples(ctx, tx, []Tuple{valueTuple(id, AttributeState, state, actor, at)})
+	node.State = state
+	return Write(ctx, tx, []Node{node}, []Tuple{valueTuple(id, AttributeState, state, actor, at)})
 }
 
 // Advance states that one issue advances one priority. The relation is stated on the issue, so
 // its far end is the priority and a read of either end answers it (Timeline reads the ends into
-// a priority; api/issue_queries.go reads the ends out of a page of issues). It appends a tuple
-// and nothing else: that the priority is live and that the issue exists are the caller's
-// refusals, since this store holds no issue row.
+// a priority; api/issue_queries.go reads the ends out of a page of issues). The issue end is the
+// issue's key, which is the id of the issue's node. It appends a tuple and nothing else: that the
+// priority is live and that the issue exists are the caller's refusals, since this store holds
+// no issue row, and the caller holds the issue's own row lock, which orders two writes of one
+// issue's set (api/issue_advances.go).
 func Advance(ctx context.Context, tx pgx.Tx, issueKey, id string, actor model.Actor, at time.Time) error {
 	return relate(ctx, tx, issueKey, id, true, actor, at)
 }
@@ -121,7 +156,7 @@ func Retract(ctx context.Context, tx pgx.Tx, issueKey, id string, actor model.Ac
 }
 
 func relate(ctx context.Context, tx pgx.Tx, issueKey, id string, asserted bool, actor model.Actor, at time.Time) error {
-	return appendTuples(ctx, tx, []Tuple{{
+	return Write(ctx, tx, nil, []Tuple{{
 		FromKind: KindIssue, FromID: issueKey, Kind: RelationAdvances,
 		ToKind: KindPriority, ToID: id,
 		At: at, Who: actor, SourceEvent: NoEvent, Asserted: asserted,
@@ -132,8 +167,8 @@ func relate(ctx context.Context, tx pgx.Tx, issueKey, id string, asserted bool, 
 // priority whose state is gone is no priority, so a write of one matches no row and is refused
 // ErrNoPriority, the refusal an id no row carries takes — which is the 404 its own page, the
 // listing and an issue's `advances` relation already answer for it. The guard stands here, in
-// the one place a row is updated, so a rename, a rank move and a second delete are each refused
-// by it; and it stands ahead of every append, so a refused write states nothing.
+// the one place a row is read for a write, so a rename, a rank move and a second delete are each
+// refused by it; and it stands ahead of every append, so a refused write states nothing.
 //
 // anyRow is the restore's: SetState writing StateLive again reaches a gone row, since a guard
 // that caught that one too would make a delete final to this store and not just to a caller.
@@ -142,23 +177,25 @@ const (
 	anyRow  = ``
 )
 
-// moveNode writes one column of one node row and answers ErrNoPriority where the store holds no
-// such priority, or none that rows names. It is the one place a row is updated: a tuple never
-// is.
-func moveNode(ctx context.Context, tx pgx.Tx, assignment, rows, id string, value any) error {
-	var written string
-	err := tx.QueryRow(ctx, `
-		update priority_nodes set `+assignment+`
+// lockedNode reads one priority's node row and holds it `for no key update` until the
+// transaction ends, the lock the store's own node write takes on a row it writes again
+// (graphstore's queueNodes). Two writes of one priority therefore queue on that row, and the
+// second reads it as the first committed it, its guard (rows) included. It answers ErrNoPriority
+// where the store holds no such priority, or none that rows names.
+func lockedNode(ctx context.Context, tx pgx.Tx, id, rows string) (Node, error) {
+	node, err := scanNode(tx.QueryRow(ctx, `
+		select `+nodeColumns+`
+		from graph_nodes
 		where kind = '`+KindPriority+`' and id = $1`+rows+`
-		returning id
-	`, id, value).Scan(&written)
+		for no key update
+	`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("write priority %s: %w", id, ErrNoPriority)
+		return Node{}, fmt.Errorf("write priority %s: %w", id, ErrNoPriority)
 	}
 	if err != nil {
-		return fmt.Errorf("write priority %s: %w", id, err)
+		return Node{}, fmt.Errorf("write priority %s: %w", id, err)
 	}
-	return nil
+	return node, nil
 }
 
 // attributeTuples states each attribute of one write, in the name order of the attributes, so a
@@ -179,124 +216,4 @@ func valueTuple(id, attribute, value string, actor model.Actor, at time.Time) Tu
 		ToKind: KindValue, ToID: value,
 		At: at, Who: actor, SourceEvent: NoEvent, Asserted: true,
 	}
-}
-
-// writeNodes is one statement, whose rows arrive in ascending (kind, id): a write touching
-// several nodes takes its row locks in that order, so two such writes cannot each hold the row
-// the other waits for. The upsert moves supertag, visibility, state, attributes and source_event,
-// and leaves made_at and made_by as the row's own first write left them.
-func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node) error {
-	if len(nodes) == 0 {
-		return nil
-	}
-	args, err := nodeParams(nodes)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into priority_nodes (`+nodeColumns+`)
-		select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
-			$6::jsonb[], $7::timestamptz[], $8::jsonb[], $9::bigint[])
-		order by 1, 2
-		on conflict (kind, id) do update set
-			supertag = excluded.supertag,
-			visibility = excluded.visibility,
-			state = excluded.state,
-			attributes = excluded.attributes,
-			source_event = excluded.source_event
-	`, args...); err != nil {
-		return fmt.Errorf("write priority nodes: %w", err)
-	}
-	return nil
-}
-
-// appendTuples appends every tuple of a write in one statement, in the order the caller handed
-// them over, which is the order their seq is drawn in and so the order a history reads them back.
-func appendTuples(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
-	if len(tuples) == 0 {
-		return nil
-	}
-	args, err := tupleParams(tuples)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into priority_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
-		select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
-			$6::timestamptz[], $7::jsonb[], $8::bigint[], $9::boolean[])
-	`, args...); err != nil {
-		return fmt.Errorf("append priority tuples: %w", err)
-	}
-	return nil
-}
-
-// nodeParams is the node write's nine arrays, one per column, in nodeColumns' order.
-func nodeParams(nodes []Node) ([]any, error) {
-	kinds := make([]string, len(nodes))
-	ids := make([]string, len(nodes))
-	supertags := make([]string, len(nodes))
-	visibilities := make([]string, len(nodes))
-	states := make([]string, len(nodes))
-	attributes := make([][]byte, len(nodes))
-	madeAt := make([]time.Time, len(nodes))
-	madeBy := make([][]byte, len(nodes))
-	events := make([]int64, len(nodes))
-	for index, node := range nodes {
-		kinds[index] = node.Kind
-		ids[index] = node.ID
-		supertags[index] = node.Supertag
-		visibilities[index] = node.Visibility
-		states[index] = node.State
-		encoded, err := encodeAttributes(node.Attributes)
-		if err != nil {
-			return nil, fmt.Errorf("encode the attributes of priority %s: %w", node.ID, err)
-		}
-		attributes[index] = encoded
-		madeAt[index] = node.MadeAt
-		writer, err := json.Marshal(node.MadeBy)
-		if err != nil {
-			return nil, fmt.Errorf("encode the writer of priority %s: %w", node.ID, err)
-		}
-		madeBy[index] = writer
-		events[index] = node.SourceEvent
-	}
-	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAt, madeBy, events}, nil
-}
-
-// tupleParams is the tuple append's nine arrays, one per column.
-func tupleParams(tuples []Tuple) ([]any, error) {
-	fromKinds := make([]string, len(tuples))
-	fromIDs := make([]string, len(tuples))
-	kinds := make([]string, len(tuples))
-	toKinds := make([]string, len(tuples))
-	toIDs := make([]string, len(tuples))
-	at := make([]time.Time, len(tuples))
-	who := make([][]byte, len(tuples))
-	events := make([]int64, len(tuples))
-	asserted := make([]bool, len(tuples))
-	for index, tuple := range tuples {
-		fromKinds[index] = tuple.FromKind
-		fromIDs[index] = tuple.FromID
-		kinds[index] = tuple.Kind
-		toKinds[index] = tuple.ToKind
-		toIDs[index] = tuple.ToID
-		at[index] = tuple.At
-		writer, err := json.Marshal(tuple.Who)
-		if err != nil {
-			return nil, fmt.Errorf("encode the writer of a %s tuple on %s: %w", tuple.Kind, tuple.FromID, err)
-		}
-		who[index] = writer
-		events[index] = tuple.SourceEvent
-		asserted[index] = tuple.Asserted
-	}
-	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, at, who, events, asserted}, nil
-}
-
-// encodeAttributes writes an empty object for a node that carries no attribute, since the column
-// is `not null` and a nil map encodes as the JSON null, which is a value rather than no value.
-func encodeAttributes(attributes map[string]any) ([]byte, error) {
-	if attributes == nil {
-		return []byte("{}"), nil
-	}
-	return json.Marshal(attributes)
 }

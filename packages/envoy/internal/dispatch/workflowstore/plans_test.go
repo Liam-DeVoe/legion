@@ -24,20 +24,29 @@ import (
 // defaultSteps is the line of steps of an issue whose owner gave no plan.
 var defaultSteps = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 
+// projectOf is the project of issue, the part of its key before its number, as Dispatch keys an
+// issue: the project every write of the issue's runs and plans names.
+func projectOf(issue string) string {
+	project, _, _ := strings.Cut(issue, "-")
+	return project
+}
+
 // defaultPlan is the plan the daemon writes when the work of issue's generation starts and its
-// owner gave none: the source default and one task default holding the default steps.
+// owner gave none: the source default and one task default holding the default steps, in the
+// issue's project.
 func defaultPlan(id, issue string, generation int64) PlanWrite {
 	return PlanWrite{
-		ID: id, Issue: issue, Generation: new(generation), Source: new(PlanSourceDefault),
+		ID: id, Issue: issue, Project: new(projectOf(issue)), Generation: new(generation), Source: new(PlanSourceDefault),
 		Tasks: []PlanTask{{ID: "default", Steps: slices.Clone(defaultSteps)}},
 	}
 }
 
 // defaultPlanRead is the plan defaultPlan writes, as the store answers it: the source default, no
-// document, one task default holding the default steps. It is written out, not read from the store,
-// so a test compares the store's answer with a plan the store did not make.
+// document, one task default holding the default steps, in the issue's project. It is written out,
+// not read from the store, so a test compares the store's answer with a plan the store did not
+// make.
 func defaultPlanRead(id, issue string, generation int64) Plan {
-	return Plan{ID: id, Issue: issue, Source: PlanSourceDefault, Generation: generation,
+	return Plan{ID: id, Issue: issue, Project: projectOf(issue), Source: PlanSourceDefault, Generation: generation,
 		Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
 }
 
@@ -80,7 +89,7 @@ func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
 	}
 
 	var kind, supertag string
-	if err := pool.QueryRow(context.Background(), `select kind, supertag from workflow_nodes where id = $1`, id).Scan(&kind, &supertag); err != nil {
+	if err := pool.QueryRow(context.Background(), `select kind, supertag from graph_nodes where kind = 'plan' and id = $1`, id).Scan(&kind, &supertag); err != nil {
 		t.Fatalf("read the plan's node: %v", err)
 	}
 	if kind != KindPlan || supertag != KindPlan {
@@ -113,7 +122,7 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id, document := uuid.NewString(), uuid.NewString()
 	owner := PlanWrite{
-		ID: id, Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
+		ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(2)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: document, Version: 3},
 		Tasks:    []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer:fresh"}}, {ID: "docs", Steps: []string{"implementer"}}},
 	}
@@ -149,7 +158,7 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 	before := wholeLog(t, pool)
 
 	owner := putPlan(t, pool, PlanWrite{
-		ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
+		ID: id, Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(1)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 3},
 		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
 	}, minute(1))
@@ -196,8 +205,10 @@ func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"version of owner none": func(write *PlanWrite) {
 			write.Source, write.Document = new(PlanSourceOwner), PlanDocument{ArtifactID: uuid.NewString()}
 		},
-		"id":    func(write *PlanWrite) { write.ID = "not-a-uuid" },
-		"issue": func(write *PlanWrite) { write.Issue = "" },
+		"id":                 func(write *PlanWrite) { write.ID = "not-a-uuid" },
+		"issue":              func(write *PlanWrite) { write.Issue = "" },
+		"project left out":   func(write *PlanWrite) { write.Project = nil },
+		"project left empty": func(write *PlanWrite) { write.Project = new("") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			write := defaultPlan(uuid.NewString(), "LEG-1", 1)
@@ -315,13 +326,14 @@ type seededIssue struct {
 	closed      *time.Time
 }
 
-// stepRun writes one run of one step of issue: its identity, and the start and end that are not nil.
+// stepRun writes one run of one step of issue, in the issue's project: its identity, and the
+// start and end that are not nil.
 func stepRun(t *testing.T, pool *store.Pool, issue, kind, role string, place int, generation int64,
 	started, ended *time.Time, result string) string {
 	t.Helper()
 	id := uuid.NewString()
 	write := StepWrite{
-		ID: id, Issue: issue, Task: new("default"), Place: new(place), Kind: new(kind), Role: new(role),
+		ID: id, Issue: issue, Project: new(projectOf(issue)), Task: new("default"), Place: new(place), Kind: new(kind), Role: new(role),
 		Generation: new(generation), StartedAt: started, EndedAt: ended,
 	}
 	if result != "" {
@@ -339,7 +351,7 @@ func ratedRetro(t *testing.T, pool *store.Pool, issue string, generation int64, 
 	t.Helper()
 	id := stepRun(t, pool, issue, StepKindRetro, "implementer", 0, generation, &started, &ended, ResultPassed)
 	write := rated(retroOf(id), rating, reason)
-	write.Issue, write.Generation = issue, new(generation)
+	write.Issue, write.Project, write.Generation = issue, new(projectOf(issue)), new(generation)
 	put(t, pool, write, ended)
 	return id
 }
@@ -466,10 +478,10 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	retroOne := ratedRetro(t, pool, "LEG-1", 1, minute(10), minute(12), 3, "The review came late.")
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(15)), ResultPassed)
 
-	ownersPlan := Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceOwner, Generation: 2, Document: &PlanDocument{ArtifactID: document, Version: 1},
+	ownersPlan := Plan{ID: planTwo, Issue: "LEG-2", Project: "LEG", Source: PlanSourceOwner, Generation: 2, Document: &PlanDocument{ArtifactID: document, Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}}}
 	written := putPlan(t, pool, PlanWrite{
-		ID: planTwo, Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: PlanDocument{ArtifactID: document, Version: 1},
+		ID: planTwo, Issue: "LEG-2", Project: new("LEG"), Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: PlanDocument{ArtifactID: document, Version: 1},
 		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}},
 	}, minute(20))
 	if planText(written) != planText(ownersPlan) {
@@ -523,16 +535,16 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	// tasks of its own, so a read that took an owner's plan over a default one lists another too.
 	newestID := "50000000-0000-4000-8000-000000000000"
 	putPlan(t, pool, PlanWrite{
-		ID: "30000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner),
+		ID: "30000000-0000-4000-8000-000000000000", Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(10)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 3}, Tasks: []PlanTask{{ID: "docs", Steps: []string{"writer"}}},
 	}, minute(75))
 	putPlan(t, pool, defaultPlan(newestID, "LEG-1", 40), minute(50))
 	putPlan(t, pool, PlanWrite{
-		ID: "90000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
+		ID: "90000000-0000-4000-8000-000000000000", Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(2)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
 	}, minute(100))
 	putPlan(t, pool, PlanWrite{
-		ID: "10000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(9)), Source: new(PlanSourceOwner),
+		ID: "10000000-0000-4000-8000-000000000000", Issue: "LEG-1", Project: new("LEG"), Generation: new(int64(9)), Source: new(PlanSourceOwner),
 		Document: PlanDocument{ArtifactID: uuid.NewString(), Version: 2},
 		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}},
 	}, minute(0))

@@ -387,13 +387,15 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	putRatingOK(t, handler, issue, retro, withFields(rating, map[string]any{"actor": daemonSessionOf("LEG")}))
 }
 
-// workflowRows counts the rows of the workflow store's two tables, which every plan write and
-// every step write adds to.
+// workflowRows counts the workflow store's rows in the node and tuple store, the nodes of runs
+// and plans and the tuples out of them, which every plan write and every step write adds to.
 func workflowRows(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var rows int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select (select count(*) from workflow_nodes) + (select count(*) from workflow_tuples)`).Scan(&rows); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from graph_nodes where kind in ('step', 'plan'))
+		     + (select count(*) from graph_tuples where from_kind in ('step', 'plan'))
+	`).Scan(&rows); err != nil {
 		t.Fatalf("count the workflow rows: %v", err)
 	}
 	return rows

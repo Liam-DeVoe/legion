@@ -25,8 +25,8 @@ var (
 	bob   = model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 )
 
-// A tuple as the log holds it, read straight from the table rather than through this package, for
-// the check that no write ever rewrote or removed one.
+// A tuple as the log holds it, read straight from the store's table rather than through this
+// package, for the check that no write ever rewrote or removed one.
 type loggedTuple struct {
 	seq                                  int64
 	fromKind, fromID, kind, toKind, toID string
@@ -364,6 +364,96 @@ func TestEveryPriorityAppendedTakesADistinctKeyAndTheListingFollowsIt(t *testing
 	assertListed(t, pool, ids)
 }
 
+// A priority's node row in the store keeps the shape the release before this one reads off its
+// own table, through every write: an object of the four attributes a person writes, title,
+// description, owner and rank, each one a JSON string, and no other key, in no project. The
+// store's node write replaces a row's attributes whole, so a rename that handed it the one
+// attribute it moves would leave the row holding the title alone; each write here moves one or
+// two attributes, or the state alone, and the row read straight from the table holds all four
+// after each of them.
+func TestAPriorityRowKeepsItsFourAttributesAsTextThroughEveryWrite(t *testing.T) {
+	ctx := context.Background()
+	pool := storetest.Open(t).Pool
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	const id = "kept-whole"
+	want := map[string]string{
+		AttributeTitle:       "Keep the row whole",
+		AttributeDescription: "Every attribute, every write.",
+		AttributeOwner:       "alice@example.com",
+	}
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		key, err := RankAt(ctx, tx, id, "", "")
+		if err != nil {
+			return err
+		}
+		want[AttributeRank] = key
+		return Create(ctx, tx, id, want, alice, at)
+	})
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		key, err := RankAt(ctx, tx, "below-it", "", "")
+		if err != nil {
+			return err
+		}
+		return Create(ctx, tx, "below-it", map[string]string{AttributeTitle: "Below it", AttributeRank: key}, alice, at)
+	})
+	// requireWhole holds the row as the table stores it to want, key for key, each value a JSON
+	// string, to the state the writes left it in, and to no project.
+	requireWhole := func(after, state string) {
+		t.Helper()
+		var types map[string]string
+		var stored map[string]any
+		var held string
+		var project *string
+		if err := pool.QueryRow(ctx, `
+			select (select jsonb_object_agg(key, jsonb_typeof(value)) from jsonb_each(attributes)), attributes, state, project_key
+			from graph_nodes where kind = $1 and id = $2
+		`, KindPriority, id).Scan(&types, &stored, &held, &project); err != nil {
+			t.Fatalf("read the row after %s: %v", after, err)
+		}
+		if held != state {
+			t.Errorf("after %s the row's state is %q, want %q", after, held, state)
+		}
+		if project != nil {
+			t.Errorf("after %s the row names the project %q, want none: a priority belongs to no project", after, *project)
+		}
+		if len(types) != len(want) {
+			t.Errorf("after %s the row holds the attributes %v, want exactly %v", after, stored, want)
+		}
+		for name, value := range want {
+			if types[name] != "string" || stored[name] != value {
+				t.Errorf("after %s the row holds %s as %s %v, want the string %q", after, name, types[name], stored[name], value)
+			}
+		}
+	}
+	requireWhole("the create", StateLive)
+
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		return SetAttributes(ctx, tx, id, map[string]string{AttributeTitle: "Keep every attribute"}, bob, at.Add(time.Minute))
+	})
+	want[AttributeTitle] = "Keep every attribute"
+	requireWhole("a rename", StateLive)
+
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		key, err := Move(ctx, tx, id, "", "below-it", bob, at.Add(2*time.Minute))
+		want[AttributeRank] = key
+		return err
+	})
+	requireWhole("a rank move", StateLive)
+
+	writeOnce(t, pool, func(tx pgx.Tx) error {
+		return SetAttributes(ctx, tx, id, map[string]string{
+			AttributeDescription: "", AttributeOwner: "bob@example.com",
+		}, alice, at.Add(3*time.Minute))
+	})
+	want[AttributeDescription], want[AttributeOwner] = "", "bob@example.com"
+	requireWhole("a write of the description and the owner", StateLive)
+
+	writeOnce(t, pool, func(tx pgx.Tx) error { return SetState(ctx, tx, id, StateGone, bob, at.Add(4*time.Minute)) })
+	requireWhole("a delete", StateGone)
+	writeOnce(t, pool, func(tx pgx.Tx) error { return SetState(ctx, tx, id, StateLive, alice, at.Add(5*time.Minute)) })
+	requireWhole("a restore", StateLive)
+}
+
 // assertListed holds the live listing to one order of ids.
 func assertListed(t *testing.T, pool *store.Pool, want []string) {
 	t.Helper()
@@ -397,14 +487,18 @@ func assertOnlyAppended(t *testing.T, before, after []loggedTuple, appended int)
 	}
 }
 
-// wholeLog is every tuple row of the database, read without this package's own statements.
+// wholeLog is every tuple of the priority store, read out of the store's table without this
+// package's own statements: each tuple out of a priority and each `advances` tuple into one. The
+// store holds other nodes' tuples beside them (the block schema's, which a migration writes), and
+// those are no write of this package.
 func wholeLog(t *testing.T, pool *store.Pool) []loggedTuple {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
 		select seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted
-		from priority_tuples
+		from graph_tuples
+		where from_kind = $1 or (from_kind = $2 and kind = $3 and to_kind = $1)
 		order by seq
-	`)
+	`, KindPriority, KindIssue, RelationAdvances)
 	if err != nil {
 		t.Fatalf("read the tuple log: %v", err)
 	}

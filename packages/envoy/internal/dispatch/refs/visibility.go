@@ -210,6 +210,18 @@ func init() {
 		// beside its check_results row: project-visible, and resolved by no read of the graph yet,
 		// so its entry carries no loader.
 		graphstore.KindResult: unresolvedKind(nodeVisibility{}),
+		// The three kinds dispatch://INFRA-1098's R32 moves into the store, registered in the
+		// commit whose writers first write a node of each: a priority (prioritystore), which
+		// belongs to no project and which every authenticated caller reads through the priority
+		// routes, and a run of a step and the plan a run ran from (workflowstore), each kept under
+		// its issue's project and read through the steps and plans routes. Each is
+		// project-visible, and no read of references resolves one into a node: graph_edges' tuple
+		// arm renders none of their tuples, the walk of an issue's tree leaves out every step and
+		// plan (workflowKinds), and the routes read the nodes themselves. So none carries a loader,
+		// and the registry holds each for the predicate a read of its kind would bind.
+		"priority": unresolvedKind(nodeVisibility{}),
+		"step":     unresolvedKind(nodeVisibility{}),
+		"plan":     unresolvedKind(nodeVisibility{}),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
 		// writes one outside a migration, every one of them is project-visible and no read of
 		// the graph resolves one, but they are nodes of the store like any other, so the

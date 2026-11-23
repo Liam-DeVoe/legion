@@ -355,11 +355,12 @@ var (
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
 	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
-	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
-	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
-	// plansRead is the plans read's one read of the project's finished issues, joined through
-	// their tuples to their runs and plans.
-	plansRead = regexp.MustCompile(`(?is)\bfrom\s+issues\s+i\b.*\bworkflow_tuples\b`)
+	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue,
+	// joined to the runs' node rows.
+	stepsRead = regexp.MustCompile(`(?is)\bfrom\s+graph_tuples\s+t\s+join\s+graph_nodes\s+n\b.*\bpart_of\b`)
+	// plansRead is the plans read's one read of the project's finished issues, left-joined to the
+	// node rows of their runs and plans.
+	plansRead = regexp.MustCompile(`(?is)\bfrom\s+issues\s+i\s+left\s+join\s+graph_nodes\s+n\b`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -397,8 +398,8 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 // the steps of an issue the daemon wrote a run of, and the plans of the project once that issue is
 // done. Every insert, update and delete is to dpop_proofs, text_trees or route_roster: the proof's
 // replay row and the two caches Dispatch rebuilds from what it holds. The positive controls are
-// each proof's insert, a tree's insert, the read of architecture_sources, the read of
-// workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
+// each proof's insert, a tree's insert, the read of architecture_sources, the steps read's read of
+// graph_tuples and the read of the project's finished issues, so a tracer that saw nothing
 // cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)

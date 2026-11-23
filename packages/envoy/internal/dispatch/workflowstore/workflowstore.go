@@ -1,23 +1,28 @@
-// Package workflowstore is the one place in the tree that writes `workflow_nodes` and
-// `workflow_tuples`: the record of each run of each step of an issue's workflow, and the plan each
-// run of the issue ran from. A run is one node of kind KindStep and a plan one node of kind
-// KindPlan, each part of its issue by one `part_of` relation; each of its fields is an attribute,
-// stated by one value tuple and held on the node row, which is the projection of its tuples
-// (store/migrations/20261116235202_workflow_nodes.up.sql). Nothing here updates a tuple and
-// nothing deletes one.
+// Package workflowstore is the one place in the tree that writes the record of each run of each
+// step of an issue's workflow, and the plan each run of the issue ran from. A run is one node of
+// kind KindStep and a plan one node of kind KindPlan, each a row of `graph_nodes` written through
+// internal/dispatch/graphstore, the store's one writer, and each part of its issue by one
+// `part_of` relation; each of its fields is an attribute, stated by one value tuple of
+// `graph_tuples` and held on the node row, which is the projection of its tuples. Nothing here
+// updates a tuple and nothing deletes one.
+//
+// A node's row keeps, in its attributes, the issue it is part of, its project and every field
+// stepFrom and planFrom read, each in its JSON type, which is the shape the release before this
+// one reads; its project is the row's project_key too, and its visibility and its state are value
+// tuples the store states as it makes the node, as it states them of every node. The workflow
+// store's own tables (store/migrations/20261116235202_workflow_nodes.up.sql) hold the runs and
+// plans a release before this one wrote, and this build neither reads nor writes them: the move of
+// dispatch://INFRA-1098's R32 takes their rows into the store at boot.
 //
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once; the rating of a retro is a third write of
 // the retro's run, in any order with the other two. So a write never refuses for its order: it
 // sets each field the node does not hold yet, leaves each field it holds, but returned_to, which
 // only the write that sets the result sets, and makes the node when none exists (PutStep,
-// PutPlan). The read of an issue (IssueSteps) answers each run with its attempt, which no write
-// stores, and the read of a project (ProjectPlans) answers each of its finished issues with its
-// plan, its ratings, its time and its count of failed steps.
-//
-// The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
-// internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
-// the day it lands.
+// PutPlan). Every write names the issue's project, which the store keeps the node under. The read
+// of an issue (IssueSteps) answers each run with its attempt, which no write stores, and the read
+// of a project (ProjectPlans) answers each of its finished issues with its plan, its ratings, its
+// time and its count of failed steps.
 package workflowstore
 
 import (
@@ -28,41 +33,43 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // The kinds and the supertags of the two nodes this store writes, a step's run and a plan, and the
 // kinds of the nodes their relations reach: the issue each is part of and the handoff a run
-// reported.
+// reported, which the store holds no node of (a run's `reports` names the handoff's id alone).
 const (
 	KindStep    = "step"
 	KindPlan    = "plan"
-	KindIssue   = "issue"
+	KindIssue   = graphstore.KindIssue
 	KindHandoff = "handoff"
 )
 
-// KindValue is the to_kind of an attribute tuple (tuple.toKind): its to_id (tuple.toID) holds the
-// value itself rather than an address.
-const KindValue = "value"
+// KindValue is the to_kind of an attribute tuple: its to_id holds the value itself rather than an
+// address.
+const KindValue = graphstore.KindValue
 
 // The two relations a node states. RelationPartOf is written once, by the write that makes the
 // node, to the issue; RelationReports is written once, by the write that sets a run's report, to
 // the handoff the ending role's completion named.
 const (
-	RelationPartOf  = "part_of"
+	RelationPartOf  = graphstore.TuplePartOf
 	RelationReports = "reports"
 )
 
 // Visibility and state, the two base attributes every node carries. A run and a plan are visible
-// to every reader of their project, and no write ends one: a run that ended keeps its node.
+// to every reader of their project, and no write ends one: a run that ended keeps its node. The
+// store states both as the write that makes a node writes its row (graphstore.QueueWrite).
 const (
-	VisibilityProject = "project"
-	StateLive         = "live"
+	VisibilityProject = graphstore.VisibilityProject
+	StateLive         = graphstore.StateLive
 )
 
 // NoEvent is the source_event of every row this store writes: a step write appends no event, since
 // an event would feed the daemon's intake with facts it caused. `events.id` is a bigserial, so no
 // event ever carries 0.
-const NoEvent int64 = 0
+const NoEvent = graphstore.NoEvent
 
 // The three kinds of a run. StepKindStep is a step a plan names, at its place from 1; the retro and
 // the merge are acts of Legion that no plan names, so their place is 0 and their kind tells them
@@ -83,10 +90,13 @@ const (
 
 // The attributes of a step, each the name of its value tuples and of its key in the node row's
 // `attributes`. A retro's run alone also holds AttributeRating and AttributeRatingReason: the
-// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason.
+// rating, 1 to 5, the agent that did the retro gave the plan the issue ran, and its reason. The
+// project is a base attribute of the store (graphstore.AttributeProject): the node row holds it in
+// its attributes beside the others and as its project_key, and the store states its value tuple,
+// as it states the project of every node it makes.
 const (
 	AttributeIssue        = "issue"
-	AttributeProject      = "project"
+	AttributeProject      = graphstore.AttributeProject
 	AttributeGeneration   = "generation"
 	AttributeTask         = "task"
 	AttributeStep         = "step"
@@ -126,15 +136,16 @@ const (
 // The refusals a caller maps to an answer of its own. They are the only ones: a write is never
 // refused for its order or for stating again a field the node already holds.
 var (
-	// ErrStepInput is a value outside its form, a write that would make a node and does not name
-	// the step's identity (its task, kind, step, role and generation), or a type or a rating that
-	// the kind the write names or the kind the node holds does not take (typeOfKind,
-	// ratingOfKind). The error's text names the field and the rule.
+	// ErrStepInput is a value outside its form, a write that names no project, a write that would
+	// make a node and does not name the step's identity (its task, kind, step, role and
+	// generation), or a type or a rating that the kind the write names or the kind the node holds
+	// does not take (typeOfKind, ratingOfKind). The error's text names the field and the rule.
 	ErrStepInput = errors.New("step input")
 	// ErrStepOtherIssue is a write of an id whose node is part of another issue.
 	ErrStepOtherIssue = errors.New("the step is a step of another issue")
 	// ErrPlanInput is a plan's value outside its form, or a plan write that does not name its
-	// generation, its source and its tasks. The error's text names the field and the rule.
+	// project, its generation, its source and its tasks. The error's text names the field and the
+	// rule.
 	ErrPlanInput = errors.New("plan input")
 	// ErrPlanOtherIssue is a plan write of an id whose node is part of another issue.
 	ErrPlanOtherIssue = errors.New("the plan is a plan of another issue")
@@ -161,12 +172,13 @@ type StepRating struct {
 	Reason string
 }
 
-// StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
-// where it states nothing. An empty text states nothing either, so a write that knows no model
-// leaves the model to a later write that knows it. ReturnedTo is the place a run returned its task
-// to, and 0 is a place: the retro's and the merge's, which a place alone does not tell apart.
-// Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return to the retro.
-// Only a retro takes a Rating.
+// StepWrite is one write of a run: the id, the issue it writes and the issue's project, and each
+// field it states, nil where it states nothing. An empty text states nothing either, so a write
+// that knows no model leaves the model to a later write that knows it. ReturnedTo is the place a
+// run returned its task to, and 0 is a place: the retro's and the merge's, which a place alone does
+// not tell apart. Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return
+// to the retro. Only a retro takes a Rating. Every write names the project, which a node holds from
+// the write that makes it and keeps; a write that names none is refused ErrStepInput.
 type StepWrite struct {
 	ID, Issue                                                              string
 	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
@@ -209,10 +221,10 @@ type PlanDocument struct {
 	Version    int
 }
 
-// PlanWrite is one write of a plan: the id and the issue it writes, and each field it states. A
-// plan write names its generation, its source and its tasks, and an owner's plan its document; a
-// Document left zero states none, as a default plan's does. The project is set once, never
-// required.
+// PlanWrite is one write of a plan: the id, the issue it writes and the issue's project, and each
+// field it states. A plan write names its project, its generation, its source and its tasks, and an
+// owner's plan its document; a Document left zero states none, as a default plan's does. The
+// project is held from the write that makes the node and kept.
 type PlanWrite struct {
 	ID, Issue       string
 	Project, Source *string

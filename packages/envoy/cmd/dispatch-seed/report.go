@@ -39,9 +39,11 @@ func (r *seedRun) buildTermStatistics(ctx context.Context) error {
 }
 
 // reportTables are the tables the command prints a row count for, in the order it prints them.
+// graph_nodes and graph_tuples are the node and tuple store, which holds the priorities and their
+// `advances` relations beside every other node the run writes.
 var reportTables = []string{
 	"projects", "issues", "issue_links", "issue_components",
-	"issue_component_members", "priority_nodes", "priority_tuples",
+	"issue_component_members", "graph_nodes", "graph_tuples",
 	"architecture_snapshots", "components", "component_depends",
 	"artifacts", "artifact_versions", "document_blocks", "document_block_texts",
 	"document_block_versions", "document_indexed_versions", "asks", "ask_followers", "ask_blocks",
@@ -159,7 +161,8 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		{"graph edges by kind", `select kind || '->' || to_kind || '=' || rows from (
 			select kind, to_kind, count(*) as rows from graph_edges group by 1, 2) e order by kind, to_kind`},
 		{"issues advancing a priority", `with recursive ` + priorityMemberTerms + `
-			select 'priorities=' || (select count(*) from priority_nodes where state = '` + prioritystore.StateLive + `') ||
+			select 'priorities=' || (select count(*) from graph_nodes
+			                         where kind = '` + prioritystore.KindPriority + `' and state = '` + prioritystore.StateLive + `') ||
 			       ' relations stated=' || (select count(*) from stated) ||
 			       ' issues stating one=' || (select count(distinct key) from stated) ||
 			       ' issues under one, the inheritance counted=' || (select count(distinct key) from members)`},

@@ -453,7 +453,8 @@ func rowCountsOf(t *testing.T, database *store.Store) map[string]int {
 // checksums are the sorted samples the repeatability check compares, by table. Each names its
 // columns: a column a trigger or a default fills with now() is left out, because two runs are not
 // at one instant, and so is every transaction-id column, which the queue of a later seam carries.
-// A long text column is compared by its md5, so one checksum is not the whole database again.
+// A long text column is compared by its md5, so one checksum is not the whole database again. A
+// table checksumRows names is sampled over the rows it keeps alone.
 var checksums = []struct {
 	table   string
 	columns string
@@ -466,10 +467,13 @@ var checksums = []struct {
 	{"issue_components", `issue_key, mode, reason, created_at, updated_at`},
 	{"issue_component_members", `issue_key, project_key, component_id`},
 	// The priority node row carries its own attributes and the tuple log carries how each got
-	// there, so both are compared whole; `seq` is in the tuple's sample because the log position
-	// is the order a history reads, as the events table's own `id` is.
-	{"priority_nodes", `kind, id, supertag, visibility, state, attributes::text, made_at, made_by::text, source_event`},
-	{"priority_tuples", `seq, from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted`},
+	// there, so both are compared whole. Both are rows of the node and tuple store, which holds
+	// every other node the run writes beside them, so each sample reads the priority store's own
+	// rows (checksumRows). A tuple's place among them is in its sample, numbered in the order of
+	// its seq, because the log position is the order a history reads, as the events table's own
+	// `id` is; the seq itself also counts every other writer's tuples drawn before it.
+	{"graph_nodes", `kind, id, supertag, visibility, state, attributes::text, made_at, made_by::text, source_event`},
+	{"graph_tuples", `row_number() over (order by seq), from_kind, from_id, kind, to_kind, to_id, at, who::text, source_event, asserted`},
 	{"components", `project_key, id, title, prose, parent, snapshot_id, source_id`},
 	{"component_depends", `project_key, from_id, to_id`},
 	{"artifacts", `id::text, issue_key, project_key, slug, name, kind, is_primary, created_at, ref_key, last_seq`},
@@ -508,13 +512,25 @@ var checksums = []struct {
 	{"search_term_totals", `project_key, items`},
 }
 
+// checksumRows narrows the sample of a table that holds the rows of several writers to the ones
+// a sample compares: the store's tables to the priority store's nodes, and to the tuples out of
+// them and the `advances` tuples into them.
+var checksumRows = map[string]string{
+	"graph_nodes":  `kind = 'priority'`,
+	"graph_tuples": `from_kind = 'priority' or (from_kind = 'issue' and kind = 'advances' and to_kind = 'priority')`,
+}
+
 func assertSameChecksums(t *testing.T, first, second *store.Store) {
 	t.Helper()
 	for _, item := range checksums {
+		rows := ""
+		if keep, narrowed := checksumRows[item.table]; narrowed {
+			rows = " where " + keep
+		}
 		query := fmt.Sprintf(
 			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
-			 from (select concat_ws(':', %s) as row_text from %s) sample`,
-			item.columns, pgx.Identifier{item.table}.Sanitize())
+			 from (select concat_ws(':', %s) as row_text from %s%s) sample`,
+			item.columns, pgx.Identifier{item.table}.Sanitize(), rows)
 		firstSum := checksumOf(t, first, item.table, query)
 		secondSum := checksumOf(t, second, item.table, query)
 		if firstSum != secondSum {
@@ -798,17 +814,18 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // ask_followers arms; 20261116184707_issue_tree_graph_edges_both_arms and
 // 20261117020856_graph_edges_asks_and_store_class each keep that list, widen what the tuple arm
 // answers and add one arm over the same tuples, answering the relations out of a finding of a lens
-// as a lens_block (armOfAFinding); and 20261117140000_issue_tree_relations adds one arm over the
-// artifacts that carry their node, answering each one's attached_to from its part_of tuple.
+// as a lens_block; and 20261117140000_issue_tree_relations adds one arm over the artifacts that
+// carry their node, answering each one's attached_to from its part_of tuple.
 // 20261118023219_issue_tree_components and 20261119100000_issue_tree_artifact_refs keep that list
 // arm for arm; the second has the tuple arm read a document's mentions through a union of its own
 // beside the log's other tuples, which is one arm (topLevelUnion).
-// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list arm for arm with 20261120122700's filter of the tuple arm. Each of
-// the arms over a kind the store now writes answers only the rows of its table that name no node,
-// and the seed names the node of every row it writes, so those arms answer nothing here
-// (armGatedPerRow).
-const graphArmCount = 30
+// 20261121090000_issue_tree_graph_edges_after_tuple_arm_filter keeps that list arm for arm with
+// 20261120122700's filter of the tuple arm. 20261123120000_graph_edges_one_tuple_arm, the last
+// migration to restate graph_edges, folds the lens_block arm and the attached_to arm into the
+// tuple arm's sub-select, each a part of its own, which leaves 28 arms. Each of the arms over a
+// kind the store now writes answers only the rows of its table that name no node, and the seed
+// names the node of every row it writes, so those arms answer nothing here (armGatedPerRow).
+const graphArmCount = 28
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -824,11 +841,6 @@ var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
 // view so as well). A union inside an arm's sub-select is indented under it and is part of that
 // arm.
 const topLevelUnion = "\nUNION ALL\n"
-
-// armOfAFinding matches the arm that answers the relations out of a finding of a lens, which it
-// names by the literal from_kind lens_block. The seed writes no lens and so no finding, the work
-// of a person or an agent reasoning about an issue, so that arm holds no row here.
-var armOfAFinding = regexp.MustCompile(`'lens_block'::text AS from_kind`)
 
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
@@ -846,7 +858,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, topLevelUnion)
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261119100000 restate it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261123120000 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -860,9 +872,6 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		case rows > 0:
 		case armGatedPerRow.MatchString(arm):
 			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
-				index+1, arm)
-		case armOfAFinding.MatchString(arm):
-			t.Logf("arm %d of graph_edges answers no row: it answers the relations out of a finding of a lens, and the seed writes no lens:\n%s",
 				index+1, arm)
 		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)

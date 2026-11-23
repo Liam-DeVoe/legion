@@ -1,7 +1,8 @@
 // priorities.go serves the five routes of a priority: the deployment-wide node work in any
 // project advances. Every row it reads and writes belongs to internal/dispatch/prioritystore,
-// which is the one place in the tree that writes `priority_nodes` and `priority_tuples`; this
-// file is the HTTP shape of those calls and the refusals they map to.
+// which is the one place in the tree that writes a priority, a `graph_nodes` row of kind
+// `priority` with its tuples in `graph_tuples`, through the store's one writer; this file is the
+// HTTP shape of those calls and the refusals they map to.
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment
 // (writeClasses, routes_table.go): a credential scoped to one project is refused
@@ -42,11 +43,12 @@ const (
 )
 
 // priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
-// characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
-// Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the
-// insert inside prioritystore.Create and failed it as a 500. 200 is far under that bound with
-// every other column of the inbound entry beside it, and well over any name a person reads at a
-// glance; a longer title derives a longer id, and the create then asks the caller to name one.
+// characters too. The id is a btree key of graph_nodes and, at the far end of every `advances`
+// tuple, of graph_tuples' indexes, and Postgres refuses a btree entry over about 2,700 bytes, so an
+// id with no bound reached the insert inside prioritystore.Create and failed it as a 500. 200 is
+// far under that bound, and under graphstore.MaxAddressBytes, the bound every address of the store
+// fits in, and well over any name a person reads at a glance; a longer title derives a longer id,
+// and the create then asks the caller to name one.
 const priorityIDMax = 200
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
@@ -442,12 +444,12 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 }
 
 // priorityEvent is the `priority.updated` each of the three writes appends in its own
-// transaction, after the store wrote the priority_nodes row, so a write the store refused rolls
-// back with no event. It names no owner: a priority belongs to no project, issue or document, and
-// the broker keys it by the priority (events.eventOwnerKey). So it wakes nobody and the outbox
-// publishes it nowhere (events.Quiet); what it is for is every other reader's open priorities
-// page, priority page and navigation rail, which the live socket carries it to and which refetch
-// on it (packages/dispatch/web/src/api/event-refresh.ts).
+// transaction, after the store wrote the priority's graph_nodes row, so a write the store refused
+// rolls back with no event. It names no owner: a priority belongs to no project, issue or
+// document, and the broker keys it by the priority (events.eventOwnerKey). So it wakes nobody and
+// the outbox publishes it nowhere (events.Quiet); what it is for is every other reader's open
+// priorities page, priority page and navigation rail, which the live socket carries it to and
+// which refetch on it (packages/dispatch/web/src/api/event-refresh.ts).
 func priorityEvent(actor model.Actor, id, change string) model.Event {
 	return model.Event{
 		Type:    "priority.updated",

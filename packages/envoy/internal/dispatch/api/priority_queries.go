@@ -1,10 +1,11 @@
 // priority_queries.go is the read behind GET /api/v1/priorities: every live priority with the
 // work that advances it, and the two faults. It is the query half of priorities.go, as
-// issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
-// `priority_tuples`, which prioritystore alone writes; it reads them through prioritystore.List
-// and through the SQL below, which splices prioritystore.AdvancesTupleRead, the one reading of
-// the `advances` relation, and joins it to the issues it counts. The parked rows carry their
-// `advances` entries through issueAdvancesTerms, the inheritance walk every issue read climbs.
+// issue_queries.go is of the issue routes. It writes no priority, which prioritystore alone writes
+// into the node and tuple store; it reads the priorities' `graph_nodes` rows through
+// prioritystore.List and their `advances` tuples in `graph_tuples` through the SQL below, which
+// splices prioritystore.AdvancesTupleRead, the one reading of the `advances` relation, and joins
+// it to the issues it counts. The parked rows carry their `advances` entries through
+// issueAdvancesTerms, the inheritance walk every issue read climbs.
 //
 // The body is six statements. The priorities are prioritystore.List; the relations are the
 // `advances` tuples every live priority holds now (priorityRelationsQuery), read once and then

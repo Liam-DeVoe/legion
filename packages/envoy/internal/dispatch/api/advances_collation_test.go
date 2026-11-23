@@ -8,10 +8,14 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The two ids of the measured case. `ci-fixes` sorts before `cicd` by the bytes, since `-` is
@@ -22,51 +26,68 @@ const (
 	letteredPriority   = "cicd"
 )
 
-// collatePriorityIDsAsADeploymentDoes holds the priority ids under a collation that sorts `cicd`
-// before `ci-fixes`, which is what a deployment's database does: its collation is the one the
-// cluster's Postgres was created with, glibc's en_US on the measured one. The test database's own
-// default (ICU en-US on the pod's test server) orders these two ids as Go does, so a test left to
-// it cannot see the defect; the ids are put under one known collation of the test's own, as
-// cireconcile's collateDefaultsAsADeploymentDoes puts the project defaults' names.
-func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
+// collatedAsADeploymentDoes answers a database of this tree's migrations whose own default
+// collation sorts `cicd` before `ci-fixes`, which is what a deployment's database does: its
+// collation is the one the cluster's Postgres was created with, glibc's en_US on the measured one.
+// The test database's own default (ICU en-US on the pod's test server) orders these two ids as Go
+// does, so a test left to it cannot see the defect. ICU's `ka-shifted` weighs punctuation only
+// where the letters are equal, which is the rule glibc's en_US was measured to follow, so the
+// database is created with that ICU locale as its default and migrated by this tree's runner.
+//
+// The whole database takes the collation, as a deployment's does, rather than one column: the
+// priority ids are the far ends of `advances` tuples in graph_tuples, a column every walk of the
+// store reads, and a walk whose recursive term reads a column of one collation and whose first
+// term a text of the default's is one Postgres refuses (a recursive query's column takes one
+// collation), a refusal no deployment meets. The database is dropped once the test ends.
+func collatedAsADeploymentDoes(t *testing.T) *store.Store {
 	t.Helper()
 	ctx := context.Background()
+	host := storetest.Open(t)
 	// A PostgreSQL built with ICU carries ICU collations of its own and one built without ICU
-	// carries none, so this count is the server's own answer to whether the collation below can
+	// carries none, so this count is the server's own answer to whether the database below can
 	// be made. An error from the read itself ends the test.
 	var icu bool
-	if err := database.Pool.QueryRow(ctx, `select count(*) > 0 from pg_collation where collprovider = 'i'`).Scan(&icu); err != nil {
+	if err := host.Pool.QueryRow(ctx, `select count(*) > 0 from pg_collation where collprovider = 'i'`).Scan(&icu); err != nil {
 		t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
 	}
 	if !icu {
 		t.Skip("a PostgreSQL built with ICU must serve this test: ICU is what holds the priority ids under one known collation weighing punctuation last, an order the Go merge of the advances lists does not follow")
 	}
-	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
-	// glibc's en_US was measured to follow. The walk orders and groups priority_tuples.to_id and
-	// joins it to priority_nodes.id, so both take the collation: one of them alone would leave the
-	// join comparing two columns of different collations. priority_tuples.from_id is left alone,
-	// since it holds issue keys and the walk joins it to issues.key.
-	for _, statement := range []string{
-		`create collation punctuation_last (provider = icu, locale = 'en-US-u-ka-shifted')`,
-		`alter table priority_tuples alter column to_id type text collate punctuation_last`,
-		`alter table priority_nodes alter column id type text collate punctuation_last`,
-	} {
-		// The server has ICU, so a statement it refuses here is a permission or a schema problem
-		// rather than an absence to pass over, and the test says so rather than skips.
-		if _, err := database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("hold the priority ids under a deployment's own collation (%s): %v", statement, err)
+	name := fmt.Sprintf("dispatch_test_collated_%d", time.Now().UnixNano())
+	// The server has ICU, so a statement it refuses here is a permission or a schema problem
+	// rather than an absence to pass over, and the test says so rather than skips.
+	if _, err := host.Pool.Exec(ctx, `create database `+name+` template template0 encoding 'UTF8'
+		locale_provider icu icu_locale 'en-US-u-ka-shifted' locale 'C'`); err != nil {
+		t.Fatalf("create a database collated as a deployment's is: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := host.Pool.Exec(context.Background(), `drop database if exists `+name+` with (force)`); err != nil {
+			t.Errorf("drop the collated database %s: %v", name, err)
 		}
+	})
+	address, err := url.Parse(host.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("read the test database's address: %v", err)
+	}
+	address.Path = "/" + name
+	database, err := store.Open(ctx, address.String())
+	if err != nil {
+		t.Fatalf("open the collated database: %v", err)
+	}
+	t.Cleanup(database.Pool.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the collated database: %v", err)
 	}
 	// The case only tells if the collation does put the two ids in the other order; a server
 	// whose ICU answers otherwise would leave the reads below proving nothing.
 	var lettersFirst bool
-	if err := database.Pool.QueryRow(ctx, `select $1::text collate punctuation_last < $2::text collate punctuation_last`,
-		letteredPriority, punctuatedPriority).Scan(&lettersFirst); err != nil {
-		t.Fatalf("compare the two ids under the collation: %v", err)
+	if err := database.Pool.QueryRow(ctx, `select $1::text < $2::text`, letteredPriority, punctuatedPriority).Scan(&lettersFirst); err != nil {
+		t.Fatalf("compare the two ids under the database's collation: %v", err)
 	}
 	if !lettersFirst {
-		t.Fatalf("punctuation_last does not sort %q before %q, so it is not the order the defect turns on", letteredPriority, punctuatedPriority)
+		t.Fatalf("the collated database does not sort %q before %q, so it is not the order the defect turns on", letteredPriority, punctuatedPriority)
 	}
+	return database
 }
 
 // Every read of an issue's `advances` lists each priority once, own before inherited where it is
@@ -76,8 +97,7 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 // and a merge that trusted that order met `ci-fixes` twice and listed it twice. The issue is
 // parked, so the parked fault of GET /api/v1/priorities reads it as well.
 func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	collatePriorityIDsAsADeploymentDoes(t, database)
+	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: collatedAsADeploymentDoes(t)})
 	createTestProject(t, handler, "COLL")
 	for _, id := range []string{punctuatedPriority, letteredPriority} {
 		createTestPriority(t, handler, map[string]any{"id": id, "title": id}, "alice")

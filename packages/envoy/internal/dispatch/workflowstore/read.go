@@ -16,14 +16,14 @@ import (
 // that order, from 1, so the retro and the merge, both at step 0, each count from 1. An issue
 // Legion never ran answers none.
 //
-// It reads the `part_of` tuples into the issue through workflow_tuples_inbound, whose predicate
-// the literal to_kind implies, and joins each to its node row, so it costs the issue's own runs
-// and nothing else.
+// It reads the `part_of` tuples into the issue through graph_tuples_as_of_in, whose predicate the
+// literal to_kind implies, keeps those whose near end is a run, and joins each to its node row by
+// the primary key of graph_nodes, so it costs the issue's own tuples in and nothing else.
 func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error) {
 	rows, err := q.Query(ctx, `
 		select n.id, n.attributes
-		from workflow_tuples t
-		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		from graph_tuples t
+		join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id
 		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
 			and t.from_kind = '`+KindStep+`' and t.asserted
 	`, issue)
@@ -89,15 +89,21 @@ func compareRuns(left, right Step) int {
 // runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
-// finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
-// whose predicate the literal to_kind implies) to the node rows of its runs and plans.
+// finished issues in `issues`, each left-joined to the node rows of its runs and plans, which it
+// reads off graph_nodes by the project they are kept under and their kind (graph_nodes_project,
+// keyed on project_key and kind) and matches to their issue by the issue their attributes name. A
+// left join keeps a finished issue that holds no run and no plan. That match is the `part_of`
+// tuple's: every write of a run or a plan names its issue and its project, the write that makes
+// the node states the issue both as its attribute and as its `part_of`, the project it names is
+// the issue's (api's lockRecordedIssue reads it off the issue row), and no later write moves
+// either (putNode).
 func ProjectPlans(ctx context.Context, q Queryer, project string, window Window) ([]IssuePlan, error) {
 	rows, err := q.Query(ctx, `
 		select i.key, i.title, i.closed_at, n.kind, n.id, n.attributes, n.made_at
 		from issues i
-		left join (workflow_tuples t join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id)
-			on t.to_kind = '`+KindIssue+`' and t.to_id = i.key and t.kind = '`+RelationPartOf+`'
-			and t.from_kind in ('`+KindStep+`', '`+KindPlan+`') and t.asserted
+		left join graph_nodes n
+			on n.project_key = $1 and n.kind in ('`+KindStep+`', '`+KindPlan+`')
+			and n.attributes->>'`+AttributeIssue+`' = i.key
 		where i.project_key = $1 and i.status = 'done' and i.closed_at is not null
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)

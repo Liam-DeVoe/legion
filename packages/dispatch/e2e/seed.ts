@@ -56,19 +56,6 @@ const tables = [
   "issues",
   "projects",
   "people",
-  // The cross-project priority and its tuple log (INFRA-2947, migration
-  // 20261112024320_priority_nodes). No foreign key reaches either table, so the closure below
-  // does not find them and they are named here: a priority a row wrote would otherwise stand
-  // in the next row's rail count, and its id would already be taken, since a priority is ended
-  // by its state and its node row stays.
-  "priority_tuples",
-  "priority_nodes",
-  // The step records Legion's daemon writes of an issue, and their tuple log (the
-  // `workflow_nodes` migration). No foreign key reaches either table, so the closure below does
-  // not find them: a step a row wrote would otherwise stand in the next row's Steps tab, under
-  // the issue key the next row's issue takes again.
-  "workflow_tuples",
-  "workflow_nodes",
   // The keyword table of each past version of the searchable text, and its fill's cursor row
   // (the `search_text_versions` migration). No foreign key reaches either table, so the closure
   // below does not find them: a row's versions would otherwise answer the next row's search at a
@@ -88,6 +75,16 @@ const tables = [
 // of an erase, which a scenario of its own writes. So the three are emptied here instead, by a
 // delete of their own, and locked beside the closure's tables so the reset still holds every
 // table it empties.
+//
+// The store holds the cross-project priorities (INFRA-2947) and the step records and plans
+// Legion's daemon writes of an issue too: each is a `priority`, `step` or `plan` node with its
+// tuples, and an issue's `advances` is a tuple out of the issue's key, which
+// internal/dispatch/prioritystore and internal/dispatch/workflowstore write there. These deletes
+// take them, so a priority a row wrote does not stand in the next row's rail count and its id is
+// free again, and a step a row wrote does not stand in the next row's Steps tab under the issue
+// key the next row's issue takes again. The two stores' own tables of migrations 20261112024320
+// and 20261116235202, which nothing of this build writes and which the move of
+// dispatch://INFRA-1098's R32 makes views, are not named: a view takes no truncate.
 //
 // The schema's own nodes stay: migration 20261109051232 seeds one `supertag` node per block type
 // and one `attribute` node per attribute, with their base-attribute and `attribute_of` tuples,

@@ -593,7 +593,11 @@ func waitRead[T any](r *stepRecordsRig, what, where string, interval time.Durati
 }
 
 // deleteNode deletes node id, a step record or a plan, from Dispatch's own store, as the store
-// holds it: its node and every tuple that names it.
+// holds it: its row of graph_nodes and every row of graph_tuples that names it, at either end.
+// The tuples of a run or a plan are the store's append-only log, so this is a delete no writer of
+// Dispatch makes; the rig makes it in its own test database, to stand for a record Dispatch never
+// received. It fails where no tuple names the node, or where the store holds other than one node
+// of that id.
 func (r *stepRecordsRig) deleteNode(id string) {
 	t := r.t
 	t.Helper()
@@ -603,11 +607,14 @@ func (r *stepRecordsRig) deleteNode(id string) {
 		t.Fatalf("connect to Dispatch's database: %v", err)
 	}
 	defer conn.Close(ctx)
-	tag, err := conn.Exec(ctx, "delete from workflow_tuples where from_id = $1 or to_id = $1", id)
+	tag, err := conn.Exec(ctx, `
+		delete from graph_tuples
+		where (from_kind in ('step', 'plan') and from_id = $1) or (to_kind in ('step', 'plan') and to_id = $1)
+	`, id)
 	if err != nil || tag.RowsAffected() == 0 {
 		t.Fatalf("delete the tuples of %s: %d rows, %v", id, tag.RowsAffected(), err)
 	}
-	if tag, err = conn.Exec(ctx, "delete from workflow_nodes where id = $1", id); err != nil || tag.RowsAffected() != 1 {
+	if tag, err = conn.Exec(ctx, "delete from graph_nodes where kind in ('step', 'plan') and id = $1", id); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("delete the node %s: %d rows, %v", id, tag.RowsAffected(), err)
 	}
 }

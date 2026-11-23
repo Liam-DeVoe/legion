@@ -12,8 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 func init() { refs.SeedStoreThroughItsWriters = seedStoreThroughItsWriters }
@@ -24,9 +26,10 @@ func init() { refs.SeedStoreThroughItsWriters = seedStoreThroughItsWriters }
 // document, and then runs the writer that states the store from such rows, graphcensus's backfill:
 // the person, the session, the role and the role's page are each a node that writer makes from
 // one of those rows, as it makes them for a database written before the store existed, and so is
-// the result. Then it writes what a person reasoning about that issue writes (seedReasoning) and
-// one run of the command bar that person asked (seedRun). No kind is named here; which kinds the
-// store then holds is what the census reads from graph_nodes.
+// the result. Then it writes what a person reasoning about that issue writes (seedReasoning), one
+// run of the command bar that person asked (seedRun), and a priority the issue advances with one
+// run of a step of the issue and the plan it ran from (seedPriorityAndWorkflow). No kind is named
+// here; which kinds the store then holds is what the census reads from graph_nodes.
 func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
@@ -54,6 +57,45 @@ func seedStoreThroughItsWriters(t *testing.T, ctx context.Context, database *sto
 	}
 	seedReasoning(t, ctx, database)
 	seedRun(t, ctx, database)
+	seedPriorityAndWorkflow(t, ctx, database)
+}
+
+// seedPriorityAndWorkflow writes a priority the census issue advances, through prioritystore, the
+// writer of a running deployment's priorities, and one run of a step of the issue and the plan it
+// ran from, through workflowstore, the writer of the step records and plans Legion's daemon sends,
+// in the issue's project, as the steps and plans routes write them.
+func seedPriorityAndWorkflow(t *testing.T, ctx context.Context, database *store.Store) {
+	t.Helper()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	daemon := model.Actor{Kind: "session", ID: "legion-daemon:CENSUS"}
+	at := time.Now().UTC()
+	project := "CENSUS"
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := prioritystore.Create(ctx, tx, "census-priority", map[string]string{
+			prioritystore.AttributeTitle: "Census priority",
+		}, alice, at); err != nil {
+			return err
+		}
+		if err := prioritystore.Advance(ctx, tx, "CENSUS-1", "census-priority", alice, at); err != nil {
+			return err
+		}
+		generation := int64(1)
+		if _, err := workflowstore.PutPlan(ctx, tx, workflowstore.PlanWrite{
+			ID: "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", Issue: "CENSUS-1", Project: &project,
+			Source: new(workflowstore.PlanSourceDefault), Generation: &generation,
+			Tasks: []workflowstore.PlanTask{{ID: "default", Steps: []string{"implementer"}}},
+		}, daemon, at); err != nil {
+			return err
+		}
+		_, err := workflowstore.PutStep(ctx, tx, workflowstore.StepWrite{
+			ID: "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", Issue: "CENSUS-1", Project: &project,
+			Task: new("default"), Place: new(1), Kind: new(workflowstore.StepKindStep),
+			Role: new("implementer"), Generation: &generation, StartedAt: &at,
+		}, daemon, at)
+		return err
+	}); err != nil {
+		t.Fatalf("write a priority, a run and a plan through their writers: %v", err)
+	}
 }
 
 // seedRun records one run of the command bar alice asked, as a going_requests row, and states it

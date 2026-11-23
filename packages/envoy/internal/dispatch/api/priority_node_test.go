@@ -2,10 +2,11 @@
 // database store/storetest's Open clones from this package's migrated template, through the
 // handler the neighbouring tests drive (newTestHandlerWithStore, dispatchRequest).
 //
-// What it reads, beside the writes and the refusals, is the two tables' own shape: a priority
-// belongs to no project, so neither priority_nodes nor priority_tuples may carry a column that
-// names one, and the node's nine columns and the tuple's ends, kind, time, writer and asserted
-// flag are the node and tuple store's own (store/migrations/20261112024320_priority_nodes.up.sql).
+// What it reads, beside the writes and the refusals, is the shape a priority takes in the node
+// and tuple store: a priority belongs to no project, so no column of its `graph_nodes` row that
+// names one holds a value and no tuple of it names one, and its row carries the store's nine node
+// columns and its tuples the store's ends, kind, time, writer and asserted flag
+// (store/migrations/20261109013400_graph_store.up.sql).
 // It reads the two credential refusals the deployment class brings with it too, and that the
 // shared token every pod carries is unaffected by either (project_scope.go:383-386).
 package api
@@ -28,8 +29,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// priorityNodeColumns is what priority_nodes carries, in the order the migration writes them:
-// the node and tuple store's own columns, and no column that names a project.
+// priorityNodeColumns are the node columns every row of the store carries, and so every
+// priority's row (store/migrations/20261109013400_graph_store.up.sql).
 var priorityNodeColumns = []string{
 	"kind", "id", "supertag", "visibility", "state", "attributes", "made_at", "made_by", "source_event",
 }
@@ -132,7 +133,7 @@ func TestPriorityNode(t *testing.T) {
 	var state, title string
 	var madeBy []byte
 	if err := database.Pool.QueryRow(ctx, `
-		select state, attributes->>'title', made_by::text from priority_nodes where kind = $1 and id = $2
+		select state, attributes->>'title', made_by::text from graph_nodes where kind = $1 and id = $2
 	`, prioritystore.KindPriority, "cut-the-queue").Scan(&state, &title, &madeBy); err != nil {
 		t.Fatalf("read the deleted priority's row: %v", err)
 	}
@@ -188,39 +189,51 @@ func TestPriorityNode(t *testing.T) {
 		t.Fatalf("a refused order write moved the priority to %q, want it left at %q", got.Rank, renamed.Rank)
 	}
 
-	// The two tables' own columns, read out of the catalogue rather than off the migration: a
-	// priority belongs to no project, so no column of either names one.
-	nodeColumns := tableColumnNames(t, database, "priority_nodes")
-	tupleColumns := tableColumnNames(t, database, "priority_tuples")
-	for _, table := range []struct {
-		name    string
-		columns []string
-	}{{"priority_nodes", nodeColumns}, {"priority_tuples", tupleColumns}} {
-		for _, column := range table.columns {
-			if strings.Contains(strings.ToLower(column), "project") {
-				t.Errorf("%s carries the column %q, which names a project: a priority belongs to none",
-					table.name, column)
-			}
+	// The priority's node row and its tuples, read out of the store rather than off a migration:
+	// a priority belongs to no project, so no column of its row that names one holds a value, and
+	// no tuple of it names a project at either end. The row is read whole, so a column the store
+	// gains later is read too.
+	var row map[string]any
+	if err := database.Pool.QueryRow(ctx, `select to_jsonb(n) from graph_nodes n where kind = $1 and id = $2`,
+		prioritystore.KindPriority, "ship-the-daemon").Scan(&row); err != nil {
+		t.Fatalf("read the priority's node row whole: %v", err)
+	}
+	for column, value := range row {
+		if strings.Contains(strings.ToLower(column), "project") && value != nil {
+			t.Errorf("the priority's node row holds %v in the column %q, which names a project: a priority belongs to none",
+				value, column)
 		}
 	}
-	if !slices.Equal(nodeColumns, priorityNodeColumns) {
-		t.Fatalf("priority_nodes columns = %v, want %v", nodeColumns, priorityNodeColumns)
+	for _, column := range priorityNodeColumns {
+		if _, carried := row[column]; !carried {
+			t.Errorf("the priority's node row carries no %q column, which every node of the store carries", column)
+		}
 	}
+	tupleColumns := tableColumnNames(t, database, "graph_tuples")
 	for _, column := range priorityTupleEnds {
 		if !slices.Contains(tupleColumns, column) {
-			t.Errorf("priority_tuples carries no %q column: a tuple needs both ends, its kind, its time, its writer and whether it is asserted", column)
+			t.Errorf("graph_tuples carries no %q column: a tuple needs both ends, its kind, its time, its writer and whether it is asserted", column)
 		}
+	}
+	if projected := distinctStrings(t, database, `
+		select distinct from_kind || '/' || kind || '/' || to_kind from graph_tuples
+		where (from_kind = 'priority' or to_kind = 'priority')
+			and (from_kind = 'project' or to_kind = 'project' or kind = 'project')
+		order by 1
+	`); len(projected) != 0 {
+		t.Fatalf("the store holds tuples that place a priority in a project: %v", projected)
 	}
 
 	// The state a priority stands in is live or gone and nothing else, in the rows and in the
 	// log alike: a delete writes gone and nothing writes a third word.
-	nodeStates := distinctStrings(t, database, `select distinct state from priority_nodes order by 1`)
+	nodeStates := distinctStrings(t, database, `select distinct state from graph_nodes where kind = 'priority' order by 1`)
 	if !slices.Equal(nodeStates, []string{prioritystore.StateGone, prioritystore.StateLive}) {
-		t.Fatalf("priority_nodes holds the states %v, want exactly %q and %q",
+		t.Fatalf("the store's priority rows hold the states %v, want exactly %q and %q",
 			nodeStates, prioritystore.StateGone, prioritystore.StateLive)
 	}
 	statedStates := distinctStrings(t, database, `
-		select distinct to_id from priority_tuples where kind = 'state' and to_kind = 'value' order by 1
+		select distinct to_id from graph_tuples
+		where from_kind = 'priority' and kind = 'state' and to_kind = 'value' order by 1
 	`)
 	if !slices.Equal(statedStates, []string{prioritystore.StateGone, prioritystore.StateLive}) {
 		t.Fatalf("the state tuples hold %v, want exactly %q and %q",
@@ -406,7 +419,7 @@ func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
 		}
 	}
 	var written int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1 and id = $2`,
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1 and id = $2`,
 		prioritystore.KindPriority, noAdvancesFilter).Scan(&written); err != nil {
 		t.Fatalf("count the priorities of the id %q: %v", noAdvancesFilter, err)
 	}
@@ -442,7 +455,7 @@ func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
 		}
 	}
 	var written int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1 and id = $2`,
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1 and id = $2`,
 		prioritystore.KindPriority, anyAdvancesFilter).Scan(&written); err != nil {
 		t.Fatalf("count the priorities of the id %q: %v", anyAdvancesFilter, err)
 	}
@@ -502,7 +515,7 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 		map[string]any{"title": strings.Repeat("e", priorityIDMax+1)}, "alice"), priorityIDMax)
 
 	var written int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1`,
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where kind = $1`,
 		prioritystore.KindPriority).Scan(&written); err != nil {
 		t.Fatalf("count the priorities: %v", err)
 	}

@@ -197,23 +197,33 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // rather than one per row.
 //
 // `advances_current` is prioritystore.AdvancesTupleRead's reading of the log for every issue
-// those chains name at once (over priority_tuples_current): the newest tuple per (issue,
-// priority), asserted or not, read once however many subjects inherit from that issue.
+// those chains name at once (over graph_tuples_current): the newest tuple per (issue, priority),
+// asserted or not, read once however many subjects inherit from that issue. It is materialized,
+// so it is planned on its own and the listing's joins are planned around its answer. graph_tuples
+// holds every fact of the store, and Postgres estimates the read's three equalities on
+// from_kind, kind and to_kind as if they were independent, while every `advances` tuple is out of
+// an issue into a priority: on the speed corpus it estimates 37 rows where the read answers 400,
+// and the larger the store the further it falls short. Inlined, that estimate reordered the
+// joins of the whole listing under the generic plan a connection's later runs take, which then
+// read 3.17 times the rows of the page without the relation, against 1.20 times materialized
+// (TestAdvancesListingSpeed).
 //
 // `advances` groups the two back onto the subject. The ids are the asserted relations to live
 // priorities alone: a relation whose last word is a retraction is no relation now, and a priority
-// whose state is `gone` is no priority, so the join to priority_nodes leaves it out of both
-// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityRelationsQuery
-// out of the priorities read. Without it the issue read and every listing row would name a
-// priority that `advances=none` and the first fault already count as none. Depth 0 answers the
-// issue's own ids and the revision, and every greater depth answers what it inherits.
+// whose state is `gone` is no priority, so the join to the priority's node row in graph_nodes
+// leaves it out of both lists, as issueAdvancesFilterTerms' join leaves it out of the filter and
+// priorityRelationsQuery out of the priorities read. Without it the issue read and every listing
+// row would name a priority that `advances=none` and the first fault already count as none. Depth
+// 0 answers the issue's own ids and the revision, and every greater depth answers what it
+// inherits.
 //
-// The revision is the greatest seq of the issue's own set, retractions and relations to a gone
-// priority counted, because it is what the store holds for the issue rather than what it answers,
-// and a tuple a writer did not see must move it whichever of the two it is. The join to the live
-// priorities is a left join on their key, so it drops no tuple from the max. A tuple that is the
-// greatest of the issue is the newest of its own pair as well, so the max over these rows is the
-// max over every tuple.
+// The revision is the greatest seq of the issue's own set, a `graph_tuples` seq, retractions and
+// relations to a gone priority counted, because it is what the store holds for the issue rather
+// than what it answers, and a tuple a writer did not see must move it whichever of the two it is.
+// An issue that holds no tuple of the relation answers 0. The join to the live priorities is a
+// left join on their key, so it drops no tuple from the max. A tuple that is the greatest of the
+// issue is the newest of its own pair as well, so the max over these rows is the max over every
+// tuple.
 //
 // Both lists come back in the byte order of the id, whatever the database's collation, which is
 // the order advancesScan merges them in with Go's own comparison of the strings. The `collate
@@ -228,7 +238,7 @@ var issueAdvancesTerms = `advances_chain as (
 		select c.start, p.parent_key, c.depth + 1
 		from advances_chain c join issues p on p.key = c.issue_key
 		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
-	), advances_current as (
+	), advances_current as materialized (
 		` + prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
 	), advances as (
 		select c.start as issue_key,
@@ -239,7 +249,7 @@ var issueAdvancesTerms = `advances_chain as (
 		                filter (where cu.asserted and live.id is not null and c.depth > 0), '{}') as inherited
 		from advances_chain c
 		left join advances_current cu on cu.from_id = c.issue_key
-		left join priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
+		left join graph_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
 			and live.state = '` + prioritystore.StateLive + `'
 		group by c.start
 	)`
@@ -258,9 +268,10 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 //
 // `advances_stated` is the issues whose own rows state an asserted relation now, by the reading
 // of the log issueAdvancesTerms makes for a page. A priority whose state is `gone` is no
-// priority, so the join to priority_nodes drops it and the work under it advances none. The seed
-// is gated on the request naming an `advances` key at all: the clause holds no column, so the
-// planner makes it a one-time filter and a listing that asks for no priority reads no tuple.
+// priority, so the join to its node row in graph_nodes drops it and the work under it advances
+// none. The seed is gated on the request naming an `advances` key at all: the clause holds no
+// column, so the planner makes it a one-time filter and a listing that asks for no priority reads
+// no tuple.
 //
 // `advances_spread` carries each seed down to the issues below it, which is the same
 // inheritance the read climbs, written as one descent per request instead of one climb per row;
@@ -271,7 +282,7 @@ var issueAdvancesFilterTerms = `advances_stated as (
 		from (
 			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean or $13::boolean)`) + `
 		) newest
-		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
+		join graph_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'
 		where newest.asserted
 		group by newest.from_id

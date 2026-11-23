@@ -203,7 +203,7 @@ func (l *stepRecordsLive) readByIssue() {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
 	l.deleteNode(failed)
-	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
+	l.note("control: deleted the failed review's record %s from Dispatch's database (its graph_nodes row and every graph_tuples row naming it)", failed)
 	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch steps --issue %s` passed with the failed review's record deleted:\n%s", l.key, out)

@@ -1,16 +1,22 @@
-// Package prioritystore is the one place in the tree that writes `priority_nodes` and
-// `priority_tuples`. A priority is a node the whole deployment holds, belonging to no project; a
-// tuple is one fact stated about it at one moment, by one writer. Nothing here updates a tuple
-// and nothing deletes one: a relation that ends is a second tuple with Asserted false, and an
-// attribute that changes is a second tuple carrying the new value. The node row is the projection
-// of its own tuples, and one transaction moves both
-// (store/migrations/20261112024320_priority_nodes.up.sql).
+// Package prioritystore is the one place in the tree that writes priorities. A priority is a node
+// the whole deployment holds, belonging to no project: a row of `graph_nodes` of kind `priority`,
+// written through internal/dispatch/graphstore, the store's one writer. A tuple is one fact stated
+// about it at one moment, by one writer, and is a row of `graph_tuples`. Nothing here updates a
+// tuple and nothing deletes one: a relation that ends is a second tuple with Asserted false, and
+// an attribute that changes is a second tuple carrying the new value. The node row is the
+// projection of its own tuples, and one transaction moves both: each write takes the node's row
+// before it appends a tuple of that node (Write), so the tuples of one node commit in the order of
+// their seq.
 //
-// The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
-// does not hold yet, so these rows copy into that store's tables column for column the day it
-// lands: a state is StateLive or StateGone, a visibility is VisibilityProject, an attribute is a
-// tuple whose ToKind is KindValue and whose ToID is the value itself, and a write no event
-// recorded carries NoEvent.
+// The priority store's own tables (store/migrations/20261112024320_priority_nodes.up.sql) hold the
+// priorities a release before this one wrote, and this build neither reads nor writes them: the
+// move of dispatch://INFRA-1098's R32 takes their rows into the store at boot. A priority's node
+// row keeps `title`, `description`, `owner` and `rank` in its attributes, each as text, which is
+// the shape the release before reads. A priority belongs to no project, so its node names none.
+//
+// The vocabulary is the store's own: a state is StateLive or StateGone, a visibility is
+// VisibilityProject, an attribute is a tuple whose ToKind is KindValue and whose ToID is the value
+// itself, and a write no event recorded carries NoEvent.
 //
 // A caller that wants a priority as it stands asks Read or List, one that wants how a fact got
 // here asks History, which serves an attribute and a relation alike, or Timeline, which is one
@@ -30,19 +36,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The kind and the supertag a priority node carries, both the one word, and the kind of the node
-// at the near end of an `advances` relation, which is an issue of any project.
+// at the near end of an `advances` relation, which is an issue of any project: the issue's key is
+// the id of its node.
 const (
 	KindPriority = "priority"
-	KindIssue    = "issue"
+	KindIssue    = graphstore.KindIssue
 )
 
 // KindValue is the ToKind of an attribute tuple: its ToID holds the value itself rather than an
 // address.
-const KindValue = "value"
+const KindValue = graphstore.KindValue
 
 // RelationAdvances is the one relation this store holds: work in any project advances a priority.
 // It is stated on the issue, so its far end is the priority.
@@ -52,9 +60,9 @@ const RelationAdvances = "advances"
 // to everyone who can see the deployment, which is what VisibilityProject means for a node that
 // belongs to no project, and DELETE writes StateGone rather than removing a row.
 const (
-	VisibilityProject = "project"
-	StateLive         = "live"
-	StateGone         = "gone"
+	VisibilityProject = graphstore.VisibilityProject
+	StateLive         = graphstore.StateLive
+	StateGone         = graphstore.StateGone
 )
 
 // The attributes a priority carries. The first four are what a person writes; the last two are
@@ -65,8 +73,8 @@ const (
 	AttributeDescription = "description"
 	AttributeOwner       = "owner"
 	AttributeRank        = "rank"
-	AttributeVisibility  = "visibility"
-	AttributeState       = "state"
+	AttributeVisibility  = graphstore.AttributeVisibility
+	AttributeState       = graphstore.AttributeState
 )
 
 // NoEvent is the SourceEvent of a write no event recorded, which is every write of this store.
@@ -74,7 +82,7 @@ const (
 // appends an ownerless `priority.updated` of its own (api/priorities.go priorityEvent), after the
 // store wrote the node row and its tuples, so no tuple can name that event's id. `events.id` is a
 // bigserial, so no event ever carries 0.
-const NoEvent int64 = 0
+const NoEvent = graphstore.NoEvent
 
 // The refusals a caller maps to an answer of its own.
 var (
@@ -114,19 +122,11 @@ func (n Node) Attribute(name string) (string, bool) {
 	return text, isText
 }
 
-// Tuple is one fact stated about a priority. ToKind KindValue makes it an attribute, whose ToID
-// is the value itself; any other ToKind makes it a relation, whose ToKind and ToID address the
-// far end.
-type Tuple struct {
-	Seq              int64 // read-only: the log position a read answers
-	FromKind, FromID string
-	Kind             string
-	ToKind, ToID     string
-	At               time.Time
-	Who              model.Actor
-	SourceEvent      int64
-	Asserted         bool
-}
+// Tuple is one fact stated about a priority, as the store holds every fact (graphstore.Tuple).
+// ToKind KindValue makes it an attribute, whose ToID is the value itself; any other ToKind makes
+// it a relation, whose ToKind and ToID address the far end. No row of an older table backs a
+// priority's tuple, so its LegacySourceSeq is nil.
+type Tuple = graphstore.Tuple
 
 // Queryer is the query surface shared by a pool and a transaction, as internal/dispatch/refs has
 // it. A write takes a pgx.Tx instead, because it moves the node row and appends its tuples

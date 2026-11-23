@@ -15,11 +15,12 @@ import (
 // its reason, and the daemon writes both onto the retro's record.
 
 // retroOf is the identity every write of the retro of LEG-1's first run carries: task default,
-// step 0, kind retro, the role that did it and generation 1.
+// step 0, kind retro, the role that did it and generation 1, in LEG-1's project.
 func retroOf(id string) StepWrite {
 	return StepWrite{
 		ID:         id,
 		Issue:      "LEG-1",
+		Project:    new("LEG"),
 		Task:       new("default"),
 		Place:      new(0),
 		Kind:       new(StepKindRetro),

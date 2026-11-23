@@ -246,11 +246,12 @@ var readsWithoutAViewer = map[string]string{
 	"TreeSubtrees":    treeWalk + " - every level of the children under the walk's frontier, read in one statement",
 }
 
-// SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
-// the writers of that store make them. A database nobody has written to holds none of them, so
-// the census would otherwise read a store that resolves four kinds fewer than a running
-// deployment's. It names no kind: it writes the rows that address people and agents and runs the
-// writer that states the store from those rows, and the census reads which kinds that made from
+// SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, and
+// a priority, a run of a step and a plan, as the writers of that store make them. A database
+// nobody has written to holds none of them, so the census would otherwise read a store that
+// resolves fewer kinds than a running deployment's. It names no kind: it writes the rows that
+// address people and agents and runs the writer that states the store from those rows, and writes
+// the others through their own writers, and the census reads which kinds that made from
 // `graph_nodes` (R10).
 //
 // It is set by the external test package (visibility_census_seed_test.go) rather than written
@@ -262,6 +263,14 @@ var SeedStoreThroughItsWriters func(t *testing.T, ctx context.Context, database 
 // prints the view back: each arm names its from_kind and its to_kind, and an arm whose kind is a
 // column of its table names neither.
 var viewNodeKind = regexp.MustCompile(`'([a-z_]+)'::text AS (?:from_kind|to_kind)`)
+
+// subselectNodeKind matches the node kind an arm of a sub-select of the view states as the
+// literal its select list opens with, its from_kind: the catalogue names an arm's columns AS the
+// view's own only for the view's own arms, and prints an arm of a union inside a sub-select with
+// no name past its first. dispatch://INFRA-1098's T7b folded the arm that answers a finding of a
+// lens as a lens_block into the tuple arm's sub-select (20261123120000), where its literal is
+// printed so; the sub-select's arms open with their from_kind, as the view's own do.
+var subselectNodeKind = regexp.MustCompile(`SELECT '([a-z_]+)'::text,`)
 
 // storeNodeKinds is the node kinds the store resolves, read from the store: every kind
 // `graph_nodes` holds a row of, and every kind the `graph_edges` view names as the from or the
@@ -294,7 +303,7 @@ func storeNodeKinds(t *testing.T, ctx context.Context, database *store.Store) []
 	if len(matches) == 0 {
 		t.Fatalf("the graph_edges definition names no node kind this test can read:\n%s", definition)
 	}
-	for _, match := range matches {
+	for _, match := range append(matches, subselectNodeKind.FindAllStringSubmatch(definition, -1)...) {
 		held[match[1]] = struct{}{}
 	}
 	kinds := make([]string, 0, len(held))

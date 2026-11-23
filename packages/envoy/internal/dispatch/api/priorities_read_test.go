@@ -529,6 +529,6 @@ func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unpla
 		[][]any{seededProject(bulkFaultProject, 2*bulkFaultRows, base)})
 	copySeededRows(t, database, "issues", seededIssueColumns, issues)
 	copySeededRows(t, database, "events", seededEventColumns, events)
-	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
+	copySeededRows(t, database, "graph_tuples", seededTupleColumns, tuples)
 	return unplaced, parked
 }
