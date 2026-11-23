@@ -1,0 +1,25 @@
+name: conflicts-script
+description: >-
+  The conflicts-script leg of ci.yaml's scripts job, which carries that old check-run name: the
+  lint, the typecheck and the Bun suite of the conflict measurement script, scripts/conflicts. The
+  leg runs on ubuntu-24.04-arm, after the job's checkout.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-bun
+
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Lint the conflict measurement script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/conflicts
+
+    # scripts/conflicts is no workspace; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the conflict measurement script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/conflicts
+
+    - name: Test the conflict measurement script
+      shell: bash
+      run: bun test scripts/conflicts

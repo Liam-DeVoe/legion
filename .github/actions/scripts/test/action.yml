@@ -1,0 +1,395 @@
+name: test
+description: >-
+  The test leg of ci.yaml's scripts job, which carries the old check-run name `test / test`: what
+  reads this repository's own tooling - the Claude Code plugin build, the changelog fold, the
+  `*.test.sh` harness of each script under .github/scripts (and of
+  scripts/priorities-seed-check.sh), and the Bun suites of scripts/. A selected scripts job runs
+  every harness of this leg: no step here tests an output of the changes job. No step needs a
+  database (the session message-wait suite is the sessions-script leg's), and the harness that
+  builds a binary of this head is the private-names-port leg's. The leg runs on
+  ubuntu-24.04-arm, after the job's checkout.
+# why: .github/ci-notes/ci.md#what-the-test-job-runs-and-how-each-harness-step-is-gated
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
+    # that job would refuse fails this leg, and with it the required ci-ok, instead of merging
+    # and then failing every release. What it builds and checks:
+    # packages/claude-envoy/scripts/verify-build.sh.
+    - name: Build, check and pack the Claude Code plugin as the release does
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
+
+    # release.yaml's $CLAUDE_ENVOY_VERSION_ARGS covers scripts/build-inputs.txt, so a build input
+    # missing from it is one no release bumps a version for.
+    - name: Check the Claude Code plugin's build input list covers what the build reads
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun test tests/build-inputs.test.ts
+
+    # release-push.test.sh renders its fold-notes cases with the real changie, and the step
+    # below renders this checkout's own fragments with it; where changie is absent, as on a
+    # developer's machine, those cases print a SKIP line and count nothing.
+    - uses: ./.github/actions/install-changie
+
+    # Nothing renders a changelog fragment between the merge and the release that first ships
+    # it, so a fragment changie refuses would fail that release's build job, and every run
+    # after it, until a fix merges. This renders every fragment of every listed package here
+    # instead, inside a required check, in the leg that installs changie.
+    - name: Check every changelog fragment renders
+      shell: bash
+      run: |
+        # shellcheck disable=SC2046 # the file is the package list, split on purpose
+        .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
+
+    # GH_TOKEN: its comparison of push-tag's pinned host keys with the ones GitHub publishes
+    # reads them with `gh api meta`, and fails on GitHub Actions without an answer.
+    - name: Test release scripts
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: .github/scripts/release-push.test.sh
+
+    - name: Test the release version bump
+      shell: bash
+      run: .github/scripts/release-bump.test.sh
+
+    - name: Test third-party notices
+      shell: bash
+      run: bun test scripts/third-party-notices.test.ts
+
+    - name: Test the semantic line-break checker
+      shell: bash
+      run: bun test scripts/semantic-line-breaks.test.ts
+
+    # The seed that writes the first priorities from the table kept by hand, driven against a
+    # fake Dispatch of the test's own: it reaches no network and no deployment.
+    - name: Test the priorities seed
+      shell: bash
+      run: bun test scripts/priorities-seed.test.ts
+
+    # The guides' own layout, in this leg because it installs Bun's dependencies, which the
+    # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8).
+    - name: Check the guides' semantic line breaks
+      shell: bash
+      run: bun test scripts/semantic-line-breaks.guides.test.ts
+
+    - name: Test the Bun pin check
+      shell: bash
+      run: .github/scripts/check-bun-version.test.sh
+
+    - name: Test the Playwright version check
+      shell: bash
+      run: .github/scripts/check-playwright-version.test.sh
+
+    - name: Test the frozen Bun workspace manifest check
+      shell: bash
+      run: .github/scripts/check-bun-workspace-manifests.test.sh
+
+    - name: Test the zod version check
+      shell: bash
+      run: .github/scripts/check-zod-version.test.sh
+
+    - name: Test the gh version check
+      shell: bash
+      run: .github/scripts/check-gh-version.test.sh
+
+    - name: Test the gitleaks version check
+      shell: bash
+      run: .github/scripts/check-gitleaks-version.test.sh
+
+    - name: Test the workflow path model the path checks import
+      shell: bash
+      run: .github/scripts/workflow_paths.test.sh
+
+    - name: Test the image trigger path check
+      shell: bash
+      run: .github/scripts/check-image-trigger-paths.test.sh
+
+    - name: Test the CI image check
+      shell: bash
+      run: .github/scripts/check-ci-images.test.sh
+
+    - name: Test the CI image mirror
+      shell: bash
+      run: .github/scripts/mirror-ci-images.test.sh
+
+    # The tool scripts, in the order they depend on each other: the fetch helper every
+    # install goes through, the filler that puts the bytes in the copy that helper reads, the
+    # gate that holds every row to its pin, and the rig that drives that helper against a
+    # fault in the tool-fallback job.
+    - name: Test the tool fetch helper
+      shell: bash
+      run: .github/scripts/ci-tools.test.sh
+
+    - name: Test the tool copy filler
+      shell: bash
+      run: .github/scripts/mirror-ci-tools.test.sh
+
+    - name: Test the tool manifest check
+      shell: bash
+      run: .github/scripts/check-ci-tools.test.sh
+
+    - name: Test the tool fallback rig
+      shell: bash
+      run: .github/scripts/ci-tools-proof.test.sh
+
+    - name: Test the action pin check
+      shell: bash
+      run: .github/scripts/check-action-pins.test.sh
+
+    - name: Test the workflow file check
+      shell: bash
+      run: .github/scripts/check-workflow-files.test.sh
+
+    - name: Test the private-name check
+      shell: bash
+      run: .github/scripts/check-private-names.test.sh
+
+    - name: Test the private-name check's term list
+      shell: bash
+      run: .github/scripts/check-private-names-terms.test.sh
+
+    - name: Test the private-name check's issue-key rule
+      shell: bash
+      run: .github/scripts/check-private-names-keys.test.sh
+
+    - name: Test the plugin-name check
+      shell: bash
+      run: .github/scripts/check-plugin-names.test.sh
+
+    - name: Test the fireEvent reason check
+      shell: bash
+      run: .github/scripts/check-fireevent-reasons.test.sh
+
+    - name: Test the daemon API contract number check
+      shell: bash
+      run: .github/scripts/check-daemon-api-contract.test.sh
+
+    - name: Test the release credential check
+      shell: bash
+      run: .github/scripts/check-release-credentials.test.sh
+
+    - name: Test the repository path derivation
+      shell: bash
+      run: .github/scripts/repo-paths.test.sh
+
+    # The lister the build-tag steps take their `-run` from, over fixture packages and over
+    # this repository's own tagged test files.
+    - name: Test the build-tag test lister
+      shell: bash
+      run: .github/scripts/go-tagged-tests.test.sh
+
+    - name: Test ci-ok's verdict
+      shell: bash
+      run: .github/scripts/ci-ok.test.sh
+
+    - name: Test ci-ok's report and the check-run post (a stand-in gh)
+      shell: bash
+      run: .github/scripts/ci-ok-report.test.sh
+
+    - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
+      shell: bash
+      run: .github/scripts/ci-ok-reconcile.test.sh
+
+    - name: Test the pull request payload both pr-title checks read (a stand-in gh)
+      shell: bash
+      run: .github/scripts/find-pr-payload.test.sh
+
+    - name: Test the merge-group cancel decision
+      shell: bash
+      run: .github/scripts/merge-group-cancels.test.sh
+
+    - name: Test the main bypass check's decision
+      shell: bash
+      run: .github/scripts/main-bypass-check.test.sh
+
+    # The edited-migrations check of go-envoy's envoy-go-checks leg compares a run's tree with a
+    # base chosen per event, over fixture remotes cloned one commit deep as actions/checkout
+    # leaves a run's tree.
+    - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
+      shell: bash
+      run: .github/scripts/edited-migrations-base.test.sh
+
+    # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
+    # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
+    # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
+    # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
+    - name: Test the browser lane's blob attempt selection
+      shell: bash
+      run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+    # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
+    # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
+    # refusal messages are checked here rather than on a runner against GitHub. Its negative
+    # control traces the drive with strace, which this leg's ubuntu-24.04-arm image carries; the
+    # harness refuses by name on an image without it.
+    - name: Test the browser lane's run reads
+      shell: bash
+      run: .github/scripts/dispatch-browser-run-reads.test.sh
+
+    # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
+    # sample files: its two readings are pure functions of those files, so the numbers and the
+    # notice titles are held here, where no browser and no runner are needed.
+    - name: Test the browser lane's memory and CPU sampler
+      shell: bash
+      run: .github/scripts/dispatch-browser-samples.test.sh
+
+    - name: Test the race memory sampler
+      shell: bash
+      run: .github/scripts/race_memory.test.sh
+
+    - name: Test the machine watch
+      shell: bash
+      run: .github/scripts/disk_watch.test.sh
+
+    - name: Test the priorities seed check (a stand-in Dispatch)
+      shell: bash
+      run: bash scripts/priorities-seed-check.test.sh
+
+    - name: Lint the Dispatch census script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/dispatch
+
+    # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the Dispatch census script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/dispatch
+
+    - name: Test the Dispatch census script
+      shell: bash
+      run: bun test scripts/dispatch
+
+    - name: Lint the GitHub App registration script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/github-apps
+
+    # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the GitHub App registration script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/github-apps
+
+    - name: Lint the session message-wait script
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/sessions
+
+    # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
+    # The suite itself is the sessions-script leg's: it creates a session-store database of its
+    # own and refuses without one. The lint and the typecheck stay here, since they need none
+    # and share this leg's Bun.
+    - name: Typecheck the session message-wait script
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/sessions
+
+    - name: Lint the approval-eval statistics
+      shell: bash
+      run: bunx biome check --error-on-warnings scripts/approval-eval
+
+    # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+    - name: Typecheck the approval-eval statistics
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/approval-eval
+
+    - name: Test the approval-eval statistics
+      shell: bash
+      run: bun test scripts/approval-eval
+
+    # scripts/e2e is no workspace either; the root package pins its TypeScript and Bun types.
+    # The program is every TypeScript file there: the drivers and model stand-ins the
+    # agent-harness, daemon-live and envoy-session-stall jobs run under bun, which no step
+    # typechecks before it runs them, and the libraries and Bun tests beside them, the plan
+    # ratings read's test among them, whose answer is typed to the contract
+    # (@legion/contracts's own types).
+    - name: Typecheck the e2e scripts and their libraries
+      shell: bash
+      run: bunx tsc --noEmit -p scripts/e2e
+
+    # Go, but no Actions cache: what runs go here is the held-port build of the envoy listener
+    # below, the CI-filter check's go list over a scratch module, the build-tag lister and the Go
+    # test runner's fixture module, none of which a cache family is filled for. The daemon's
+    # go.mod is the one Go pin of this repository's three modules that a job without one of its
+    # own reads.
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    # After setup-go: go-test.test.sh below runs .github/scripts/go-test.sh, and so gotestsum,
+    # over its fixture Go module.
+    - uses: ./.github/actions/install-gotestsum
+
+    # The traced row of scripts/e2e/lib/process-tree.test.ts runs the rig's process helpers
+    # under strace, which the runner image does not carry, and on GitHub Actions a program a
+    # test names missing fails its file rather than skipping it (@legion/test-fixtures/host-tools).
+    - name: Install strace for the e2e libraries' traced row
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+    # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+    - name: Test the e2e scripts' libraries
+      shell: bash
+      run: bun test scripts/e2e/lib
+
+    # After setup-go: its fixtures run go list over a scratch module.
+    - name: Test the CI filter check
+      shell: bash
+      run: .github/scripts/check-ci-filters.test.sh
+
+    # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
+    # program with a stand-in bunx.
+    - name: Test the TypeScript filter check
+      shell: bash
+      run: .github/scripts/check-ts-filters.test.sh
+
+    # Beside the two checks above, and needing no Go either: every case is text, read by the
+    # step reader of .github/scripts/go_test_steps.py (over every go test step of ci.yaml, the
+    # workflows its jobs call and the actions its steps use, so a step it would refuse fails
+    # here), or the hash of a script that file's AUDITED_SCRIPTS pins. The expansion's own run
+    # compiles the three Go modules it covers and is run by hand rather than by any job.
+    - name: Test the go test step expansion
+      shell: bash
+      run: .github/scripts/go-test-step-expansion.test.sh
+
+    # The search the lint leg runs over the tree, run here over fixture repositories, one per
+    # kind of finding and one per registry class; like the search, it runs no go, bun or build
+    # command.
+    - name: Test the test-reach search
+      shell: bash
+      run: .github/scripts/check-test-reach.test.sh
+
+    # The script every Go step of a job ci-ok needs runs its tests through, over a fixture Go
+    # module of its own (.github/scripts/testdata/go-test), with gotestsum and go: the merge
+    # group's retry and each case it must refuse, the read of the jsonfile after gotestsum ends,
+    # and the counters and the memory sampler that run through it.
+    - name: Test the Go test runner and its merge-group retry
+      shell: bash
+      run: .github/scripts/go-test.test.sh
+
+    - name: Test the run-time split of a package's tests between legs
+      shell: bash
+      run: .github/scripts/go-test-split.test.sh
+
+    - name: Test ci-ok's naming of the Go tests that passed on their retry
+      shell: bash
+      run: .github/scripts/ci-ok-retries.test.sh
+
+    # The changes job's unnamed-file step, over #4397's own captured file list and a 3,000-file
+    # list made from it, against .github/ci-areas.yaml and filters of its own.
+    - name: Test the selection of every job for a changed file no filter names
+      shell: bash
+      run: .github/scripts/unnamed-files.test.sh
+
+    # The carrying jobs' verdict over lists of a run's jobs captured from GitHub
+    # (testdata/leg-verdict).
+    - name: Test the verdict of the jobs that carry a split job's old check-run name
+      shell: bash
+      run: .github/scripts/leg-verdict.test.sh

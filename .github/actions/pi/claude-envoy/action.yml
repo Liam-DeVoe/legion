@@ -1,0 +1,77 @@
+name: claude-envoy
+description: >-
+  The claude-envoy leg of ci.yaml's pi job, which carries the old check-run name
+  `claude-envoy / claude-envoy`: the lint, the typecheck, the release's build and check, the tests
+  and the pack of the Claude Code plugin, and the Codex plugin's package built and checked from the
+  same dist/. It uploads the packed plugin as the artifact claude-envoy-pr, which ci.yaml's
+  claude-envoy-names job checks for private names. The leg runs on ubuntu-24.04-arm, after the
+  job's checkout, its Bun (.github/actions/setup-bun), and the pinned Claude Code and Codex
+  (.github/actions/install-claude-code and install-codex, steps of ci.yaml because each writes its
+  LEGION_TEST_* path into $GITHUB_ENV): tests/answers-claude.test.ts runs the pinned Claude Code
+  against a stand-in Messages endpoint and Dispatch, and tests/codex-real.test.ts the plugin's
+  Codex build on the pinned Codex CLI against a stand-in Responses API, and each refuses on GitHub
+  Actions without its binary.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Lint Claude Envoy plugin
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run lint
+
+    - name: Typecheck Claude Envoy plugin
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run typecheck
+
+    # Nothing commits dist/ or legion/: release.yaml's claude_envoy_build builds them and packs
+    # them into the tarball it publishes to npm. So this builds and checks them from the head's
+    # source as that job does: packages/claude-envoy/scripts/verify-build.sh.
+    - name: Build, check and pack the plugin as the release does
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
+
+    # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
+    - name: Put the checked build into CI's checkout for the pack
+      shell: bash
+      run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+
+    # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
+    # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
+    # zsh is missing; the runner image has no zsh.
+    - name: Install zsh
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+
+    - name: Test Claude Envoy plugin
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun run test
+
+    - name: Pack Claude Envoy plugin
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: bun pm pack --destination ../../out/pr-artifacts
+
+    # The Codex plugin's package, built from the checked dist/ and packed and checked as
+    # release.yaml's claude_envoy_build does, into the same artifact.
+    - name: Build, pack and check the Codex plugin as the release does
+      shell: bash
+      working-directory: packages/claude-envoy
+      run: |
+        bun scripts/build.ts --codex-out "$RUNNER_TEMP/codex-envoy" --dist dist
+        (cd "$RUNNER_TEMP/codex-envoy" && bun pm pack --destination "$GITHUB_WORKSPACE/out/pr-artifacts")
+        scripts/check-packed-skills.sh "$GITHUB_WORKSPACE"/out/pr-artifacts/sjawhar-codex-envoy-*.tgz
+
+    # `overwrite` lets a re-run of this leg replace its first attempt's copy, which the
+    # claude-envoy-names job reads (the Claude Code plugin's tarball;
+    # .github/actions/private-names-packed-plugin says why the Codex one beside it is passed over).
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: claude-envoy-pr
+        path: out/pr-artifacts/*.tgz
+        overwrite: true

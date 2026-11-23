@@ -1,0 +1,21 @@
+name: test-fixtures
+description: >-
+  The test-fixtures leg of ci.yaml's ts job, which carries that old check-run name: the typecheck
+  and the tests of the shared test fixtures package. It has no build: nothing imports it at run
+  time, and its consumers read its sources through the workspace. The leg runs on
+  ubuntu-24.04-arm, after the job's checkout and its Bun (.github/actions/setup-bun).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Typecheck the shared test fixtures
+      shell: bash
+      working-directory: packages/test-fixtures
+      run: bun run typecheck
+
+    - name: Test the shared test fixtures
+      shell: bash
+      working-directory: packages/test-fixtures
+      run: bun run test

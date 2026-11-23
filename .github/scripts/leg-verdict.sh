@@ -7,8 +7,8 @@
 #
 #   leg-verdict.sh LEG...
 #
-# Each LEG is the check-run name one of its legs carries, as that leg's `name:` gives it and
-# ci.yaml's CI_OK_CHECK_RUN_JOBS lists it (`envoy-go (1/3)`). It reads the jobs of this run's
+# Each LEG is the check-run name one of its legs carries, as that leg's `name:` in ci.yaml gives
+# it (`envoy-go (1/3)`). It reads the jobs of this run's
 # attempt,
 #
 #   gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=50" \

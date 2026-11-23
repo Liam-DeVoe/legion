@@ -7,9 +7,10 @@
 # hands it the NEEDS ci.yaml's ci-ok job builds with `toJSON(needs)`, which ci-ok-report.sh builds
 # for its early post too,
 # and the SELECTED_BY, PULL_REQUEST_ONLY and ALWAYS_RUN of ci.yaml's env, shrunk to four selected
-# jobs: typecheck,
-# envoy-client and docs, each selected by its own output, and worker-image, which also runs only
-# on a pull request. The always-run list is ci.yaml's own `changes` and lint, and a third job,
+# jobs: typecheck and docs, each selected by the output of its own id, which SELECTED_BY therefore
+# does not name, envoy-client, whose output SELECTED_BY names as an exception, and worker-image,
+# another exception, which also runs only on a pull request. The always-run list is ci.yaml's own
+# `changes` and lint, and a third job,
 # smoke-gate, for the cases that prove the list is read rather than hard-coded. Some cases pass
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
@@ -19,8 +20,8 @@
 # to telling that skip from a filter miss. Four cases run a merge group whose verdicts and
 # unnamed-file verdict say which failed job no pull request of the group's files ran, and hold
 # the line that names it, its step summary, and its absence where a changed file matched no filter.
-# CHECK_RUN_JOBS is ci.yaml's map from a leg's check-run name to its job id, empty but where a
-# case reads a leg named by an expression.
+# The check-run names of legs named by an expression are read off a ci.yaml of the case's own
+# (CI_OK_WORKFLOW): one with no such name, but where a case reads a leg named by an expression.
 #
 # A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
 # tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
@@ -99,7 +100,7 @@ annotations() {
 # nothing of it is read as a runner shutdown and a failure is a failure.
 check_runs changes lint typecheck envoy-client worker-image docs smoke-gate contracts
 
-selected_by='{"typecheck": "typecheck", "envoy-client": "envoy_client", "worker-image": "worker_image", "docs": "docs"}'
+selected_by='{"envoy-client": "envoy_client", "worker-image": "worker_image"}'
 pull_request_only='["worker-image"]'
 always_run='["changes", "lint"]'
 # The same list with a third always-run job, which ci-ok.sh must judge as it judges lint.
@@ -142,17 +143,22 @@ unmatched_selects=$(with_verdicts "$selects" \
   '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}')
 
 # run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
-# pull_request and the always-run list to ci.yaml's own two jobs; CHECK_RUN_JOBS is
-# $check_run_jobs. The GitHub half of the environment is the ci-ok job's own, pointed at the
+# pull_request and the always-run list to ci.yaml's own two jobs; the workflow the names are read
+# off is $workflow. The GitHub half of the environment is the ci-ok job's own, pointed at the
 # stand-in above: the head its check runs are on, the run they must belong to, and gh-read.sh's
 # retry delay turned off. The step summary is $work/summary.md, emptied first.
-check_run_jobs='{}'
+cat >"$work/ci.yaml" <<'YAML'
+jobs:
+  typecheck: {runs-on: ubuntu-24.04-arm}
+  envoy-client: {runs-on: ubuntu-24.04-arm}
+YAML
+workflow=$work/ci.yaml
 run_ci_ok() {
   : >"$work/summary.md"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
-    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} CHECK_RUN_JOBS=$check_run_jobs \
+    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} CI_OK_WORKFLOW=$workflow \
     GITHUB_STEP_SUMMARY="$work/summary.md" "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
@@ -265,13 +271,24 @@ run_ci_ok "$(needs success "$selects" skipped typecheck=success envoy-client=ski
 check "fails" "$(is "$status" 1)"
 check "names it and why" "$(contains "$out" '^::error::lint ended skipped; lint runs on every change')"
 
-echo "case: a job SELECTED_BY does not name"
+echo "case: a job that changes has no output for"
+# Selected by the output of its own id, contracts, which SELECTED_BY does not name, finds none
+# among the outputs of a changes that succeeded: nothing says what selects it.
 run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped \
   contracts=skipped)"
 check "fails" "$(is "$status" 1)"
-check "names it, its result and why" "$(contains "$out" '^::error::contracts ended skipped, and ci-ok does not know what selects it')"
+check "names it, its result and why" \
+  "$(contains "$out" '^::error::contracts ended skipped, and ci-ok does not know what selects it: changes has no output contracts;')"
 check "names the three classes it could join" \
-  "$(contains "$out" "map it in CI_OK_SELECTED_BY in ci.yaml's env when a changes output gates it, name it in CI_OK_ALWAYS_RUN when it runs on every change, or name it in CI_OK_EXEMPT when it is outside ci-ok's accounting\$")"
+  "$(contains "$out" "map it in CI_OK_SELECTED_BY in ci.yaml's env to the changes output its if: tests when that output is not named after the job's own id, name it in CI_OK_ALWAYS_RUN when it runs on every change, or name it in CI_OK_EXEMPT when it is outside ci-ok's accounting\$")"
+
+echo "case: a job SELECTED_BY does not name, selected by the output of its own id"
+run_ci_ok "$(needs success "$selects_docs" success typecheck=success envoy-client=skipped worker-image=success docs=failure)"
+check "fails" "$(is "$status" 1)"
+check "reads docs' own output" \
+  "$(contains "$out" '^::error::docs ended failure, but changes selected it (needs.changes.outputs.docs is true)')"
+check "and an exception's output for envoy-client" \
+  "$(contains "$out" '^envoy-client: skipped (not selected: needs.changes.outputs.envoy_client is false)$')"
 
 echo "case: a job SELECTED_BY maps is absent from NEEDS"
 run_ci_ok "$(needs success "$selects" success typecheck=success worker-image=success docs=skipped)"
@@ -320,7 +337,7 @@ run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=ski
   smoke-gate=success)"
 check "fails" "$(is "$status" 1)"
 check "names it and the three classes it could join" \
-  "$(contains "$out" '^::error::smoke-gate ended success, and ci-ok does not know what selects it; map it in CI_OK_SELECTED_BY')"
+  "$(contains "$out" '^::error::smoke-gate ended success, and ci-ok does not know what selects it: changes has no output smoke-gate; map it in CI_OK_SELECTED_BY')"
 
 echo "case: a selected job whose runner was shut down under it"
 # GitHub reports such a job `failure`, and the runner's two ##[error] lines are the annotations
@@ -458,31 +475,51 @@ check "keeps it a failure" \
 check "warns that it could not tell a shutdown from a failure" \
   "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
 
-echo "case: a leg named by an expression whose runner was shut down, read through CHECK_RUN_JOBS"
+echo "case: a leg named by an expression whose runner was shut down, read through the workflow's names"
 # A leg of a matrix job written in ci.yaml whose name: is an expression carries the old check-run
 # name it evaluates to, here broker-client / broker-client for a leg of envoy-client, and no job
-# id: only ci.yaml's map ties its check run to its job, so only through it is the shutdown read.
+# id: only the name read off ci.yaml ties its check run to its job, so only through it is the
+# shutdown read.
 check_runs changes lint typecheck 'broker-client / broker-client' worker-image docs
 annotations 'broker-client / broker-client' \
   'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
   'Process completed with exit code 143.'
-check_run_jobs='{"broker-client / broker-client": "envoy-client"}'
+cat >"$work/ci-legs.yaml" <<'YAML'
+jobs:
+  envoy-client:
+    name: ${{ format('{0} / {0}', matrix.leg) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [broker-client, envoy-client]
+  pr-title:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
+YAML
+workflow=$work/ci-legs.yaml
 run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
 check "fails" "$(is "$status" 1)"
 check "reads the leg's job as cancelled" \
   "$(contains "$out" '^envoy-client: cancelled (selected: needs.changes.outputs.envoy_client is true)$')"
 check "names the shutdown" "$(contains "$out" 'a runner shutdown cut this one off')"
-check_run_jobs='{}'
+check "passes over a job it does not judge whose name reads another context" \
+  "$(is "$(contains "$out" 'is no form ci-ok.jq reads')" false)"
+workflow=$work/ci.yaml
 run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
-check "without the map the leg's check run is no job's, and the failure stands" \
+check "without the name in ci.yaml the leg's check run is no job's, and the failure stands" \
   "$(contains "$out" '^envoy-client: failure (selected: needs.changes.outputs.envoy_client is true)$')"
 
-echo "case: CHECK_RUN_JOBS is not a JSON object of name to job id"
-check_run_jobs='["envoy-client"]'
+echo "case: a job ci-ok judges whose name ci-ok.jq cannot read"
+cat >"$work/ci-bad-name.yaml" <<'YAML'
+jobs:
+  envoy-client:
+    name: ${{ github.event_name == 'merge_group' && 'envoy-client (queue)' || 'envoy-client' }}
+YAML
+workflow=$work/ci-bad-name.yaml
 run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
 check "fails" "$(is "$status" 1)"
-check "names the input" "$(contains "$out" '^::error::CHECK_RUN_JOBS is not a JSON object of check-run name to job id')"
-check_run_jobs='{}'
+check "names the job and its name" \
+  "$(contains "$out" "^::error::ci-ok.sh cannot read the check-run names of .*: .*job envoy-client's name: .* is no form ci-ok.jq reads")"
+workflow=$work/ci.yaml
 
 check_runs changes lint typecheck envoy-client worker-image docs
 

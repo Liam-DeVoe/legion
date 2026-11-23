@@ -99,8 +99,8 @@ variables:
     why: The launcher's role-layout tests need a directory outside /tmp and say so through testprereq.Require.
   LEGION_E2E:
     class: selector
-    jobs: [envoy-client]
-    why: Selects the envoy-client tests against a real NATS container, which envoy-client runs.
+    jobs: [ts]
+    why: Selects the envoy-client tests against a real NATS container, which ts's envoy-client leg runs.
   LEGION_E2E_DISPATCH_STACK:
     class: selector
     jobs: [go-envoy]
@@ -114,12 +114,12 @@ variables:
     why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.
   LEGION_TEST_CLAUDE:
     class: set
-    jobs: [claude-envoy, agent-harness, go-envoy]
+    jobs: [pi, agent-harness, go-envoy]
     why: The Claude Code binary install-claude-code puts in the job's environment.
   LEGION_TEST_CODEX:
     class: set
-    jobs: [claude-envoy]
-    why: The native Codex binary install-codex puts in claude-envoy's environment.
+    jobs: [pi]
+    why: The native Codex binary install-codex puts in the environment of pi's claude-envoy leg.
   LEGION_TEST_DRAIN_MEASURE:
     class: set
     jobs: [go-daemon]
@@ -138,15 +138,15 @@ variables:
     why: The pinned Claude Code tarballs the kind job's setup fetches, which the rig's npm stand-in serves to its pods.
   LEGION_TEST_NATS_URL:
     class: set
-    jobs: [pi-envoy, pi-legion]
-    why: The NATS service of the job that runs the Oh My Pi extension tests.
+    jobs: [pi]
+    why: The NATS service of pi's pi-envoy and pi-legion legs, which run the Oh My Pi extension tests.
   LEGION_TEST_OMP:
     class: set
-    jobs: [go-daemon, plugin-pack, agent-harness, pi-envoy, pi-legion, go-envoy]
+    jobs: [go-daemon, plugin-pack, agent-harness, pi, go-envoy]
     why: The Oh My Pi binary install-omp puts in the job's environment.
   LEGION_TEST_PG_DSN:
     class: set
-    jobs: [go-daemon, daemon-live, agent-harness, sessions-script, go-envoy-held, dispatch-browser]
+    jobs: [go-daemon, daemon-live, agent-harness, scripts, go-envoy-held, dispatch-browser]
     why: The Postgres server the daemon's tests and the Dispatch harness's make their databases on, a service of each job that runs them.
   LEGION_TEST_UV:
     class: set

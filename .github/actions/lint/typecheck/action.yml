@@ -1,0 +1,45 @@
+name: typecheck
+description: >-
+  The typecheck leg of ci.yaml's lint job, which carries the old check-run name
+  `typecheck / typecheck`: go vet over the Go daemon, as linux builds it and as darwin builds it.
+  Vet compiles every package of the module and its test files, and runs no test. The leg runs on
+  ubuntu-24.04-arm, after the job's checkout.
+runs:
+  using: composite
+  steps:
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    # go-daemon, shared with go-daemon and pi-legion.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+    - name: Vet the Go daemon
+      shell: bash
+      working-directory: packages/daemon
+      run: go vet ./...
+
+    # The same vet as macOS builds the module: `legion` ships for darwin
+    # (.github/go-release-targets.json), and a file with no build constraint that uses a symbol
+    # only a `//go:build linux` file defines compiles on this runner and nowhere else. The vet
+    # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
+    # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
+    # One darwin architecture is enough: no file of the module, or of the envoy packages it
+    # imports, tells amd64 from arm64 on darwin.
+    - name: Vet the Go daemon for darwin
+      shell: bash
+      working-directory: packages/daemon
+      run: |
+        flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
+        while IFS= read -r flag; do
+          echo "Vetting for darwin with $flag"
+          GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+        done <<< "$flags"

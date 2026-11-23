@@ -9,12 +9,12 @@
 #
 # Each case writes the run's jobs as the jobs route lists them and the `changes` and `job.status`
 # the reporting job saw, and runs the real scripts with a stand-in `gh` first on PATH: it answers
-# the jobs read and records each check run posted. The map is ci-ok.test.sh's four jobs and the
-# always-run list ci.yaml's own two, in a ci.yaml of the case's own (CI_OK_WORKFLOW) whose
-# CI_OK_CHECK_RUN_JOBS gives two legs named by an expression to envoy-client; one case reads the
-# real ci.yaml. A job's check runs are read under each name GitHub gives them: the job's id, a
-# called workflow's job, a called workflow's matrix leg, a matrix leg with no name of its own, and
-# a leg named by an expression, which only that map ties to its job.
+# the jobs read and records each check run posted. The jobs ci-ok judges are ci-ok.test.sh's four
+# and the always-run list ci.yaml's own two, the `needs:` of the ci-ok job of a ci.yaml of the
+# case's own (CI_OK_WORKFLOW), whose envoy-client job names two legs by an expression; one case
+# reads the real ci.yaml. A job's check runs are read under each name GitHub gives them: the job's
+# id, a called workflow's job, a called workflow's matrix leg, a matrix leg with no name of its
+# own, and a leg named by an expression, which only its job's `name:` in ci.yaml ties to its job.
 #
 # Run from anywhere: .github/scripts/ci-ok-report.test.sh
 # CI runs it in ci.yaml's test job.
@@ -70,11 +70,22 @@ chmod +x "$work/bin/gh"
 cat > "$work/ci.yaml" <<'YAML'
 env:
   CI_OK_SELECTED_BY: |
-    {"typecheck": "typecheck", "envoy-client": "envoy_client", "worker-image": "worker_image", "docs": "docs"}
+    {"envoy-client": "envoy_client", "worker-image": "worker_image"}
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
   CI_OK_ALWAYS_RUN: '["changes", "lint"]'
-  CI_OK_CHECK_RUN_JOBS: |
-    {"broker-client / broker-client": "envoy-client", "docs (envoy-client)": "envoy-client"}
+jobs:
+  envoy-client:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {leg: broker-client, name: broker-client / broker-client}
+          - {leg: docs, name: docs (envoy-client)}
+  pr-title:
+    name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
+  ci-ok:
+    needs: [changes, lint, typecheck, envoy-client, worker-image, docs]
 YAML
 
 # What `changes` gave the reporting job on a merge group: typecheck and envoy-client selected,
@@ -285,7 +296,7 @@ run_report '{}' merge_group failure
 check "fails" "$(is "$status" 1)"
 check "posts nothing" "$(is "$(posted)" 0)"
 
-echo "case: the real ci.yaml's map, with nothing selected"
+echo "case: the real ci.yaml's jobs and leg names, with nothing selected"
 jobs typecheck=in_progress
 run_report '{"result": "success", "outputs": {}}' merge_group failure "$script_dir/../workflows/ci.yaml"
 check "reads it and posts" "$(is "$(posted)" 1)"
@@ -295,8 +306,9 @@ echo "case: a failed check run of envoy-client under each name it can carry"
 # GitHub names a job's check run by its id, a called workflow's job `<job> / <its job>` and that
 # job's matrix leg `<job> / <its job> (<leg>)`, a matrix leg written in ci.yaml with no name of its
 # own `<job> (<leg>)`, and a leg whose name: is an expression by what the expression gives, an old
-# check-run name that only CI_OK_CHECK_RUN_JOBS ties to its job. Read any other way, the failed
-# leg is no job's, its job reads as unlisted rather than failed, and the post leaves it unnamed.
+# check-run name that only the job's `name:` in ci.yaml ties to its job. Read any other way, the
+# failed leg is no job's, its job reads as unlisted rather than failed, and the post leaves it
+# unnamed.
 for form in 'envoy-client' 'envoy-client / inner' 'envoy-client / inner (2)' 'envoy-client (2)' \
   'broker-client / broker-client' 'docs (envoy-client)'; do
   jobs typecheck=in_progress lint=in_progress "$form=completed/failure"
@@ -304,23 +316,22 @@ for form in 'envoy-client' 'envoy-client / inner' 'envoy-client / inner (2)' 'en
   check "$form: read as envoy-client's check run, which failed" \
     "$(contains "$(field .output.summary)" '^envoy-client: failure (selected')"
 done
-check "a name the map gives to envoy-client is no check run of docs, whose prefix it carries" \
+check "a name ci.yaml gives a leg of envoy-client is no check run of docs, whose prefix it carries" \
   "$(contains "$(field .output.summary)" '^docs: unlisted (not selected')"
-sed 's/^  CI_OK_CHECK_RUN_JOBS: |$/  CI_OK_CHECK_RUN_JOBS: "{}"/; /"broker-client \/ broker-client"/d' \
-  "$work/ci.yaml" >"$work/ci-no-map.yaml"
+sed '/^    name: \${{ matrix.name }}$/d' "$work/ci.yaml" >"$work/ci-no-name.yaml"
 jobs typecheck=in_progress lint=in_progress 'broker-client / broker-client=completed/failure'
-run_report "$selects" merge_group failure "$work/ci-no-map.yaml"
-check "with no map, the leg named by an expression is no job's, and envoy-client reads unlisted" \
+run_report "$selects" merge_group failure "$work/ci-no-name.yaml"
+check "with no name: on the job, the leg named broker-client / broker-client is no job's, and envoy-client reads unlisted" \
   "$(contains "$(field .output.summary)" '^envoy-client: unlisted (selected')"
 
-echo "case: CI_OK_CHECK_RUN_JOBS is not an object of name to job id"
-sed 's/^  CI_OK_CHECK_RUN_JOBS: |$/  CI_OK_CHECK_RUN_JOBS: "[]"/; /"broker-client \/ broker-client"/d' \
-  "$work/ci.yaml" >"$work/ci-bad-map.yaml"
+echo "case: a job ci-ok judges whose name: ci-ok.jq cannot read"
+sed 's/^    name: \${{ matrix.name }}$/    name: ${{ github.event_name }}/' "$work/ci.yaml" >"$work/ci-bad-name.yaml"
 jobs typecheck=in_progress
-run_report "$selects" merge_group failure "$work/ci-bad-map.yaml"
+run_report "$selects" merge_group failure "$work/ci-bad-name.yaml"
 check "fails" "$(is "$status" 1)"
 check "posts nothing" "$(is "$(posted)" 0)"
-check "names the map" "$(contains "$out" 'CI_OK_CHECK_RUN_JOBS object of check-run name to job id')"
+check "names the job whose name it cannot read" \
+  "$(contains "$out" "cannot read the check-run names of .*job envoy-client's name: .* is no form ci-ok.jq reads")"
 
 echo "case: a leg of a matrix job decides the run, and the post names that leg"
 # The jobs route shows each running leg of the reporting job in_progress; the one on this step's

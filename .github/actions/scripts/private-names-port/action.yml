@@ -1,0 +1,27 @@
+name: private-names-port
+description: >-
+  The private-names-port leg of ci.yaml's scripts job, which carries that old check-run name: one
+  harness, .github/scripts/check-private-names-port.test.sh, the port of this repository's four
+  private-name rules, proved by comparison rather than by assertion. Every case runs through
+  .github/scripts/check-private-names.sh, the frozen shell script, and through
+  packages/daemon/internal/leakguard's rule file as the `legion` binary of this head runs it, and
+  the two are held to one verdict and one class. The harness builds ./cmd/legion out of
+  packages/daemon, so it needs the checkout (the harness, the frozen script and the daemon
+  sources the build reads) and setup-go on packages/daemon/go.mod: it refuses without a `go` on
+  PATH and fails the run when the binary does not build. No Bun, no database and no container
+  image; no Actions cache either, since the go-daemon entry is filled with what compiling
+  packages/daemon's test binaries leaves, which is not this build. The leg runs on
+  ubuntu-24.04-arm, after the job's checkout, under 20 minutes: the harness takes 71 s with a warm
+  Go build cache, and this leg compiles that command's packages from nothing.
+# why: .github/ci-notes/ci.md#the-private-names-port-job-and-the-closure-it-took-off-the-test-filter
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    - name: Test the private-name rules' port against the frozen script
+      shell: bash
+      run: .github/scripts/check-private-names-port.test.sh

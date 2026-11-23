@@ -1,0 +1,26 @@
+name: pi-shared
+description: >-
+  The pi-shared leg of ci.yaml's pi job, which carries that old check-run name: the typecheck and
+  the tests of packages/pi-shared. The leg runs on ubuntu-24.04-arm, after the job's checkout and
+  its Bun (.github/actions/setup-bun).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Typecheck pi-shared
+      shell: bash
+      working-directory: packages/pi-shared
+      run: bun run typecheck
+
+    # src/jj-attribution.test.ts runs the real jj in a scratch repository for one case, and
+    # refuses on GitHub Actions without one.
+    - uses: ./.github/actions/install-jj
+
+    # test/skills-partition.test.ts stages each plugin's skills with scripts/pi-plugin-prepack.sh
+    # --stage-skills and holds the two lists to a partition of skills/.
+    - name: Test pi-shared
+      shell: bash
+      working-directory: packages/pi-shared
+      run: bun run test

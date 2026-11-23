@@ -1,0 +1,62 @@
+name: envoy-client
+description: >-
+  The envoy-client leg of ci.yaml's ts job, which carries that old check-run name: the typecheck,
+  the tests against a real NATS container (LEGION_E2E, set on the test step) and the build of
+  packages/envoy-client, after contracts' build, which it reads. The leg runs on
+  ubuntu-24.04-arm, after the job's checkout and its Bun (.github/actions/setup-bun).
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Build contracts for Envoy client
+      shell: bash
+      working-directory: packages/contracts
+      run: bun run build
+
+    - name: Typecheck Envoy client
+      shell: bash
+      working-directory: packages/envoy-client
+      run: bun run typecheck
+
+    # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml). This leg
+    # pulls the image here, and does not call .github/actions/pull-test-images: that action
+    # reads a Go `const` line, and this image is a TypeScript constant
+    # (packages/envoy-client/src/__tests__/nats-server.ts:9-10). The registry is this
+    # repository's own, so a failed pull is a fault of this repository. Show it, do not retry
+    # it.
+    - name: Pre-pull the NATS image the credential tests run
+      shell: bash
+      run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+
+    # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves
+    # its temporary directory behind is how 7,063 of them gathered on a shared development
+    # machine, measured on 2026-11-07, which is the count this step keeps at zero. The suites
+    # take their directories from @legion/test-fixtures, whose rules are docs/testing.md's "Bun
+    # tests". It is exported on the command line rather than set in `env:` so the reading step
+    # can name the same path.
+    - name: Test Envoy client
+      shell: bash
+      working-directory: packages/envoy-client
+      env:
+        LEGION_E2E: "1"
+      run: |
+        mkdir -p "$RUNNER_TEMP/envoy-client-tmp"
+        TMPDIR="$RUNNER_TEMP/envoy-client-tmp" bun run test
+
+    - name: Check the Envoy client suite left no temporary directory behind
+      shell: bash
+      run: |
+        left=$(ls -A "$RUNNER_TEMP/envoy-client-tmp")
+        if [ -n "$left" ]; then
+          echo "the suite left these in its temporary directory:" >&2
+          printf '%s\n' "$left" >&2
+          exit 1
+        fi
+        echo "the suite left nothing in its temporary directory"
+
+    - name: Build Envoy client
+      shell: bash
+      working-directory: packages/envoy-client
+      run: bun run build

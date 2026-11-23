@@ -47,10 +47,11 @@
 # run's jobs route (the latest attempt's, as GitHub lists them), where a job GitHub shows
 # completed stands at its conclusion, every check run of it together, one still queued or running
 # at that status (`queued`, `in_progress`), and one the route does not list at all as `unlisted`.
-# A job's check runs are those ci-ok.jq's runs_of gives it: each name CI_OK_CHECK_RUN_JOBS maps to
-# it, which is how a leg whose `name:` is an expression is found, and each name GitHub gives after
-# the job's id, a called workflow's jobs (`<job> / <its job>`, `<job> / <its job> (<leg>)`) and a
-# matrix leg with no name of its own (`<job> (<leg>)`). The reporting job is the one exception:
+# A job's check runs are those ci-ok.jq's runs_of gives it: each check-run name a leg or a carrier
+# of it gives through its `name:` in the workflow (ci-ok.jq's check_run_jobs reads them off the
+# file), which is how a leg whose `name:` is an expression is found, and each name GitHub gives
+# after the job's id, a called workflow's jobs (`<job> / <its job>`, `<job> / <its job> (<leg>)`)
+# and a matrix leg with no name of its own (`<job> (<leg>)`). The reporting job is the one exception:
 # the route shows it `in_progress`, because this step is still running, so its own JOB_STATUS
 # stands for it. Nothing but a success is a success there, so ci-ok.sh's verdict is failure, which
 # is right: a selected job that did not succeed fails ci-ok, and the group this run tests cannot
@@ -86,13 +87,14 @@
 #   RUNNER_NAME        as Actions sets it: the runner of this step, which names the reporting leg.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
-#                      CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_CHECK_RUN_JOBS are read
-#                      from it and handed to ci-ok.sh, which judges a job by the class its name is
-#                      in, and CI_OK_CHECK_RUN_JOBS to runner-shutdown.sh.
+#                      CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN are read from its env and
+#                      handed to ci-ok.sh, which judges a job by the class its name is in; the jobs
+#                      judged are its ci-ok job's `needs:`, and the check-run names of their legs
+#                      are read off their `name:`s, for the jobs route and for runner-shutdown.sh.
 #
 # Run from anywhere: JOB=... JOB_STATUS=... CHANGES=... EVENT=... HEAD_SHA=... \
 #   .github/scripts/ci-ok-report.sh
-# Its tests are in ci-ok-report.test.sh, which ci.yaml's test job runs.
+# Its tests are in ci-ok-report.test.sh, which ci.yaml's scripts job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -124,11 +126,18 @@ fi
 # reaches this step at all — the steps after the kill are skipped, as the `Apply` step of the
 # job in runner-shutdown.sh's header was — so the case that reaches it is `changes`, whose
 # result the reporting job is handed; both are read the same way all the same.
+# The jobs ci-ok judges, the ci-ok job's `needs:`, and the check-run name each leg and carrier of
+# them gives through its `name:`, to its job id (ci-ok.jq, check_run_jobs), as a JSON object.
+judged=$(yq -o=json '.jobs["ci-ok"].needs // ""' "$workflow" 2>/dev/null) || judged='""'
+leg_names() {
+  yq -o=json '.' "$workflow" | jq -c -L "$script_dir" --argjson judged "$judged" \
+    'include "ci-ok"; check_run_jobs($judged | if type == "array" then . else [] end)'
+}
 shutdown_killed() { # shutdown_killed <job>: true when that job's failure was a runner shutdown
   local kills names
-  # The job's check runs are read by the workflow's name map; a file yq cannot read leaves the
-  # names GitHub gives after a job id, and the map is held to its shape below on a decided run.
-  names=$(yq -r '.env.CI_OK_CHECK_RUN_JOBS // ""' "$workflow" 2>/dev/null) || names=
+  # The job's check runs are read by the workflow's names; a file that cannot be read leaves the
+  # names GitHub gives after a job id, and the names are held to their form below on a decided run.
+  names=$(leg_names 2>/dev/null) || names=
   # A refused read is not a kill: runner_shutdown_kills has warned, and the failure stands.
   kills=$(CHECK_RUN_JOBS=$names runner_shutdown_kills "$1") || return 1
   [ -n "$kills" ]
@@ -176,12 +185,15 @@ fi
 selected_by=$(yq -r '.env.CI_OK_SELECTED_BY // ""' "$workflow")
 pull_request_only=$(yq -r '.env.CI_OK_PULL_REQUEST_ONLY // ""' "$workflow")
 always_run=$(yq -r '.env.CI_OK_ALWAYS_RUN // ""' "$workflow")
-check_run_jobs=$(yq -r '.env.CI_OK_CHECK_RUN_JOBS // ""' "$workflow")
 if ! jq -e 'type == "object"' <<<"$selected_by" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$pull_request_only" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$always_run" >/dev/null 2>&1 \
-  || ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$check_run_jobs" >/dev/null 2>&1; then
-  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object, CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays and CI_OK_CHECK_RUN_JOBS object of check-run name to job id"
+  || ! jq -e 'type == "array" and all(.[]; type == "string")' <<<"$judged" >/dev/null 2>&1; then
+  echo "::error::$workflow holds no JSON CI_OK_SELECTED_BY object, CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays in its env and no ci-ok job whose needs: list the jobs it judges"
+  exit 1
+fi
+if ! check_run_jobs=$(leg_names 2>&1); then
+  echo "::error::ci-ok-report.sh cannot read the check-run names of $workflow's jobs: $check_run_jobs"
   exit 1
 fi
 
@@ -200,7 +212,7 @@ def ended($job):
 def live($job): [mine($job)[] | select(.status != "completed") | .status] | first // "unlisted";
 {changes: $changes}
   + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
-  + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
+  + ([$judged[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 JQ
 # The check run of this job that this step runs in, by its runner: a leg's own check-run name,
 # which the title and summary give rather than the job's id. A job of one check run, or a read
@@ -211,7 +223,7 @@ if jobs=$(gh_read gh api --paginate \
   --jq '.jobs[] | {name, status, conclusion, runner_name}'); then
   jobs=$(jq -s . <<<"$jobs")
   needs=$(jq -n -L "$script_dir" --argjson jobs "$jobs" --argjson changes "$CHANGES" \
-    --argjson map "$selected_by" --argjson always "$always_run" --argjson names "$check_run_jobs" "$program")
+    --argjson judged "$judged" --argjson always "$always_run" --argjson names "$check_run_jobs" "$program")
   if [ "$decided_job" = "$JOB" ] && [ -n "${RUNNER_NAME:-}" ]; then
     leg=$(jq -r -L "$script_dir" --arg job "$JOB" --arg runner "$RUNNER_NAME" --argjson names "$check_run_jobs" \
       'include "ci-ok"; [runs_of($job; $names)[] | select(.status != "completed" and .runner_name == $runner) | .name]
@@ -220,10 +232,10 @@ if jobs=$(gh_read gh api --paginate \
   fi
 else
   echo "::warning::GitHub refused this run's job list three times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
-  needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
+  needs=$(jq -n --argjson changes "$CHANGES" --argjson judged "$judged" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)
-     + ([$map | keys_unsorted[] | {key: ., value: {result: "unread"}}] | from_entries)')
+     + ([$judged[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)')
 fi
 # This job's own result, which the jobs route cannot give while this step is running.
 needs=$(jq --arg job "$JOB" --arg status "$JOB_STATUS" '.[$job].result = $status' <<<"$needs")
@@ -232,7 +244,7 @@ summary=$(mktemp)
 trap 'rm -f "$summary"' EXIT
 status=0
 verdict=$(NEEDS=$needs EVENT=$EVENT SELECTED_BY=$selected_by ALWAYS_RUN=$always_run \
-  PULL_REQUEST_ONLY=$pull_request_only CHECK_RUN_JOBS=$check_run_jobs "$script_dir/ci-ok.sh" 2>&1) || status=$?
+  PULL_REQUEST_ONLY=$pull_request_only CI_OK_WORKFLOW=$workflow "$script_dir/ci-ok.sh" 2>&1) || status=$?
 echo "$verdict"
 if [ "$status" -eq 0 ]; then
   conclusion=success

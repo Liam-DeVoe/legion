@@ -1,0 +1,200 @@
+name: Read an arm64 tool-fallback install and set up the next
+description: >-
+  The steps between the installs of the tool-fallback-arm leg of ci.yaml's tool-fallback job
+  (ubuntu-24.04-arm), the arm64 half of the tool-fallback proof: the healthy installs of Bun and
+  of the arm64 rows of crane, changie, mise, jj and elan from their release assets, and each again
+  under the fault, where each must read its second source. Each install is a step of ci.yaml with
+  its own 11-minute bound (a composite action's step takes no timeout-minutes), so this action
+  runs only what lies between two of them: `after` names the point of the leg it follows, and the
+  steps of that name below run. None of those installs carries `continue-on-error`, so a held
+  install is loud by itself: its bound fails the leg at about 11.5 minutes.
+
+  The leg's 40 minutes, from the slowest run it can have: the two Bun halves take 15 (the
+  checkout and the actions' download 1, the healthy 34 MB release zip 2, the fault and its probe
+  1, the faulted install - oven-sh/setup-bun's own download refused at once, then one ladder of
+  .github/scripts/ci-tools.sh, two minutes at worst - 4, the 107 MB npm tarball 3, the two
+  readings 2, the report 1, the machine watch 1); the other rows' four healthy and four faulted
+  installs make ten fetches that can each take a whole 124-second ladder (21), the four probes 2,
+  and the rest of their readings 1. That is 39, and the next minute up is 40. Measured, the leg
+  took 76 s in run 44073112404.
+# why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof
+# The job holds the router's own scopes and no other:
+# why: .github/ci-notes/ci.md#why-the-tool-fallback-arm-job-needs-no-other-scope
+inputs:
+  after:
+    description: >-
+      The point of the leg this step follows: `start`, `healthy-bun`, `healthy`, `faulted-bun`,
+      `faulted-crane`, `faulted-changie`, `faulted-jj` or `faulted-elan`.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The same reading as the tool-fallback leg's, over both halves of this one: no other arm64
+    # job of this repository takes this reading of its runner, so nothing else says what one of
+    # those runners had.
+    # why: .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show
+    - name: Start the machine watch over both halves
+      if: inputs.after == 'start'
+      shell: bash
+      run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
+    # The healthy path, with nothing faulted: the release asset served Bun, and setup-bun's
+    # fourth step held what it installed to the row its third step read out of `uname -m`.
+    - name: Read the Bun the release asset served
+      if: inputs.after == 'healthy-bun'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+
+    # The healthy path of the other arm64 rows, with nothing faulted: each action picked its
+    # -aarch64 row from `uname -m`, read the release asset that row names, and held the bytes to
+    # the row's digest before it put the tool on PATH. install-jj did that twice: the mise it
+    # installs jj with is the mise-aarch64 row, and the jj mise installs is held to the jj-aarch64
+    # row. What each installed tool answers, against the row it was held to, and the jj binary
+    # held to its row once more where the job's PATH finds it.
+    - name: Read what the release assets served of the other arm64 rows
+      if: inputs.after == 'healthy'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . .github/scripts/ci-tools.sh
+        proof=.github/scripts/ci-tools-proof.sh
+        wrong=""
+        "$proof" version-answers crane-aarch64 "$(crane version)" || wrong="$wrong crane-aarch64"
+        "$proof" version-answers changie-aarch64 "$(changie --version)" || wrong="$wrong changie-aarch64"
+        "$proof" version-answers mise-aarch64 "$(mise --version)" || wrong="$wrong mise-aarch64"
+        "$proof" version-answers jj-aarch64 "$(jj --version)" || wrong="$wrong jj-aarch64"
+        "$proof" version-answers elan-aarch64 "$(elan --version)" || wrong="$wrong elan-aarch64"
+        ci_tools_verify jj-aarch64 "$(command -v jj)" "the jj on this runner's PATH" || wrong="$wrong jj-aarch64"
+        if [ -n "$wrong" ]; then
+          echo "::error::these arm64 installs answer something other than the row they were held to:$wrong" >&2
+          exit 1
+        fi
+
+    # The fault and the routing of every later step through it, as in the tool-fallback leg: the
+    # rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the four
+    # spellings of the two proxy variables and the two emptied bypass lists to $GITHUB_ENV, so
+    # neither the hosts nor the variables are written in this file.
+    - name: Start the fault in front of GitHub's release assets
+      if: inputs.after == 'healthy'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh start-fault
+
+    - name: Read the fault before any install meets it
+      if: inputs.after == 'healthy'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh probe github.com
+
+    # Both names, because the action's refusal takes both: what must be read again is an
+    # install, and not the bun the healthy half left behind. The npm path on arm64 follows: the
+    # release asset answers nothing behind the fault, so setup-bun's third step reads the
+    # @oven/bun-linux-aarch64 package the row names.
+    - name: Take the installed Bun away, so the second source must serve it
+      if: inputs.after == 'healthy'
+      shell: bash
+      run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+    # --expect-refused is this half's own reading of the source: the proxy's 504 for
+    # github.com after the probe is the refusal that sent this install to npm, and the
+    # version and the digest cannot say it, since both sources serve one binary.
+    - name: Read the Bun npm served
+      if: inputs.after == 'faulted-bun'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+    # The stand-in curl the tool-fallback leg runs, from here on: every install after it tries
+    # its primary first, which the fault refuses, and the stand-in ends each such refusal in
+    # about a second where the pinned ladder would ride it out for a minute. It shortens no
+    # fetch of a host the fault does not hold, so the ghcr copies are read on the pinned
+    # ladder. The Bun halves ran before it.
+    - name: Shorten the ladder of every fetch this job arranges to fail
+      if: inputs.after == 'faulted-bun'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh shorten-ladder
+
+    # Each faulted install is read the way the npm half is: a probe marks the fault proxy's log
+    # before it, and `refusals` after it reads the 504 that install met, so each reading names
+    # the refusal that sent that one install to its ghcr copy. The version and the digest say
+    # the right bytes arrived; neither can say which source served them.
+    - name: Mark the fault's log before the faulted crane install
+      if: inputs.after == 'faulted-bun'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh probe github.com
+
+    - name: Read the crane the copy served
+      if: inputs.after == 'faulted-crane'
+      shell: bash
+      run: |
+        set -euo pipefail
+        proof=.github/scripts/ci-tools-proof.sh
+        "$proof" version-answers crane-aarch64 "$(crane version)" ||
+          { echo "::error::the crane the copy served does not answer the crane-aarch64 row's version" >&2; exit 1; }
+        "$proof" refusals github.com
+
+    - name: Mark the fault's log before the faulted changie install
+      if: inputs.after == 'faulted-crane'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh probe github.com
+
+    - name: Read the changie the copy served
+      if: inputs.after == 'faulted-changie'
+      shell: bash
+      run: |
+        set -euo pipefail
+        proof=.github/scripts/ci-tools-proof.sh
+        "$proof" version-answers changie-aarch64 "$(changie --version)" ||
+          { echo "::error::the changie the copy served does not answer the changie-aarch64 row's version" >&2; exit 1; }
+        "$proof" refusals github.com
+
+    - name: Mark the fault's log before the faulted jj install
+      if: inputs.after == 'faulted-changie'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh probe github.com
+
+    # mise's own install of jj goes, so the faulted install must reach the release host and
+    # read the copy, as in the tool-fallback leg. Two rows meet the fault there: the
+    # mise-aarch64 archive install-jj's first step fetches, and the jj-aarch64 binary mise cannot
+    # fetch, which its second step reads from its copy.
+    - name: Take mise's install away, so the faulted install must read the copy
+      if: inputs.after == 'faulted-changie'
+      shell: bash
+      run: rm -rf "$HOME/.local/share/mise"
+
+    - name: Read the mise and the jj the copies served
+      if: inputs.after == 'faulted-jj'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . .github/scripts/ci-tools.sh
+        proof=.github/scripts/ci-tools-proof.sh
+        wrong=""
+        "$proof" version-answers mise-aarch64 "$(mise --version)" || wrong="$wrong mise-aarch64"
+        "$proof" version-answers jj-aarch64 "$(jj --version)" || wrong="$wrong jj-aarch64"
+        ci_tools_verify jj-aarch64 "$(command -v jj)" "the jj on this runner's PATH" || wrong="$wrong jj-aarch64"
+        if [ -n "$wrong" ]; then
+          echo "::error::these faulted installs answer something other than the row they were held to:$wrong" >&2
+          exit 1
+        fi
+        "$proof" refusals github.com
+
+    - name: Mark the fault's log before the faulted elan install
+      if: inputs.after == 'faulted-jj'
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh probe github.com
+
+    # The action installs nothing where it finds an elan, so the one the healthy half left goes.
+    - name: Take elan away, so the faulted install must read the copy
+      if: inputs.after == 'faulted-jj'
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+    - name: Read the elan the copy served
+      if: inputs.after == 'faulted-elan'
+      shell: bash
+      run: |
+        set -euo pipefail
+        proof=.github/scripts/ci-tools-proof.sh
+        "$proof" version-answers elan-aarch64 "$(elan --version)" ||
+          { echo "::error::the elan the copy served does not answer the elan-aarch64 row's version" >&2; exit 1; }
+        "$proof" refusals github.com

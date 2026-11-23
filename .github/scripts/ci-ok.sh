@@ -24,8 +24,8 @@
 # reading, and which fields of which endpoint it is). Such a job is read here as cancelled
 # unless a failure annotation of it names another exit code: that is usually a step that broke
 # the job, but a step allowed to fail leaves the same annotation on a job that succeeds, so a
-# job whose `continue-on-error` steps fail on purpose — the `tool-fallback` job, whose steps are
-# in .github/workflows/ci-job-tool-fallback.yaml — is not read as killed once one of those steps
+# job whose `continue-on-error` steps fail on purpose — the `tool-fallback` job, whose install
+# steps are ci.yaml's own — is not read as killed once one of those steps
 # has failed, and a runner shutdown then stays a failure with the job's own log for a remedy.
 # Where a job is read as cancelled
 # and `changes` selected it, its error names the shutdown and its remedy rather than the job's
@@ -64,14 +64,14 @@
 #                      so its reader checks its filter for a read it misses and its test for a
 #                      flake. The line decides nothing of the verdict.
 #   EVENT              `github.event_name`.
-#   SELECTED_BY        a JSON object mapping every job but those ALWAYS_RUN names to the
-#                      `changes` output its `if:` tests; the job is selected when that output is
-#                      'true' (ci-ok.jq). check-ci-filters.sh holds it to ci.yaml.
-#   PULL_REQUEST_ONLY  a JSON array of the SELECTED_BY jobs whose `if:` also admits only
-#                      pull_request: one is selected only when EVENT is pull_request too.
-#                      check-ci-filters.sh holds it to ci.yaml. (A job an event must hold back
-#                      otherwise needs no list: `changes` sets its output false there, as it does
-#                      for the twelve slow suites on a pull request without the label full-ci,
+#   SELECTED_BY        a JSON object of the exceptions: each job whose `if:` tests a `changes`
+#                      output not named after the job's own id, to that output. Every other job
+#                      but those ALWAYS_RUN names is selected by the output of its own id, and the
+#                      job is selected when that output is 'true' (ci-ok.jq).
+#   PULL_REQUEST_ONLY  a JSON array of the jobs whose `if:` also admits only pull_request: one is
+#                      selected only when EVENT is pull_request too. (A job an event must hold
+#                      back otherwise needs no list: `changes` sets its output false there, as it
+#                      does for the slow suites on a pull request without the label full-ci,
 #                      whose skip this verdict accepts and whose line says the label held it back.)
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
@@ -79,10 +79,12 @@
 #                      CI_OK_ALWAYS_RUN, and check-ci-filters.sh holds every job of that file to
 #                      exactly one of the three classes this list, SELECTED_BY and CI_OK_EXEMPT
 #                      make.
-#   CHECK_RUN_JOBS     a JSON object from each leg's and carrier's check-run name to its job id,
-#                      ci.yaml's CI_OK_CHECK_RUN_JOBS: a leg whose `name:` is an expression carries
-#                      the name it evaluates to and no job id, so runner-shutdown.sh reads a job's
-#                      check runs through it (ci-ok.jq, runs_of).
+#   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
+#                      by default (the ci-ok job's checkout of .github). The check-run name each
+#                      leg and carrier gives through its `name:` is read off it (ci-ok.jq,
+#                      check_run_jobs), since a leg whose `name:` is an expression carries the name
+#                      it evaluates to and no job id, and runner-shutdown.sh reads a job's check
+#                      runs through that map (ci-ok.jq, runs_of).
 #   GH_TOKEN           the job's github.token, with `checks: write` (or `checks: read`): a job
 #                      that ends `failure` is asked about on the commit's check runs, where the
 #                      runner's shutdown annotation tells a platform kill from a fault of the
@@ -91,24 +93,26 @@
 #                      github.sha, which is the expression ci.yaml's ci-ok job and the
 #                      ci-ok-report action both already pass.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run those check runs are of.
-# A job of NEEDS that neither ALWAYS_RUN nor SELECTED_BY names fails (ci-ok does not know what to
-# make of its result), and so does a job either of them names that is absent from NEEDS. It
+# A job of NEEDS that ALWAYS_RUN does not name, on a run whose `changes` succeeded with no output
+# of the name that job is selected by, fails (ci-ok does not know what to make of its result), and
+# so does a job ALWAYS_RUN or SELECTED_BY names that is absent from NEEDS. It
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
 #
 # Run from anywhere:
-#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... CHECK_RUN_JOBS=... \
+#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... \
 #     GH_TOKEN=... HEAD_SHA=... .github/scripts/ci-ok.sh
 # ci.yaml's ci-ok job runs it over every job's result, and ci-ok-report.sh over the results it
 # reads for the failing ci-ok it posts at once on a decided merge-group run; its tests are in
-# ci-ok.test.sh, which ci.yaml's test job runs.
+# ci-ok.test.sh, which ci.yaml's scripts job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/runner-shutdown.sh
 source "$script_dir/runner-shutdown.sh"
-for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN CHECK_RUN_JOBS GH_TOKEN HEAD_SHA \
+workflow=${CI_OK_WORKFLOW:-$script_dir/../workflows/ci.yaml}
+for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN GH_TOKEN HEAD_SHA \
   GITHUB_REPOSITORY GITHUB_RUN_ID; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok.sh needs $input in its environment"
@@ -123,9 +127,8 @@ if ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$SELECTED_BY" >
   echo "::error::SELECTED_BY is not a JSON object of job to output name: $SELECTED_BY"
   exit 1
 fi
-if ! jq -e --argjson map "$SELECTED_BY" 'type == "array" and all(.[]; type == "string" and (. as $job | $map | has($job)))' \
-  <<<"$PULL_REQUEST_ONLY" >/dev/null 2>&1; then
-  echo "::error::PULL_REQUEST_ONLY is not a JSON array of jobs SELECTED_BY names: $PULL_REQUEST_ONLY"
+if ! jq -e 'type == "array" and all(.[]; type == "string")' <<<"$PULL_REQUEST_ONLY" >/dev/null 2>&1; then
+  echo "::error::PULL_REQUEST_ONLY is not a JSON array of job names: $PULL_REQUEST_ONLY"
   exit 1
 fi
 if ! jq -e 'type == "array" and all(.[]; type == "string") and any(. == "changes")' \
@@ -133,8 +136,12 @@ if ! jq -e 'type == "array" and all(.[]; type == "string") and any(. == "changes
   echo "::error::ALWAYS_RUN is not a JSON array of job names naming changes, whose outputs every other job is judged by: $ALWAYS_RUN"
   exit 1
 fi
-if ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$CHECK_RUN_JOBS" >/dev/null 2>&1; then
-  echo "::error::CHECK_RUN_JOBS is not a JSON object of check-run name to job id: $CHECK_RUN_JOBS"
+# Each check-run name a leg or a carrier of a job ci-ok judges gives through its `name:`, to that
+# job's id, read off the workflow itself (ci-ok.jq, check_run_jobs): runner-shutdown.sh reads a
+# job's check runs through it.
+if ! CHECK_RUN_JOBS=$(yq -o=json '.' "$workflow" | jq -c -L "$script_dir" --argjson judged "$(jq -c 'keys' <<<"$NEEDS")" \
+  'include "ci-ok"; check_run_jobs($judged)' 2>&1); then
+  echo "::error::ci-ok.sh cannot read the check-run names of $workflow's jobs: $CHECK_RUN_JOBS"
   exit 1
 fi
 
@@ -162,6 +169,7 @@ fi
 read -r -d '' program <<'JQ' || true
 include "ci-ok";
 (.changes.outputs // {}) as $out
+| (.changes.result // "") as $changes_result
 | def selection($job): selection($job; $map; $out; $pr; $event);
   def killed($job): $shutdown | any(. == $job);
   def result($job; $result):
@@ -190,21 +198,22 @@ include "ci-ok";
       ["info", "\($job): \($result)"],
       (select($result != "success")
        | ["error", "\($job) ended \($result); \($job) runs on every change, so ci-ok passes only when it succeeded"])
-    elif ($map | has($job)) then
-      selection($job) as $s
+    elif $result != "absent" and $changes_result == "success" and ($out | has(output_of($job; $map)) | not) then
+      ["info", "\($job): \($result) (in none of ci-ok's three classes)"],
+      ["error", "\($job) ended \($result), and ci-ok does not know what selects it: changes has no output \(output_of($job; $map)); map it in CI_OK_SELECTED_BY in ci.yaml's env to the changes output its if: tests when that output is not named after the job's own id, name it in CI_OK_ALWAYS_RUN when it runs on every change, or name it in CI_OK_EXEMPT when it is outside ci-ok's accounting"]
+    else
+      output_of($job; $map) as $output
+      | selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($result == "failure" and missed_by_filters($job; $map; $out; $event))
-         | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($map[$job]) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
+         | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($output) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
         if $result == "absent" then
-          ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
+          ["error", "\($job) is absent from NEEDS, but needs.changes.outputs.\($output) selects it; the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every job ci-ok judges a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
           ["error", "\($job) ended \($result), but changes selected it (\($s.why)); a selected job must succeed, and \(cut_off($job; $result))"]
         elif ($s.selected | not) and $result != "success" and $result != "skipped" then
           ["error", "\($job) ended \($result); a job changes did not select must succeed or be skipped"]
         else empty end
-    else
-      ["info", "\($job): \($result) (in none of ci-ok's three classes)"],
-      ["error", "\($job) ended \($result), and ci-ok does not know what selects it; map it in CI_OK_SELECTED_BY in ci.yaml's env when a changes output gates it, name it in CI_OK_ALWAYS_RUN when it runs on every change, or name it in CI_OK_EXEMPT when it is outside ci-ok's accounting"]
     end;
   . as $needs
   | ($always[] | select(. as $job | $needs | has($job) | not) | rows(.; "absent")),

@@ -1,0 +1,25 @@
+name: sessions-script
+description: >-
+  The sessions-script leg of ci.yaml's scripts job, which carries that old check-run name:
+  scripts/sessions' own suite, which measures message-wait.ts over a session store of its own. It
+  creates a database on the server LEGION_TEST_PG_DSN names, writes the fixture into it, spawns
+  the script, and drops the database again (scripts/sessions/__tests__/message-wait.test.ts). It
+  refuses without that variable and never skips, so this leg carries the job's Postgres service
+  (ci.yaml starts it for this leg alone) and the variable is set on the suite's step. No install:
+  the suite and the script it spawns import node: builtins and bun alone, so the Bun the setup
+  action installs is the whole of what they need. The leg runs on ubuntu-24.04-arm, after the
+  job's checkout.
+# why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-carries-a-database-of-its-own
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    # The server the suite creates its own session-store database on, and drops again: the
+    # login is the image's superuser, since the test's first statement is a CREATE DATABASE.
+    - name: Test the session message-wait script
+      shell: bash
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: bun test scripts/sessions

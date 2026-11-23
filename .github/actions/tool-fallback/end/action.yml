@@ -1,0 +1,23 @@
+name: Report the tool-fallback runner and stop the fault
+description: >-
+  The last steps of both legs of ci.yaml's tool-fallback job, before the ci-ok report: what the
+  machine watch read of the runner, and the end of the routing through the fault. Call it with
+  `if: always()`: the reading a reader wants most is the one from a leg that failed, and the steps
+  after it must not be routed through a proxy that is about to go.
+runs:
+  using: composite
+  steps:
+    - name: Report what this job ran on
+      if: always()
+      shell: bash
+      run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+
+    # The proxy stops with this leg, and the steps after this one must not be routed through it:
+    # the ci-ok-report step can read the run's jobs and post a check run with gh, which would
+    # otherwise go through a proxy that is about to go. The rig writes the emptied variables, as
+    # it wrote the proxy ones.
+    # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-fault-stops-before-the-last-steps
+    - name: Stop routing this job through the fault
+      if: always()
+      shell: bash
+      run: .github/scripts/ci-tools-proof.sh stop-fault

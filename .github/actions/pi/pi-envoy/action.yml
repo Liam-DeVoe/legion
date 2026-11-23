@@ -1,0 +1,78 @@
+name: pi-envoy
+description: >-
+  The pi-envoy leg of ci.yaml's pi job, which carries that old check-run name: the typecheck, the
+  tests and the release's pack of packages/pi-envoy. The leg runs on ubuntu-24.04, after the job's
+  checkout, its Bun (.github/actions/setup-bun), and the Oh My Pi the pin .omp-pin names
+  (.github/actions/install-jj for its mise, then .github/actions/install-omp, steps of ci.yaml
+  because install-omp writes LEGION_TEST_OMP into $GITHUB_ENV), which
+  extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
+  extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run against
+  stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub Actions without.
+  Its leg of the job starts the NATS service extensions/card-delivery-omp.test.ts delivers Envoy
+  cards and a person's Send through, on a host port Docker picks rather than on 4222:
+  extensions/envoy.test.ts binds 127.0.0.1:4222, the port nats.js dials when it is handed no
+  server, to count what dials it, and on GitHub Actions it fails when that port is held.
+inputs:
+  nats-port:
+    description: The host port Docker mapped the job's NATS service's 4222 to (`job.services.nats.ports['4222']`).
+    required: true
+runs:
+  using: composite
+  steps:
+    # extensions/tmux-place-omp.test.ts runs Oh My Pi in a pane of a tmux server of its own, the
+    # only way the place a session registers can be read from the session itself, and refuses on
+    # GitHub Actions without a tmux.
+    - name: Install tmux
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+
+    - shell: bash
+      run: bun install --frozen-lockfile
+
+    - name: Build contracts for pi-envoy
+      shell: bash
+      working-directory: packages/contracts
+      run: bun run build
+
+    - name: Typecheck pi-envoy
+      shell: bash
+      working-directory: packages/pi-envoy
+      run: bun run typecheck
+
+    - name: Test pi-envoy
+      shell: bash
+      working-directory: packages/pi-envoy
+      env:
+        LEGION_TEST_NATS_URL: nats://127.0.0.1:${{ inputs.nats-port }}
+      run: bun run test
+
+    # The release's pack (release.yaml's pi_envoy_build job), which is also this leg's build: the
+    # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
+    # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
+    # license cannot be determined) and stages this plugin's eleven skills. The listing shows the
+    # tarball ships those and nothing of the Legion plugin's: no legion.js, no agents/, none of
+    # its skills.
+    - name: Pack pi-envoy
+      shell: bash
+      working-directory: packages/pi-envoy
+      run: |
+        jq '.omp.extensions = ["dist/envoy.js"]' package.json > "$RUNNER_TEMP/package.json"
+        mv "$RUNNER_TEMP/package.json" package.json
+        bun pm pack --destination ../../out/pr-artifacts
+        listing=$RUNNER_TEMP/pi-envoy-listing
+        tar tzf ../../out/pr-artifacts/*.tgz > "$listing"
+        for shipped in package/dist/envoy.js package/dist/THIRD_PARTY_NOTICES package/dist/skills/dispatch/SKILL.md; do
+          grep -qxF "$shipped" "$listing" || { echo "::error::the pi-envoy tarball does not ship $shipped"; exit 1; }
+        done
+        for legion in package/dist/legion.js package/agents/ package/dist/skills/legion-worker/; do
+          if grep -qF "$legion" "$listing"; then
+            echo "::error::the pi-envoy tarball ships $legion, which is the Legion plugin's"
+            exit 1
+          fi
+        done
+
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pi-envoy-pr
+        path: out/pr-artifacts/*.tgz
+        overwrite: true

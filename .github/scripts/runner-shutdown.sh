@@ -48,7 +48,8 @@
 # narrows them: a job's check run has `details_url` `<server>/<repo>/actions/runs/<run id>/job/
 # <job id>`, and this script keeps those whose `details_url` holds `/actions/runs/{GITHUB_RUN_ID}
 # /job/`. Within them a job's check runs are those ci-ok.jq's runs_of gives it: a name
-# CHECK_RUN_JOBS maps to the job, for a leg whose `name:` is an expression, or else a name that is
+# CHECK_RUN_JOBS maps to the job, the name a leg or a carrier gives through its `name:` in ci.yaml,
+# or else a name that is
 # the job's id in ci.yaml or starts with `<job> / ` or `<job> (`, which is how ci-ok-report.sh's
 # read of the jobs route takes a called workflow's jobs and a matrix's legs too.
 #
@@ -87,9 +88,10 @@
 #                      github.sha, the expression both callers' steps already pass.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run whose check runs are read.
 #   GH_RETRY_SECONDS   optional: gh-read.sh's knob, the tests' way to retry without waiting.
-#   CHECK_RUN_JOBS     optional: ci.yaml's CI_OK_CHECK_RUN_JOBS, each leg's and carrier's check-run
-#                      name to its job id; with none, only the names GitHub gives after a job id
-#                      are that job's.
+#   CHECK_RUN_JOBS     optional: each check-run name a leg or a carrier of a job ci-ok judges gives
+#                      through its `name:`, to its job id, which ci-ok.sh and ci-ok-report.sh read
+#                      off ci.yaml (ci-ok.jq's check_run_jobs); with none, only the names GitHub
+#                      gives after a job id are that job's.
 #
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first

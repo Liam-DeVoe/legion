@@ -1,0 +1,185 @@
+name: lint
+description: >-
+  The lint leg of ci.yaml's lint job, which carries the old check-run name `lint / lint`: the
+  checks that read the whole tree on every change, the search that every test reaches a job ci-ok
+  needs (.github/scripts/check-test-reach.sh) among them, and the checks of the workflow files the
+  ci-filters job ran. The job tests no output of the changes job, so a change anywhere starts it.
+  The leg runs on ubuntu-24.04-arm, after the job's checkout.
+runs:
+  using: composite
+  steps:
+    # This leg runs on every change, so the pin check runs on every change rather than only on
+    # one that touches a package.
+    - name: Check every Bun install reads .bun-version
+      shell: bash
+      run: .github/scripts/check-bun-version.sh
+
+    # Every test reaches a job ci-ok needs: no build tag, -skip, variable gate, script or
+    # scheduled step leaves one out (the script's header lists the five). It reads the
+    # workflows, .github/test-variables.yaml and the tree, and runs no go, bun or build command,
+    # so it needs only the checkout; on every change, since a test, a step or a row anywhere
+    # can be the one that leaves a test out.
+    - name: Check every test reaches a job ci-ok needs
+      shell: bash
+      run: .github/scripts/check-test-reach.sh
+
+    # This leg runs on every change too, and the gate reads only the tree: bun.lock, the
+    # browser image's Dockerfile and that image's row.
+    - name: Check the browser image's Playwright is the one bun.lock resolves
+      shell: bash
+      run: .github/scripts/check-playwright-version.sh
+
+    - name: Check frozen Bun installs copy every workspace manifest
+      shell: bash
+      run: .github/scripts/check-bun-workspace-manifests.sh
+
+    - name: Check every manifest names the one exact zod
+      shell: bash
+      run: .github/scripts/check-zod-version.sh
+
+    - name: Check the saved gh help is the worker image's gh
+      shell: bash
+      run: .github/scripts/check-gh-version.sh
+
+    - name: Check the gitleaks the release lane fetches is the one the daemon links
+      shell: bash
+      run: .github/scripts/check-gitleaks-version.sh
+
+    - name: Check image triggers cover every image input
+      shell: bash
+      run: .github/scripts/check-image-trigger-paths.sh
+
+    - name: Check every image a CI job fetches is a row of .github/ci-images.yaml
+      shell: bash
+      run: .github/scripts/check-ci-images.sh tree
+
+    - name: Check every tool asset of .github/ci-tools.yaml agrees with its pin
+      shell: bash
+      run: .github/scripts/check-ci-tools.sh
+
+    - name: Check every remote action is pinned to a commit SHA
+      shell: bash
+      run: .github/scripts/check-action-pins.sh
+
+    - name: Check no current file names the pre-split Oh My Pi plugin
+      shell: bash
+      run: .github/scripts/check-plugin-names.sh
+
+    # Biome's own rule refuses the `fireEvent` import under packages/dispatch/web/src, and a file
+    # that needs it keeps one `biome-ignore` naming that file's reasons. The rule reads imports,
+    # so it says nothing about a call added to a file whose exemption is already in place, which
+    # is what a forward merge of main brings: no conflict, no lint error, no type error. This
+    # check asks each call for its own reason instead.
+    - name: Check every fireEvent call of the Dispatch suite carries its own reason
+      shell: bash
+      run: .github/scripts/check-fireevent-reasons.sh
+
+    # Only on a pull request and a merge group, the two events that have a base to compare
+    # with: this leg also runs on the bypass check's dispatched run at main's tip, where the
+    # change has already merged. The condition tests `github.event_name` and no output of the
+    # `changes` job: a gate that keeps a step to the events it serves.
+    - name: "Check the daemon API contract: the files that hold its number agree, and a change to it declares a number above the base's"
+      if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: .github/scripts/check-daemon-api-contract.sh
+
+    - name: Check the release workflows keep credentials out of jobs that run dependency code
+      shell: bash
+      run: .github/scripts/check-release-credentials.sh
+
+    # Every package whose fragments a release renders is a line of .github/changelog-packages,
+    # which this check reads: a fragment of any other package is rendered nowhere and nothing
+    # would report it, so it is refused here, on every pull request.
+    - name: Check every changelog fragment belongs to a listed package
+      shell: bash
+      run: |
+        # shellcheck disable=SC2046 # the file is the package list, split on purpose
+        .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
+
+    # No setup-go cache: gofmt needs none, and neither do the workflow checks at the end of this
+    # leg. The third-party-notices step that used this Go is ci.yaml's notices job
+    # (.github/actions/notices), on a filter of its own.
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
+    # inside packages/daemon), so it is formatted here with the daemon.
+    - name: Check the Go daemon's formatting
+      shell: bash
+      run: |
+        unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
+    # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
+    # difference here is what a reader's own `bun install` would write.
+    - name: Check bun.lock agrees with the workspace manifests
+      shell: bash
+      run: |
+        bun install --lockfile-only
+        if ! git diff --exit-code bun.lock; then
+          echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
+          exit 1
+        fi
+
+    # A package's `bun run lint` checks only the paths its recipe names. This is the command the
+    # root README.md's "Development" section documents, over the whole tree, so a fixture,
+    # config or test file that Biome would rewrite fails here instead of on the next person who
+    # runs it.
+    - name: Check the whole tree with Biome
+      shell: bash
+      run: bunx biome check .
+
+    # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
+    # floor, so a live proof that starts one, and a script or page that installs one, must name
+    # one the floor takes. The test scans every tracked shell script and every tracked text file
+    # for those, so it runs here, on every change: a new driver or page can be anywhere.
+    - name: Check every NATS server a script starts or installs is one the floor takes
+      shell: bash
+      run: bun test scripts/e2e/lib/nats-image.test.ts
+
+    # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
+    # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
+    # loads with `bun build --metafile`, and holds every such file to that gate's filter.
+    - name: Check every Bun gate's filter selects the files its typecheck compiles
+      shell: bash
+      run: .github/scripts/check-ts-filters.sh
+
+    # The three checks of the workflow files the ci-filters job ran, after every other check of
+    # this leg and whatever those concluded, so one failure does not hide the next.
+    # why: .github/ci-notes/ci.md#what-the-ci-filters-job-holds-every-filter-and-every-workflow-file-to
+    - name: Check every CI filter matches every file its job reads
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: .github/scripts/check-ci-filters.sh
+
+    - name: Check every workflow file GitHub can read and its size
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: .github/scripts/check-workflow-files.sh
+
+    # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
+    # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.
+    - name: Check every workflow file with actionlint
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: >-
+        docker run --rm -e SHELLCHECK_OPTS=--severity=warning -v "$PWD:/repo" -w /repo
+        ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        -verbose -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'
