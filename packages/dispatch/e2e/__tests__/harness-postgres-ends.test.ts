@@ -234,7 +234,9 @@ exec "${join(bin, "pg_ctl")}" "$@"
           "stop, and no stack starts from a copy of a running server: "
       );
     } finally {
-      // A server that is already gone has no postmaster.pid, and nothing to stop.
+      // No postmaster.pid: pg_ctl never started a server. A file that is left names a server still
+      // running, or one the bounded child's kill has already taken, whose stop then fails; the
+      // status check below, not that stop's exit, is the row's verdict.
       if (existsSync(join(templateData, "postmaster.pid"))) {
         await runBounded({
           argv: [join(bin, "pg_ctl"), "-D", templateData, "-m", "immediate", "-w", "stop"],
