@@ -8,6 +8,7 @@
  */
 
 import { type RefObject, useCallback, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { useMarkedKeys } from "../../hooks/useMarkedKeys";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -304,14 +305,22 @@ export function useInboxSelection({
     setSnoozeRefusal(undefined);
     setSnoozing(new Set(ids));
     void bulkWrite.submit(ids, until).then(({ failed }) => {
-      setSnoozing(new Set());
-      setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
-      const refused = new Set(failed.map(({ askId }) => askId));
-      const taken = new Set(ids.filter((id) => !refused.has(id)));
-      setMarked((current) => {
-        const next = new Set([...current].filter((id) => !taken.has(id)));
-        for (const id of refused) next.add(id);
-        return next;
+      // The bar's going and its hand-off are one render. This runs outside any event of the
+      // reader's, so React would commit it at normal priority and run the bar's hand-off, a
+      // passive effect (`SelectionBar`), in a later task; in Firefox, which fires no `focusout`
+      // for the removed Snooze trigger, the page's rescue can check the loss first and hand the
+      // focus elsewhere. `flushSync` commits the going here and runs the bar's effects with it,
+      // as the project List's bar does (`issues-table-actions.ts`).
+      flushSync(() => {
+        setSnoozing(new Set());
+        setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
+        const refused = new Set(failed.map(({ askId }) => askId));
+        const taken = new Set(ids.filter((id) => !refused.has(id)));
+        setMarked((current) => {
+          const next = new Set([...current].filter((id) => !taken.has(id)));
+          for (const id of refused) next.add(id);
+          return next;
+        });
       });
     });
   };
