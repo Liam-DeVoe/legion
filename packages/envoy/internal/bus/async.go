@@ -328,9 +328,9 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// windowTime is the clock the client's publish windows read their deadlines against, time a first
-// send's wait for a connection on (pinFirst) and time their probes on: WithWindowClock's, and the
-// real clock when that set none.
+// windowTime is the clock the client's publish windows read their deadlines against and time a
+// first send's wait for a connection on (pinFirst): WithWindowClock's, and the real clock when that
+// set none. A probe's flush reads WithWindowClock's clock itself (window.probeFlush).
 func (c *Client) windowTime() clock.Clock {
 	if c.windowClock == nil {
 		return clock.Real()
@@ -667,8 +667,8 @@ func acknowledgement(reply *nats.Msg) (replyAck, bool) {
 }
 
 // Probe pins the window to the client's connection when nothing has yet, waiting up to timeout
-// for one, and flushes that connection within timeout, both on the window clock
-// (WithWindowClock). A flush that fails or runs out of time, and a connection lost or reconnected
+// for one on the window clock (WithWindowClock), and flushes that connection within timeout
+// (probeFlush). A flush that fails or runs out of time, and a connection lost or reconnected
 // since the window pinned it, answer an error wrapping ErrUnavailable. After a window whose sends
 // NATS did not acknowledge, it tells a connection that is gone or silent from one whose server
 // still answers.
@@ -676,15 +676,29 @@ func (w *window) Probe(timeout time.Duration) error {
 	if err := w.pin(timeout); err != nil {
 		return err
 	}
-	flush, cancel := clock.WithShownTimeout(w.client.windowTime(), context.Background(), timeout)
-	defer cancel()
-	if err := w.conn.FlushWithContext(flush); err != nil {
+	if err := w.probeFlush(timeout); err != nil {
 		return fmt.Errorf("bus: %w: the flush probe failed: %w", ErrUnavailable, err)
 	}
 	if !w.current() {
 		return fmt.Errorf("bus: %w: the window's connection was lost or reconnected since its first send", ErrUnavailable)
 	}
 	return nil
+}
+
+// probeFlush flushes the window's pinned connection within timeout, for Probe. With no window
+// clock, as in every deployment, it is nats.go's FlushTimeout, as at main: its timeout starts once
+// the flush holds nats.go's connection lock (v1.55.0 nats.go:6113-6118), so a reconnect's
+// handshake or a slow write that holds that lock for the whole timeout delays the probe rather
+// than failing it. On a window clock (WithWindowClock) the timeout is that clock's, shown to
+// nats.go (clock.WithShownTimeout), so a fake's ends only where the test moves the fake; it starts
+// before the flush waits for nats.go's lock.
+func (w *window) probeFlush(timeout time.Duration) error {
+	if w.client.windowClock == nil {
+		return w.conn.FlushTimeout(timeout)
+	}
+	flushing, cancel := clock.WithShownTimeout(w.client.windowClock, context.Background(), timeout)
+	defer cancel()
+	return w.conn.FlushWithContext(flushing)
 }
 
 // acknowledged waits for future's acknowledgement of a publish to topic, sent at sentAt, and names

@@ -436,9 +436,12 @@ func directServer(deps Deps) *server {
 // count, since the server's other timers on the same fake may be pending beside it.
 func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
 	t.Helper()
-	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, at.Equal)
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() (string, bool) {
+		now, armed := fake.Now(), fake.Armed()
+		if len(armed) == 0 {
+			return fmt.Sprintf("no timer armed, the fake at %s", now.Format(time.RFC3339Nano)), false
+		}
+		return fmt.Sprintf("%d timers armed, due at %v, the fake at %s", len(armed), armed, now.Format(time.RFC3339Nano)), slices.ContainsFunc(armed, at.Equal)
 	})
 }
 

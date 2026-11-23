@@ -320,7 +320,10 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// The holder's rest, read before and after the idle window and the other process's event.
 	rest := watchRest(outbox)
 	go func() { outbox.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(failOnce{t}, "the outbox's Run to return once its context ended", done)
+	})
 
 	testwait.Eventually(t, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
@@ -812,7 +815,10 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { standby.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(failOnce{t}, "the standby's Run to return once its context ended", done)
+	})
 	testwait.Eventually(t, "the standby resting after its first try and its LISTEN connection's catch-up", func() bool {
 		// restingAt is read first, so the takes it is compared with are never older than it.
 		rested := restingAt.Load()
