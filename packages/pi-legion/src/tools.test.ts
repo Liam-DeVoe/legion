@@ -343,11 +343,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
-    claim: {
-      type: "string",
-      description:
-        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does",
-    },
+    claim: { type: "string" },
   },
   required: ["op"],
   additionalProperties: false,
