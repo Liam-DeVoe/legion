@@ -6,9 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 var _ = registerRetirement(decisionsDocumentRetirement)
@@ -21,9 +18,9 @@ var _ = registerRetirement(decisionsDocumentRetirement)
 // writing the value, converted every decisions document into nodes and retired it, and kept these
 // for a build of the release before it, which writes the role, the step and the document.
 //
-// Its kinds are the relation kinds that release moved into the store: an ask's anchored_to,
-// owned_by and followed_by, and a decision block's from_ask and decided_by. A build that lists
-// them is that release or a later one, none of which writes `decisions`.
+// Its kinds are the relation kinds that release moved into the store (AsksKinds): an ask's
+// anchored_to, owned_by and followed_by, and a decision block's from_ask and decided_by. A build
+// that lists them is that release or a later one, none of which writes `decisions`.
 //
 // It deletes only where decisions_documents() answers no document, a document with no role whose
 // slug is a decisions document's counting as one, since the function itself counts it: a guard on
@@ -38,11 +35,8 @@ var _ = registerRetirement(decisionsDocumentRetirement)
 // holds `decisions`, or an artifact whose role is `decisions`, makes its check's narrowing fail,
 // and the whole transaction with it.
 var decisionsDocumentRetirement = Retirement{
-	Name: "the decisions document's kept objects",
-	Kinds: []string{
-		graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleFollowedBy,
-		refs.TupleFromAsk, graphstore.TupleDecidedBy,
-	},
+	Name:  "the decisions document's kept objects",
+	Kinds: AsksKinds,
 	Stands: func(ctx context.Context, q queryer) (bool, error) {
 		var stands bool
 		err := q.QueryRow(ctx, `select to_regprocedure('decisions_documents()') is not null`).Scan(&stands)

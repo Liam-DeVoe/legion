@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -154,6 +156,34 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // waits by LockTimeout.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
+}
+
+// MigrateThrough is Migrate over the embedded migrations numbered up to version alone: the set a
+// binary built when version was the newest migration carried. It brings a database to the schema
+// of an earlier release as that release's boot left it, for a test that writes rows as that
+// release wrote them and then migrates the database to this build's head (Migrate), as a deploy of
+// this build would.
+func (s *Store) MigrateThrough(ctx context.Context, version int) error {
+	return s.migrate(ctx, migrationsUpTo{FS: migrationFiles, version: version})
+}
+
+// migrationsUpTo is the embedded set less every file numbered past version (MigrateThrough).
+type migrationsUpTo struct {
+	fs.FS
+	version int
+}
+
+// ReadDir lists the files of name that are numbered up to the set's version.
+func (m migrationsUpTo) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(m.FS, name)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(entries, func(entry fs.DirEntry) bool {
+		digits, _, _ := strings.Cut(entry.Name(), "_")
+		number, err := strconv.Atoi(digits)
+		return err == nil && number > m.version
+	}), nil
 }
 
 // versionTable is the table this runner records each applied migration in.

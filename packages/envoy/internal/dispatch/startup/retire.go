@@ -10,6 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -27,22 +30,53 @@ import (
 // server_build_announcements row naming a commit other than the booting process's own lists every
 // relation kind of Kinds, since that row names the build a rollback reaches, or this boot created
 // the database from empty, so no earlier release holds rows a rollback could reach. The second is
-// the entry's own: Holds answers nothing.
+// the entry's own: once its Backfill has run, Holds answers nothing.
 type Retirement struct {
 	// Name names the objects in every line the step logs about them.
 	Name string
 	// Kinds are the relation kinds of the release that kept the objects: the kinds it moved into
-	// the store, which every build of it and after it announces (refs.TupleKinds).
+	// the store, which every build of it and after it announces (refs.TupleKinds). It is one of
+	// the lists below, one per release, so every entry of one release reads one guard.
 	Kinds []string
 	// Stands reports whether the objects still stand. An entry whose objects are gone does nothing
 	// more, so a boot after the one that deleted them reads one probe and changes nothing.
 	Stands func(ctx context.Context, q queryer) (bool, error)
+	// Backfill, where set, brings in what a build of an earlier release wrote that the objects
+	// still answer, before Holds is read: the backfill the release that kept them built, called as
+	// it was built, batches and commits included. It runs only where the announcement the first
+	// condition reads holds, never over a database this boot created from empty, which holds no
+	// row an earlier release wrote, and one that fails keeps the objects for the next boot.
+	Backfill func(ctx context.Context, database *store.Store) error
 	// Holds answers each thing that still needs the objects, named for the log, and nothing where
 	// they may go. It is read on the shared pool first, and again in the deleting transaction.
 	Holds func(ctx context.Context, q queryer) ([]Holder, error)
 	// Delete deletes the objects, in the order its statements need, in the step's transaction:
 	// one that fails rolls back whole and leaves every object standing.
 	Delete func(ctx context.Context, tx pgx.Tx) error
+}
+
+// AsksKinds are the relation kinds dispatch://INFRA-1150's release moved into the store, the
+// release that moved decisions, readings, asks and their answers: an ask's anchored_to, owned_by
+// and followed_by, and a decision block's from_ask and decided_by. Every build of that release and
+// after it announces them, and a build of a release before it announces none of followed_by,
+// from_ask and decided_by. Every entry that deletes what that release kept reads this one list.
+var AsksKinds = []string{
+	graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleFollowedBy,
+	refs.TupleFromAsk, graphstore.TupleDecidedBy,
+}
+
+// IssueTreeKinds are the relation kinds dispatch://INFRA-1253's release moved into the store, the
+// issue-room release that moved issues and their documents - an issue's child_of, needs,
+// duplicate_of and filed_from, a document's attached_to, and a component's depends_on and an
+// issue's affects - and the capability issue_room, which no relation kind spells and which only a
+// build of that release or a later one announces. A document's mentions, which that release
+// states out of the document's node too, is no member: dispatch://INFRA-1149's build announces it
+// already, for a block's mentions, so it tells no build of that release from one before it. Every
+// entry that deletes what that release kept reads this one list.
+var IssueTreeKinds = []string{
+	graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
+	refs.TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,
+	processes.CapabilityIssueRoom,
 }
 
 // Holder is one thing that still needs a retirement's objects, as the attributes of the line the
@@ -108,9 +142,10 @@ type rollbackAnnouncement struct {
 // Retire runs every retirement of retirements over pool, for a process serving commit, whose
 // boot created the database from empty where fromEmpty (store.Store.CreatedFromEmpty). It runs at
 // every boot, after the migrations and before the process serves, and it never stops the boot: a
-// retirement that does not delete, and one whose transaction fails, leaves every one of its
-// objects in place and logs why, naming the announcement whose kinds fell short or each thing
-// Holds answered, and the next boot tries again. A retirement whose objects are gone does nothing.
+// retirement that does not delete, and one whose backfill or transaction fails, leaves every one
+// of its objects in place and logs why, naming the announcement whose kinds fell short or each
+// thing Holds answered, and the next boot tries again. A retirement whose objects are gone does
+// nothing.
 func Retire(ctx context.Context, pool *store.Pool, commit string, fromEmpty bool, logger *slog.Logger, retirements []Retirement) {
 	if logger == nil {
 		logger = slog.Default()
@@ -128,7 +163,9 @@ func Retire(ctx context.Context, pool *store.Pool, commit string, fromEmpty bool
 	}
 }
 
-// retire runs one retirement (Retire).
+// retire runs one retirement (Retire): its guard, then its backfill, then what holds its objects,
+// and only where nothing does, its transaction. A retirement whose guard does not hold reads
+// nothing more, since the build a rollback reaches may still write what Holds would name.
 func retire(ctx context.Context, pool *store.Pool, commit string, fromEmpty bool, rollback *rollbackAnnouncement, logger *slog.Logger, retirement Retirement) {
 	stands, err := retirement.Stands(ctx, pool)
 	if err != nil {
@@ -139,17 +176,25 @@ func retire(ctx context.Context, pool *store.Pool, commit string, fromEmpty bool
 		return
 	}
 	from := fromAttrs(commit, fromEmpty, rollback)
-	allowed := fromEmpty
 	if !fromEmpty {
 		missing := missingKinds(rollback, retirement.Kinds)
-		allowed = rollback != nil && len(missing) == 0
 		switch {
 		case rollback == nil:
 			logger.Warn("dispatch: the boot's retirement kept its objects: no announcement names a build other than this one, so the build a rollback reaches is not known",
 				from...)
+			return
 		case len(missing) > 0:
 			logger.Warn("dispatch: the boot's retirement kept its objects: the build a rollback reaches does not list every relation kind of the release that kept them",
 				append(from, "missing", missing)...)
+			return
+		}
+	}
+	// A database this boot created from empty holds no row an earlier release wrote, so there is
+	// nothing for the backfill to bring in.
+	if retirement.Backfill != nil && !fromEmpty {
+		if err := retirement.Backfill(ctx, &store.Store{Pool: pool}); err != nil {
+			logger.Error("dispatch: the boot's retirement's backfill failed; its objects stay for the next boot", append(from, "error", err)...)
+			return
 		}
 	}
 	holders, err := retirement.Holds(ctx, pool)
@@ -158,7 +203,7 @@ func retire(ctx context.Context, pool *store.Pool, commit string, fromEmpty bool
 		return
 	}
 	logHolders(ctx, logger, holders)
-	if !allowed || len(holders) > 0 {
+	if len(holders) > 0 {
 		return
 	}
 	deleted, holders, err := retireInTx(ctx, pool, retirement)

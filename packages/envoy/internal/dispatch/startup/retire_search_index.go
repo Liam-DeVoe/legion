@@ -6,8 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -35,11 +33,12 @@ import (
 // document's windows under its room, and its deletion of store.FillDocumentSearch and its call
 // are in this build. It is exported so a test drives it through Retire meanwhile.
 //
-// Its kinds are the issue-room release's list: the relation kinds that release moved into the
-// store - an issue's child_of, needs, duplicate_of and filed_from, a document's attached_to, and a
-// component's depends_on and an issue's affects - and the capability issue_room, which no relation
-// kind spells and which only a build of that release or a later one announces. A build that lists
-// them reads node_search and the windows whose owner is current, and never these objects.
+// Its kinds are the issue-room release's list (IssueTreeKinds): the relation kinds that release
+// moved into the store - an issue's child_of, needs, duplicate_of and filed_from, a document's
+// attached_to, and a component's depends_on and an issue's affects - and the capability
+// issue_room, which no relation kind spells and which only a build of that release or a later one
+// announces. A build that lists them reads node_search and the windows whose owner is current,
+// and never these objects.
 //
 // Nothing else holds the objects: the one build that reads them is of a release before that one,
 // which the first guard keeps out.
@@ -59,12 +58,8 @@ import (
 // converted document's own artifact id: a window of a document that is still its own room, or of
 // an issue room, is the current owner's, which meaning search reads, and stays.
 var SearchIndexRetirement = Retirement{
-	Name: "the old search index and its old windows",
-	Kinds: []string{
-		graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
-		refs.TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,
-		processes.CapabilityIssueRoom,
-	},
+	Name:  "the old search index and its old windows",
+	Kinds: IssueTreeKinds,
 	Stands: func(ctx context.Context, q queryer) (bool, error) {
 		var stands bool
 		err := q.QueryRow(ctx, `
