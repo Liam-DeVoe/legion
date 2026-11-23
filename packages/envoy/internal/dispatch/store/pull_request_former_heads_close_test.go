@@ -163,3 +163,65 @@ func TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSid
 		}
 	}
 }
+
+// TestAnUndatedCloseAtTheInstallKeepsOutEveryResultRecordedBeforeTheInstall: the schedule of
+// TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall with
+// both results recorded before the install, where #70's row is written closed with no date: no
+// time Dispatch holds says whether the result at 4444… came after the close. The install takes
+// such a result as one from before the close, the conservative side, so after the reopen neither
+// result is a candidate, while a result recorded after the install, at a place after the close,
+// still is. The neighbour dates the close as every writer dates a row, and the closed-period
+// result counts.
+func TestAnUndatedCloseAtTheInstallKeepsOutEveryResultRecordedBeforeTheInstall(t *testing.T) {
+	ctx := context.Background()
+	const afterInstallH6 = "6666666666666666666666666666666666666666"
+	for _, row := range []struct {
+		name                string
+		dated, afterInstall bool
+		want                []string
+	}{
+		{name: "the close is undated", want: []string{"acme/widgets#70@3333"}},
+		{name: "the close is undated and a result is recorded after the install", afterInstall: true,
+			want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
+		{name: "the close is dated", dated: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			store := openEmptyTestStore(t)
+			documents := installFixture(t, store)
+			exec := func(what, sql string, args ...any) {
+				t.Helper()
+				if _, err := store.Pool.Exec(ctx, sql, args...); err != nil {
+					t.Fatalf("%s: %v", what, err)
+				}
+			}
+			exec("write #70 at 4444…", `update pull_request_heads set head_sha = $1 where number = 70`, closedPeriodH4)
+			exec("record a result at 1111… while #70 is open", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], installH1)
+			closing := `update pull_request_heads set state = 'closed' where number = 70`
+			if row.dated {
+				closing = `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`
+			}
+			exec("close #70 at 4444…", closing)
+			var dated bool
+			if err := store.Pool.QueryRow(ctx, `select event_at is not null from pull_request_heads where number = 70 and state = 'closed'`).Scan(&dated); err != nil {
+				t.Fatalf("read #70's closed row: %v", err)
+			}
+			if dated != row.dated {
+				t.Fatalf("#70's closed row is dated %v, want %v: this test holds no such close", dated, row.dated)
+			}
+			exec("record a result at 4444… while #70 is closed", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], closedPeriodH4)
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			if row.afterInstall {
+				exec("record a result at 6666… while #70 is closed, after the install", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], afterInstallH6)
+			}
+			exec("reopen #70 at 3333…", `update pull_request_heads set state = 'open', head_sha = $1 where number = 70`, installH3)
+			exec("move #70 on to 7777…", `update pull_request_heads set head_sha = $1 where number = 70`, reopenedH7)
+			drainCandidates(t, store, "CORE-1")
+			heads, _ := formerHeadsAndOwed(t, store)
+			if !slices.Equal(heads, row.want) {
+				t.Fatalf("after the reopen #70 holds the former heads %v, want %v: a result whose order against an undated close no time shows is taken as before it, and one after the install is after it", heads, row.want)
+			}
+		})
+	}
+}

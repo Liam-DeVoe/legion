@@ -936,12 +936,22 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 -- time GitHub dated the closed row's last write (pull_request_heads.event_at: the pull request's
 -- updated_at, which the event or the read that wrote the row named; a write that found the pull
 -- request closed carries a time no earlier than its close, and an older write leaves the row as it
--- is), a result first where the two are equal. A row no write dated, which no writer of this
--- release or the one before stores, goes after every result, since nothing shows when it closed.
--- A write that found the pull request closed later than its close, as a read once GitHub updated
--- it again, dates the close by that read: the row holds no earlier time of it. Each place is
--- drawn from pull_request_former_heads_order in that order, before any place a record after the
--- install draws. The close is one record of a row written closed for each pull request, its
+-- is), a result first where the two are equal. event_at has been in pull_request_heads since its
+-- first migration (20261102122300), nullable, with no default and no backfill, and every writer
+-- of every release since dates each write from the pull request's updated_at, which GitHub sends
+-- with every pull request, in a webhook and in a read (delivery.UpsertPullRequestHead's callers);
+-- a write GitHub sent no valid updated_at with stores no time and leaves an earlier one. So a row
+-- no write dated is one GitHub sent no time for, and nothing shows when it closed: it goes after
+-- every result, the conservative side, since a result taken from the lifecycle its close ended
+-- can carry a pass from before the close across a reopen, which the close forbids, while a result
+-- of the closed period left out leaves its commit with no state, which a testing move waits on and
+-- does not misjudge; a result recorded after the install is placed after it all the same. A close
+-- written with no time where an earlier write dated the row keeps that earlier time, which places
+-- the close too early; it too needs a pull request GitHub sent with no updated_at. A write that
+-- found the pull request closed later than its close, as a read once GitHub updated it again,
+-- dates the close by that read: the row holds no earlier time of it. Each place is drawn from
+-- pull_request_former_heads_order in that order, before any place a record after the install
+-- draws. The close is one record of a row written closed for each pull request, its
 -- latest-dated row's, which the settler applies as any other (pull_request_former_heads_apply):
 -- it ends the lifecycle at its place, so a result placed after it is of the next lifecycle and
 -- one placed before it is not (pull_request_former_heads_leave), whichever side of the install it
