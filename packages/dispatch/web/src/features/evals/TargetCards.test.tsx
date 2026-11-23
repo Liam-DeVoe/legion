@@ -101,6 +101,7 @@ function evalItem(
 function answerOf(items: EvalListItem[]): EvalListResponse {
   return {
     compare: COMPARE,
+    delivery_freshness: null,
     freshness: { refresher_age_seconds: null, rows_updated_at: null },
     items,
     limit: 200,

@@ -245,6 +245,7 @@ const PIPELINE_FIELDS: Readonly<Record<PipelineField, true>> = {
  *  check until it is named here. */
 const EVALS_FIELDS: Readonly<Record<EvalsField, true>> = {
   compare: true,
+  delivery_freshness: true,
   items: true,
   limit: true,
   offset: true,

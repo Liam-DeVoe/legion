@@ -102,6 +102,7 @@ export function evalsAnswer(
 ): EvalListResponse {
   return {
     compare,
+    delivery_freshness: null,
     freshness: { refresher_age_seconds: null, rows_updated_at: null },
     items,
     limit: 200,

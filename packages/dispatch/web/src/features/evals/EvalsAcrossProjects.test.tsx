@@ -64,6 +64,7 @@ const ITEMS = [
 function answer(items: EvalListItem[], total = items.length, offset = 0): EvalListResponse {
   return {
     compare: COMPARE,
+    delivery_freshness: null,
     freshness: { refresher_age_seconds: null, rows_updated_at: null },
     items,
     limit: 200,
