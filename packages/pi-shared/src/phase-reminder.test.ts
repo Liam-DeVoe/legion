@@ -571,6 +571,70 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
   }
 });
 
+/** An issue record of only the fields the record check reads, cast as `claimFailed` is: no
+ * worker's claim is failed in it. */
+const issueAt = (fields: { phase: string; stepRole?: string; placeRole?: string }) =>
+  ({ ...fields, workers: {} }) as unknown as LegionIssue;
+
+const noLongerWorks = "legion: this role no longer works this phase; no reminder is sent";
+
+/** Whether a worker whose claim is on `role` is reminded at a settle while its issue's record is
+ * `record`, the record check's answer; a reminder it drops is logged as the one line that says the
+ * role no longer works the place. */
+async function remindedAt(role: string, record: LegionIssue): Promise<boolean> {
+  const debugged: string[] = [];
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => ({ ...implementer, role, claimToken: `legion-legion-legion-208-${role}` }),
+    readRecord: async () => record,
+    publisher: () => undefined,
+    project: "legion",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: (message) => debugged.push(message), warn: () => {} },
+  });
+  reminder.apply({ kind: "assignment" });
+  const continuation = await reminder.settle(said("Working."));
+  const reminded = continuation !== undefined;
+  expect(debugged).toEqual(reminded ? [] : [noLongerWorks]);
+  return reminded;
+}
+
+// Contract 227: the issue's `placeRole` names the claim that works its place, which neither the
+// phase nor `stepRole` names where a fresh agent of acceptance accepts, a role of the deployment
+// does the retro, or the owner does a step of a role. The record check reminds that claim alone.
+test("the fresh agent of acceptance is reminded at accepting, where placeRole names it", async () => {
+  const accepting = issueAt({ phase: "accepting", placeRole: "acceptance" });
+  expect(await remindedAt("acceptance", accepting)).toBe(true);
+});
+
+test("the role placeRole names at retro is reminded there, and the implementer is not", async () => {
+  // A retro whose agent is a coder, a role of the deployment, and not the implementer: the coder
+  // is reminded, then the implementer is not.
+  const coderRetro = issueAt({ phase: "retro", placeRole: "coder" });
+  const reminded = [
+    await remindedAt("coder", coderRetro),
+    await remindedAt("implementer", coderRetro),
+  ];
+  expect(reminded).toEqual([true, false]);
+});
+
+test("a claim of the step's role is not reminded at a step placeRole gives the owner", async () => {
+  // A step `checker:owner`, which the owner does: the checker of an earlier step is not reminded.
+  const ownerStep = issueAt({ phase: "step", stepRole: "checker", placeRole: "architect" });
+  expect(await remindedAt("checker", ownerStep)).toBe(false);
+});
+
+// A daemon below contract 227 serves no `placeRole`: the record check reads the phase, and
+// `stepRole` at `step`, as it did before that contract.
+test("an issue with no placeRole is read by its phase, and by its stepRole at step", async () => {
+  expect(await remindedAt("acceptance", issueAt({ phase: "accepting" }))).toBe(false);
+  expect(await remindedAt("implementer", issueAt({ phase: "retro" }))).toBe(true);
+  expect(await remindedAt("coder", issueAt({ phase: "retro" }))).toBe(false);
+  expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "checker" }))).toBe(true);
+});
+
 // The wait a `ready_for_update` answer creates is `awaiting-update`, and nothing is armed in it:
 // the daemon is what wakes the worker, with the task it held behind the round, once the round
 // has replaced the pod. A timer fired in that wait would steer a real turn into the worker

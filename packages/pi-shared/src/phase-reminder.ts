@@ -283,7 +283,8 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: true };
     }
-    const works = record.phase === "step" ? record.stepRole : roleForPhase(record.phase);
+    const works =
+      record.placeRole ?? (record.phase === "step" ? record.stepRole : roleForPhase(record.phase));
     if (works !== claim.role) {
       deps.log.debug("legion: this role no longer works this phase; no reminder is sent", {
         issue: claim.issue,
