@@ -1086,6 +1086,14 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	return nil
 }
 
+func (s *Postgres) DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error {
+	noteIssueWrite(ctx, issue)
+	if _, err := tx.Exec(ctx, `delete from pull_requests where issue = $1 and branch = $2`, issue, branch); err != nil {
+		return fmt.Errorf("delete the pull request of %s on %s: %w", issue, branch, err)
+	}
+	return nil
+}
+
 func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error) {
 	var claims bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where tree = $1 and session = $2 and session <> '')", tree, session).Scan(&claims); err != nil {

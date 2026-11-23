@@ -4637,8 +4637,9 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 	return err
 }
 
-// closeTaskPullRequests closes each pull request the row names, of the other tasks of the row's
-// issue, as branchClient makes each write of a branch (the implement App), within branchRowTimeout:
+// closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (the
+// other tasks' at the merge, a removed task's at the version that removed it), as branchClient
+// makes each write of a branch (the implement App), within branchRowTimeout:
 // the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
 // request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
 // short and that runs again on its backoff, closes only those still open. A row of a generation the
@@ -4662,10 +4663,11 @@ func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow
 	for _, number := range payload.Numbers {
 		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
 		if err != nil {
-			return fmt.Errorf("close the pull request #%d of another task of %s: %w", number, issue.Key, err)
+			return fmt.Errorf("close the pull request #%d of a task of %s: %w", number, issue.Key, err)
 		}
 		if closed {
-			r.log.Info("outbox closed the pull request of another task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number)
+			r.log.Info("outbox closed the pull request of a task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number,
+				"comment", payload.Comment)
 		}
 	}
 	return nil
