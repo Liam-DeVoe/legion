@@ -363,7 +363,7 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 		built = append(built, issue+"/"+string(role))
 		return credential(ctx, issue, role, repo)
 	}
-	bundles := NewBundles(counting, apps)
+	bundles := NewBundles(counting, nil, apps)
 	for _, ask := range []struct {
 		issue string
 		role  claim.Role
@@ -378,7 +378,7 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 		{"LEGION-45", "checker", "implement"},
 		{"LEGION-46", "checker", "review"},
 	} {
-		bundle, err := bundles.Bundle(context.Background(), ask.issue, ask.role, repo)
+		bundle, err := bundles.Bundle(context.Background(), ask.issue, ask.role, repo, "")
 		if err != nil {
 			t.Fatalf("the bundle of %s on %s: %v", ask.role, ask.issue, err)
 		}
@@ -402,7 +402,7 @@ func TestOneAskOfARoleOfAPlanReadsThePlanOnce(t *testing.T) {
 	}}
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
 		apps, quietBundleLog())
-	bundle, err := NewBundles(credential, apps).Bundle(context.Background(), "LEGION-43", "coder", ghrepo.MustParse("sjawhar/legion"))
+	bundle, err := NewBundles(credential, nil, apps).Bundle(context.Background(), "LEGION-43", "coder", ghrepo.MustParse("sjawhar/legion"), "")
 	if err != nil {
 		t.Fatalf("the bundle of coder on LEGION-43: %v", err)
 	}
@@ -426,9 +426,9 @@ func TestABundleIsHeldUnderTheAppItsAskRead(t *testing.T) {
 			"sjawhar": ghconfig.Render("ghs_review", string(Review), time.Now().Add(time.Hour)),
 		}}, nil
 	}
-	bundles := NewBundles(credential, RoleApps{})
+	bundles := NewBundles(credential, nil, RoleApps{})
 	for range 2 {
-		if _, err := bundles.Bundle(context.Background(), "LEGION-43", claim.RoleTester, ghrepo.MustParse("sjawhar/legion")); err != nil {
+		if _, err := bundles.Bundle(context.Background(), "LEGION-43", claim.RoleTester, ghrepo.MustParse("sjawhar/legion"), ""); err != nil {
 			t.Fatalf("the bundle of the tester: %v", err)
 		}
 	}
@@ -437,6 +437,43 @@ func TestABundleIsHeldUnderTheAppItsAskRead(t *testing.T) {
 	}
 	if keys, want := slices.Collect(maps.Keys(bundles.built)), []bundleKey{{app: Review, repo: "sjawhar/legion"}}; !slices.Equal(keys, want) {
 		t.Errorf("the walk holds its bundles under %v, want %v", keys, want)
+	}
+}
+
+// A claim's gh bundle comes from one function (ClaimBundle): the controller's is asked for by
+// owner, with the default its caller names, and every other role's is built for its repository
+// on the claim's issue. A walk's memo answers through the same function, and holds nothing of
+// the controller's, whose every ask is the controller function's own.
+func TestAClaimsBundleIsTheControllersByOwnerAndEveryOtherRolesByRepository(t *testing.T) {
+	var asked []string
+	controller := func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
+		asked = append(asked, "controller for "+defaultOwner)
+		return ghconfig.Bundle{Default: defaultOwner}, nil
+	}
+	credential := func(_ context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		asked = append(asked, string(role)+" of "+issue+" for "+repo.String())
+		return ghconfig.Bundle{Default: repo.Owner()}, nil
+	}
+	repo := ghrepo.MustParse("sjawhar/legion")
+	ctx := context.Background()
+	if _, err := ClaimBundle(ctx, credential, controller, "", claim.RoleController, ghrepo.Repository{}, "acme"); err != nil {
+		t.Fatalf("the controller's bundle: %v", err)
+	}
+	if _, err := ClaimBundle(ctx, credential, controller, "LEGION-43", claim.RoleTester, repo, "acme"); err != nil {
+		t.Fatalf("the tester's bundle: %v", err)
+	}
+	bundles := NewBundles(credential, controller, RoleApps{})
+	for range 2 {
+		if _, err := bundles.Bundle(ctx, "", claim.RoleController, ghrepo.Repository{}, "acme"); err != nil {
+			t.Fatalf("the walk's controller bundle: %v", err)
+		}
+	}
+	want := []string{"controller for acme", "tester of LEGION-43 for sjawhar/legion", "controller for acme", "controller for acme"}
+	if !slices.Equal(asked, want) {
+		t.Errorf("the asks reached %q, want %q", asked, want)
+	}
+	if len(bundles.built) != 0 {
+		t.Errorf("the walk holds %d bundles of the controller's, want none", len(bundles.built))
 	}
 }
 
@@ -470,7 +507,7 @@ func TestAPlanVersionTakenDuringABuildLeavesTheAppItsAskRead(t *testing.T) {
 		built = append(built, issue+"/"+string(role))
 		return credential(ctx, issue, role, repo)
 	}
-	bundles := NewBundles(commitThenBuild, apps)
+	bundles := NewBundles(commitThenBuild, nil, apps)
 	for _, ask := range []struct {
 		issue string
 		app   string
@@ -479,7 +516,7 @@ func TestAPlanVersionTakenDuringABuildLeavesTheAppItsAskRead(t *testing.T) {
 		{"LEGION-47", "review"},
 		{"LEGION-43", "implement"},
 	} {
-		bundle, err := bundles.Bundle(context.Background(), ask.issue, "coder", repo)
+		bundle, err := bundles.Bundle(context.Background(), ask.issue, "coder", repo, "")
 		if err != nil {
 			t.Fatalf("the bundle of coder on %s: %v", ask.issue, err)
 		}

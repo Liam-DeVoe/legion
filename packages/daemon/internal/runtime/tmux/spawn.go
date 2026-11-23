@@ -728,7 +728,8 @@ type launchGitHubCredential struct {
 // its default the first owner (runtime.GitHubCredential).
 //
 // It writes nothing: a mint is a network call, made before the launch lock, and the claim's
-// directories are written only after the refusal (writeGitHubCredential).
+// directories are written only after the refusal (writeGitHubCredential). It is one claim's one
+// ask, so it builds no walk's memo (appauth.ClaimBundle).
 func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
@@ -743,7 +744,7 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	}
 	var bundle ghconfig.Bundle
 	if err == nil {
-		bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.roleApps), spec.Issue, role, spec.Repository, "")
+		bundle, err = appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, spec.Issue, role, spec.Repository, "")
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

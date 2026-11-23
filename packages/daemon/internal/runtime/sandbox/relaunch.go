@@ -1328,7 +1328,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		holders = map[slotKey]slotHolder{}
 	}
 	holders[slotKey{sandbox: l.name, slot: slotOf(l.spec.Claim)}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
-	memo := appauth.NewBundles(r.gitHubCredential, r.roleApps)
+	memo := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for i, slot := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -1343,7 +1343,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			}
 		}
 		if err == nil {
-			bundle, err = r.roleBundle(minting, memo, l.spec.Issue, holds, l.spec.Repository, "")
+			bundle, err = memo.Bundle(minting, l.spec.Issue, holds, l.spec.Repository, "")
 		}
 		role := slot
 		cancel()
