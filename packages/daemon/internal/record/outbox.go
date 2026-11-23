@@ -1095,7 +1095,9 @@ func NoticePerClaim(kind NoticeKind) bool {
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
 // child issue's close as done, which ends the claim as a tree close does and keeps its session, so
 // the issue's next run, should a person set it todo again, resumes each claim's session rather
-// than starting fresh (supervise's RequestIssueClose); "pause_stop" is a project pause's stop of
+// than starting fresh (supervise's RequestIssueClose), but where a start of that run is of another
+// agent than the one whose session the claim holds, which starts in a session of its own
+// (supervise.Claim.SessionAgent); "pause_stop" is a project pause's stop of
 // one live claim (store's Pause), which stops its process and keeps its session, phase and task as
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
 // and does nothing once that pause has ended.

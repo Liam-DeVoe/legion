@@ -2809,8 +2809,9 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
-// apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
-// both (plan.Supported), and work queued for either reads the same here: the entry the work is of
+// apart. At step the role names the step. A role can stand at two steps of a task, of one agent or
+// of two, a second agent of the role taking a name of its own (plan.Supported), and work queued for
+// either reads the same here: the entry the work is of
 // and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
 // now and its entry, StartLeft) and the claim's given entry compare beside this. Away
 // from step the phase alone is compared: one role works several phases (the implementer
