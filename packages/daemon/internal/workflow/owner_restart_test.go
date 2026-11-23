@@ -135,7 +135,7 @@ func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(
 	var logged bytes.Buffer
 	engine.log = slog.New(slog.NewTextHandler(&logged, nil))
 	child := ownerAtItsStep(t, pool, engine)
-	const spentLine = "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry"
+	const spentLine = "workflow: a failed owner's restarts at its step are spent, and it waits for the operator's retry or the controller's fresh_session"
 
 	started := 0
 	for n := 1; n <= OwnerRestarts+2; n++ {

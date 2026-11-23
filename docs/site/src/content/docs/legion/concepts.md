@@ -711,8 +711,9 @@ again when it runs again. The daemon starts the child's architect again, with fr
 child's next phase start. Where the child stands at a step its architect does itself, other than an
 acceptance, or at a retro its architect does, no phase start follows until that architect reports
 it, so the daemon starts it again at once, at most three times in that step's run; after that
-`legion state` names it under `retry` among the claims nothing will wake, and an operator's retry
-relaunches it and tells it the step again.
+`legion state` names it under `retry` among the claims nothing will wake, and the controller is
+told. The operator's retry or the controller's `fresh_session` relaunches it and tells it the step
+again.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word

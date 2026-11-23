@@ -81,7 +81,7 @@ func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record
 		if err != nil {
 			return "", false, err
 		}
-		e.warnOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry",
+		e.warnOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent, and it waits for the operator's retry or the controller's fresh_session",
 			"issue", issue.Key, "claim", owner, "task", step.place.Task, "kind", step.place.Kind, "place", step.place.Place, "restarts", OwnerRestarts)
 		return fmt.Sprintf("%s's own architect failed at %s, which only it reports, and the daemon has started it again %d times at this step: "+
 			"it stays failed, and the stranded list names it, until the operator's retry (legion claims retry %s) or the controller's fresh_session starts it again; "+
