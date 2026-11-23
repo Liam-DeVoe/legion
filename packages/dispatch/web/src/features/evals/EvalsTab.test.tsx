@@ -143,8 +143,9 @@ afterEach(() => {
   for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
-/** A row of this file, its page unmounted inside its body rather than in `afterEach`, so no
- *  timer of the live socket fires between the two (DeliveryPage.test.tsx gives the reason). */
+/** A row of this file, its page unmounted inside its body rather than in `afterEach`: the tab's
+ *  timers are real ones, and Bun gives the event loop a turn between a row's body and its
+ *  `afterEach`, where a timer due then would set state with no act scope open. */
 const test = (name: string, body: () => Promise<void>): void =>
   bunTest(name, async () => {
     try {

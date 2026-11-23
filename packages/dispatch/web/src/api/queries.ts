@@ -19,9 +19,6 @@ import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
   DeliveryLiveWindow,
-  DeliveryMeasuresResponse,
-  DeliveryPipelineResponse,
-  DeliveryTimelineWithMeasures,
   EvalItemsResponse,
   EvalListResponse,
   InboxRow,
@@ -475,12 +472,12 @@ export const priorityHistoryQuery = (id: string) =>
     queryFn: () => api.getPriorityHistory(id),
   });
 
-/** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
- *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
- *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's
- *  refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription with the
- *  last observer; the page keeps the previous answer on screen while a new view's snapshot is out,
- *  as a filter change in the prototype it ports never blanks it. */
+/** What every live-owned query of the Evals tab shares (LEGION-690): its first load subscribes
+ *  its view over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and
+ *  every later change into the cache, so nothing here reads again. `meta.live` keeps the event
+ *  feed's refresh paths away from it (`api/query-refresh.ts`); `gcTime` 0 drops the subscription
+ *  with the last observer; the page keeps the previous answer on screen while a new view's
+ *  snapshot is out, as a filter change in the prototype it ports never blanks it. */
 const LIVE = {
   gcTime: 0,
   meta: { live: true },
@@ -489,19 +486,16 @@ const LIVE = {
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
 
-/** The body each delivery view's kind is answered with: the GET route's it mirrors. */
+/** The body each live view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineWithMeasures;
-  readonly measures: DeliveryMeasuresResponse;
-  readonly pipeline: DeliveryPipelineResponse;
   readonly evals: EvalListResponse;
   readonly items: EvalItemsResponse;
   readonly "project-timeline": ProjectTimelineResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  the pages subscribe - timeline, measures, pipeline, evals, items and project-timeline - are
- *  keyed here; the socket serves other kinds no page reads. */
+ *  the Evals tab subscribes - evals, items and project-timeline - are keyed here; the socket
+ *  serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -513,34 +507,6 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
   >;
 }
 
-/** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
- *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */
-export const deliveryTimelineQuery = (view: DeliveryLiveView & { kind: "timeline" }) =>
-  queryOptions({
-    ...LIVE,
-    placeholderData: keepPreviousData,
-    queryKey: ["delivery", "timeline", view],
-    queryFn: (context) => subscribeLive(context, view),
-  });
-
-/** The measures panel's own read for a brushed window, live, under `["delivery"]` beside the
- *  timeline and by the same search and facets. */
-export const deliveryMeasuresQuery = (view: DeliveryLiveView & { kind: "measures" }) =>
-  queryOptions({
-    ...LIVE,
-    placeholderData: keepPreviousData,
-    queryKey: ["delivery", "measures", view],
-    queryFn: (context) => subscribeLive(context, view),
-  });
-
-/** One deploy-repository run with every job it ran, read by GET. A live delta that changes the
- *  run invalidates this key, so an open drill-down reads it again. */
-export const deliveryRunQuery = (id: number) =>
-  queryOptions({
-    queryKey: ["delivery", "run", id],
-    queryFn: () => api.getDeliveryRun(id),
-  });
-
 /** One run of a project's deploy source with every job it ran and its record (deploy row and
  *  failures), read by GET from the repository its timeline row names (dispatch://INFRA-2918,
  *  D14). A project-timeline delta that changes the run's row invalidates this key, so an open
@@ -549,14 +515,6 @@ export const projectDeployRunQuery = (project: string, repo: string, id: number)
   queryOptions({
     queryKey: ["project-deploy-run", project, repo, id],
     queryFn: () => api.getProjectDeployRun(project, id, repo),
-  });
-
-/** The Pipeline page, live, by `at` so a pinned day is its own subscription. */
-export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline" }) =>
-  queryOptions({
-    ...LIVE,
-    queryKey: ["delivery", "pipeline", view],
-    queryFn: (context) => subscribeLive(context, view),
   });
 
 /** The kinds of eval, each read by a view of its own on the Evals tab. */

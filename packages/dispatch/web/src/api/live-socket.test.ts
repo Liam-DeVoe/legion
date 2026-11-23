@@ -656,41 +656,6 @@ test("state is open with the last change time, reconnecting since <t>, or closed
   expect(live.state().state).toBe("closed");
 });
 
-test("for each run a delta upserts, an open drill-down's run is read again", async () => {
-  const { unsubscribe } = observe();
-  let runReads = 0;
-  const run = new QueryObserver(queryClient, {
-    queryKey: ["delivery", "run", 42],
-    queryFn: async () => {
-      runReads += 1;
-      return { id: 42, url: "", jobs: [] };
-    },
-  });
-  const stopRun = run.subscribe(() => {});
-  try {
-    const { socket, sub } = await opened();
-    socket.receive(snapshot(sub));
-    await settle();
-    expect(runReads).toBe(1);
-
-    // A delta that changes no run reads nothing; one that upserts run 42 reads its drill-down.
-    socket.receive(merged(sub));
-    await settle();
-    expect(runReads).toBe(1);
-    socket.receive({
-      ...merged(sub, "42"),
-      items: { runs: { upsert: [{ id: 42 } as never], remove: [] } },
-      counts: {},
-      revs: { items: { runs: { "42": "cccccccccccccccc" } } },
-    });
-    await settle();
-    expect(runReads).toBe(2);
-  } finally {
-    stopRun();
-    unsubscribe();
-  }
-});
-
 test("for each run row a project-timeline delta upserts, an open drill-down's run is read again", async () => {
   const timeline: DeliveryLiveView = {
     kind: "project-timeline",

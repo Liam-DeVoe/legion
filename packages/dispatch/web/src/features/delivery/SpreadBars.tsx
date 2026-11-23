@@ -34,8 +34,8 @@ const MEDIAN: Judge = "minutes.median";
 const P90: Judge = "minutes.p90";
 
 /** The statistics a judged chart's bars draw, a day's value of each: a lead time's median and its
- *  p90. A lead-time card's caption names its dashed line where `targetLine` draws one over them. */
-export const SPREAD_STATISTICS: readonly Judge[] = [MEDIAN, P90];
+ *  p90, over which `targetLine` draws the dashed line. */
+const SPREAD_STATISTICS: readonly Judge[] = [MEDIAN, P90];
 
 interface Props {
   days: readonly SpreadBarDay[];

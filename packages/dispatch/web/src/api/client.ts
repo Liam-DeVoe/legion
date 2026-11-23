@@ -357,8 +357,8 @@ export function isCredentialFeatureOff(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "FEATURE_OFF";
 }
 
-// The delivery timeline answers this 404 until someone sets its configuration: definitive like the
-// two above, since retrying changes nothing until the settings form is saved.
+// The merge timeline's live view answers this 404 while no project has delivery on: definitive
+// like the two above, since retrying changes nothing until a project's delivery settings are saved.
 export function isDeliveryNotConfigured(error: unknown): boolean {
   return (
     error instanceof ApiError && error.status === 404 && error.code === "DELIVERY_NOT_CONFIGURED"
@@ -1737,11 +1737,6 @@ export class DispatchApiClient {
    *  comment or message - and `id` its id. A source whose text belongs to no document is 404. */
   getReferenceQuestions(kind: ReferenceSourceKind, id: string) {
     return this.read("/api/v1/references/questions", {}, { id, kind });
-  }
-
-  /** One deploy-repository run with every job it ran, for the drill-down's job lists. */
-  getDeliveryRun(id: number) {
-    return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
   /** One run of a project's deploy source with every job it ran, and its record: the deploy row

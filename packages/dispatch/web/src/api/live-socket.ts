@@ -361,11 +361,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     sub.seq = frame.seq;
     sub.revs = applyRevs(sub.revs, frame.revs);
     noteChange(frame.seq, frame.changed_at);
-    // A run that changed may be one whose drill-down is open; only an open one reads again.
-    for (const run of frame.items.runs?.upsert ?? []) {
-      void queryClient.invalidateQueries({ exact: true, queryKey: ["delivery", "run", run.id] });
-    }
-    // So may a project-timeline run row (`projectDeployRunQuery`'s key, by the row's repository).
+    // A project-timeline run row that changed may be one whose drill-down is open
+    // (`projectDeployRunQuery`'s key, by the row's repository); only an open one reads again.
     const { view } = sub;
     if (view.kind !== "project-timeline") return;
     for (const row of frame.items.items?.upsert ?? []) {
