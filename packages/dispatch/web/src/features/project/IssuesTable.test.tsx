@@ -2475,11 +2475,12 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
 });
 
 // A column filter goes with the table it heads when its press sends the List off to read its
-// issues: the focus in its list, a panel of its own, goes to the toolbar's search box. The pick is
-// the pointer's, whose option keeps the focus in the list's text box, and the List stands in the
-// shell's main content with the page's focus rescue mounted: the press inside the list's panel is
-// the reader's own, so the List's hand-off answers it rather than the rescue sending the focus out
-// of the main content, to the shell's navigation.
+// issues. The pick is the pointer's, whose option keeps the focus in the list's text box, and the
+// List stands in the shell's main content with the page's focus rescue mounted: the press inside
+// the list's panel is the reader's own, so the rescue answers it inside the main content, from
+// the place the panel was opened from. Its walk back passes over the search box, which takes
+// typed text, to the toolbar's Clear filters, and never sends the focus out of the main content
+// to the shell's navigation.
 test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
   const user = userEvent.setup();
   // Opened on Done and Todo, whose listing answers. Unticking Done goes back to the open issues,
@@ -2497,12 +2498,13 @@ test("a column filter press that sends the List off to read its issues leaves th
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
   await afterRescue();
   // Not the page's body, from which a keyboard reader would start again at its first link, nor
-  // that link itself, outside the main content.
-  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  // that link itself, outside the main content, nor the search box.
+  const clear = screen.getByRole("button", { name: "Clear filters" });
+  expect(clear).toHaveFocus();
   expect(screen.getByRole("link", { name: "Inbox" })).not.toHaveFocus();
   open.resolve([issue("CORE-1")]);
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
-  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  expect(clear).toHaveFocus();
 });
 
 // A row's own Start next is held (`aria-disabled`, `heldPress`) from its press until the list
@@ -2713,13 +2715,14 @@ test("offline, Take out of epic whose list read never settles hands the focus to
   }
 });
 
-// A notice's button that takes the notice away hands the focus on, never to the page's body
-// (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
-// before it, else the toolbar's search box.
+// A notice's button that takes the notice away hands the focus on, never to the page's body: to
+// the control now at its place among the List's notices, else the one before it, else, by the
+// page's rescue, to the toolbar's nearest control before the notices that takes no typed text,
+// the View menu, and never into the search box.
 test.each([
   "Finish",
   "Dismiss",
-])("the interrupted action's %s hands its focus to the search box", async (press) => {
+])("the interrupted action's %s hands its focus to the toolbar's View menu, not the search box", async (press) => {
   const user = userEvent.setup();
   localStorage.setItem(
     "dispatch.project-table.CORE",
@@ -2735,20 +2738,21 @@ test.each([
   );
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
   restores.push(() => send.mockRestore());
-  table([issue("CORE-1")]);
+  table([issue("CORE-1")], "", { rescued: true });
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   within(recovery).getByRole("button", { name: press }).focus();
   await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(screen.queryByRole("region", { name: "Interrupted table action" })).toBeNull()
   );
-  expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  await afterRescue();
+  expect(screen.getByRole("button", { name: /^View/ })).toHaveFocus();
 });
 
 test.each([
   "Create anyway",
   "Cancel new epic",
-])("the possible duplicate's %s hands its focus to the search box", async (press) => {
+])("the possible duplicate's %s hands its focus to the toolbar's View menu, not the search box", async (press) => {
   const user = userEvent.setup();
   const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
     if (!input.force)
@@ -2760,7 +2764,7 @@ test.each([
   });
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
   const named = nameTheEpic(user, "Existing epic");
-  table([issue("CORE-1")]);
+  table([issue("CORE-1")], "", { rescued: true });
   restores.push(() => {
     create.mockRestore();
     send.mockRestore();
@@ -2772,8 +2776,9 @@ test.each([
   within(duplicate).getByRole("button", { name: press }).focus();
   await user.keyboard("{Enter}");
   expect(screen.queryByRole("button", { name: press })).toBeNull();
-  const search = screen.getByRole("searchbox", { name: "Search issues" });
-  expect(search).toHaveFocus();
+  await afterRescue();
+  const view = screen.getByRole("button", { name: /^View/ });
+  expect(view).toHaveFocus();
   if (press === "Create anyway") {
     // The write the press sent lands, and the focus stays where it went.
     await waitFor(() =>
@@ -2782,7 +2787,7 @@ test.each([
           .textContent
       ).toContain("Made the epic")
     );
-    expect(search).toHaveFocus();
+    expect(view).toHaveFocus();
   }
 });
 

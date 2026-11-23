@@ -322,15 +322,17 @@ export function IssuesTable({
     return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
-  // own - goes with the table when a press in it sends the List back to its skeleton, and the
-  // focus it held goes to the search box rather than the page's body. A notice's button under
-  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
-  // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
-  // focus goes to the control now at its place among the notices, else the one before it, else
-  // the search box. Each of these takes the focus only while the reader can see it; where none
-  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Only the
-  // head and the notices are counted: the selection bar, the rows and the dialogs each hand the
-  // focus on themselves. The handler sits on the List's section, which stays in every branch.
+  // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
+  // button under the toolbar goes with the notice it answers - the interrupted action's Finish
+  // and Dismiss, the possible duplicate's Create anyway and Cancel new epic, the unanswered
+  // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
+  // the one before it. Each of these takes the focus only while the reader can see it; where none
+  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
+  // head or the notices hold no other control, the page's rescue walks the focus back over the
+  // main content to the nearest control before them that the reader can see and that takes no
+  // typed text, so never into the search box. Only the head and the notices are counted: the
+  // selection bar, the rows and the dialogs each hand the focus on themselves. The handler sits
+  // on the List's section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -342,7 +344,7 @@ export function IssuesTable({
       const notices = noticesRef.current;
       return notices?.contains(element) ? notices : element.closest("thead");
     },
-    () => searchRef.current
+    () => null
   );
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key

@@ -4252,11 +4252,13 @@ test("the header checkbox follows the filters and its count never hides a select
   }
 });
 
-// A press that takes its own control away hands the focus on, never to the page's body (ruling
-// ff1a60f5): Clear selection goes with the selection it empties, and its focus goes to the
-// select-all checkbox before it, or to the search box while no row matches and that checkbox is
-// disabled.
-test("Clear selection hands its focus to the select-all checkbox, or to the search box while no row matches", async () => {
+// A press that takes its own control away hands the focus on, and never into a field that takes
+// typed text: Clear selection goes with the selection it empties, and its focus goes to the
+// select-all checkbox before it. While no row matches, that checkbox is disabled and the header
+// holds no other control, so its own hand-off moves nothing and leaves the loss to the page's
+// rescue, which the app shell mounts: its walk back passes over the disabled checkbox to the
+// Filter button, and never lands on the search box, which takes typed text.
+test("Clear selection hands its focus to the select-all checkbox, and never to the search box while no row matches", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
 
@@ -4287,7 +4289,10 @@ test("Clear selection hands its focus to the select-all checkbox, or to the sear
     expect(
       within(region).queryByRole("button", { name: "Clear selection" })
     ).not.toBeInTheDocument();
-    expect(search).toHaveFocus();
+    await waitFor(() =>
+      expect(within(region).getByRole("button", { name: "Filter · 0" })).toHaveFocus()
+    );
+    expect(search).not.toHaveFocus();
   } finally {
     page.view.unmount();
     page.restore();

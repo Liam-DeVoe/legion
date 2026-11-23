@@ -1364,8 +1364,8 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
 
 /** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
  *  per label - an Inbox row, a `div` carrying the row marker where the Inbox draws an `<li>`, a
- *  row by the same rule (`ROW_SELECTOR`), and the one checkbox a row marks itself by - appended
- *  to `parent`. */
+ *  row by the same rule (`ROW_SELECTOR`), and the one checkbox a row marks itself by, laid out in
+ *  the box one under the other from its top - appended to `parent`. */
 function rowBoxIn(
   parent: Element,
   ...labels: string[]
@@ -1374,7 +1374,7 @@ function rowBoxIn(
   box.style.overflowY = "auto";
   parent.append(box);
   placeAt(box, 100, 300);
-  const rows = labels.map((label) => {
+  const rows = labels.map((label, index) => {
     const row = document.createElement("div");
     row.setAttribute("data-inbox-row", label);
     row.setAttribute(ROW_MARKER_ATTRIBUTE, "");
@@ -1383,6 +1383,7 @@ function rowBoxIn(
     mark.type = "checkbox";
     mark.setAttribute("aria-label", `Select ${label}`);
     row.append(mark);
+    placeAt(mark, 100 + index * 40);
     box.append(row);
     return { mark, row };
   });
@@ -2249,6 +2250,46 @@ test("a control replaced by content holding a form hands the focus to the form's
   });
 });
 
+// A press whose commit draws a disclosure where its control stood - the Artifacts tab's
+// references Retry, whose read draws the Referenced by disclosure in place of the failed line -
+// lands on the disclosure's summary, focused with no scroll. The keyboard reaches a `<details>`'s
+// summary as it reaches a button, and it comes first in what the press drew there. With
+// Chromium's `focusout` and without.
+test("a control replaced by a disclosure hands the focus to the disclosure's summary, scrolling nothing", async () => {
+  await scrollingNothing(async () => {
+    for (const withFocusout of [true, false]) {
+      await withRescue(async () => {
+        const { buttons, main } = mainOf("Upload", "Remove");
+        const remove = buttons[1] as HTMLButtonElement;
+        const failed = document.createElement("div");
+        failed.setAttribute("role", "alert");
+        const retry = buttonIn(failed, "Retry");
+        main.insertBefore(failed, remove);
+        const references = document.createElement("div");
+        const disclosure = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Referenced by (2)";
+        const link = document.createElement("a");
+        link.href = "/issues/OPS-1";
+        link.textContent = "Depends on CORE-1";
+        disclosure.append(summary, link);
+        references.append(disclosure);
+        retry.focus();
+        enterPress(retry);
+        // The read's answer takes the failed line away and draws the disclosure where it stood.
+        const replace = () => {
+          failed.remove();
+          main.insertBefore(references, remove);
+        };
+        if (withFocusout) lose(retry, replace);
+        else replace();
+        await settled();
+        expect(focusedName()).toBe("Referenced by (2)");
+      });
+    }
+  });
+});
+
 /** A region drawn for one item, as the Inbox draws its reading column: marked with the item it
  *  shows (`SHOWN_ITEM_ATTRIBUTE`), holding the item's answer form first - its text box and its
  *  Send - and then its Snooze. */
@@ -2845,6 +2886,42 @@ test("a row the reader's press takes away hands the focus to the same control in
         belongs[named] = landing;
       }
     }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// The same Unpin with the reader scrolled so far down that the row that moves up into the
+// pressed row's place, and every control before it, stand above the window, as the Inbox's next
+// row does at a phone's width once a card's Answer takes its tall row away. The row that moved up
+// takes the focus only where the reader can see it, as a walk's landing does: here nothing in
+// sight stands at the place or before it, so the main content's own stop takes the focus, with
+// no scroll. By Enter, with Chromium's `focusout` and without.
+test("a row that moves up into the place of a row the reader's press took away takes no focus while it stands out of the reader's sight", async () => {
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const withFocusout of [true, false]) {
+    const named = withFocusout ? "with a focusout" : "without a focusout";
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const { main } = mainOf();
+        const rows = pinnedAgentsIn(main, ["Alpha", "Beta", "Gamma"], []);
+        for (const [index, { row }] of rows.entries()) {
+          for (const control of row.querySelectorAll("a, button")) {
+            placeAt(control, index === 1 ? 300 : -400 + index * 40);
+          }
+        }
+        const { row, unpin } = rows[1] as { row: HTMLLIElement; unpin: HTMLButtonElement };
+        unpin.focus();
+        enterPress(unpin);
+        const leave = () => row.remove();
+        if (withFocusout) lose(unpin, leave);
+        else leave();
+        await settled();
+        landed[named] =
+          document.activeElement === main ? "the main content's own stop" : focusedName();
+      });
+    });
+    belongs[named] = "the main content's own stop";
   }
   expect(landed).toEqual(belongs);
 });
@@ -3991,6 +4068,48 @@ test("a component's hand-off lands on a control wholly in sight where it always 
   expect(landed).toEqual(belongs);
 });
 
+// A component's own hand-off lands on no field that takes typed text, its fallback included: the
+// reader never chose it, and their next key would be typed into it. A line whose only control a
+// press takes away falls back to a search box, as a selection header's Clear selection with no
+// row matching and its select-all checkbox disabled has nothing else before it. The hand-off
+// moves nothing then, and the page's rescue answers the loss by its walk back over the main
+// content, to the Filter button before the line, which takes no text. With Chromium's `focusout`
+// and without.
+test("a component's hand-off passes over a fallback that takes typed text, and the rescue walks back to the control before the line", async () => {
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const withFocusout of [true, false]) {
+    const named = withFocusout ? "with a focusout" : "without a focusout";
+    await withRescue(async () => {
+      const { main } = mainOf();
+      const search = controlOf("search");
+      search.setAttribute("aria-label", "Search agents");
+      main.append(search);
+      buttonIn(main, "Filter");
+      const host = document.createElement("div");
+      main.append(host);
+      const fallback = () => search;
+      const view = render(createElement(HandOffLine, { fallback, labels: ["Clear selection"] }), {
+        container: host,
+      });
+      try {
+        const clear = host.querySelector("button") as HTMLButtonElement;
+        clear.focus();
+        enterPress(clear);
+        const goes = () => view.rerender(createElement(HandOffLine, { fallback, labels: [] }));
+        if (withFocusout) lose(clear, goes);
+        else goes();
+        await settled();
+        landed[named] = focusedName();
+      } finally {
+        view.unmount();
+      }
+    });
+    belongs[named] = "Filter";
+  }
+  expect(landed).toEqual(belongs);
+});
+
 /** The Inbox's Decline shape: a list of rows, each an `<li>` holding an ask card, with the first
  *  card's **Decline to answer** opening a modal dialog at the end of the body, as `useDialog`
  *  portals one, and the focus moved into the dialog's note box from that trigger, so the rescue
@@ -4068,6 +4187,52 @@ test("a Tab inside the region a press was made in leaves the press the cause of 
       expect(focusedName()).toBe("Ship");
     }, writes);
   }
+});
+
+// The same Decline at a phone's width, with the reader scrolled down to the question: the reader
+// presses the dialog's own Decline, and once the decline lands the dialog goes with the
+// question's row. The row that moves up into that row's place, and every control before it,
+// stand above the window then. The loss is answered as the opener's own (`handOn`): no control
+// in sight takes the focus, so the own stop of the main content takes it, with no scroll, and the
+// focus is never left on the page's body. With Chromium's `focusout` for the control the dialog
+// took away, and with none.
+test("a dialog gone with its opener's row, with nothing in sight at the opener's place or before it, hands the focus to the main content's own stop", async () => {
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const withFocusout of [true, false]) {
+    const named = withFocusout ? "with a focusout" : "without a focusout";
+    const writes = signedInWrites();
+    await scrollingNothing(async () => {
+      await withRescue(async () => {
+        const { buttons, main } = mainOf("Before");
+        placeAt(buttons[0] as HTMLElement, -2_000);
+        const { decline, dialog, rows } = declineDialogIn(main);
+        for (const control of rows[1]?.querySelectorAll("button") ?? []) placeAt(control, -300);
+        decline.focus();
+        enterPress(decline);
+        const write = writeOf(writes);
+        decline.setAttribute("aria-disabled", "true");
+        await settled();
+        await write.land();
+        // The commit the decline's answer makes: the dialog goes, and the question's row with it.
+        const goes = () => {
+          dialog.remove();
+          rows[0]?.remove();
+        };
+        if (withFocusout) lose(decline, goes);
+        else goes();
+        await settled();
+        landed[named] =
+          document.activeElement === main
+            ? "the main content's own stop"
+            : document.activeElement === document.body
+              ? "the page"
+              : focusedName();
+      }, writes);
+    });
+    belongs[named] = "the main content's own stop";
+  }
+  expect(landed).toEqual(belongs);
 });
 
 // (cw) The Tab still ends the rescue's wait for the control the press disabled, whoever caused

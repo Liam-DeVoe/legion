@@ -39,6 +39,7 @@ function CommitProbe(): null {
 
 function List({
   banner = false,
+  children,
   enabled,
   groups,
   headings,
@@ -49,6 +50,9 @@ function List({
   /** Whether a banner BANNER_HEIGHT tall stands above the list, as the Inbox's header stands
    *  above its rows. */
   banner?: boolean;
+  /** Drawn inside the anchor after the rows, so its layout effects run in each of the list's
+   *  commits before the anchor keeps its place. */
+  children?: ReactNode;
   enabled?: () => boolean;
   /** A row's group; rows default to one shared group. */
   groups?: Readonly<Record<string, string>>;
@@ -79,6 +83,7 @@ function List({
         </Fragment>
       ))}
       <CommitProbe />
+      {children}
     </ViewportAnchor>
   );
   const page = (
@@ -547,6 +552,63 @@ test("rows the host names as leaving let the focused row below them move up into
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
     await frames(1);
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same Dismiss while a dialog's scroll lock puts `overflow: hidden` on the body, as the
+// Inbox's Decline dialog does at a phone's width until the decline lands and the dialog goes with
+// its row. Chromium then takes the window's scroll anchoring from the body, so the browser's own
+// anchoring is off on the body for that commit as well as on the document's root, and back on
+// with the root's two frames later.
+test("rows the host names as leaving hold the browser's scroll anchoring off on the body too, while a dialog locks the page's scroll", async () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  document.body.style.overflow = "hidden";
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(window.scrollY).toBe(100);
+    expect(document.body.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await frames(2);
+    expect(document.body.style.getPropertyValue("overflow-anchor")).toBe("");
+  } finally {
+    document.body.style.removeProperty("overflow");
+    view.unmount();
+  }
+});
+
+/** Moves the window by `by` in the layout effects of the commit that draws it, as Firefox's own
+ *  scroll anchoring moves it at the layout after a commit, ahead of the anchor's own pass. */
+function AnchorsAnyway({ by }: { by: number }): null {
+  useLayoutEffect(() => {
+    setScrollY(window.scrollY + by);
+  }, [by]);
+  return null;
+}
+
+// A press that takes away the row the reader's hand is on, as the Inbox's Decline dialog goes with
+// its row once the decline lands, while the browser moves the window by that row all the same, as
+// Firefox does while a dialog's scroll lock is on, whatever `overflow-anchor` the root and the body
+// carry. The row has gone, so no row is left to measure the view by: the anchor puts the window
+// back where the press found it, the row after it moves up into its place, and the view does not
+// scroll.
+test("a row the host names as leaving, taken from under the reader's hand, leaves the window where the press found it, though the browser moved it", () => {
+  const going = (id: string) => id === "r6";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const place = viewportTop("r6");
+    view.rerender(
+      <List leaving={going} rows={ids(12).filter((id) => !going(id))}>
+        <AnchorsAnyway by={-ROW_HEIGHT} />
+      </List>
+    );
+    expect(window.scrollY).toBe(100);
+    expect(viewportTop("r7")).toBe(place);
   } finally {
     view.unmount();
   }

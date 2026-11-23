@@ -41,6 +41,9 @@ interface Snapshot extends AnchorRow {
   selfLeaving: boolean;
   /** The row's top, in viewport pixels, immediately before the commit. */
   top: number;
+  /** The window's offset immediately before a commit in which this component holds the
+   *  browser's own anchoring off for the window (`holdNativeAnchoring`), else null. */
+  windowTop: number | null;
 }
 
 /** What the reader can see of the rows, top and bottom, in viewport pixels. */
@@ -179,7 +182,9 @@ function focusedControl(): Element | null {
  * named: a thread's own Dismiss takes away the row the reader's hand is on, and the browser
  * holds the view against its going as much as against a row's above. The snapshot taken before
  * the commit cannot tell whether that row goes in it, and the browser would hold the view
- * against that going. It is turned back on as soon as this component has kept its place. A row
+ * against that going. It is turned back on as soon as this component has kept its place. Where
+ * the window scrolls the rows and moved in such a commit all the same, it is put back where the
+ * press found it (`keepPlace`). A row
  * that goes in the same commit without the reader's press, by a live update or another device,
  * is compensated as any other shift is, so the rows in view do not jump under it.
  *
@@ -240,9 +245,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  coordinates: that is the list moving under the hand, which is the thing being compensated
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
-  /** The box whose own scroll anchoring is turned off for a press's commit, and the inline
-   *  `overflow-anchor` it had before (`holdNativeAnchoring`). Null while it is on. */
-  private nativeAnchoring: { box: HTMLElement; priority: string; value: string } | null = null;
+  /** The boxes whose own scroll anchoring is turned off for a press's commit, each with the
+   *  inline `overflow-anchor` it had before (`holdNativeAnchoring`). Empty while it is on. */
+  private nativeAnchoring: { box: HTMLElement; priority: string; value: string }[] = [];
   /** The frame request that gives the box its scroll anchoring back once a rendering update has
    *  run with it off (`releaseAfterRendering`). Null while none is pending. */
   private releaseFrame: number | null = null;
@@ -265,25 +270,28 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   /** Turns the browser's own scroll anchoring off on the box that scrolls the rows for the
-   *  commit in flight: the box the host named, else the document's root, whose value the window
-   *  takes. The browser would hold the view against the going of the rows a press of the reader's
-   *  takes away, which is the shift this component lets happen. The value is read back at once,
-   *  so it is in force before React removes the rows. A hold still pending from an earlier press
-   *  keeps the value the box had before it. `releaseAfterRendering` turns it back on. */
+   *  commit in flight: the box the host named, else the window, whose anchoring the document's
+   *  root sets and, while a dialog's scroll lock puts `overflow: hidden` on the body
+   *  (`useDialog`), the body too: Chromium then takes the window's anchoring from the body, and
+   *  held the view at 390 px against the going of the Inbox row a Decline dialog went with. The
+   *  browser would hold the view against the going of the rows a press of the reader's takes
+   *  away, which is the shift this component lets happen. The value is read back at once, so it
+   *  is in force before React removes the rows. A hold still pending from an earlier press keeps
+   *  the value each box had before it. `releaseAfterRendering` turns it back on. */
   private holdNativeAnchoring(): void {
     this.cancelRelease();
-    const box = this.scrollerElement() ?? document.documentElement;
-    if (this.nativeAnchoring?.box !== box) {
+    const scroller = this.scrollerElement();
+    const boxes = scroller === null ? [document.documentElement, document.body] : [scroller];
+    if (this.nativeAnchoring[0]?.box !== boxes[0]) {
       this.releaseNativeAnchoring();
-      const { style } = box;
-      this.nativeAnchoring = {
+      this.nativeAnchoring = boxes.map((box) => ({
         box,
-        priority: style.getPropertyPriority("overflow-anchor"),
-        value: style.getPropertyValue("overflow-anchor"),
-      };
+        priority: box.style.getPropertyPriority("overflow-anchor"),
+        value: box.style.getPropertyValue("overflow-anchor"),
+      }));
     }
-    box.style.setProperty("overflow-anchor", "none");
-    void getComputedStyle(box).overflowAnchor;
+    for (const box of boxes) box.style.setProperty("overflow-anchor", "none");
+    for (const box of boxes) void getComputedStyle(box).overflowAnchor;
   }
 
   /** Gives the box its scroll anchoring back once a rendering update has run with it off: two
@@ -293,7 +301,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  (a Dismiss that takes Mark all read out of the Inbox's control row at a phone's width
    *  scrolled 52 px), a move this component had already let happen. */
   private releaseAfterRendering(): void {
-    if (this.nativeAnchoring === null) return;
+    if (this.nativeAnchoring.length === 0) return;
     this.cancelRelease();
     this.releaseFrame = requestAnimationFrame(() => {
       this.releaseFrame = requestAnimationFrame(() => {
@@ -309,17 +317,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     this.releaseFrame = null;
   }
 
-  /** Gives the box back the scroll anchoring `holdNativeAnchoring` turned off, with the inline
+  /** Gives each box back the scroll anchoring `holdNativeAnchoring` turned off, with the inline
    *  value it had, at once. */
   private releaseNativeAnchoring(): void {
     this.cancelRelease();
     const held = this.nativeAnchoring;
-    if (held === null) return;
-    this.nativeAnchoring = null;
-    if (held.value === "") {
-      held.box.style.removeProperty("overflow-anchor");
-    } else {
-      held.box.style.setProperty("overflow-anchor", held.value, held.priority);
+    this.nativeAnchoring = [];
+    for (const { box, priority, value } of held) {
+      if (value === "") {
+        box.style.removeProperty("overflow-anchor");
+      } else {
+        box.style.setProperty("overflow-anchor", value, priority);
+      }
     }
   }
 
@@ -640,8 +649,19 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // Only rows going from above the current one let it move up, so only they make the shrink
     // above the list the press's own (`keepPlace`).
     const rootTop = leaving.length > 0 ? (this.root?.getBoundingClientRect().top ?? null) : null;
-    if (leaving.length > 0 || selfLeaving) this.holdNativeAnchoring();
-    return { group: at, id: current.id, leaving, rootTop, selfLeaving, top, via: current.via };
+    const holding = leaving.length > 0 || selfLeaving;
+    if (holding) this.holdNativeAnchoring();
+    const windowTop = holding && this.scrollerElement() === null ? window.scrollY : null;
+    return {
+      group: at,
+      id: current.id,
+      leaving,
+      rootTop,
+      selfLeaving,
+      top,
+      via: current.via,
+      windowTop,
+    };
   }
 
   componentDidUpdate(
@@ -660,10 +680,19 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  reader's took away from above it freed, once the commit is in. Where such a row went in that
    *  commit, less what the list itself moved up in it too (`rootTop`): content above the list
    *  that shrank with the press. Where none went, a shrink above the list is no doing of the
-   *  press's, and it is made up for as any other shift is. */
+   *  press's, and it is made up for as any other shift is. Where the window scrolls the rows and
+   *  the browser moved it in a commit whose anchoring this component held off, the window is put
+   *  back first: Firefox holds the view against the going of the rows a press took away while a
+   *  dialog's scroll lock is on (`useDialog`), `overflow-anchor: none` on the root and the body
+   *  notwithstanding, and moved the window 730 px up at 390 px when the Inbox's Decline dialog
+   *  went with its row. */
   private keepPlace(snapshot: Snapshot | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
+    const { windowTop } = snapshot;
+    if (windowTop !== null && Math.abs(window.scrollY - windowTop) > 0.5) {
+      this.scrollBy(windowTop - window.scrollY);
+    }
     const element = this.rowById(root, snapshot.id);
     if (element === null) return;
     const { group } = this.props;
