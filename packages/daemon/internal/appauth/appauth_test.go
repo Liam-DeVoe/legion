@@ -636,7 +636,9 @@ func TestGrantedAccessBelowTheSetIsAskedForAtWhatIsGranted(t *testing.T) {
 // and an access above the set's is no reason to ask for more than the set names. A word outside
 // read, write and admin is granted none: the permission is left out of the request and logged at
 // warn, rather than passed back to GitHub, which would refuse the mint whole and leave the
-// role no gh files. An admin grant is asked for at the write the set names, never at admin.
+// role no gh files. The record names that access as unorderedAccess, in its message and in its
+// granted field, never as the word came (shownGrant). An admin grant is asked for at the write the
+// set names, never at admin.
 func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -662,9 +664,52 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	if !maps.Equal(asked[0].Permissions, want) {
 		t.Errorf("the write request named permissions %v, want exactly %v", asked[0].Permissions, want)
 	}
-	line := "appauth: the implement App's installation on acme is granted contents: maintain, where its token asks for contents: write, so the token is minted without it; grant the App contents: write and approve it on that account"
-	if count := shortfallLogged(loggedRecords(t, &stderr), line, Implement, "acme", "contents", "write", "maintain"); count != 1 {
+	line := "appauth: the implement App's installation on acme is granted contents: (an access this daemon cannot order), where its token asks for contents: write, so the token is minted without it; grant the App contents: write and approve it on that account"
+	if count := shortfallLogged(loggedRecords(t, &stderr), line, Implement, "acme", "contents", "write", unorderedAccess); count != 1 {
 		t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
+	}
+}
+
+// A shortfall is said once per App role, owner and what its record prints of the access granted
+// (shownGrant): an installation whose answer names another word accessOrder does not rank at a
+// later mint is said nothing of again, since its record would print alike. Whatever answers in
+// GitHub's place can echo the read's Authorization there, a JWT that differs at every mint, so a
+// key holding the word as it came would log the same record at every mint and keep every one.
+func TestTwoAccessesThisDoesNotKnowAreSaidOnce(t *testing.T) {
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	var stderr bytes.Buffer
+	github := &keyModeGitHub{
+		owners: []string{"acme"},
+		slug:   "legion-implementer",
+		grants: map[string]string{"contents": "maintain", "metadata": "read"},
+	}
+	github.answer = func(exchange int, body accessTokensBody) (int, string) {
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
+	}
+	tokens := keyModeManager(t, github, &now, &stderr)
+
+	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	github.mu.Lock()
+	github.grants = map[string]string{"contents": "triage", "metadata": "read"}
+	github.mu.Unlock()
+	tokens.Forget(Implement, "acme")
+	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
+		t.Fatalf("Token after Forget: %v", err)
+	}
+
+	if got := len(github.exchanges()); got != 2 {
+		t.Fatalf("%d exchanges, want one for each of the two mints", got)
+	}
+	said := 0
+	for _, record := range loggedRecords(t, &stderr) {
+		if record.Permission == "contents" {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Errorf("the log holds %d records of contents, want one: two words accessOrder does not rank print alike:\n%s", said, stderr.String())
 	}
 }
 

@@ -160,20 +160,21 @@ var readPermissions = map[string]string{
 // granted at write is granted its read, and one granted at read is not granted its write. A
 // value outside these three is no access this daemon knows how to ask for, and ranks below all
 // of them, so narrowToGranted leaves that permission out rather than ask for a word of GitHub's
-// it cannot order.
+// it cannot order, and a record says it as unorderedAccess (shownGrant).
 var accessOrder = map[string]int{"read": 1, "write": 2, "admin": 3}
 
 // grantShortfall is one permission a role's set asks for that the installation is not granted at
 // the access asked: the permission, the access the set asks for, and the access the installation
-// is granted, empty where it is granted none. It carries no token, and neither does the record it
-// is said in (sayShortfalls).
+// is granted as a record may print it (shownGrant), empty where it is granted none. It carries no
+// token, and neither does the record it is said in (sayShortfalls).
 type grantShortfall struct {
 	permission string
 	asked      string
 	granted    string
 }
 
-// granting is what the installation is granted of the permission, as the message says it.
+// granting is what the installation is granted of the permission, as the message says it: the
+// access the shortfall carries (shownGrant), or none.
 func (s grantShortfall) granting() string {
 	if s.granted == "" {
 		return "no " + s.permission
@@ -190,10 +191,25 @@ func (s grantShortfall) minting() string {
 	return "with " + s.permission + ": " + s.granted
 }
 
+// shownGrant is the access an installation is granted of a permission, as GitHub's answer wrote
+// it, as a shortfall carries it and its record prints it, in the message and in the granted field:
+// an access accessOrder ranks as itself, none as empty, and unorderedAccess in place of any other
+// word. Whatever answers in GitHub's place can echo the read's request there, the App's JWT and
+// all; narrowToGranted still decides on the word as it came, as narrowedTo does (heldWords).
+func shownGrant(held string) string {
+	if held == "" || accessOrder[held] != 0 {
+		return held
+	}
+	return unorderedAccess
+}
+
 // narrowToGranted is asked cut down to granted, and every shortfall between the two in one order
 // whatever order a map ranges in: a permission granted at the access asked or above is asked for
 // as asked names it, one granted below is asked for at the access granted, and one granted none
-// is left out. It copies, since the sets it cuts are shared by every mint.
+// is left out. Each case is decided on the access granted as GitHub's answer wrote it, and a
+// shortfall carries it as shownGrant prints it: one granted a word accessOrder does not rank is
+// left out as granted none is, and the access of one granted below is one accessOrder ranks. It
+// copies, since the sets it cuts are shared by every mint.
 func narrowToGranted(asked, granted map[string]string) (map[string]string, []grantShortfall) {
 	narrowed := make(map[string]string, len(asked))
 	var short []grantShortfall
@@ -201,7 +217,7 @@ func narrowToGranted(asked, granted map[string]string) (map[string]string, []gra
 		access, held := asked[permission], granted[permission]
 		switch {
 		case accessOrder[held] == 0:
-			short = append(short, grantShortfall{permission: permission, asked: access, granted: held})
+			short = append(short, grantShortfall{permission: permission, asked: access, granted: shownGrant(held)})
 		case accessOrder[held] < accessOrder[access]:
 			narrowed[permission] = held
 			short = append(short, grantShortfall{permission: permission, asked: access, granted: held})
@@ -221,9 +237,11 @@ func narrowToGranted(asked, granted map[string]string) (map[string]string, []gra
 const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account"
 
 // saidShortfall is the key one record of a shortfall is logged under: the App role, the owner
-// lowercased as a scope's is, and what the installation is granted of the permission. A second
-// mint of any scope of that role and owner logs nothing again, since the grant is the
-// installation's and the record is about the installation.
+// lowercased as a scope's is, and what the installation is granted of the permission as the record
+// prints it (shownGrant). A second mint of any scope of that role and owner logs nothing again,
+// since the grant is the installation's and the record is about the installation; nor does one
+// whose installation now names another word accessOrder does not rank, which the record would
+// print alike.
 type saidShortfall struct {
 	role  AppRole
 	owner string
@@ -349,8 +367,8 @@ func shownSuspension(suspendedAt string) string {
 // owner meets it, and nothing on any mint after it: the grant is the installation's and the
 // record is about the installation, which the owner names. Beside the message the record carries
 // what it says as fields, so a reader filtering the daemon's log finds it by them: the App, the
-// owner, the permission, the access the set asks for and the access the installation is granted,
-// empty where it is granted none.
+// owner, the permission, the access the set asks for and the access the installation is granted
+// as the message prints it (shownGrant), empty where it is granted none.
 func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
 	for _, shortfall := range short {
 		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}

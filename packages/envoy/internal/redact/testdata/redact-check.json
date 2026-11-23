@@ -7149,6 +7149,34 @@
       "production": "appauth grantedPermissions: a suspended_at GitHub writes as a time still prints as that time"
     },
     {
+      "id": "appauth-answer-words-granted",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationReadEchoingTheAppJWTAsAGrantPrintsNoneOfIt/one",
+      "production": "appauth narrowToGranted: an access GitHub's installation read names that accessOrder does not rank carried into a grant shortfall, and printed in its warn record's message and granted field (sayShortfalls), only as a fixed phrase, never as it came (shownGrant)",
+      "function": "github.com/sjawhar/legion/daemon/internal/appauth.narrowToGranted",
+      "capture": "appauth.answer-words/granted-one",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/permissions.go",
+        "preimage": "granted: shownGrant(held)",
+        "replacement": "granted: held"
+      }
+    },
+    {
+      "id": "appauth-answer-words-granted-every",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationReadEchoingTheAppJWTAsAGrantPrintsNoneOfIt/every",
+      "production": "appauth exchangeGranted: an installation granted every permission of the set at an access accessOrder does not rank refused (errGrantedNone) naming only the set asked for, and each shortfall's warn record naming the access only as a fixed phrase (shownGrant)"
+    },
+    {
+      "id": "appauth-answer-words-granted-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationReadEchoingTheAppJWTAsAGrantPrintsNoneOfIt/control",
+      "production": "appauth narrowToGranted: an access accessOrder ranks still prints as itself in a grant shortfall's warn record, and the request still asks for it"
+    },
+    {
       "id": "appauth-answer-words-viewer-not-a-bot",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
@@ -9857,6 +9885,11 @@
       "source": "the review of #4368 at 72f3edacc4",
       "guard": "reference-depth-bounded-go",
       "note": "not a leak: a time the field's writer controls; the bound's refusal past ReferencePasses is held by the reference-depth rows of the fixture, in Go and in TypeScript, and by control (20c)"
+    },
+    {
+      "site": "appauth sayShortfalls: a grant shortfall's warn record printed the access GitHub's installation read named as it came, in its message (granting) and its granted field, since narrowToGranted carried an access accessOrder does not rank into the shortfall raw",
+      "source": "the code-quality review of #4368 at df9ce51fa0",
+      "guard": "appauth-answer-words-granted"
     }
   ]
 }
