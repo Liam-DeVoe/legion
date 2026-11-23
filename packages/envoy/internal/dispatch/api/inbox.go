@@ -176,13 +176,13 @@ func (s *server) loadInbox(ctx context.Context, caller model.Actor, project, ass
 		askPointers[index] = &asks[index].Ask
 		askIDs[index] = asks[index].ID
 	}
-	if err := loadAskDetails(ctx, s.deps.Store.Pool, askPointers); err != nil {
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, caller, askPointers); err != nil {
 		return nil, err
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
 	reader := s.readDisplayTrees(ctx, trees)
-	threads, err := s.loadAskThreads(ctx, askIDs, reader)
+	threads, err := s.loadAskThreads(ctx, caller, askIDs, reader)
 	if err != nil {
 		return nil, err
 	}

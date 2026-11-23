@@ -50,11 +50,13 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
+  buildPersonPath,
   buildProjectPath,
   type IssueRoute,
   type IssueTab,
   issueTabForRoute,
   liveViewSessionOf,
+  PERSON_PATH,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -345,6 +347,9 @@ const PipelinePage = lazyChunk(() =>
 const AnswersPage = lazyChunk(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
+const PersonPage = lazyChunk(() =>
+  import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
+);
 const SettingsPage = lazyChunk(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
@@ -588,7 +593,19 @@ function NavigationContents({
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        {/* The login is the way in to the reader's own page: what they wrote and what reached
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
+        <p className={`px-2 text-sm ${railMutedText}`}>
+          Signed in as{" "}
+          <Link
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
+            onClick={onClose}
+            to={buildPersonPath(user.login)}
+          >
+            {user.login}
+          </Link>
+        </p>
         <button
           className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
           disabled={signOutPending}
@@ -1237,6 +1254,7 @@ function AppShell({
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>

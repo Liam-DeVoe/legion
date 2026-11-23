@@ -301,6 +301,17 @@ func parseLandingRequest(w http.ResponseWriter, r *http.Request) (landingRequest
 // The dashboard asks every read for the display trees of the stored texts it answers
 // (`Dispatch-Trees: 1`, wantsDisplayTrees), this one included, and each part is read with what
 // this request asked for, so a part carries exactly the trees the route it stands in for would.
+//
+// Each part that reads the node and tuple store reads it for the reader its route reads it for,
+// so a node reserved for its author is in the part exactly when it is in the route's answer. For
+// every route but the comment lists that reader is the caller: the routes name it with
+// actingReader and this one with actingPerson, and the two prove one author for every credential
+// that holds the person scope this route requires - the cookie its login, a personal or
+// broker-issued token the person it names (graphstore's provedAuthor) - which is the author an
+// author-private read compares. The comment lists are read as everyReader, as their route reads
+// them (answerCommentList), since that route keeps its answer for every reader of the owner:
+// read for the caller, the landing would seed a comment the route never shows, and the page
+// would drop it at its first refetch.
 func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -349,7 +360,7 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 	case landingPageInbox:
 		answer.Page.Inbox = s.landingInboxPage(ctx, caller)
 	case landingPageDocument:
-		answer.Page.Document = s.landingDocumentPage(ctx, read.project, read.slug, trees)
+		answer.Page.Document = s.landingDocumentPage(ctx, caller, read.project, read.slug, trees)
 	}
 	answer.Shell.Agents = services.agents.wait()
 	answer.Shell.CredentialRequests = services.credentialRequests.wait()
@@ -675,7 +686,7 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string, trees bool) *landingIssuePage {
 	page := &landingIssuePage{}
 
-	read, err := s.loadIssueDetail(ctx, key, trees)
+	read, err := s.loadIssueDetail(ctx, caller, key, trees)
 	page.Issue = landingPart(ctx, "issue.detail", &read, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
@@ -683,17 +694,17 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 
 	// Shaped as the comments route shapes them, over the page's reader, which the coverage part
 	// below registers with too and which resolves at the end, so the page reads the stored trees
-	// once for both.
-	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
+	// once for both. Read as everyReader, as that route reads them (getLanding says why).
+	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, everyReader, issueOwner(key), "")
 	reader := s.readDisplayTrees(ctx, trees)
 	page.Comments = shapedComments(landingPart(ctx, "issue.comments", comments, err), reader)
 
 	// With no thread, as the reader the page seeds this part for asks for it: the list is
 	// unpaged, so a thread read here is read for every ask of the issue and drawn by no one.
-	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", false, trees)
+	asks, err := s.loadIssueAskRows(ctx, caller, issueOwner(key), "all", false, trees)
 	page.Asks = landingPart(ctx, "issue.asks", asks, err)
 
-	decisions, err := s.loadIssueDecisions(ctx, key, trees)
+	decisions, err := s.loadIssueDecisions(ctx, caller, key, trees)
 	page.Decisions = landingPart(ctx, "issue.decisions", &decisions, err)
 
 	if page.Issue != nil {
@@ -701,7 +712,7 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 		// for an issue it has already read; a key that is no issue leaves this part null and the
 		// page reads that 404 from the route itself. Each requirement registers its tree with the
 		// page's reader, as the route's do with the route's (issueCoverage).
-		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, key, reader)
+		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, caller, key, reader)
 		page.Coverage = landingPart(ctx, "issue.coverage", &coverage, err)
 
 		// The sources of the issue's own project. The project is in the issue read above, so the
@@ -800,7 +811,7 @@ func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *land
 // reader for the page, so the three are one read of the stored trees. The subscribers, which the
 // listener answers, are read beside the database parts (landingServicePart), started here rather
 // than with the shell's because they name the document this reads first.
-func (s *server) landingDocumentPage(ctx context.Context, project, slug string, trees bool) *landingDocumentPage {
+func (s *server) landingDocumentPage(ctx context.Context, caller model.Actor, project, slug string, trees bool) *landingDocumentPage {
 	page := &landingDocumentPage{}
 
 	artifact, err := s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, artifactTarget{Project: project}, slug)
@@ -827,10 +838,11 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string, 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact)
 	page.Blocks = landingPart(ctx, "document.blocks", blocks, err)
 
-	asks, _, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "all")
+	asks, _, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, caller, documentOwner(artifact.ID), "all")
 	page.Asks = shapedAsks(landingPart(ctx, "document.asks", asks, err), reader)
 
-	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "")
+	// Read as everyReader, as the comments route reads them (getLanding says why).
+	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, everyReader, documentOwner(artifact.ID), "")
 	page.Comments = shapedComments(landingPart(ctx, "document.comments", comments, err), reader)
 	reader.resolve()
 	page.Subscribers = subscribers.wait()
