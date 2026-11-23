@@ -73,9 +73,12 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 		return nil, nil
 	}
 	// The root is the issue as recorded where the issue is its own root; the worker's step is
-	// read at the phase it runs as (IssueAtStep).
+	// read on the copy of the issue its step is given its work on (StepCopy).
 	root := issue
-	standing := IssueAtStep(*issue, open[at])
+	standing, err := StepCopy(ctx, e.store, tx, *issue, open[at])
+	if err != nil {
+		return nil, err
+	}
 	issue = &standing
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
 	if err != nil || !owed {
