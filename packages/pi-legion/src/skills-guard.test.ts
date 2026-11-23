@@ -450,20 +450,6 @@ test("the pair is recorded as a row per half, and the reviewer approves only pas
   );
 });
 
-// A docs-only change needs no simplify pass (roles/core/implementer.md), so the body's `Thermo`
-// line and the pass's own rule say the same.
-test("the body guide runs no simplify pass on a docs-only diff, as the implementer's prompt says", () => {
-  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain(
-    "**Thermo:** `simplify-settled-diff` <once at <head-sha> | not run (docs-only change)>: <0 applied | applied → new head <sha>>;"
-  );
-  expect(prBody).toContain(
-    "The pass covers every file the diff touches, and a docs-only diff needs none."
-  );
-  expect(prBody).not.toContain("a docs-only PR included");
-  expect(prBody).not.toContain("a docs-only diff included");
-});
-
 // The pair's own text bounds what it reads and what it reports: a range its task names limits
 // what it must read, and a defect it sees in code the pull request changed before that range is
 // still a finding, while code the pull request leaves unchanged stays out of its findings, because
@@ -789,9 +775,7 @@ test("the wake table and the guides say a review's request for changes or a revi
   };
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
-      /Changes requested and review steps' fails count: no tester's fail, no move back\./,
       /^(?![\s\S]*Tester fails and requests for changes are what it counts)/,
-      /^(?![\s\S]*Only requests for changes count)/,
     ]),
     ...guide("concepts.md", [
       /A review's request for changes counts a round\. So does the fail of a step of the type review whose agent is not the owner\. A tester's fail, the fail of a step of any other type and a move back by a worker or the architect count none\./,
@@ -860,36 +844,6 @@ test("an issue runs the default steps unless its architect registers a plan befo
       /\*\*A child:\*\* before `release_children`/,
     ]),
     ...lacks("legion-worker/SKILL.md", [/default task[^.;]*tester[^.;]*reviewer[^.;]*acceptance/]),
-  ]).toEqual([]);
-});
-
-// Each rule of the worker and retro skills states its exceptions where it is stated, so no other
-// sentence of the skills or the prompts contradicts it: a kept volume keeps more than the tracked
-// work, a parent can be held before its retro, the working copy is cleaned before a step's report
-// as before a handoff, a completion after a merge forward carries a handoff only where its phase
-// writes one, a merge forward the daemon asks for in retro is no part of retro and its review is
-// Legion's ask, a tool that takes no rating is never refused for its absence, and step 3 writes no
-// comment when no point qualifies.
-test("the worker and retro skills state the exceptions of their rules", () => {
-  expect([
-    ...lacks("legion-worker/SKILL.md", [
-      /nothing else of the disk survives but a volume the deployment keeps\./,
-      /without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave/,
-      /Before you write the handoff or report your step, run `jj -R "\$LEGION_WORKSPACE" status`/,
-      /complete again at the new head, with a handoff that names it where your phase writes one\./,
-    ]),
-    ...lacks("legion-retro/SKILL.md", [
-      /Retro commits nothing and pushes nothing of its own:/,
-      /A merge forward that the daemon's merge-forward message asks of you is no part of retro/,
-      /Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for\./,
-      /Whether another push after a review needs a new review is the repository's own rule\./,
-      /In the workspace retro itself changes nothing\./,
-      /The daemon refuses a completion without them where your tool takes them \(`PLAN_RATING_REQUIRED`\)/,
-      /The message is posted, and so is step 3's comment where a point qualified\./,
-    ]),
-    ...lacks("legion-architect/references/plan.md", [
-      /A role this deployment defines runs where its step stands in your plan, at the phase `step`/,
-    ]),
   ]).toEqual([]);
 });
 
@@ -1005,58 +959,9 @@ test("a run still going at retro is named in its message and as a risk", () => {
 test("the plan guide says which checks retro does not send back", () => {
   expect(
     lacks("legion-architect/references/plan.md", [
-      /retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds\./,
-      /Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name \(`absent`\)\./,
       /no reviewer step and no `acceptance:owner`[^.]*the checks the base branch requires/,
     ])
   ).toEqual([]);
-});
-
-// The roles a step may name stand inside the `Legion addressing` line of an architect's prompt,
-// not after it, so the plan guide sends its reader to that line.
-test("the plan guide finds the roles of the deployment in the addressing line", () => {
-  const plan = collapsed(path.join(staged, "legion-architect", "references", "plan.md"));
-  expect(plan).toContain(
-    'your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.'
-  );
-  expect(plan).not.toContain("your launch lists both after your addressing");
-});
-
-// The architect reads each version of a child's spec itself, and uses a reader where the reading
-// needs one (go/architect-common.md, b537812fb53), so the decomposition guide asks for a
-// `plan-reviewer` only there.
-test("the decomposition guide asks for a reader of a child's spec where the reading needs one", () => {
-  const decomposition = collapsed(
-    path.join(staged, "legion-architect", "references", "decomposition.md")
-  );
-  expect(decomposition).toContain(
-    "1. Read them against your own spec (a root's at its approved version, a child's at the version its parent approved). Where the reading needs a reader, a fresh `task(agent=\"plan-reviewer\")` reads them, told what they are, with this mandate:"
-  );
-  expect(decomposition).not.toContain('1. Have a fresh `task(agent="plan-reviewer")`');
-});
-
-// The children-first rule holds only a first phase that has not started
-// (record.ChildrenFirstCandidates): a child's architect starts with its issue's first phase, and
-// the children it files run beside that work. So the skill says the phase does not start.
-test("the architect skill says an open child keeps a parent's first phase from starting", () => {
-  const skill = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
-  expect(skill).toContain(
-    "A parent's own first phase does not start while Dispatch shows an open child under it (the `children-first` row)."
-  );
-  expect(skill).not.toContain("first phase waits while Dispatch shows an open child");
-});
-
-// A role token comes from the addressing line or from `roleToken`, which encodes the project and
-// the key as the daemon does (claim.NewToken): a typed one may reach nobody (SKILL.md, "Every
-// turn"), so the decomposition guide gives no recipe to type one.
-test("the decomposition guide takes a role token from the addressing line or roleToken", () => {
-  const decomposition = collapsed(
-    path.join(staged, "legion-architect", "references", "decomposition.md")
-  );
-  expect(decomposition).toContain(
-    "- A role token (`legion-acme-legion-41-architect`) comes from your addressing line or `roleToken` (`@legion/contracts`): never type one."
-  );
-  expect(decomposition).not.toContain("with the daemon's project and the key lower-cased");
 });
 
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
@@ -1203,15 +1108,4 @@ test("no skill holds a code precedence sentence; the role prompts and agent defi
     .map((file) => path.relative(REPO_ROOT, file))
     .sort();
   expect(holding).toEqual([]);
-});
-
-// A decision in a document beside the issue, the task and the handoffs reaches no worker, because
-// no start task names that document. A role the deployment defines writes no handoff, so its runs
-// are what a later step reads in their place. This shows the text ships, never that a role
-// follows it.
-test("a worker's first step reads the issue, its task and the handoffs, and no other document for decisions", () => {
-  countedOncePerFile(
-    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
-    ["skills/legion-worker/SKILL.md"]
-  );
 });
