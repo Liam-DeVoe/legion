@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -56,7 +57,7 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 		t.Fatalf("a reconnecting connection reports %q (caps an unset stream: %t), want \"\" read as an older server: this test needs the reading a reconnect leaves", version, serverDefaultsAnUnsetCap(version))
 	}
 
-	client := &Client{streamConfig: &cfg, stopCh: make(chan struct{})}
+	client := &Client{streamConfig: &cfg, stopCh: make(chan struct{}), logger: slog.Default()}
 	ensured := make(chan error, 1)
 	go func() { ensured <- client.ensureStreamOn(context.Background(), conn) }()
 	time.Sleep(300 * time.Millisecond)

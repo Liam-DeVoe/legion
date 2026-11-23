@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -335,7 +336,7 @@ func TestABucketLookupTheServerNeverAnswersEndsAtTheHangGuard(t *testing.T) {
 	conn, js := relayedJetStream(t, relay)
 	relay.arm(1 << 30)
 
-	_, err := ensureKeyValue(context.Background(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), 2*time.Second, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose lookup the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -434,7 +435,7 @@ func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing
 
 	relay.arm(1 << 30)
 	guard := RequestTimeout + 2*time.Second
-	_, err := ensureKeyValue(context.Background(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+	_, err := ensureKeyValue(context.Background(), slog.Default(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose raise the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
 	}
@@ -546,7 +547,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -572,7 +573,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, false, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
@@ -593,7 +594,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(0)
-	if _, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain); err != nil {
+	if _, err := wrapKeyValue(countedReads(context.Background()), slog.Default(), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 

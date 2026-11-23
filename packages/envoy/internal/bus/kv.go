@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext
 	if err != nil {
 		return KeyValue{}, err
 	}
-	return wrapKeyValue(ctx, conn, kv, false, oneSend)
+	return wrapKeyValue(ctx, loggerOwning(conn), conn, kv, false, oneSend)
 }
 
 // WrapKeyValue pairs kv, a legacy handle opened on conn, with the jetstream handle of the same
@@ -98,7 +99,7 @@ func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext
 // on it has had an answer for it already. A start opens its handles through EnsureKeyValue
 // instead, which sends its handle open again (wrapKeyValue).
 func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
-	return wrapKeyValue(context.Background(), conn, kv, false, oneSend)
+	return wrapKeyValue(context.Background(), loggerOwning(conn), conn, kv, false, oneSend)
 }
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
@@ -110,7 +111,8 @@ const (
 )
 
 // wrapKeyValue is WrapKeyValue, with two things its callers choose, under ctx, which bounds the
-// handle's open as well as RequestTimeout does.
+// handle's open as well as RequestTimeout does. Its lines, the WARNs of a wait on the member and
+// of an open sent again, go to logger.
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -133,7 +135,7 @@ const (
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
 // for a read whose caller waits two seconds for it, and an open that kept sending would leave that
 // read and every one after it unanswered rather than save a start.
-func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+func wrapKeyValue(ctx context.Context, logger *slog.Logger, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
@@ -157,11 +159,11 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, readLimitOf(ctx), send) }
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, logger, request, readLimitOf(ctx), send) }
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(ctx, kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(ctx, logger, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}
