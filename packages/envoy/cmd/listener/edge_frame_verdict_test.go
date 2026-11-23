@@ -80,17 +80,18 @@ func TestEdgeFrameVerdict(t *testing.T) {
 
 // TestEdgeFrameVerdictReadsEachFieldByItsExactKey holds the edge's frame rule to the fields the
 // session's plugin reads: JSON.parse takes a frame's topic, role mark, payload and the payload's
-// repo by their exact keys, past one byte order mark (TextDecoder) and at any depth, while
-// encoding/json takes the last key of any case and refuses a byte order mark and a document nested
-// deeper than 10,000. A frame that names one of those fields under more than one key, or under a
-// key that differs from its name only in case, is withheld on every branch: the probe frame, which
-// encoding/json read as the session's own message and the plugin as another project's event,
-// repeated keys, and "Topic", "TOPIC" and "tOpIc" beside "topic" on the generic, GitHub and role
-// branches. So is a frame with a top-level "__proto__" key, in either spelling, whose fields the
-// plugin's zod read takes as the envelope's own. The controls, each with one exact key, get the
-// verdict main gives them. A row that names goTopic, goRole or goRepo first checks that
-// encoding/json, the read main judged by, reads the frame that way, so no row passes on a frame
-// that does not split the readers as it says.
+// repo by their exact keys, past one byte order mark (TextDecoder), while encoding/json takes the
+// last key of any case and refuses a byte order mark. A frame that names one of those fields under
+// more than one key, or under a key that differs from its name only in case, is withheld on every
+// branch under ambiguous_key: the probe frame, which encoding/json read as the session's own
+// message and the plugin as another project's event, repeated keys, and "Topic", "TOPIC" and
+// "tOpIc" beside "topic" on the generic, GitHub, role and agent branches. A frame with a top-level
+// "__proto__" key, in either spelling, whose fields the plugin's zod read takes as the envelope's
+// own, is withheld under prototype_key. A frame or a GitHub payload that encoding/json does not
+// read is withheld, as main withheld it. The controls, each with one exact key, get the verdict
+// main gives them. A row that names goTopic, goRole or goRepo first checks that encoding/json, the
+// read main judged by, reads the frame that way, so no row passes on a frame that does not split
+// the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
@@ -132,6 +133,8 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	passed := frameVerdict{action: framePass, answered: true}
 	notHeld := frameDrops(withheldProjectNotHeld)
 	notInProject := frameDrops(withheldNotInProject)
+	ambiguous := frameDrops(withheldAmbiguousKey)
+	prototype := frameDrops(withheldPrototypeKey)
 
 	type row struct {
 		name    string
@@ -144,28 +147,30 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	}
 	rows := []row{
 		{name: "the probe: another project's topic and a later Topic naming the session's own subject", subject: own,
-			data: object(field{"topic", text(otherIssue)}, field{"Topic", text(own)}), want: notHeld, goTopic: own},
+			data: object(field{"topic", text(otherIssue)}, field{"Topic", text(own)}), want: ambiguous, goTopic: own},
 		{name: "the probe without its Topic key (control)", subject: own,
 			data: object(field{"topic", text(otherIssue)}), want: notHeld},
 		{name: "the probe's keys the other way round", subject: own,
-			data: object(field{"Topic", text(own)}, field{"topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+			data: object(field{"Topic", text(own)}, field{"topic", text(otherIssue)}), want: ambiguous, goTopic: otherIssue},
 		{name: "a lone Topic key naming the session's own subject", subject: own,
-			data: object(field{"Topic", text(own)}), want: notHeld, goTopic: own},
+			data: object(field{"Topic", text(own)}), want: ambiguous, goTopic: own},
 		{name: "a lone Topic key naming another project under the token's project", subject: ownIssue,
-			data: object(field{"Topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+			data: object(field{"Topic", text(otherIssue)}), want: ambiguous, goTopic: otherIssue},
 		{name: "a topic key written top\\u0069c after topic", subject: own,
-			data: object(field{"topic", text(otherIssue)}, field{`top\u0069c`, text(own)}), want: notHeld, goTopic: own},
+			data: object(field{"topic", text(otherIssue)}, field{`top\u0069c`, text(own)}), want: ambiguous, goTopic: own},
 		{name: "a key written \\u0054opic after topic", subject: own,
-			data: object(field{"topic", text(otherIssue)}, field{`\u0054opic`, text(own)}), want: notHeld, goTopic: own},
+			data: object(field{"topic", text(otherIssue)}, field{`\u0054opic`, text(own)}), want: ambiguous, goTopic: own},
+		{name: "a lone topic key written top\\u0069c naming another project under the token's project", subject: ownIssue,
+			data: object(field{`top\u0069c`, text(otherIssue)}), want: notHeld, goTopic: otherIssue},
 
 		{name: "repeated topic keys on the session's own subject", subject: own,
-			data: object(field{"topic", text(otherIssue)}, field{"topic", text(own)}), want: notHeld, goTopic: own},
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(own)}), want: ambiguous, goTopic: own},
 		{name: "repeated topic keys under the token's project", subject: ownIssue,
-			data: object(field{"topic", text(otherIssue)}, field{"topic", text(ownIssue)}), want: notHeld, goTopic: ownIssue},
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(ownIssue)}), want: ambiguous, goTopic: ownIssue},
 		{name: "repeated topic keys of a GitHub event", subject: github,
-			data: object(field{"topic", text(otherIssue)}, field{"topic", text(github)}, field{"payload", pubRepo}), want: notHeld, goTopic: github},
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(github)}, field{"payload", pubRepo}), want: ambiguous, goTopic: github},
 		{name: "repeated topic keys of role lanes", subject: own,
-			data: object(field{"topic", text(pubLane)}, field{"topic", text(privLane)}), want: notHeld, goTopic: privLane},
+			data: object(field{"topic", text(pubLane)}, field{"topic", text(privLane)}), want: ambiguous, goTopic: privLane},
 
 		{name: "a byte order mark before another project's topic under the token's project", subject: ownIssue,
 			data: append([]byte(bom), object(field{"topic", text(otherIssue)})...), want: notHeld},
@@ -178,26 +183,40 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 		{name: "another project's role mark beside a value nested 10,001 deep", subject: own,
 			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"deep", deep}), want: notHeld},
 
+		{name: "the session's own message with text after it", subject: own,
+			data: []byte(`{"source":"agent","topic":"` + own + `","payload":"hi"} x`), want: notHeld},
+		{name: "the session's own message with a misspelt literal", subject: own,
+			data: []byte(`{"source":"agent","topic":"` + own + `","payload":tru}`), want: notHeld},
+		{name: "the token's project's event with text after it", subject: ownIssue,
+			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `"} x`), want: notHeld},
+		{name: "a GitHub event of the token's repository with text after it", subject: github,
+			data: append(object(field{"topic", text(github)}, field{"payload", pubRepo}), " x"...), want: notHeld},
+
 		{name: "another project's role mark and a later Role of the token's project", subject: own,
-			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"Role", text(privRole)}), want: notHeld, goRole: privRole},
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"Role", text(privRole)}), want: ambiguous, goRole: privRole},
 		{name: "repeated role marks, the last of the token's project", subject: own,
-			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"role", text(privRole)}), want: notHeld, goRole: privRole},
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"role", text(privRole)}), want: ambiguous, goRole: privRole},
 		{name: "the token's project's role mark and a later ROLE of another project", subject: own,
-			data: object(field{"topic", text(own)}, field{"role", text(privRole)}, field{"ROLE", text(pubRole)}), want: notHeld, goRole: pubRole},
+			data: object(field{"topic", text(own)}, field{"role", text(privRole)}, field{"ROLE", text(pubRole)}), want: ambiguous, goRole: pubRole},
 		{name: "another project's role mark beside an event id written as a number", subject: own,
 			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"event_id", "4626"}), want: notHeld},
 
 		{name: "a GitHub event of another repository and a later Payload of the token's", subject: github,
-			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"Payload", pubRepo}), want: notInProject, goRepo: "acme/pub"},
+			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"Payload", pubRepo}), want: ambiguous, goRepo: "acme/pub"},
 		{name: "repeated payload keys, the last of the token's repository", subject: github,
-			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"payload", pubRepo}), want: notInProject, goRepo: "acme/pub"},
+			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"payload", pubRepo}), want: ambiguous, goRepo: "acme/pub"},
 		{name: "a GitHub payload naming another repository and a later Repo of the token's", subject: github,
-			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"Repo", text("acme/pub")})}), want: notInProject, goRepo: "acme/pub"},
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"Repo", text("acme/pub")})}), want: ambiguous, goRepo: "acme/pub"},
 		{name: "a GitHub payload with repeated repo keys, the last of the token's repository", subject: github,
-			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"repo", text("acme/pub")})}), want: notInProject, goRepo: "acme/pub"},
-
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"repo", text("acme/pub")})}), want: ambiguous, goRepo: "acme/pub"},
 		{name: "a GitHub payload whose __proto__ key holds the token's repository", subject: github,
-			data: object(field{"topic", text(github)}, field{"payload", payload(field{"__proto__", string(object(field{"repo", text("acme/pub")}))})}), want: notInProject},
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"__proto__", string(object(field{"repo", text("acme/pub")}))})}), want: prototype},
+		{name: "a GitHub payload of the token's repository followed by another repository's object", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", text(`{"repo":"acme/pub"} {"repo":"acme/secret","title":"secret"}`)}), want: notInProject},
+		{name: "a GitHub payload of the token's repository with a misspelt literal", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", text(`{"repo":"acme/pub","x":tru}`)}), want: notInProject},
+		{name: "a GitHub payload of the token's repository beside a value nested 10,001 deep", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", text(`{"repo":"acme/pub","deep":` + deep + `}`)}), want: notInProject},
 
 		{name: "control: a topic of the token's project", subject: ownIssue,
 			data: object(field{"topic", text(ownIssue)}), want: framePasses()},
@@ -231,13 +250,13 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	for _, variant := range []string{"Topic", "TOPIC", "tOpIc"} {
 		rows = append(rows,
 			row{name: "generic: another project's topic and a later " + variant + " of the token's project", subject: ownIssue,
-				data: object(field{"topic", text(otherIssue)}, field{variant, text(ownIssue)}), want: notHeld, goTopic: ownIssue},
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(ownIssue)}), want: ambiguous, goTopic: ownIssue},
 			row{name: "GitHub: another project's topic and a later " + variant + " naming the GitHub event", subject: github,
-				data: object(field{"topic", text(otherIssue)}, field{variant, text(github)}, field{"payload", pubRepo}), want: notHeld, goTopic: github},
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(github)}, field{"payload", pubRepo}), want: ambiguous, goTopic: github},
 			row{name: "role: another project's role lane and a later " + variant + " naming the token's project's lane", subject: own,
-				data: object(field{"topic", text(pubLane)}, field{variant, text(privLane)}), want: notHeld, goTopic: privLane},
+				data: object(field{"topic", text(pubLane)}, field{variant, text(privLane)}), want: ambiguous, goTopic: privLane},
 			row{name: "agent: another project's topic and a later " + variant + " naming the session's own subject", subject: own,
-				data: object(field{"topic", text(otherIssue)}, field{variant, text(own)}), want: notHeld, goTopic: own},
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(own)}), want: ambiguous, goTopic: own},
 		)
 	}
 	// The plugin's zod read copies a "__proto__" key onto the envelope by assignment, so the key's
@@ -246,13 +265,13 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 		holding := func(fields ...field) string { return string(object(fields...)) }
 		rows = append(rows,
 			row{name: "generic: a " + proto + " key holding another project's topic under the token's project", subject: ownIssue,
-				data: object(field{"source", text("dispatch")}, field{proto, holding(field{"topic", text(otherIssue)})}), want: notHeld},
+				data: object(field{"source", text("dispatch")}, field{proto, holding(field{"topic", text(otherIssue)})}), want: prototype},
 			row{name: "GitHub: a " + proto + " key holding another project's topic beside the token's repository", subject: github,
-				data: object(field{"source", text("github")}, field{proto, holding(field{"topic", text(otherIssue)})}, field{"payload", pubRepo}), want: notHeld},
+				data: object(field{"source", text("github")}, field{proto, holding(field{"topic", text(otherIssue)})}, field{"payload", pubRepo}), want: prototype},
 			row{name: "role: a " + proto + " key holding another project's role mark under the session's own topic", subject: own,
-				data: object(field{"topic", text(own)}, field{proto, holding(field{"role", text(pubRole)})}), want: notHeld},
+				data: object(field{"topic", text(own)}, field{proto, holding(field{"role", text(pubRole)})}), want: prototype},
 			row{name: "agent: a " + proto + " key holding another project's topic beside the session's own topic", subject: own,
-				data: object(field{"topic", text(own)}, field{proto, holding(field{"topic", text(otherIssue)})}), want: notHeld},
+				data: object(field{"topic", text(own)}, field{proto, holding(field{"topic", text(otherIssue)})}), want: prototype},
 		)
 	}
 
