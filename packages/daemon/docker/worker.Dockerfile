@@ -104,9 +104,7 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget): under gVisor a
 # whole mapping counts as the pod's memory once one page of it is read. sjawhar/jj#4 starts from
 # jj-vcs/jj#10100 and keeps, in a merge of two commits with several merge bases, what both sides
-# hold (jj-vcs/jj#6369). Where both sides changed the merge bases' own conflict, it merges them
-# against a virtual merge base, as git does, if that conflict is between text files, and gives a
-# conflict if it is not. A later pin must carry both patches, or one jj command on a large pack
+# hold (jj-vcs/jj#6369). A later pin must carry both patches, or one jj command on a large pack
 # fills an issue pod again, or a role's merge silently reverts work.
 ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261123-030350
 ARG GH_TOOL=gh@2.98.0
@@ -118,10 +116,11 @@ ARG GH_TOOL=gh@2.98.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
-# 0.46.0-sami.20261123-030350 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
-# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
-# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
+# Oh My Pi's and gh's were read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin,
+# gh's at 2.98.0) and jj's on 2026-11-23 (at its 0.46.0-sami.20261123-030350 pin), each as the
+# `digest` GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag>
+# --jq '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the
+# tools stage reads. gh's is also its line
 # in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
 # cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
 # releases carry no attestation (the same command answers 404 for both). A bump repeats those
