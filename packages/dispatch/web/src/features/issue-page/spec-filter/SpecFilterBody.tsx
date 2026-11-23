@@ -44,7 +44,7 @@ import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
-import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
+import { focusedNodeOf, landOnRow, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
@@ -387,11 +387,9 @@ export function SpecFilterBody({
   // Puts the focus on the statement or the decision cell that draws node `id`, as the outline
   // moves to a row (`moveToRow`), which brings it on screen where it already holds the focus.
   const goTo = useCallback((id: string): boolean => {
-    const target = tree.current?.querySelector<HTMLElement>(
-      `[data-node-id="${CSS.escape(id)}"][role="treeitem"]`
-    );
-    if (target != null) moveToRow(target);
-    return target != null;
+    const target = treeItemOf(tree.current, id);
+    if (target !== null) moveToRow(target);
+    return target !== null;
   }, []);
   // `w` on a statement, or on a control inside one: the focus goes to the cell beside it, which
   // draws the decision its run is headed by, whichever decision the tree's order names first
@@ -440,15 +438,23 @@ export function SpecFilterBody({
   // An address that names a row puts the focus on it, once per address (R19), and only after
   // every read the tree's rows come from has settled (`readsSettled`): a row drawn above it after
   // it took the focus would push it out of view, as the statements are drawn above a comment's
-  // row once the spec's blocks answer. The focus then brings it on screen (`goTo`). The row is not
-  // on the page until the reads that hold it have answered, so this looks again on every drawing
-  // of the columns.
+  // row once the spec's blocks answer. It lands on the row as the outline does (`IssueTree.tsx`'s
+  // `landOnRow`): the focus comes in the next frame and brings the row on screen, and the hold
+  // keeps it there, until the reader acts, while what the page draws after the reads (the names,
+  // the cuts once measured) still grows the rows above it. The row is not on the page until the
+  // reads that hold it have answered, so this looks again on every drawing of the columns, and
+  // the address is taken only once its row is found.
+  const landingHold = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => landingHold.current?.abort(), []);
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
     if (!readsSettled || statements.length === 0) return;
-    if (goTo(reveal)) taken.current = reveal;
-  }, [goTo, readsSettled, reveal, statements]);
+    const row = treeItemOf(tree.current, reveal);
+    if (row === null) return;
+    taken.current = reveal;
+    landOnRow(row, landingHold);
+  }, [readsSettled, reveal, statements]);
 
   useTreeKeymap({
     container: tree,
@@ -503,8 +509,17 @@ export function SpecFilterBody({
     zoom: undefined,
   });
 
+  // The tree's one tab stop: the row the focus last rested on (R9), else the row the address
+  // names once the reads have settled, else the first statement. The address's row is the tab
+  // stop from the render that lands on it, as the Plan view's is: the stage gives a focus that
+  // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
+  // landing's frame, and a landing whose row lost the focus to another row by then leaves the
+  // focus there (`landOnRow`).
+  const addressed = readsSettled ? statements.find((node) => node.id === reveal) : undefined;
   const tabStop =
-    stop !== undefined && statements.some((node) => node.id === stop) ? stop : statements[0]?.id;
+    stop !== undefined && statements.some((node) => node.id === stop)
+      ? stop
+      : (addressed ?? statements[0])?.id;
   return (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
@@ -748,6 +763,13 @@ function clearOfHeads(element: HTMLElement): void {
   if (heads === undefined || heads.height === 0) return;
   const top = element.getBoundingClientRect().top;
   if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - CLEARANCE });
+}
+
+/** The statement or the decision cell of `tree` that draws node `id`; null where none does. */
+function treeItemOf(tree: HTMLElement | null, id: string): HTMLElement | null {
+  return (
+    tree?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"][role="treeitem"]`) ?? null
+  );
 }
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
