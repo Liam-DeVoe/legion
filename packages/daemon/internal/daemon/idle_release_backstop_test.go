@@ -13,15 +13,15 @@ import (
 )
 
 // dispatch://INFRA-2746 R1 at the release of a pod (check
-// c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its daemon row and its second, third and
-// fourth controls), through the writer a release's last step runs (outbox.armBackstops) on the
-// pause rig's store, with no pause: the released worker of LEGION-208's open phase gets the
+// c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its daemon row and its second, third,
+// fourth and fifth controls), through the writer a release's last step runs (outbox.armBackstops)
+// on the pause rig's store, with no pause: the released worker of LEGION-208's open phase gets the
 // backstop the release arms while it owes its phase by the owed answer's rule (record.PhaseOwed),
-// and while it is the one claim that owes nothing and still gets one (holdsUndeliveredEntryTask),
-// and gets none otherwise. TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole drives a
-// recorded completion through the daemon a deployment runs; these rows are shapes that rig does
-// not build, each read from the whole claim and from the record in the store (store.ClaimTx,
-// record.FillIdleClaims).
+// and while it is of one of the two kinds of claim that owe nothing and still get one
+// (holdsUndeliveredEntryTask, holdsUndeliveredNewsTask), and gets none otherwise.
+// TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole drives a recorded completion through
+// the daemon a deployment runs; these rows are shapes that rig does not build, each read from the
+// whole claim and from the record in the store (store.ClaimTx, record.FillIdleClaims).
 //
 // The second control is the shape the review of 0a66d46a reproduced: the implementer took entry
 // 1, was handed the task of entry 2, which its row stands on, and the send of that task failed
@@ -46,6 +46,17 @@ import (
 // arms its backstop. The third and fourth controls fail if the exception reads only a task of the
 // row's entry (p.Entry == f.RowEntry).
 //
+// The fifth control is a task of news alone (supervise.Delivery.NewsOnly), the second kind, which
+// the daemon sends a claim level with its row's entry whatever that claim completed
+// (newsClaimTakes): LEGION-208's reviewer in reviewing took entry 1, its row stands on entry 1
+// and records its approval, as OSSV-732's reviewer's approval stood while GitHub held the merge,
+// and it holds an unconfirmed task of news alone of the issue's run and phase whose send failed
+// before any turn. Nothing sends that news again, so the release arms its backstop, though the
+// reviewer owes its phase nothing. The same reviewer gets none holding nothing, holding a task of
+// news alone that a turn confirmed, or holding an unconfirmed one of another run or of another
+// phase. Those last three rows fail if the second kind reads only the task's mark (p.NewsOnly),
+// and the fifth control's backstop row fails without the second kind.
+//
 // A merger in merging whose pull request is merged gets none, since the merge finished its
 // merging (record.MergedInMerging). The controls, an implementer that serves its row's entry and
 // a merger whose pull request is open, each owe their phase and get one.
@@ -65,6 +76,9 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 		// entry (entry 0) of the issue's run and phase in place of a task of an entry: a ready
 		// worker's resume task (workflow.ResumePhaseTask), which gives the claim no entry.
 		noEntryTask bool
+		// news is the task of news alone (supervise.Delivery.NewsOnly, newsTask) the worker
+		// holds in place of any other, nil for none.
+		news *supervise.Delivery
 		// pullRequest is the state of LEGION-208's pull request, "" for none, and mergeForward
 		// whether the daemon asked the implementer, in the phase at, to merge the base forward
 		// onto the head that pull request stands at, which holds the tester of testing.
@@ -96,6 +110,25 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 		{name: "it holds the task of its entry and a merge forward holds it", at: phase.Testing, role: claim.RoleTester,
 			served: 1, rowEntry: 2, task: 2, pullRequest: record.PullRequestOpen, mergeForward: true,
 			why: "the merge forward told it to wait for the landed message, which wakes its pod"},
+		{name: "the fifth control: a reviewer level with its row's entry, its approval of that entry recorded, holds an unconfirmed task of news alone of the issue's run and phase, whose send failed before any turn",
+			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
+			news: newsTask(phase.Reviewing, 1, false), backstop: true,
+			why: "nothing sends that news again, so the backstop is the one wake that delivers it"},
+		{name: "a reviewer level with its row's entry, its approval of that entry recorded, holds nothing",
+			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
+			why: "its approval stands and it holds nothing that waits for it to come back"},
+		{name: "a reviewer level with its row's entry, its approval of that entry recorded, holds a task of news alone that a turn confirmed",
+			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
+			news: newsTask(phase.Reviewing, 1, true),
+			why:  "a turn took that news, so nothing waits for it to come back"},
+		{name: "a reviewer level with its row's entry, its approval of that entry recorded, holds an unconfirmed task of news alone of another run",
+			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
+			news: newsTask(phase.Reviewing, 2, false),
+			why:  "a task of news alone of another run gets none"},
+		{name: "a reviewer level with its row's entry, its approval of that entry recorded, holds an unconfirmed task of news alone of another phase",
+			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
+			news: newsTask(phase.Testing, 1, false),
+			why:  "a task of news alone of another phase gets none"},
 		{name: "a merger in merging whose pull request is merged", at: phase.Merging, role: claim.RoleMerger,
 			served: 1, rowEntry: 1, pullRequest: record.PullRequestMerged, why: "the merge finished its merging"},
 		{name: "the control: a merger in merging whose pull request is open", at: phase.Merging, role: claim.RoleMerger,
@@ -113,6 +146,9 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 				worker.GivenEntry, worker.Pending = c.task, undeliveredTask(c.at, c.task)
 			case c.noEntryTask:
 				worker.Pending = undeliveredTask(c.at, 0)
+			case c.news != nil:
+				task := *c.news
+				worker.Pending = &task
 			}
 			r.putClaim(worker)
 			r.putPhaseRow(c.role, c.rowEntry, c.completed)

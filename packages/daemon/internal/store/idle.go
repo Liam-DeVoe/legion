@@ -488,10 +488,12 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // backstop reads (internal/daemon's getsBackstop, record.PhaseOwed), which reads the workflow's
 // record of the claim's role and which this package cannot import (IdleRecords says why). A
 // worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1), since a
-// backstop would wake it to do nothing, but for the one claim the rule keeps: one behind its
-// entry that holds a task of the issue's run and phase the daemon has not delivered, of that
-// entry, of an earlier one or of no entry, whose delivery waits for the claim to come back
-// (internal/daemon's holdsUndeliveredEntryTask).
+// backstop would wake it to do nothing, but for the two kinds of claim the rule keeps, whose
+// delivery waits for the claim to come back: one behind its entry that holds a task of the
+// issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
+// entry (internal/daemon's holdsUndeliveredEntryTask), and one that holds a task of news alone of
+// the issue's run and phase the daemon has not delivered, whatever it owes and whatever entry it
+// serves (internal/daemon's holdsUndeliveredNewsTask).
 type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration

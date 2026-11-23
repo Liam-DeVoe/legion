@@ -10,19 +10,25 @@ body: |-
   that is behind its entry, or of a merger in `merging` whose pull request is merged holds no pod.
   By the same rule a released claim that owes its phase nothing gets no idle backstop: the release
   of its pod, a project's pause that stops it, and the cancel of its release while the project is
-  paused arm none, since its later work comes as a daemon task or message, which wakes the pod.
-  One such claim still gets the backstop: a claim behind its entry that holds a task of the
-  issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
-  entry, such as a task whose send failed before any turn, the task of an earlier entry a relaunch
-  kept or a resume task of no entry, unless its completion is recorded, a merge forward holds its
-  role or its merged pull request is finishing its merge. Admission's owed-entry repair passes
-  over such a claim, and nothing else brings its pod back. The daemon sends a resume task with no
-  entry to a ready worker that holds its issue's phase with nothing pending, to a silent phase
-  worker and to a suspended owner that the boot resumes, each only when its claim is level with
-  its phase entry. A claim behind its entry gets that entry's task instead. While the daemon
-  records that a started issue gave its admission slot back to wait on another issue, the silence
-  sweep writes no start row for its phase workers, tells the architect of a quiet worker once after
-  24 hours, and the idle backstop wakes its released pod no earlier than 24 hours after the
-  release; the normal bounds apply again once the issue holds a slot. A migration adds
-  `pod_wake_backstops.armed_at`. The role prompt says when a reminder comes and what to do when a
-  completion is refused.
+  paused arm none, since any work such a claim gets later comes as a task or a message of the
+  daemon's, which wakes the pod once it is sent. A task of news alone whose send failed before any
+  turn is the exception, since nothing sends it again. Two kinds of such claim still get the
+  backstop. The first is a claim behind its entry that holds a task of the issue's run and phase
+  the daemon has not delivered, of that entry, of an earlier one or of no entry, such as a task
+  whose send failed before any turn, the task of an earlier entry a relaunch kept or a resume task
+  of no entry, unless its completion is recorded, a merge forward holds its role or its merged pull
+  request is finishing its merge. Admission's owed-entry repair passes over such a claim, and
+  nothing else brings its pod back. The daemon sends a resume task with no entry to a ready worker
+  that holds its issue's phase with no work pending, to a silent phase worker and to a suspended
+  owner that the boot resumes, each only when its claim is level with its phase entry. A claim
+  behind its entry gets that entry's task instead. A task of news alone is also a task of the
+  issue's run and phase with no entry, but no task of the phase, so the first kind does not count
+  it; the second kind does. The second kind is a claim that holds a task of news alone of the
+  issue's run and phase the daemon has not delivered, whatever it owes and whatever entry it
+  serves, such as a reviewer whose approval stands while GitHub holds the merge. A confirmed news
+  task, or one of another run or another phase, gets none. While the daemon records that a started
+  issue gave its admission slot back to wait on another issue, the silence sweep writes no start
+  row for its phase workers, tells the architect of a quiet worker once after 24 hours, and the
+  idle backstop wakes its released pod no earlier than 24 hours after the release; the normal
+  bounds apply again once the issue holds a slot. A migration adds `pod_wake_backstops.armed_at`.
+  The role prompt says when a reminder comes and what to do when a completion is refused.

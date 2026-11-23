@@ -42,8 +42,8 @@ import (
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
 // issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
-// differently: it is given its phase's task again when it holds that phase with nothing pending
-// (readyWorkerTask).
+// differently: it is given its phase's task again when it holds that phase with no work pending
+// (supervise.HoldsWork, readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -302,7 +302,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
+	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with no work pending is given its phase's task",
 		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
 	return nil
 }

@@ -994,8 +994,9 @@ func (r *cutoverRig) bootsApplied(t *testing.T) int {
 // releaseAgain has the idle release take issue's pod again, and holds that the release armed no
 // backstop for the merger. The merger's completion stands on its phase row (its READY head)
 // while the issue stays in merging on an open pull request, so it owes its phase nothing, and a
-// release arms no backstop for a released claim that owes nothing (dispatch://INFRA-2746 R1,
-// armBackstops): its later work comes as a task or message of the daemon's, which wakes the pod.
+// release arms no backstop for a released claim that owes nothing and holds no task the daemon
+// has yet to deliver (dispatch://INFRA-2746 R1, armBackstops): any work it gets later comes as a
+// task or a message of the daemon's, which wakes the pod once it is sent.
 // The release arms its backstops before it forgets its mark (ClearIssueRelease), so once the
 // merger stands suspended by `released` and the mark is gone, every backstop that release arms is
 // in the table. The pass takes a pod whose live claims are idle, have reported since their last

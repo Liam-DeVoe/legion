@@ -136,10 +136,12 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A worker that owes that phase nothing gets no
 // backstop, by the rule a release's backstop reads (getsBackstop, dispatch://INFRA-2746 R1), but
-// for the one such worker that rule keeps: a claim behind its entry that holds a task of the
-// issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
-// entry (holdsUndeliveredEntryTask). A stop the machine makes of a claim that holds a task no turn
-// has taken already owes it a launch (supervise's holdsTask), which brings it back at the resume. A
+// for the two kinds of such worker that rule keeps: a claim behind its entry that holds a task of
+// the issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of
+// no entry (holdsUndeliveredEntryTask), and a claim that holds a task of news alone of the issue's
+// run and phase the daemon has not delivered, whatever it owes and whatever entry it serves
+// (holdsUndeliveredNewsTask). A stop the machine makes of a claim that holds a task no turn has
+// taken already owes it a launch (supervise's holdsTask), which brings it back at the resume. A
 // start owed once the pause has ended, with no pause open after it, is logged as a released held
 // row (decision 23), and the outbox runs it at once through the pacing; a later open pause holds
 // it, and that pause's resume logs it.

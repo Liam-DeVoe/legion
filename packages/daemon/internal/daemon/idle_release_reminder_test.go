@@ -144,14 +144,15 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 }
 
 // The other half of dispatch://INFRA-2746 R1 at the release of a pod (check
-// c-idle-keeps-nothing-for-a-claim-that-owes-nothing): a released claim that owes nothing gets no
-// backstop, and its later work still brings its pod back, as a daemon task. The implementer's
-// completion is recorded and its pod is released with no backstop; the pod then stays released,
-// pass after pass, with nothing to wake it for. Then the issue moves back into implementing, as a
-// review that asks for changes leaves the implementer's row: its completion gone and its entry
-// raised above the one the claim was given, with no task of that entry queued. The admission
-// pass's owed-entry repair (workflow.OwedEntry) sends that entry's task, and the task brings the
-// pod back: the role registers again and is given a task.
+// c-idle-keeps-nothing-for-a-claim-that-owes-nothing): a released claim that owes nothing and
+// holds no task the daemon has yet to deliver gets no backstop, and its later work still brings
+// its pod back, as a daemon task once it is sent. The implementer's completion is recorded and
+// its pod is released with no backstop; the pod then stays released, pass after pass, with
+// nothing to wake it for. Then the issue moves back into implementing, as a review that asks for
+// changes leaves the implementer's row: its completion gone and its entry raised above the one
+// the claim was given, with no task of that entry queued. The admission pass's owed-entry repair
+// (workflow.OwedEntry) sends that entry's task, and the task brings the pod back: the role
+// registers again and is given a task.
 func TestIdleOfAClaimThatOwesNothingGetsItsPodBackForItsNextWork(t *testing.T) {
 	rig := newIdleWakeRig(t, nil, idleRigOwesNothing)
 	issue := rig.issue(idleRigOwesNothing)

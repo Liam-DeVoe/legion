@@ -1025,17 +1025,17 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // which records the released role stopped by the pause in the store (outbox.cancelRelease,
 // store.ReleaseCancelPause.GetsBackstop), each arm no backstop for LEGION-208's implementer when
 // its completion of the entry its phases row stands on is recorded while the issue stays in
-// implementing, and none when it is behind that entry and holds no task of the issue's run and
-// phase, since the daemon sends it its entry's task itself: in neither case does it owe the phase
-// anything a wake could bring back. The behind rows read the entry the claim serves from the
-// whole claim (supervise.Claim.ServingEntry, store.ClaimTx).
+// implementing and it holds no task, and none when it is behind that entry and holds no task of
+// the issue's run and phase, since the daemon sends it its entry's task itself: in neither case
+// does it owe the phase anything a wake could bring back. The behind rows read the entry the claim
+// serves from the whole claim (supervise.Claim.ServingEntry, store.ClaimTx).
 //
-// The second control of the check is the one claim that owes nothing and still gets the
-// backstop (holdsUndeliveredEntryTask): the implementer took entry 1, was handed the task of
-// entry 2, which its row stands on, and the send of that task failed before any turn, so the
-// claim holds it unconfirmed and serves entry 1. Its delivery waits for the claim to come back,
-// and admission's owed-entry repair passes over a claim that holds a task of the issue's run and
-// phase it still works (supervise.Delivery.StillWorked), so both writers arm its backstop. The
+// The second control of the check is the first of the two kinds of claim that owe nothing and
+// still get the backstop (holdsUndeliveredEntryTask): the implementer took entry 1, was handed
+// the task of entry 2, which its row stands on, and the send of that task failed before any turn,
+// so the claim holds it unconfirmed and serves entry 1. Its delivery waits for the claim to come
+// back, and admission's owed-entry repair passes over a claim that holds a task of the issue's run
+// and phase it still works (supervise.Delivery.StillWorked), so both writers arm its backstop. The
 // third control is a relaunch that kept the task it held (keepsStartTask): the implementer took
 // entry 1 and holds the task of entry 2 unconfirmed, while its row stands on entry 3. The repair
 // passes over it all the same, so both writers arm its backstop: the exception reads a task of
@@ -1046,6 +1046,18 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // row stands on entry 3, and it holds a task of entry 0 of the issue's run and phase unconfirmed.
 // The repair passes over it as well, so both writers arm its backstop. The third and fourth
 // controls fail if the exception reads only a task of the row's entry (p.Entry == f.RowEntry).
+//
+// The fifth control is the second kind, a task of news alone (supervise.Delivery.NewsOnly,
+// holdsUndeliveredNewsTask), which the daemon sends a claim level with its row's entry whatever
+// that claim completed (newsClaimTakes): the implementer took entry 1, its row stands on entry 1
+// and records its completion, and it holds an unconfirmed task of news alone of the issue's run
+// and phase whose send failed before any turn. Nothing sends that news again, so both writers arm
+// its backstop, though it owes its phase nothing. The same implementer gets none from either
+// writer holding nothing (the first row), holding a task of news alone that a turn confirmed, or
+// holding an unconfirmed one of another run or of another phase. Those last three rows fail if
+// the second kind reads only the task's mark (p.NewsOnly), and the fifth control's backstop row
+// fails on both writers without the second kind.
+//
 // The stop transaction's row stops it owing no launch, as every row here does; the machine's own
 // stop of a claim holding such a task owes it a launch as well (supervise's holdsTask), which the
 // row leaves out so that the stop reads the backstop's rule. The control, the same stop of an
@@ -1081,6 +1093,9 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			// a ready worker's resume task (workflow.ResumePhaseTask), which gives the claim no
 			// entry.
 			noEntryTask bool
+			// news is the task of news alone (supervise.Delivery.NewsOnly, newsTask) the
+			// implementer holds in place of any other, nil for none.
+			news *supervise.Delivery
 			// backstop is whether the stop arms the implementer's backstop, and why says why.
 			backstop bool
 			why      string
@@ -1101,6 +1116,18 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			{name: "it holds the task of an earlier entry and its completion of its row's entry is recorded",
 				served: 1, rowEntry: 3, task: 2, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
+			{name: "the fifth control: its completion of its row's entry is recorded and it holds an unconfirmed task of news alone of the issue's run and phase, whose send failed before any turn",
+				served: 1, rowEntry: 1, completed: true, news: newsTask(phase.Implementing, 1, false), backstop: true,
+				why: "nothing sends that news again, so the backstop is the one wake that delivers it"},
+			{name: "its completion of its row's entry is recorded and it holds a task of news alone that a turn confirmed",
+				served: 1, rowEntry: 1, completed: true, news: newsTask(phase.Implementing, 1, true),
+				why: "a turn took that news, so nothing waits for it to come back"},
+			{name: "its completion of its row's entry is recorded and it holds an unconfirmed task of news alone of another run",
+				served: 1, rowEntry: 1, completed: true, news: newsTask(phase.Implementing, 2, false),
+				why: "a task of news alone of another run gets none"},
+			{name: "its completion of its row's entry is recorded and it holds an unconfirmed task of news alone of another phase",
+				served: 1, rowEntry: 1, completed: true, news: newsTask(phase.Testing, 1, false),
+				why: "a task of news alone of another phase gets none"},
 			{name: "the control: its role owes its phase", served: 1, rowEntry: 1, backstop: true, why: "it owes its phase"},
 		} {
 			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
@@ -1112,6 +1139,9 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 					implementer.GivenEntry, implementer.Pending = c.task, undeliveredTask(phase.Implementing, c.task)
 				case c.noEntryTask:
 					implementer.Pending = undeliveredTask(phase.Implementing, 0)
+				case c.news != nil:
+					task := *c.news
+					implementer.Pending = &task
 				}
 				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
 				if writer.released {
@@ -1195,6 +1225,21 @@ func undeliveredTask(at phase.Phase, entry int64) *supervise.Delivery {
 	return &supervise.Delivery{ID: "outbox:42", Task: "the phase's next step", Generation: 1, Entry: entry, Phase: at,
 		QueuedAt: queued, Prompted: true, SendFailures: 1, LastSendFailureAt: queued.Add(time.Minute),
 		LastSendError: "the connection to the agent closed before the prompt was read"}
+}
+
+// newsTask is a task of news of the approved design alone (supervise.Delivery.NewsOnly) of
+// LEGION-208's phase at and run generation, which carries no entry, as the daemon's news-only
+// start queues it for a claim level with its row's entry (newsClaimTakes): left as a send that
+// failed before any turn leaves it (undeliveredTask), or, where confirmed is set, confirmed by the
+// turn a later send started.
+func newsTask(at phase.Phase, generation uint64, confirmed bool) *supervise.Delivery {
+	d := undeliveredTask(at, 0)
+	d.Task, d.Generation, d.NewsOnly = "The approved design of LEGION-208 changed.", generation, true
+	if confirmed {
+		d.DeliveredAt = d.LastSendFailureAt.Add(time.Minute)
+		d.ConfirmedAt = d.DeliveredAt
+	}
+	return d
 }
 
 // cancelRelease cancels LEGION-208's release through the outbox's own cancel, with the rig's

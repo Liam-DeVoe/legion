@@ -111,14 +111,14 @@ type Kubernetes struct {
 	// IdleRelease is `runtime.kubernetes.idle_release`, settled: how long an issue pod with no
 	// turn in progress and no turn due is kept before the daemon releases it, and how long after
 	// a release the backstop wakes the phase worker of the pod whose phase is open and that gets
-	// a backstop by the backstop's rule: it owes that phase, or it is the one exception of
-	// dispatch://INFRA-2746 R1 (internal/daemon's getsBackstop). For an issue the daemon records
-	// as waiting on another issue (record.Issue.ReleasedForWaitAt), the backstop wakes the pod
-	// only workflow.WaitSilenceBound, 24 hours, after it was armed (pod_wake_backstops.armed_at;
-	// workflow's backstopWaits, internal/daemon's fireDueBackstops), in place of
-	// `backstop_minutes`, until the issue takes an admission slot again. Both defaults apply when
-	// the file sets no block, so release is on for every Kubernetes deployment; `idle_minutes: 0`
-	// turns it off.
+	// a backstop by the backstop's rule: it owes that phase, or it is of one of the two kinds
+	// dispatch://INFRA-2746 R1 excepts (internal/daemon's getsBackstop). For an issue the daemon
+	// records as waiting on another issue (record.Issue.ReleasedForWaitAt), the backstop wakes
+	// the pod only workflow.WaitSilenceBound, 24 hours, after it was armed
+	// (pod_wake_backstops.armed_at; workflow's backstopWaits, internal/daemon's
+	// fireDueBackstops), in place of `backstop_minutes`, until the issue takes an admission slot
+	// again. Both defaults apply when the file sets no block, so release is on for every
+	// Kubernetes deployment; `idle_minutes: 0` turns it off.
 	IdleRelease IdleReleaseConfig
 	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
 	// issue pod's launcher process runs by. Every default applies when the file sets no block, so
@@ -167,13 +167,14 @@ func DefaultRepositoryCache() RepositoryCacheConfig { return defaultRepositoryCa
 // suspends each live claim with the source `released` and deletes the pod, its disk and its
 // Sandbox (IdleMinutes), and how long after that release the backstop wakes (BackstopMinutes) the
 // phase worker of the pod whose phase is open and that gets a backstop by the backstop's rule: it
-// owes that phase, or it is the one exception of dispatch://INFRA-2746 R1 (internal/daemon's
-// getsBackstop). The backstop stands in for a wait that raises no event of its own. For an issue
-// the daemon records as waiting on another issue (record.Issue.ReleasedForWaitAt), the backstop
-// wakes the pod only workflow.WaitSilenceBound, 24 hours, after it was armed
-// (pod_wake_backstops.armed_at; workflow's backstopWaits, internal/daemon's fireDueBackstops), in
-// place of BackstopMinutes, until the issue takes an admission slot again. IdleMinutes zero turns
-// release off, and the deployment's pods then live from an issue's first role start to its close.
+// owes that phase, or it is of one of the two kinds dispatch://INFRA-2746 R1 excepts
+// (internal/daemon's getsBackstop). The backstop stands in for a wait that raises no event of its
+// own. For an issue the daemon records as waiting on another issue
+// (record.Issue.ReleasedForWaitAt), the backstop wakes the pod only workflow.WaitSilenceBound, 24
+// hours, after it was armed (pod_wake_backstops.armed_at; workflow's backstopWaits,
+// internal/daemon's fireDueBackstops), in place of BackstopMinutes, until the issue takes an
+// admission slot again. IdleMinutes zero turns release off, and the deployment's pods then live
+// from an issue's first role start to its close.
 type IdleReleaseConfig struct {
 	IdleMinutes     int
 	BackstopMinutes int

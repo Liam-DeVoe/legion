@@ -2834,16 +2834,20 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // IdleHoldReminder), which keeps a pod for a reminder only of a claim that owes its phase; and
 // the backstop of a released or pause-stopped worker (internal/daemon's getsBackstop, read by
 // armBackstops, projectPause.stopTx and the paused cancel of a release), which arms no wake for
-// a claim that owes nothing but one. The other two read the owed answer's rule because a claim
-// that owes nothing is reminded of nothing and mostly waits on nothing a backstop stands in for:
-// the silence sweep does not nudge a role whose completion stands, so a hold on such a claim's
-// reported wake would never end, and a backstop would wake it every backstop_minutes to do
-// nothing where its later work comes as a daemon task or message, which wakes the pod. The one
-// claim the backstop keeps is behind its entry and holds a task of the issue's run and phase the
-// daemon has not delivered, of that entry, of an earlier one or of no entry (internal/daemon's
-// holdsUndeliveredEntryTask): that delivery waits for the claim to come back, admission's
-// owed-entry repair passes over a claim that holds such a task, and nothing else brings the pod
-// back for it.
+// a claim that owes nothing but for two kinds of claim. The other two read the owed answer's rule
+// because a claim that owes nothing is reminded of nothing and mostly waits on nothing a backstop
+// stands in for: the silence sweep does not nudge a role whose completion stands, so a hold on
+// such a claim's reported wake would never end, and a backstop would wake it every
+// backstop_minutes to do nothing where any work it gets later comes as a task or a message of the
+// daemon's, which wakes the pod once it is sent. The first kind the backstop keeps is behind its
+// entry and holds a task of the issue's run and phase the daemon has not delivered, of that
+// entry, of an earlier one or of no entry (internal/daemon's holdsUndeliveredEntryTask): that
+// delivery waits for the claim to come back, admission's owed-entry repair passes over a claim
+// that holds such a task, and nothing else brings the pod back for it. The second holds a task of
+// news alone (supervise.Delivery.NewsOnly) of the issue's run and phase the daemon has not
+// delivered, whatever it owes and whatever entry it serves (internal/daemon's
+// holdsUndeliveredNewsTask): once a send of that news fails before any turn, nothing sends it
+// again.
 func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
 	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged
 }

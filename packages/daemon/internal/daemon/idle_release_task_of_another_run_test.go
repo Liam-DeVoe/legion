@@ -10,13 +10,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// dispatch://INFRA-2746 R1's one exception at the release of a pod (check
-// c-idle-keeps-nothing-for-a-claim-that-owes-nothing): a released claim behind its entry keeps
-// its backstop only for an undelivered task of the issue's run and phase that it still works
-// (supervise.Delivery.StillWorked, which admission's owed-entry repair reads too). A claim behind
-// its entry that holds an unconfirmed task of another phase or of no run is not passed over by
-// that repair, which sends it its row's entry's task, and that send is what brings its pod back:
-// its release arms no backstop. The control is the same claim holding a task of the issue's run
+// The first of dispatch://INFRA-2746 R1's two exceptions at the release of a pod (check
+// c-idle-keeps-nothing-for-a-claim-that-owes-nothing, holdsUndeliveredEntryTask): a released
+// claim behind its entry keeps its backstop only for an undelivered task of the issue's run and
+// phase that it still works (supervise.Delivery.StillWorked, which admission's owed-entry repair
+// reads too). The second, a task of news alone (holdsUndeliveredNewsTask), is the fifth control
+// of TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry,
+// whose rows hold a news task of another run or of another phase as well. A claim behind its
+// entry that holds an unconfirmed task of another phase or of no run is not passed over by that
+// repair, which sends it its row's entry's task, and that send is what brings its pod back: its
+// release arms no backstop. The control is the same claim holding a task of the issue's run
 // and phase, which the repair passes over and which keeps its backstop. The two rows of another
 // phase or of no run fail if the exception reads the task's confirmation alone
 // (p.ConfirmedAt.IsZero()) in place of StillWorked, which no row of
