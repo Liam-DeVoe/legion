@@ -240,35 +240,47 @@ func retroSteps(words ...string) []record.PlanStep {
 	return steps
 }
 
-// The owner's retro of a task whose last step of the type implementation is the owner's is done as
-// that step's role, and every write of the owner's pane judges that under the launch lock: the rig's
-// ActsAs is the daemon's rule (record.OwnerActsAs) over the issue as the record would read it, the
-// task's plan rows `implementer:owner reviewer`. While the issue stands at the reviewer's step the
-// owner's pane holds the review App, its own. At the retro the owner-step's ask whether the pane
-// holds the implement App is a wait until the outbox's write lands, and then nil; a refresh and a
-// relaunch during the retro leave the pane on the implement App the owner was told of; once the
-// retro ended and the issue stands in merging, the retro's write-back puts the review App back.
+// The owner's slot holds the App of the role the owner's act is done as, and every write of the
+// owner's pane judges that under the launch lock: the rig's ActsAs is the daemon's rule
+// (record.OwnerActsAs) over the issue as the record would read it, the task's plan rows
+// `implementer:owner reviewer`, and whether the record holds a merge forward asked of the owner
+// that has not ended. While the issue stands at the reviewer's step with no merge forward the
+// owner's pane holds the review App, its own. Two windows hold the implement App: the owner's
+// retro of its own implementer step, and a merge forward asked of the owner while another agent
+// reviews, since a merge forward is an act as the implementer. In each the outbox's ask whether the
+// pane holds the implement App is a wait until the outbox's write lands, and then nil; a refresh
+// and a relaunch in the window leave the pane on the implement App the owner was told of; once the
+// window ended and the issue stands in merging, the write-back puts the review App back.
 //
 // The controls: at the retro of `acceptance:owner` alone, which the owner does as itself, and at the
 // retro of `implementer reviewer`, which its implementer does, the same writes, refresh and
 // relaunch leave the owner's pane on the review App.
-func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementAppUnderTmux(t *testing.T) {
+func TestTheOwnersRetroAndItsMergeForwardHoldTheImplementAppUnderTmux(t *testing.T) {
 	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
+	reviewing := record.Issue{Key: "LEGION-1", Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer}
 	for _, tc := range []struct {
 		name  string
 		steps []record.PlanStep
-		// placeRole is the role of the claim that works the retro (record.Issue.PlaceRole).
-		placeRole claim.Role
-		want      string
+		// window is the issue as the record reads it through the window the test writes the pane in,
+		// and asked whether the record holds a merge forward asked of the owner then.
+		window record.Issue
+		asked  bool
+		want   string
 	}{
-		{name: "implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"), placeRole: claim.RoleArchitect, want: implement},
-		{name: "control: acceptance:owner alone", steps: retroSteps("acceptance:owner"), placeRole: claim.RoleArchitect, want: review},
-		{name: "control: the retro of a fresh implementer", steps: retroSteps("implementer", "reviewer"), placeRole: claim.RoleImplementer, want: review},
+		{name: "the owner's retro of implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"),
+			window: record.Issue{Key: "LEGION-1", Phase: phase.Retro, PlaceRole: claim.RoleArchitect}, want: implement},
+		{name: "a merge forward asked of the owner of implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"),
+			window: reviewing, asked: true, want: implement},
+		{name: "control: acceptance:owner alone", steps: retroSteps("acceptance:owner"),
+			window: record.Issue{Key: "LEGION-1", Phase: phase.Retro, PlaceRole: claim.RoleArchitect}, want: review},
+		{name: "control: the retro of a fresh implementer", steps: retroSteps("implementer", "reviewer"),
+			window: record.Issue{Key: "LEGION-1", Phase: phase.Retro, PlaceRole: claim.RoleImplementer}, want: review},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			var issue atomic.Pointer[record.Issue]
-			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer})
+			var asked atomic.Bool
+			issue.Store(&reviewing)
 			var owner atomic.Value
 			owner.Store(claim.Token(""))
 			f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
@@ -276,7 +288,7 @@ func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementAppUnderTmux(t *te
 					if token != owner.Load().(claim.Token) {
 						return "", false, nil
 					}
-					role, acting := record.OwnerActsAs(*issue.Load(), tc.steps)
+					role, acting := record.OwnerActsAs(*issue.Load(), tc.steps, asked.Load())
 					return role, acting, nil
 				}
 			})
@@ -293,40 +305,43 @@ func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementAppUnderTmux(t *te
 				t.Fatalf("the owner's pane holds %q at the reviewer's step, want %q", got, review)
 			}
 
-			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Retro, PlaceRole: tc.placeRole})
+			window := tc.window
+			issue.Store(&window)
+			asked.Store(tc.asked)
 			role := claim.RoleArchitect
 			if tc.want == implement {
 				role = claim.RoleImplementer
 				if err := f.SlotHoldsCredential(ctx, spec.Claim, role); !errors.Is(err, runtime.ErrSlotCredentialPending) {
-					t.Fatalf("the retro's ask before the outbox's write = %v, want runtime.ErrSlotCredentialPending", err)
+					t.Fatalf("the ask before the outbox's write = %v, want runtime.ErrSlotCredentialPending", err)
 				}
 			}
 			if err := f.WriteSlotCredential(ctx, spec.Claim); err != nil {
-				t.Fatalf("WriteSlotCredential of the owner's pane at the retro = %v", err)
+				t.Fatalf("WriteSlotCredential of the owner's pane in the window = %v", err)
 			}
 			if err := f.SlotHoldsCredential(ctx, spec.Claim, role); err != nil {
-				t.Fatalf("the retro's ask whether the pane holds the App of %s once written = %v, want nil", role, err)
+				t.Fatalf("the ask whether the pane holds the App of %s once written = %v, want nil", role, err)
 			}
 			if got := held(); got != tc.want {
-				t.Fatalf("the owner's pane holds %q at the retro once written, want %q", got, tc.want)
+				t.Fatalf("the owner's pane holds %q in the window once written, want %q", got, tc.want)
 			}
 			f.refreshGitHubCredentials(ctx)
 			if got := held(); got != tc.want {
-				t.Fatalf("the owner's pane holds %q after a refresh during the retro, want %q", got, tc.want)
+				t.Fatalf("the owner's pane holds %q after a refresh in the window, want %q", got, tc.want)
 			}
 			if _, err := f.Spawn(ctx, spec); err != nil {
-				t.Fatalf("the relaunch of the architect during the retro: %v", err)
+				t.Fatalf("the relaunch of the architect in the window: %v", err)
 			}
 			if got := held(); got != tc.want {
-				t.Fatalf("the owner's pane holds %q after a relaunch during the retro, want %q", got, tc.want)
+				t.Fatalf("the owner's pane holds %q after a relaunch in the window, want %q", got, tc.want)
 			}
 
 			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Merging})
+			asked.Store(false)
 			if err := f.WriteSlotCredential(ctx, spec.Claim); err != nil {
-				t.Fatalf("the retro's write-back of the owner's pane = %v", err)
+				t.Fatalf("the write-back of the owner's pane = %v", err)
 			}
 			if got := held(); got != review {
-				t.Fatalf("the owner's pane holds %q after the retro's write-back in merging, want %q", got, review)
+				t.Fatalf("the owner's pane holds %q after the write-back in merging, want %q", got, review)
 			}
 		})
 	}

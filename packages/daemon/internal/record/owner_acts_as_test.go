@@ -90,7 +90,7 @@ func TestTheOwnersSlotActsAsTheStepItDoes(t *testing.T) {
 			} else if p != nil {
 				steps = p.Steps["a"]
 			}
-			if role, acting := OwnerActsAs(*issue, steps); role != tc.want || acting != tc.acting {
+			if role, acting := OwnerActsAs(*issue, steps, false); role != tc.want || acting != tc.acting {
 				where := "no plan rows"
 				if tc.plan != nil {
 					where = tc.plan.steps

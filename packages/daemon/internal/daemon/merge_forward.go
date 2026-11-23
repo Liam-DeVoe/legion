@@ -7,9 +7,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// errMergeForwardWaits is a merge-forward message to an issue's owner that waits for the owner's
+// slot to hold the App of the role it asks an act as (ownerSlotActs).
+var errMergeForwardWaits = wait.New("the merge-forward message waits for its owner's slot")
 
 // mergeForwardMessage publishes one message of a merge forward (record.MergeForwardMessage,
 // dispatch://INFRA-4374 R1) to the Envoy topic of the role it names on the row's issue, and to
@@ -37,7 +43,9 @@ import (
 // wake and the publish - is deliverHeld's, as it is a merge-queue removal's. The message reaches the
 // claim it names (record.MergeForwardMessage.Claim), the worker of its role's step when the
 // workflow wrote it; a row the release before wrote names none and reaches the claim the record
-// gives that step when it runs (workerToken).
+// gives that step when it runs (workerToken). A message that reaches the issue's owner and asks an
+// act as its role waits, once the owner's session runs, for the owner's slot to hold that role's
+// App (ownerSlotActs).
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -71,5 +79,39 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
-		delivered:  "outbox merge-forward message delivered"})
+		delivered:  "outbox merge-forward message delivered",
+		holds:      func(ctx context.Context) error { return r.ownerSlotActs(ctx, row, *issue, token, payload) }})
+}
+
+// ownerSlotActs is the hold of a merge-forward message that reaches token where token is the
+// owner of issue (record.OwnerClaim): the owner works the step of the message's role, so the message
+// asks it for an act as that role, and the owner's slot holds the App of the role the act is done
+// as. The ask is an act as the implementer, the merge forward the record holds asked of the owner,
+// for which the slot acts as the implementer (record.OwnersMergeForward), so the runtime writes the
+// slot and the ask waits until its gh files hold the implement App. The review a landing asks of
+// the reviewer is an act as the reviewer, an approval GitHub refuses from the pull request's
+// author, the implement App, so it waits while the owner's slot acts as an App of another role,
+// through the owner's retro of its own implementation step and through a merge forward asked of it,
+// and then until the write-back of the owner's own App has reached its gh files: it reaches the
+// owner once, after that write-back. The landed told to the worker of the issue's phase, the
+// owner's own step, says to go on with that step at the new head, so it waits the same way for that
+// step's App. The hold asks no act, only that the worker stop writing the workspace, and goes at
+// once. A message to another agent's claim waits for nothing here.
+func (r *outbox) ownerSlotActs(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.MergeForwardMessage) error {
+	if payload.Step == record.MergeForwardHold {
+		return nil
+	}
+	if owner, err := record.OwnerClaim(issue); err != nil || owner != token {
+		return nil
+	}
+	_, slot, err := r.ownerRoles(ctx, token)
+	if err != nil {
+		return err
+	}
+	if !r.sameApp(ctx, row.Issue, slot, payload.Role) {
+		return fmt.Errorf("%w: the merge-forward %s row %d of %s waits for %s's slot to act as %s, and it acts as %s",
+			errMergeForwardWaits, payload.Step, row.ID, row.Issue, token, payload.Role, slot)
+	}
+	_, err = r.slotHoldsApp(ctx, row, token, payload.Role, errMergeForwardWaits, "merge-forward "+string(payload.Step)+" row")
+	return err
 }

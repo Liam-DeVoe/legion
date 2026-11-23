@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -112,6 +113,41 @@ func (r *ownerHoldRig) published() []string {
 	return kinds
 }
 
+// ownerStepStale is the line the executor logs for an owner-step that finished undelivered.
+const ownerStepStale = "outbox owner-step finished undelivered: its step no longer runs"
+
+// staleLines is each line of logged, a JSON log, that ownerStepStale is the message of, decoded.
+func staleLines(t *testing.T, logged string) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for line := range strings.SplitSeq(strings.TrimSpace(logged), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("decode the log line %q: %v", line, err)
+		}
+		if entry["msg"] == ownerStepStale {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
+}
+
+// staleUnread fails the test unless logged holds one line of a stale owner-step, and that line
+// names no slot: the executor decided the step no longer runs before it read the slot's role.
+func staleUnread(t *testing.T, logged, of string) {
+	t.Helper()
+	lines := staleLines(t, logged)
+	if len(lines) != 1 {
+		t.Fatalf("the log holds %d lines of %s, want one:\n%s", len(lines), of, logged)
+	}
+	if slot, read := lines[0]["slot"]; read {
+		t.Fatalf("the line of %s names the slot %q, which the executor never read:\n%s", of, slot, logged)
+	}
+}
+
 // A stale owner-step is not delivered: the notice names the run it tells, and once that run has
 // ended it finishes unpublished with the log line of a step that no longer runs, asking the runtime
 // nothing. The owner's retro of `implementer:owner`: its notice while the retro runs is published,
@@ -148,9 +184,7 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 		if got := r.published(); len(got) != 1 {
 			t.Fatalf("the notices published = %v after the retro ended, want the one of the running retro alone", got)
 		}
-		if lines := strings.Count(r.logged.String(), "outbox owner-step finished undelivered: its step no longer runs"); lines != 1 {
-			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", lines, r.logged.String())
-		}
+		staleUnread(t, r.logged.String(), "the retro's notice after it ended")
 		if got, want := slotCalls(r.rt, r.owner), []string{"WriteSlotCredential", "SlotHoldsCredential implementer"}; strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want the running retro's %q, and nothing of the ended retro's", got, want)
 		}
@@ -326,8 +360,8 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 	})
 }
 
-// stands moves LEGION-1 to at, its task a running at place, as a move of the walk writes the two
-// (record.Store.MoveTask, PutIssue).
+// stands moves LEGION-1 to at, its task a running at place, held by nothing, as a move of the walk
+// writes the two (record.Store.MoveTask, PutIssue).
 func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPlace) {
 	t.Helper()
 	ctx := context.Background()
@@ -339,7 +373,7 @@ func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPla
 		if err := r.records.MoveTask(ctx, tx, "LEGION-1", 1, "a", place, record.TaskRunning); err != nil {
 			return err
 		}
-		issue.Phase = at
+		issue.Phase, issue.Hold = at, nil
 		return r.records.PutIssue(ctx, tx, *issue)
 	}); err != nil {
 		t.Fatalf("move LEGION-1 to %s at %+v: %v", at, place, err)
@@ -429,6 +463,79 @@ func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.
 		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		r.writtenBack(t)
 		asked(t, r, append(want, "WriteSlotCredential"), "after the retro's write-back ran in merging,")
+	})
+
+	// hold puts LEGION-1, standing in its retro, on a hold from it, as an escalation does.
+	hold := func(t *testing.T, r *ownerHoldRig) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			issue, err := r.records.Issue(ctx, tx, "LEGION-1")
+			if err != nil {
+				return err
+			}
+			issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldEscalated}
+			return r.records.PutIssue(ctx, tx, *issue)
+		}); err != nil {
+			t.Fatalf("hold LEGION-1 from its retro: %v", err)
+		}
+	}
+
+	// A hold of the retro gives the owner no acting role (record.OwnerActsAs), and the owner does no
+	// step or retro then: complete_step refuses its report. So the retro's owner-step run during the
+	// hold finishes undelivered, writing and asking nothing, as a held step's does. Once the hold's
+	// retry puts the issue back in the retro, the retry tells the retro again (workflow's restart,
+	// an owner-step of the same run), which is told once the slot holds the implement App.
+	t.Run("implementer:owner reviewer, its retro held, then retried", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer:owner", "reviewer")
+		r.started(t, "step", 1, true)
+		r.started(t, "retro", 0, false)
+		hold(t, r)
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retro's owner-step while the issue is held = %v, want it finished", err)
+		}
+		if got := r.published(); len(got) != 0 {
+			t.Fatalf("the retro's owner-step published %v while the issue is held, want nothing", got)
+		}
+		staleUnread(t, r.logged.String(), "the held retro's owner-step")
+		asked(t, r, nil, "for the retro's owner-step while the issue is held,")
+
+		r.stands(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+		r.rt.ScriptSlotHolds(nil)
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retry's owner-step of the retro = %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the retry's owner-step of the retro published %v, want one", got)
+		}
+		asked(t, r, []string{"WriteSlotCredential", "SlotHoldsCredential implementer"}, "for the retry's owner-step of the retro,")
+	})
+
+	// The same holds of a retro the owner does as itself, of `acceptance:owner` alone, whose App is
+	// the owner's own: the hold, not the App, ends what the owner may do. While the issue is held
+	// the retro's owner-step finishes undelivered and asks the runtime nothing, and once the hold's
+	// retry puts the issue back in the retro the retry's owner-step is told after one ask.
+	t.Run("acceptance:owner alone, its retro held, then retried", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "acceptance:owner")
+		r.started(t, "step", 1, true)
+		r.started(t, "retro", 0, false)
+		hold(t, r)
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retro's owner-step while the issue is held = %v, want it finished", err)
+		}
+		if got := r.published(); len(got) != 0 {
+			t.Fatalf("the retro's owner-step published %v while the issue is held, want nothing", got)
+		}
+		staleUnread(t, r.logged.String(), "the held retro's owner-step")
+		asked(t, r, nil, "for the retro's owner-step while the issue is held,")
+
+		r.stands(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retry's owner-step of the retro = %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the retry's owner-step of the retro published %v, want one", got)
+		}
+		asked(t, r, []string{"SlotHoldsCredential architect"}, "for the retry's owner-step of the retro,")
 	})
 
 	t.Run("control: acceptance:owner alone", func(t *testing.T) {
