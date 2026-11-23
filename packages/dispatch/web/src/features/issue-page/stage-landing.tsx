@@ -1,18 +1,17 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { useAddressedItem } from "../artifacts/ArtifactDocument";
 import { useWholeRouteRead } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
-import { useKeymap } from "../shell/keymap";
 import { useOpenedDocument, useOutlineAddress } from "./document-address";
-import { issueAddress, presetPath } from "./issue-address";
+import { useEscapeOrder } from "./escape-order";
+import { issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { OpenedDocument } from "./OpenedDocument";
-import { useAskOutline, useFocusBranch } from "./outline-request";
 import { isFilter } from "./presets";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
@@ -33,13 +32,10 @@ import { type ItemLanding, isItemRoute, useItemLanding } from "./useItemLanding"
  * an id written short on an item's own address, several ids, none, a failed read - is the
  * outline's own landing (`slots/body.tsx`), which this does not do again.
  *
- * It also binds the page's own Escape steps between a caret and the outline (R1): a caret is left
- * first (the outline's and a document's own), then an opened document is closed
- * (`OpenedDocument.tsx`), then the filter by words is emptied, then every view is turned off,
- * and then the outline is left (`useTreeKeymap.ts`). The words' two steps and the views' are
- * these. It keeps the outline's scroll place across a round trip through a view, puts the focus
- * on an approval request's entry in the header when the address names one, and opens Details at
- * the issue's steps on `/steps`.
+ * It also binds the page's own Escape steps between a caret and the outline (R1,
+ * `escape-order.ts`), keeps the outline's scroll place across a round trip through a view or a
+ * document, puts the focus on an approval request's entry in the header when the address names
+ * one, and opens Details at the issue's steps on `/steps`.
  */
 export function useStageLanding({ issue, route }: SlotProps): {
   readonly document?: ReactNode;
@@ -103,13 +99,13 @@ export function useStageLanding({ issue, route }: SlotProps): {
         : markedItem;
   useApprovalFocus(landing);
   useStepsAddress(route);
-  usePageEscape({
+  useEscapeOrder({
     documentOpen: opened !== undefined,
     filter: address.filter,
     issueKey: issue.key,
     viewOn: isFilter(address.preset),
   });
-  useScrollPlace(opened === undefined ? address.preset : "document");
+  useOutlinePlace(opened === undefined && !isFilter(address.preset), address.target !== undefined);
   const queryAnswered = useAnsweredOnce(
     queryRead.prefix === undefined || !queryRead.resolution.isPending
   );
@@ -247,103 +243,45 @@ function useStepsAddress(route: IssueRoute): void {
 }
 
 /**
- * The page's own Escape steps between a caret and the outline (R1): the box the filter by words
- * is typed in empties, then leaves; the filter's words are cleared; every view is turned off,
- * the reader kept on the node they were on. A document open over the page closes first
- * (`OpenedDocument.tsx`), a menu open over it answers its own press (`IssuePresets.tsx`), and a
- * control inside a row of the outline gives the row back first (`useTreeKeymap.ts`).
+ * Keeps the outline's scroll place across a round trip through a view or a document (R1, the
+ * plan's ST-5). The place is recorded on each scroll while the outline is drawn, for the
+ * following it is drawn in (`useFollowing`), and kept while a view or a document is drawn in its
+ * place. When the outline is drawn again it is put back before the browser paints: by Back, the
+ * place of the following Back returns to; by Conversation, `t c` or Escape off a view - each an
+ * address of the outline that names no node - or by a document's way back to the outline address
+ * it was opened from, the outline's last place. A new address that names a node, a link to it,
+ * puts nothing back: it lands by its own rules (`slots/body.tsx`). A scroll the browser makes as
+ * a shorter view clamps the page lands after that view is drawn, so it is never the outline's.
  */
-function usePageEscape({
-  documentOpen,
-  filter,
-  issueKey,
-  viewOn,
-}: {
-  documentOpen: boolean;
-  filter: string;
-  issueKey: string;
-  viewOn: boolean;
-}): void {
-  const navigate = useNavigate();
-  const { hash, pathname, search } = useLocation();
-  const ask = useAskOutline();
-  const [focusBranch] = useFocusBranch();
-  // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest of
-  // the address.
-  const setWords = (next: string) => {
-    const query = new URLSearchParams(search);
-    if (next === "") query.delete("q");
-    else query.set("q", next);
-    const rest = query.toString();
-    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
-  };
-  // Whether the page's own Escape is the next step: no document is open, whose close comes
-  // first, no menu is open, whose press it is, and the focus is in no control inside a row of
-  // the outline, which Escape gives the row back from first (`useTreeKeymap.ts`).
-  const escapesHere = () => {
-    if (documentOpen || document.querySelector('[role="menu"]') !== null) return false;
-    const active = document.activeElement;
-    const row = active?.closest("[data-node-row]");
-    return row === null || row === undefined || row === active;
-  };
-  useKeymap("issue", [
-    {
-      // The box the filter by words is typed in: Escape empties it, and leaves it once it is
-      // empty, as Escape leaves a caret first.
-      id: "words-leave",
-      inEditable: true,
-      keys: "Escape",
-      label: "Clear the filter by words, then leave it",
-      palette: false,
-      run: () => {
-        if (filter !== "") setWords("");
-        else (document.activeElement as HTMLElement | null)?.blur();
-      },
-      when: () => document.activeElement?.matches('[data-testid="issue-filter"]') === true,
-    },
-    {
-      id: "words-clear",
-      keys: "Escape",
-      label: "Clear the filter by words",
-      palette: false,
-      run: () => setWords(""),
-      when: () => filter !== "" && escapesHere(),
-    },
-    {
-      // Every view off, which is Conversation's address. A reader on a row of the view stays on
-      // that node in the outline it opens on, so the next Escape leaves the outline.
-      id: "filters-off",
-      keys: "Escape",
-      label: "Turn every view off",
-      palette: false,
-      run: () => {
-        const on = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-        navigate(presetPath(issueKey, "conversation"));
-        if (on !== undefined) ask(on, focusBranch);
-      },
-      when: () => viewOn && escapesHere(),
-    },
-  ]);
-}
-
-/**
- * Keeps the reader's place on each view and on an opened document across a round trip (R1): a
- * press or a chord that turns a view on and off again leaves the outline where the reader left
- * it. The place is recorded as the reader scrolls, under the view on, and put back as a view is
- * drawn again, before the browser paints it. A scroll the browser makes as a shorter view clamps
- * the window lands after the view has changed, so it is recorded under the view it belongs to.
- */
-function useScrollPlace(place: string): void {
+function useOutlinePlace(drawn: boolean, namesNode: boolean): void {
+  const { pathname, search } = useLocation();
+  const following = useFollowing();
+  const move = useNavigationType();
+  // The address as a document's way back writes it (`NodeMenu.tsx`'s `outline`).
+  const address = `${pathname}${search}`;
   const places = useRef(new Map<string, number>());
-  const current = useRef(place);
+  const last = useRef<{ readonly address: string; readonly top: number } | undefined>(undefined);
+  const now = useRef({ address, drawn, following });
   useEffect(() => {
-    const record = () => places.current.set(current.current, window.scrollY);
+    const record = () => {
+      const { address, drawn, following } = now.current;
+      if (!drawn) return;
+      places.current.set(following, window.scrollY);
+      last.current = { address, top: window.scrollY };
+    };
     window.addEventListener("scroll", record, { passive: true });
     return () => window.removeEventListener("scroll", record);
   }, []);
   useLayoutEffect(() => {
-    current.current = place;
-    const top = places.current.get(place);
+    const wasDrawn = now.current.drawn;
+    now.current = { address, drawn, following };
+    if (wasDrawn || !drawn) return;
+    const returned = move === "POP" ? places.current.get(following) : undefined;
+    const outline =
+      last.current !== undefined && (!namesNode || last.current.address === address)
+        ? last.current.top
+        : undefined;
+    const top = returned ?? outline;
     if (top !== undefined) window.scrollTo({ top });
-  }, [place]);
+  }, [address, drawn, following, move, namesNode]);
 }

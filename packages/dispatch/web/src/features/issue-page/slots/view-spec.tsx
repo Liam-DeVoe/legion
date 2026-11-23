@@ -76,6 +76,10 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
     onAddressDrawn(rows.some(({ id }) => id === revealed));
   }, [onAddressDrawn, revealed, tells, view.root]);
   const request = useOutlineRequest();
+  // While the view is on, the page's Escape that turns every view off (part N's R1) comes before
+  // a statement gives the view up too, words or none.
+  const viewEscape: { holdsEscape?: boolean } =
+    address.preset !== "conversation" ? { holdsEscape: true } : {};
   return (
     <NoTooltips>
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
@@ -90,6 +94,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           // The words filter's Escape comes before the view is left; turning the view off with
           // Escape is a later step of the page's key table.
           holdsEscape={address.filter !== ""}
+          {...viewEscape}
           issue={issue}
           reader={viewer}
           {...(namesFailure === undefined ? {} : { namesFailure })}
