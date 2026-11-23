@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -85,6 +87,43 @@ func ShownLogin(login string) string {
 		return login
 	}
 	return NotALogin
+}
+
+// NotABranch is what ShownBranch prints in place of a branch name it does not print.
+const NotABranch = "(a branch name the daemon does not print)"
+
+// ShownBranch is branch, a branch a GitHub answer names (a repository's default_branch, which the
+// daemon records and later names), as a message may print it: branch where git takes it as a
+// branch's name (branchName) and it holds no GitHub token form (HoldsToken); NotABranch
+// otherwise. A token GitHub mints is a name git takes, so the token test refuses it.
+func ShownBranch(branch string) string {
+	if branchName(branch) && !HoldsToken(branch) {
+		return branch
+	}
+	return NotABranch
+}
+
+// branchName says whether name is one `git check-ref-format --branch` takes, held to what a
+// message may print: valid UTF-8 of graphic characters with no space, none of `~^:?*[\`, no `..`
+// or `@{`, not `@` and not opening with `-`, no empty component and none that opens with `.` or
+// ends in `.lock`, ending in neither `/` nor `.`, and at most 255 bytes, GitHub's bound on a ref.
+func branchName(name string) bool {
+	if name == "" || name == "@" || len(name) > 255 || !utf8.ValidString(name) ||
+		strings.HasPrefix(name, "-") || strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") ||
+		strings.Contains(name, "..") || strings.Contains(name, "@{") || strings.ContainsAny(name, `~^:?*[\`) {
+		return false
+	}
+	for _, r := range name {
+		if !unicode.IsGraphic(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	for part := range strings.SplitSeq(name, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 // tokenForm matches the GitHub token forms: installation, OAuth, user-to-server, refresh and

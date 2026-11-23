@@ -6292,6 +6292,62 @@
       }
     },
     {
+      "id": "daemon-answer-words-permission-bot",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadGitHubRefusesLogsTheAppsBotOnlyInItsShape",
+      "production": "daemon workflowRuntime.readPermission: the review App's bot, which its lease names as an App read answered it, logged only as a login GitHub allows (githubrest.ShownLogin), never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-bot",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"bot\", githubrest.ShownLogin(lease.Identity.Name)",
+        "replacement": "\"bot\", lease.Identity.Name"
+      }
+    },
+    {
+      "id": "supervise-answer-words-adopted-identity",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAnAdoptionLogsTheAppsGitNameOnlyInItsShape",
+      "production": "supervise Machine.adopt: the App identity's git name, the bot login an App read of GitHub answered, logged only as a login GitHub allows (githubrest.ShownLogin), never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/supervise.Machine).adopt",
+      "capture": "supervise.answer-words/adopted-identity",
+      "mutation": {
+        "file": "packages/daemon/internal/supervise/delivery.go",
+        "preimage": "\"identity\", githubrest.ShownLogin(id.Name)",
+        "replacement": "\"identity\", id.Name"
+      }
+    },
+    {
+      "id": "sandbox-answer-words-adopt-identity",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnAdoptionTheShimRefusesNamesTheAppsGitNameOnlyInItsShape",
+      "production": "sandbox Runtime.AdoptWorkingCopy: a refused adoption names the App identity's git name only as a login GitHub allows, and not its email, which holds that login",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).AdoptWorkingCopy",
+      "capture": "sandbox.answer-words/adopt-identity",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/sandbox.go",
+        "preimage": "loc.Claim, githubrest.ShownLogin(id.Name), err)",
+        "replacement": "loc.Claim, id.Name, err)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-app-logins",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBootsAppLoginsRefusalNamesNoLoginOutsideItsShape",
+      "production": "daemon appLoginsAtBoot: the two Apps' bot logins, GitHub's answers to their App reads, named in the boot's refusal only as logins GitHub allows",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.appLoginsAtBoot",
+      "capture": "daemon.answer-words/app-logins",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/workflow.go",
+        "preimage": "return githubrest.ShownLogin(login)",
+        "replacement": "return login"
+      }
+    },
+    {
       "id": "daemon-answer-words-permission-control",
       "requirement": "r4-unchanged",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -6731,6 +6787,55 @@
       "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
       "test": "TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas/already_exists",
       "production": "ghbranch alreadyExists: a ref GitHub has decided on its message as it came (oauth2call.GitHubRefusal)"
+    },
+    {
+      "id": "ghbranch-answer-words-base-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/refused",
+      "production": "ghbranch Create: a refused read of the base, the default branch GitHub's answer named, names the read only by the base in a branch's shape (githubrest.ShownBranch), never by the path it asked",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "\"/git/ref/heads/\"+RefPath(base), \"/git/ref/heads/\"+shown,",
+        "replacement": "\"/git/ref/heads/\"+RefPath(base), \"\","
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-no-commit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/no-commit",
+      "production": "ghbranch Create: the base, the default branch GitHub's answer named, in Create's refusals only in a branch's shape (githubrest.ShownBranch), never as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-no-commit",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "shown := githubrest.ShownBranch(base)",
+        "replacement": "shown := base"
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/unanswered",
+      "production": "ghbranch Create: a read of the base that got no answer names the read by the shown base (url.Error.URL), never by the URL it asked, which holds the base as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "\"/git/ref/heads/\"+RefPath(base), \"/git/ref/heads/\"+shown,",
+        "replacement": "\"/git/ref/heads/\"+RefPath(base), \"\","
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/control",
+      "production": "ghbranch Create: a base in a branch's shape still prints as it came"
     },
     {
       "id": "cipher-decided-as-it-came",
