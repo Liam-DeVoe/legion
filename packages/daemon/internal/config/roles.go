@@ -52,15 +52,6 @@ const maxRoleWord = 32
 // builtinTypes are Legion's five types of a step, in the order a refusal lists them.
 var builtinTypes = []plan.Type{plan.TypeDesign, plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview}
 
-// legionName is whether name is a name Legion gives a role of its own (plan.IsLegionName): a role
-// of a claim, the controller, or a role of a step, acceptance among them. A role of the deployment
-// takes none of them, and neither does a role of an owner's plan, which plan.Validate holds to the
-// same rule. `owner` is none: it is the key of a task's owner, and the name of no role, claim,
-// token or slot.
-func legionName(name string) bool {
-	return plan.IsLegionName(name)
-}
-
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
 // twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
@@ -85,7 +76,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
-		case legionName(name):
+		case plan.IsLegionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
 			return nil, fmt.Errorf("%s names %s twice", key, name)
