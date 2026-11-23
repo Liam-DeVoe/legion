@@ -6,17 +6,15 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// roleHoldersRead is GET /api/v1/issues/{key}/role-holders as Dispatch answers it: the session
-// that holds each Legion role of the issue, as the daemon last published it.
+// roleHoldersRead is GET /api/v1/issues/{key}/role-holders as Dispatch answers it: each holder of
+// a Legion role of the issue (dispatch.RoleHolder), as the daemon last published it.
 type roleHoldersRead struct {
-	Issue   string `json:"issue"`
-	Holders []struct {
-		Role    string `json:"role"`
-		Session string `json:"session"`
-	} `json:"holders"`
+	Issue   string                `json:"issue"`
+	Holders []dispatch.RoleHolder `json:"holders"`
 }
 
 // A second agent of one role is a holder of its role on Dispatch while it works its step. The owner

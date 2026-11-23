@@ -3673,7 +3673,7 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // lost. A claim that recorded no agent then, or records none now, tells the session as its
 // agent's own, as it did before agents were recorded.
 func (a AbandonedSession) OfAnotherAgent(agent plan.AgentID) bool {
-	return agent != "" && a.Agent != "" && a.Agent != agent
+	return otherAgent(a.Agent, agent)
 }
 
 // RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has

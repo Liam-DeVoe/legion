@@ -618,22 +618,17 @@ func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.
 	return []string{"slots " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(now)}, nil
 }
 
-// PodLacksRole satisfies runtime.IssuePodRoles: podLacks of name, which the outbox asks both as
-// the slot of a claim (claim.Token.Slot, the agent its token ends in, which can be a name no role
-// has, such as the second implementer of a plan, `implementer-2`) and as the role of a start's
-// step, whose own resources (its role_config_files overlays among them) a pod built before the
-// deployment defined it lacks as it lacks a slot of that name: a claim's slot and its step's role
-// can be two names, a second agent's (`implementer-2` on a step of `implementer`) or a keyed
-// agent's on the step of another role, and the claim's token names the slot alone.
+// PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
+// template was built without name (templateRoles), and true; "" and false where the issue has no
+// Sandbox, no live pod, or a pod built with name, and for a template no launcher of this layout
+// wrote, which binds none. It reads the informers' stores alone and makes no API call. The outbox
+// asks name both as the slot of a claim (claim.Token.Slot, the agent its token ends in, which can
+// be a name no role has, such as the second implementer of a plan, `implementer-2`) and as the role
+// of a start's step, whose own resources (its role_config_files overlays among them) a pod built
+// before the deployment defined it lacks as it lacks a slot of that name: a claim's slot and its
+// step's role can be two names, a second agent's (`implementer-2` on a step of `implementer`) or a
+// keyed agent's on the step of another role, and the claim's token names the slot alone.
 func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
-	return r.podLacks(issue, name)
-}
-
-// podLacks is the uid of the issue's live pod (livePod) whose template was built without name
-// (templateRoles), and true; "" and false where the issue has no Sandbox, no live pod, or a pod
-// built with name, and for a template no launcher of this layout wrote, which binds none. It reads
-// the informers' stores alone and makes no API call.
-func (r *Runtime) podLacks(issue string, name claim.Role) (string, bool) {
 	sandbox, err := issueSandboxName(r.project, issue)
 	if err != nil {
 		return "", false

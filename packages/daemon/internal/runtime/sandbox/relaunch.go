@@ -519,7 +519,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 
 // livePod is whether pod is the live pod of the Sandbox read as s: the Sandbox running, the pod
 // its own, not ended, its init containers passed. A launch replaces only such a pod by ending the
-// roles in it (suspendDisplacing), and podLacks answers only for one.
+// roles in it (suspendDisplacing), and PodLacksRole answers only for one.
 func livePod(s *sandbox, pod *corev1.Pod) bool {
 	_, initExit := failedInit(pod)
 	return s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
@@ -657,9 +657,6 @@ func (r *Runtime) tryBound(l launch) time.Duration {
 		if !slices.Contains(roles, slot) {
 			extra++
 		}
-	}
-	if extra == 0 {
-		return r.launchBound
 	}
 	return r.launchBound + time.Duration(relaunchRoleCalls*extra)*apiTimeout
 }

@@ -1000,9 +1000,8 @@ func TestTheDaemonWarnsOfAnOperatorVolumeOfASlotsFormAndRefusesOneOfARolesSlot(t
 			t.Fatalf("prepare = %v, want the volumes taken with a warning", err)
 		}
 		var warned []string
-		for _, line := range strings.Split(logged, "\n") {
-			var entry map[string]any
-			if json.Unmarshal([]byte(line), &entry) == nil && entry["level"] == "WARN" && strings.HasPrefix(fmt.Sprint(entry["msg"]), "runtime.kubernetes.pod.volumes[") {
+		for _, entry := range loggedMessages(t, logged, "runtime.kubernetes.pod.volumes[") {
+			if entry["level"] == "WARN" {
 				warned = append(warned, fmt.Sprint(entry["msg"]))
 			}
 		}

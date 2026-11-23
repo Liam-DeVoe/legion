@@ -67,10 +67,7 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil {
-			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
-		}
-		if !slices.Contains(r.podSlots(view.sandbox, kind), role) {
+		if err != nil || !slices.Contains(r.podSlots(view.sandbox, kind), role) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
@@ -275,8 +272,9 @@ func (c *launcherCredentials) fail(name string, uid types.UID, at time.Time) {
 func (c *launcherCredentials) forgetSandbox(sandbox string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prefix := sandbox + "-"
 	for name := range c.secrets {
-		rest, ours := strings.CutPrefix(name, sandbox+"-")
+		rest, ours := strings.CutPrefix(name, prefix)
 		slot, secret := strings.CutSuffix(rest, "-boot")
 		if ours && secret && isSlotName(claim.Role(slot)) {
 			delete(c.secrets, name)
