@@ -790,16 +790,17 @@ type PhaseRow struct {
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
 	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro, on the
-	// row of the role its agent runs as (the implementer's where the owner does it, PlaceWorker),
-	// and for the merge on the merger's row, written by the start that raises the
-	// entry (workflow's enter). With the issue and the role they are the row's key, so a role that
-	// stands at two steps of a task has a row for each, and each row's handoff, completion, entry and
-	// decision above are the facts of its step's run (PhaseRowAt reads the row of a step). An issue
-	// with no plan rows keeps "" and 0, one row for each role, and so does every row the release
-	// before the column wrote. A new generation folds the rows of each role into the one whose entry
-	// is the highest and clears both fields with the entry's task (ClearGeneration), since the task
-	// ids belong to one generation's plan; a carried hand-over keeps its rows, and the step with
-	// them.
+	// row of the place's role (PlaceWorker's Worker.Role), and for the merge on the merger's row,
+	// written by the start that raises the entry (workflow's enter). At a step the place's role is
+	// the step's own role, whoever does the step. At the retro it is the role of the retro's agent,
+	// the implementer where the owner does it. With the issue and the role they are the row's key,
+	// so a role that stands at two steps of a task has a row for each, and each row's handoff,
+	// completion, entry and decision above are the facts of its step's run (PhaseRowAt reads the
+	// row of a step). An issue with no plan rows keeps "" and 0, one row for each role, and so does
+	// every row the release before the column wrote. A new generation folds the rows of each role
+	// into the one whose entry is the highest and clears both fields with the entry's task
+	// (ClearGeneration), since the task ids belong to one generation's plan; a carried hand-over
+	// keeps its rows, and the step with them.
 	StepTask  string
 	StepPlace int
 }

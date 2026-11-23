@@ -47,8 +47,8 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
 	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldChildrenBeforeRetro is a parent whose plan has no acceptance step, held before its retro
-	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
+	// HeldChildrenBeforeRetro is a parent whose task's last step is not an acceptance, held before
+	// its retro while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
 	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
 	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
 	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those

@@ -587,8 +587,8 @@ var heldReasons = []EnumeratedValue{
 }
 
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
-// than the floor; `children`, a parent whose plan has no acceptance step waiting before its retro
-// for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
+// than the floor; `children`, a parent whose task's last step is not an acceptance waiting before
+// its retro for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
 // OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
 var holdReasons = []EnumeratedValue{
 	{Value: string(record.HoldForChildren), Since: OwnerPlanContract},

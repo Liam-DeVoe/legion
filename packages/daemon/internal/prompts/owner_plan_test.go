@@ -194,7 +194,7 @@ func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "It also names the place of yours your own issue stands at, a step or the retro, where it stands at one, and Legion sends that place's `owner-step` notice again after the catch-up, unless one is still on its way to you: do it as that notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child whose merge its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "It also names the place of yours your own issue stands at, a step or the retro, where it stands at one. After the catch-up, Legion sends that place's `owner-step` notice again only where this session has not had it and none is still on its way. Where this session had it, the catch-up brings no new one: find that notice earlier in this session. A relaunch that resumes this session after a death is usually such a case. Do the step as that notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed and that carries the merges of every child whose merge its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
@@ -324,6 +324,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"You get no backstop",
 		"at your retro, or in `accepting` with no plan rows",
 		"the daemon's own start at once",
+		"notice again after the catch-up, unless one is still on its way to you",
 	}
 	for _, tc := range []struct {
 		part string

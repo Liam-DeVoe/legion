@@ -563,7 +563,7 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
-    "the empty commit that carries the pull request onto the commit you pushed",
+    "Where the branch has an open pull request, so does the empty commit that carries it onto the commit you pushed",
   ];
   for (const rule of step) {
     countedOncePerFile(rule, workerPrompt);

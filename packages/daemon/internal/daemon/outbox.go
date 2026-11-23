@@ -2026,8 +2026,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // transaction of the daemon's, which is why the listener's own answer is what is recorded. A
 // listener that names no recipient — one older than the field — leaves told alone, launch and
 // session, so the same relaunch then tells the fresh session the step once more: a repeat, never
-// a step left untold. A claim this daemon does not supervise, with no recipient named, records
-// nothing, and its next ready tells the step again.
+// a step left untold. The catch-up decides a mark that names a session by that session alone, so
+// a fresh session the same launch starts after its resume of the session told failed is told the
+// step again; only a mark with no session, a claim that recorded none, is decided by its launch
+// (workflow's toldThisSession). A claim this daemon does not supervise, with no recipient named,
+// records nothing, and its next ready tells the step again.
 func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim, recipient string) error {
 	mark := record.OwnerTold{Launch: told.Generation, Session: told.Session}
 	if recipient != "" && !told.HoldsSession(recipient) {
@@ -2592,8 +2595,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Op == "pause_stop" {
 		return r.pauseStop(ctx, row, payload)
 	}
-	// A slot's credential is written for the App its claim's slot holds as the record stands when
-	// the row runs (slotCredential), whatever the issue's generation, phase or tree.
+	// A slot_credential row writes the owner's slot back to the owner's own App (slotCredential).
+	// It writes only where the slot's role, read from the record when the row runs, acts as that
+	// App, and else nothing. It runs whatever the issue's generation, phase or tree.
 	if payload.Op == "slot_credential" {
 		return r.slotCredential(ctx, row.Issue, payload)
 	}

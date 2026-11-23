@@ -112,8 +112,8 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
-// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose plan
-// has no acceptance step) is not accepted: the hold stands in place of its retro until those
+// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose task's
+// last step is not an acceptance) is not accepted: the hold stands in place of its retro until those
 // issues have run, so each of them must start beneath it and be counted by its wait. Read as
 // accepted, it would hold a child at admitted until the parent closed (HeldUnderAccepted), leave
 // that child out of the wait (OpenBeneath), and start its retro, and its merge where it has a pull

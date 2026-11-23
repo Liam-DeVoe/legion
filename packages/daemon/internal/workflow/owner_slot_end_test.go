@@ -16,8 +16,9 @@ import (
 // `implementer:owner tester:owner`, the gate's opening, which ends no step, queues no supervise
 // slot_credential, and the owner's report of step 1 ends the owner's implementer step and queues
 // one, of the owner's claim, the architect's role, in the issue's tree, though the owner's next
-// step starts in the same move: the row writes the slot for the App the record answers when it
-// runs.
+// step starts in the same move. When the row runs, it writes the slot only where the role the
+// record then answers acts as the owner's own App, and else nothing (the daemon's
+// slotCredential). Here that role is the tester, which acts as that App.
 func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	pool := migratedPool(t)

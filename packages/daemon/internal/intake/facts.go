@@ -1973,8 +1973,8 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
-// beneath (record.HoldForChildren): the last of them to leave starts the retro.
+// a parent whose task's last step is not an acceptance, waits before its retro for the issues
+// beneath it, beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
 		"%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves. This retry changed nothing.", issue, strings.Join(beneath, ", "))}
