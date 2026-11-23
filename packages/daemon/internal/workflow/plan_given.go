@@ -109,11 +109,10 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if given.stored != nil {
 		var refused []plan.Refusal
 		for _, id := range given.changed {
-			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
-			if at < 0 {
+			task, ok := given.stored.TaskOf(id)
+			if !ok {
 				continue
 			}
-			task := given.stored.Tasks[at]
 			if refusal := intake.FinishedTask(fact.Issue, id, task.State, intake.ChangeOfTask); refusal != nil {
 				return givenVersion{}, refusal, nil
 			}
@@ -387,17 +386,17 @@ func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
 }
 
 // needsOfMerging is one refusal (intake.NeedOfMergingTask) for each task next adds or changes
-// (changed) that needs the task of stored that merges (mergingTask) where that task stands at its
-// retro or its merge, or is done: the work of the issue merges there, and this release carries out
-// no need of it then. None while that task stands at a step or waits.
+// (changed) that needs the task of stored that merges (record.StoredPlan.MergingTask) where that
+// task stands at its retro or its merge, or is done: the work of the issue merges there, and this
+// release carries out no need of it then. None while that task stands at a step or waits.
 func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string) []plan.Refusal {
-	merging := mergingTask(stored)
-	at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == merging })
-	if merging == "" || at < 0 {
+	merging, merges := stored.MergingTask()
+	row, ok := stored.TaskOf(merging)
+	if !merges || !ok {
 		return nil
 	}
 	var stands string
-	switch row := stored.Tasks[at]; {
+	switch {
 	case row.Place.Kind == record.PlaceRetro:
 		stands = "retro"
 	case row.Place.Kind == record.PlaceMerge || row.State == record.TaskDone:
