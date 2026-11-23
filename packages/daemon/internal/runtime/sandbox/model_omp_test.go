@@ -160,8 +160,9 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	}
 }
 
-// A pod's agent resumes the session its claim recorded and runs the model the pod's overlay puts
-// on the `default` role, not the one that session saved: `--model @default` rides the recorded
+// A pod's agent of a role that names no model resumes the session its claim recorded and runs the
+// model the pod's overlay puts on the `default` role, not the one that session saved: `--model
+// @default` rides the recorded
 // argv, and @default is Oh My Pi's own name for that role. Measured on the pinned binary: a
 // session saved on one model, the profile's `modelRoles.default` moved to another, and the
 // recorded argv's own answer naming the profile's current model. The same argv with the flag

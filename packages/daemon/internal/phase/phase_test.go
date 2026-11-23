@@ -25,7 +25,7 @@ func TestPhaseValuesMatchWorkflowWireContract(t *testing.T) {
 // BackwardPairs is every move back of today's line, Order: the triangle over the seven working
 // phases of Order, 21 pairs. There is no move back of Order beyond them, since no phase of this
 // workflow waits for a merge somebody else makes (dispatch://INFRA-714). A task in another order
-// moves back by its own order, along any of the 42 pairs of MovePairs (workflow's
+// moves back by its own order, along any pair of MovePairs, step's among them (workflow's
 // Walk.MovesBack), so these 21 are the moves back of a task in the default steps, not of every
 // task.
 func TestBackwardPairsHoldsEveryMoveBack(t *testing.T) {

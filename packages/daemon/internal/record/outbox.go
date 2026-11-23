@@ -334,7 +334,7 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
+// worker's own summary and, beside it, the verdict it gave (the pass or fail of the tester or of a role of the deployment). A
 // review-stuck notice's summary names the fact that wrote it, and its topic is the reviewer's role
 // topic, which the architect asks for the decision.
 type Notice struct {
