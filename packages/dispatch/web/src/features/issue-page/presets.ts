@@ -322,9 +322,13 @@ export function filterSignals(
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
+  // A decision block the reviewer holds is no entry of the Decisions view until it posts
+  // (`TreeNode.heldForReview`, `decisions-filter/decisions-parts.ts`), so the count leaves it
+  // out with the list.
+  const held = countOf(decisions.root, "ask", (node) => node.heldForReview === true);
   return {
     decisions: {
-      count: decisions.matches - restatedAnswers(decisions.root),
+      count: decisions.matches - restatedAnswers(decisions.root) - held,
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
     },
     plan: { count: view("plan").matches, unit: "steps" },

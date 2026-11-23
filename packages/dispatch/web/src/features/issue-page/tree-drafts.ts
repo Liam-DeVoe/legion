@@ -121,6 +121,8 @@ export interface Draft {
    *  name; empty for a node that is no block. */
   pointers: Readonly<Record<string, readonly string[]>>;
   question: boolean;
+  /** Whether this ask is a decision block the reviewer holds (`TreeNode.heldForReview`). */
+  heldForReview?: true;
   reference?: string;
   replaced: boolean;
   /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
@@ -830,6 +832,10 @@ function addAsks(
     draft.tree = ask.question_tree;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
+    // A decision block the reviewer holds (`held_for_review`) is the open question it is, and
+    // nothing that lists or counts what waits on people holds it until it posts: the Decisions
+    // view lists it in no part and counts it nowhere (`TreeNode.heldForReview`).
+    if (ask.held_for_review === true) draft.heldForReview = true;
     // An open question whose turn is the reader's own waits on the reader, and is what the
     // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
     // resolved it waits on (`waiting_on_person`), as every other count of what waits on the

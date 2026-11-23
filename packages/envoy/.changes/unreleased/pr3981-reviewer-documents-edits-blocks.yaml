@@ -11,6 +11,7 @@ body: |-
   among them, its writer's own included), the notices, the issue's "Waiting on you" and its
   Decisions view's open questions until the review ends. Its ask lists and its ask read carry
   `held_for_review: true` meanwhile: the issue page's tree draws it without marking it as waiting
-  on the reader, and the margin's open asks and the document's open-decisions count leave it out.
+  on the reader, and its next-question key passes over it; the page's Decisions view neither lists
+  nor counts it, and the margin's open asks and the document's open-decisions count leave it out.
   Then the block shows everywhere, with a new quiet event `ask.reviewed`. A rewrite the review
   applies goes into a new version of the document first.
