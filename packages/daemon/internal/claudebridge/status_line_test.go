@@ -31,6 +31,7 @@ func TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote(t *testing.T) {
 			reports := &turnReports{
 				url:    oauth2calltest.StatusLineServer(t, c.status, "", c.body) + "/legion/v1/claims/turn-outcome",
 				client: &http.Client{},
+				clock:  Config{}.clock(),
 				log:    log.New(&logged, "", 0),
 			}
 			reports.post(claim.TurnOutcomeRequest{Sequence: 1, Outcome: claim.TurnClean})
