@@ -139,8 +139,9 @@ type outbox struct {
 	// that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
 	podEnded func(context.Context, []string)
 	// roleApps is the one reader of a role's App (workflowRuntime.roleApps), which the hold of an
-	// owner-step reads to tell a step whose App the owner's slot already holds (ownApp). A test
-	// that builds the outbox by hand leaves it zero, which answers Legion's own roles.
+	// owner-step reads to write the slot for no step whose App the owner's slot already holds
+	// (ownApp). A test that builds the outbox by hand leaves it zero, which answers Legion's own
+	// roles.
 	roleApps appauth.RoleApps
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
@@ -1752,11 +1753,12 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
-// run has ended (ownerStepRuns); one of a step that acts as an App other than the owner's own
-// (ownApp: not the owner's acceptance, nor its retro) waits besides until its architect's slot
-// holds that App (ownerSlotHolds). The end of a step the owner did queues the write of its slot
-// back to its own App, and every notice to the architect queued after that write waits until it
-// ran (slotWritePending). A role topic with no live holder refuses the publish
+// run has ended (ownerStepRuns). It waits besides until its architect's slot's gh files hold the
+// App of its step, the owner's own App among them; the runtime writes the slot first only for the
+// App of another role, and a pod whose launcher cannot say what its gh files hold holds back no
+// step of the owner's own App (ownerSlotHolds). The end of a step the owner did queues the write of
+// its slot back to its own App, and every notice to the architect queued after that write waits
+// until it ran (slotWritePending). A role topic with no live holder refuses the publish
 // (notify.ErrNoHolder): while the architect's claim can hold its role again — relaunching, a root
 // the operator suspended and can resume, or the architect of a catch-up's own issue suspended
 // while that issue is in the workflow, which its
@@ -1980,10 +1982,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // daemon's ActsAs (ownerActsAs), read from the record now, and where it is not the notice's role
 // the step no longer runs either, the one test of a row that names no run.
 //
-// A step whose App is the App of the owner's own role (ownApp: the review App of the owner's
-// acceptance, and the owner's retro) needs no write: the owner's slot holds that App whenever the
-// owner does no other step, and the end of any other step writes it back before the next notice to
-// the owner publishes (slotWritePending). Each step is told once the slot's gh files hold its App:
+// A step whose App is the App of the owner's own role (ownApp: the review App, which the owner's
+// acceptance and retro act as, and a step of each role whose App it is, the planner, the tester and
+// the reviewer among them) needs no write: the owner's slot holds that App whenever the owner does
+// no other step, and the end of any other step writes it back before the next notice to the owner
+// publishes (slotWritePending). Each step is told once the slot's gh files hold its App:
 // the runtime writes the slot for an App of another role (runtime.SlotCredentials.WriteSlotCredential),
 // and for every step it is asked whether the slot's gh files hold the App (SlotHoldsCredential), so
 // the kubelet's sync of a write-back is waited for too. A wait holds the row on its backoff as a
