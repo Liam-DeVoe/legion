@@ -88,14 +88,15 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"stop_task", "default", "register_plan"},
 				// A later version changes a task that waits or is stopped, and of the running task
 				// its text alone, which Legion takes while the task goes on and every later start
-				// reads; it refuses any other change of the running task, and takes its block
-				// unchanged. Its answer names the running step (`running`).
+				// reads; it refuses a change of the running task's steps or its removal with a
+				// reason that names the task, and takes its block unchanged. Its answer names the
+				// running step (`running`).
 				{"later version", "waits", "stopped", "running task", "text alone"},
 				{"only the running task's text", "goes on at its step"},
 				{"Every later start of the task holds the new text"},
 				{"sends the agent at work nothing"},
-				{"removes the running task", "`PLAN_REFUSED`"},
-				{"Its reason is", "task <id> is running, so a later version can change only its text."},
+				{"changes the steps of the running task or removes it", "`PLAN_REFUSED`"},
+				{"its reason names the task", "task <id> is running, so a later version can change only its text."},
 				{"running task's block", "goes on"},
 				{"answer", "running task", "role whose agent works it", "`running`"},
 				// A refusal changes nothing, so the same version is given again, and an issue
@@ -148,6 +149,9 @@ func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 				{"Every later start", "holds that text", "new session"},
 				{"agent at work now reads no new start"},
 				{"answer of `register_plan` names the step", "send that step's agent", "by message"},
+				{"On the project's default steps, the task is `default`"},
+				{"one task block is `:::plan_task{#default}`", "no `steps`", "text holds the decision"},
+				{"Legion takes that version while the task runs", "stops nothing"},
 				{"started its work before Legion took plans has no task text"},
 				{"such an issue", "comment on the issue", "by message"},
 				{"hold also where a general skill offers another place"},

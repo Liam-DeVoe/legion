@@ -20,6 +20,10 @@ Put each decision for an agent of a task into the task's text, in a later versio
 Every later start of the task holds that text, a new session's start included.
 The agent at work now reads no new start.
 So when the answer of `register_plan` names the step the decision is for, in `running`, also send that step's agent the decision by message.
+On the project's default steps, the task is `default`, which no block of yours names.
+For it, give a version of `plan.md` whose one task block is `:::plan_task{#default}`, with no `steps`, and whose text holds the decision.
+Legion takes that version while the task runs, and stops nothing.
+A planner's task blocks do not go in that version: Legion refuses a version that removes the task `default`.
 An issue that started its work before Legion took plans has no task text.
 On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
 These rules hold also where a general skill offers another place for a decision.

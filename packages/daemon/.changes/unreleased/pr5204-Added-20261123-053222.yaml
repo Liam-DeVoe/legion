@@ -6,7 +6,8 @@ body: |-
   The running agent is sent nothing for the version. A version that removes a running task or
   changes any other part of it is still refused. `register_plan` answers each running task's
   step and the role whose agent works it (`running`, contract 235), and the retro's task now
-  holds the task's text.
+  holds the task's text. The owner's prompt puts a decision for an agent into its task's text,
+  and on the project's default steps into a version whose one block is the task `default`.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: pr5204
