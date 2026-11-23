@@ -632,7 +632,7 @@ func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, acceptance, or a role of this deployment or of an issue's plan; "+
 			"the project's controller is none of them, and the controller does not compact its own session")
 }
 

@@ -197,9 +197,9 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			}}}
 		}},
 		"POST /legion/v1/phase/retry": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			// A failure of the architect's claim holds an issue in accepting, whose role is the
-			// architect's (workflow's claimFailed), and the held run is the step of the phase its
-			// hold is from (record.StandsAt).
+			// A failure of the architect's claim holds an issue in accepting where the acceptance is
+			// the architect's own, as on this issue with no plan rows (workflow's claimFailed), and
+			// the held run is the step of the phase its hold is from (record.StandsAt).
 			seedTree(t, r.h, "LEGION-208", "LEGION-209")
 			setIssue(t, r.h, "LEGION-209", func(issue *record.Issue) {
 				issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Accepting}
@@ -239,7 +239,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			}}}
 		}},
 		"POST /legion/v1/tasks/stop": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			// A stop at accepting ends the architect's own step.
+			// A stop at accepting ends the architect's own step: this issue has no plan rows, so its
+			// acceptance is the architect's.
 			seedTree(t, r.h, "LEGION-208")
 			setIssue(t, r.h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Accepting })
 			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
