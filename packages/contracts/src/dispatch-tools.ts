@@ -2608,12 +2608,12 @@ export const dispatchToolSpecs = [
       "approval names: the version the level's approval request names, else the version of the person's " +
       "newest approval of the notes document. With no such approval no statement takes a field from the notes. " +
       "A field that a statement's note does not write is a field that the statement lacks. The import reads " +
-      "a field only from the first paragraph of a list item, in a list that no quote or table holds. It " +
-      "reads no field from a code block. A field that the note writes twice, or writes in another place that " +
-      "is not a code block, is also a field that the statement lacks. A Kind with no value is also a field " +
-      "that the statement lacks. An About or a Supports that names no id and is not none is also a field " +
-      "that the statement lacks. A value of commas, dots or backticks alone names no id. An About or a " +
-      "Supports of none is a relation to nothing. " +
+      "a field only from the first paragraph of a list item. That list must stand at the top of the note, or " +
+      "in an item of another such list. A field that the note writes twice, or writes in any other " +
+      "paragraph, is also a field that the statement lacks. The import reads no field from a code block or " +
+      "a heading. A Kind with no value is also a field that the statement lacks. An About or a Supports " +
+      "that names no id and is not none is also a field that the statement lacks. A value of commas, dots " +
+      "or backticks alone names no id. An About or a Supports of none is a relation to nothing. " +
       "Each component and interface, and each statement whose kind, about, supports and parent resolve, is " +
       "written with that approval as its provenance; each other statement is held with the fields it lacks, " +
       "and the holds no repair issue names get one child issue of the level, assigned to its assignee, whose " +
