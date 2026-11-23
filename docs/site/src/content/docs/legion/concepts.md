@@ -213,8 +213,9 @@ own, of any role and at any place: `acceptance:owner` is its acceptance in `acce
 `implementer:owner` its own implementation. A step `acceptance` with no key is a fresh agent of
 the role `acceptance`. Legion tells the architect each step of its own with an `owner-step` notice,
 once its slot holds the App of the step's role, and only while the step runs; while it runs and no
-such notice of it is queued, Legion tells it again, with the same task, at each launch of the
-architect and when the architect is idle past the silence bound. It starts no other agent for the
+such notice of it is queued, Legion tells it again, with the same task, at a launch of the
+architect in a session that has not had it, such as a fresh session after a lost one, and when
+the architect is idle past the silence bound. It starts no other agent for the
 step, and takes its report
 with the `legion` tool's `complete_step`: the issue, the step's place (1 for the first, 0 for the
 retro), a summary, and the verdict `pass` or `fail` where the step reports one, with the commit it
