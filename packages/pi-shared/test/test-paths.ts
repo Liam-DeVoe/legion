@@ -15,7 +15,8 @@
 //     reads). Those hold none of UNQUOTED_WORD_REFUSES (`wordDirectory`);
 //   - a path a script takes only when it is plain: rig.sh and the model route installers it runs
 //     write a path into a `!command` or a mount, or split a list of them on blanks. Those hold none
-//     of PLAIN_WORD_REFUSES (the general forms, with bases of the test's own).
+//     of PLAIN_WORD_REFUSES; the rig tests put theirs under @legion/test-fixtures' memoryRoot, or
+//     /tmp where that path is not plain (rig.test.ts, rig-isolation.test.ts).
 import { afterAll, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync } from "node:fs";
