@@ -7,7 +7,7 @@ description: "Use when text you write will reach a person outside the company (a
 
 The operator approves every message that leaves the company. Do the four steps below, then ask.
 
-**Done when:** you did the four steps, then asked, and the ask carries its parts in their order, the removal line among them.
+**Done when:** you asked, and the ask carries its four parts in their order, the removal line among them; or, for an upstream report, patch or public post, its entry is made as its section says; or, for an excluded message, you did what its row of the Exclusions table says.
 
 Not covered:
 
