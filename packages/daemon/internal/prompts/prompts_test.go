@@ -330,7 +330,7 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 	}{
 		{claim.RoleTester, false, []string{"is a gap you name, never a reason of its own to send the issue back"}},
 		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a review that asks for changes"}},
-		{claim.Role("acceptance"), false, []string{"is a gap you name in your acceptance comment, never a reason of its own to send the work back", "Your reading is then the only gate on the issue"}},
+		{claim.Role("acceptance"), false, []string{"is a gap. You name it in your acceptance comment, and it is never a reason of its own to send the work back", "Your reading is then the only gate on the issue"}},
 		{claim.RoleArchitect, false, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 		{claim.RoleArchitect, true, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 	} {
@@ -793,7 +793,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review named (the daemon part below says which review that is), or, on an issue with no pull request, the commit your newest report of a verdict named, read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
+		"When the task of a round names `Last reviewed commit: <commit>`, read the difference from that commit to the head (`git diff <commit> <head>`), and each thread. That commit is the head the Legion footer of your own newest deciding review named (the daemon part below says which review that is). On an issue with no pull request, it is the commit your newest report of a verdict named.",
 		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
 		"the head read by the newest of your own deciding reviews whose footer named the entry of its round, or, on an issue with no pull request, the commit your newest report of a verdict named; the daemon part below gives the whole rule and where the commit comes from.",
