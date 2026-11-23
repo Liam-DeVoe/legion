@@ -70,8 +70,9 @@ const registerPlanRoute = "register_plan"
 // the value strips hold each back from a caller below it (shaping.go's valueStrips).
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
+// that constant, and the contract these keys and values arrived at stays where it is. It moves only
+// with this change's own number, and answers.go's SupportedContracts names the constant rather than
+// its number.
 const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code

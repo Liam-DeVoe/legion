@@ -315,14 +315,14 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 	})
 }
 
-// Every outbox row that would start or prompt a role waits while the release holds, and every
-// other kind runs (record.HeldByProjectRelease). Every kind of every lane is named here, so a kind
-// added to the outbox without a decision for the release fails this test, and so is every
-// supervise op, a project pause's `pause_stop` (a stop, which runs), the launch the pause owes a
-// role it stopped and a start queued for news of the approved design alone (two starts, which
-// wait) among them, and the pause's two notices to the controller, which wait as every
-// controller notice does. The reconcile of a tree's news (design_changes) runs: it tells a role
-// only by such a news-only start.
+// Every outbox row that would start or prompt a role waits while the release holds, and every other
+// kind runs (record.HeldByProjectRelease). Every kind of every lane is named here, so a kind added
+// to the outbox without a decision for the release fails this test, and so is every supervise op, a
+// project pause's `pause_stop` and a stopped task's `step_stop` (stops, which run), the launch the
+// pause owes a role it stopped and a start queued for news of the approved design alone (two
+// starts, which wait) among them, and the pause's two notices to the controller, which wait as
+// every controller notice does. The reconcile of a tree's news (design_changes) runs: it tells a
+// role only by such a news-only start.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	const ownRound = "release:7"
 	type row struct {
@@ -340,6 +340,7 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 			{"an issue's close", record.SuperviseRequest{Op: "issue_close"}, false},
 			{"a tree's close", record.SuperviseRequest{Op: "tree_close"}, false},
 			{"a project pause's role stop", record.SuperviseRequest{Op: "pause_stop", Pause: 3}, false},
+			{"a stopped task's step stop", record.SuperviseRequest{Op: "step_stop"}, false},
 		},
 		record.OutboxKindUpdateAsk: {
 			{"the release's own ask", record.UpdateAsk{Round: ownRound}, false},

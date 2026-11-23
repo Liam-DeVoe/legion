@@ -1181,17 +1181,18 @@ func resumeText(issue record.Issue, at Standing) string {
 	return continueLine(issue) + at.lines + " Resume the existing phase work." + at.owners
 }
 
-// ResumeTask is the resume task of the worker of issue's phase, standing where the record holds
-// its work (standingPart): the working copy the runtime gives it (Config.WorkspaceDir) and, for an
-// issue with plan rows, its task and its step. It is the one place every resume the engine sends
-// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker, through
+// ResumeTask is the resume task of the worker of issue's phase, standing where the record holds its
+// work (standingPart): the working copy the runtime gives it (Config.WorkspaceDir) and, for an
+// issue with plan rows, its task and its step. It is the one place every resume the engine sends is
+// composed: the promotion's start of a mid-phase worker (StartPromotedWorker, through
 // resumeTaskOn), an owed entry sent with no task (sendOwedEntry), the boot's resume by rule, the
-// cutover's repair of a merger, the catch-up's resume and the silence repair.
+// boot's start of a phase owner the project release stopped (startStoppedClaim), the cutover's
+// repair of a merger, the catch-up's resume and the silence repair.
 //
 // It is exported for the tests of other packages that hold a start's task to the resume task
-// (internal/admit's re-admission cases, internal/daemon's resume, silence and upgrade cases), as
-// StartOrOwe is for the rows they queue, so that what those cases expect is the text production
-// composes. Production code outside this package adds no caller.
+// (internal/admit's re-admission cases, internal/daemon's resume, silence, upgrade and project move
+// cases), as StartOrOwe is for the rows they queue, so that what those cases expect is the text
+// production composes. Production code outside this package adds no caller.
 func (e *Engine) ResumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

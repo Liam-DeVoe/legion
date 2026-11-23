@@ -189,19 +189,20 @@ func OutboxLanes() []OutboxLane {
 //
 // Every other row runs: the Dispatch writes and publishes (dispatch_status, dispatch_message,
 // gated_steps_publish, design_gates_publish and role_holders_publish, the last of which tells
-// Dispatch that the claims the release stops hold their roles no longer), the writes of an
-// issue's step records and of the plan its run carries out (step_record, plan_record), the
-// release of a Dispatch claim (claim_release), the reconcile of a tree's news of its approved
-// design (design_changes), which reads Dispatch and writes the news record, a supervise row that
-// stops a role (op `suspend`, `issue_close`, `tree_close`, and a project pause's `pause_stop`,
-// which stops a live role and keeps its session, phase and task, and stops nothing once its pause
-// has ended), an issue's pod deleted after its close (issue_suspend), a linger's close and its
-// workspace's removal (linger_close, workspace_remove), a gate's seed (gate_seed) and an issue's
-// branch (issue_branch). None of them makes a pod or prompts a role, and a start one of them
-// queues is a row this holds. A `pause_stop` that runs while the release holds suspends a role the
-// release has not stopped yet with the idle release's source, which the release's own suspension
-// then takes over (supervise's suspensionRank), and leaves a role the release stopped as it
-// stands, ending its stop as taken over (internal/daemon's pauseStopAnswered).
+// Dispatch that the claims the release stops hold their roles no longer), the writes of an issue's
+// step records and of the plan its run carries out (step_record, plan_record), the release of a
+// Dispatch claim (claim_release), the reconcile of a tree's news of its approved design
+// (design_changes), which reads Dispatch and writes the news record, a supervise row that stops a
+// role (op `suspend`, `issue_close`, `tree_close`, a stopped task's `step_stop`, and a project
+// pause's `pause_stop`, which stops a live role and keeps its session, phase and task, and stops
+// nothing once its pause has ended), an issue's pod deleted after its close (issue_suspend), a
+// linger's close and its workspace's removal (linger_close, workspace_remove), a gate's seed
+// (gate_seed) and an issue's branch (issue_branch). None of them makes a pod or prompts a role, and
+// a start one of them queues is a row this holds. A `pause_stop` that runs while the release holds
+// suspends a role the release has not stopped yet with the idle release's source, which the
+// release's own suspension then takes over (supervise's suspensionRank), and leaves a role the
+// release stopped as it stands, ending its stop as taken over (internal/daemon's
+// pauseStopAnswered).
 func HeldByProjectRelease(payload OutboxPayload, releaseRound string) bool {
 	switch value := payload.(type) {
 	case SuperviseRequest:

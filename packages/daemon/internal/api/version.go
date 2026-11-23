@@ -3421,7 +3421,7 @@ package api
 // process that has run one answers it, 200, whatever the pause, as above. While a release runs
 // (its record neither finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause
 // answer 409 `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
-// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 221's, which are 213's with
+// `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 221's, which are 219's with
 // the key paths of `projectRelease` on the state's and of `heldPods` on the refusal's, and every
 // record below 221 gains the empty domain of each of the six fields, which no contract below 221
 // admits a value of. This change took 209 at the forward merge that brought in 3c59c0cc, the
