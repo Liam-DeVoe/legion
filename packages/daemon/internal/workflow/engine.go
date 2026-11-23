@@ -177,6 +177,11 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
+	// noFixRule takes the fix rule out of the tail of every fact (apply), and everyRoleToldCI tells
+	// a CI settlement of a task that takes a fix to every role, as for any other task
+	// (tellChecks). Only a test sets either, as the control of the rule it takes out.
+	noFixRule       bool
+	everyRoleToldCI bool
 }
 
 var _ intake.Handler = (*Engine)(nil)
@@ -233,7 +238,25 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	return result, e.askMergeState(ctx, tx, fact)
 }
 
+// apply is the fact's handler (handle), then the fix rule over the issue the fact names
+// (fixRule), in the fact's own transaction: whatever the handler wrote of the issue's check
+// states, its head or where its task stands, the rule reads it as the fact leaves it. A fact the
+// handler refused, left unspent or answered as a duplicate wrote nothing, and the rule writes
+// nothing beside it.
 func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	result, err := e.handle(ctx, tx, fact)
+	if err != nil || result.Refusal != nil || result.Unspent || result.Duplicate || e.noFixRule {
+		return result, err
+	}
+	if key, ok := intake.IssueOf(fact); ok {
+		if err := e.fixRule(ctx, tx, key); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	return result, nil
+}
+
+func (e *Engine) handle(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	// An architect's request is judged again on the record as the fact reads it before its
 	// handler runs (requestRefusal); its refusal writes nothing and is left unspent.
 	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
