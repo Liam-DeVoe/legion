@@ -342,13 +342,12 @@ func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
 	if err != nil || ro != carried {
 		t.Fatalf("sign-request of a target the helper signed: %v; want the helper's object back", err)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "sign-request" || !reflect.DeepEqual(req.Locations, locations) {
-			t.Fatalf("request sent to the helper: %+v; want sign-request with the locations %q", req, locations)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Locations, locations) {
+		t.Fatalf("request sent to the helper: %+v; want sign-request with the locations %q", req, locations)
 	}
 
 	older, _ := fakeHelper(t, helper.Response{OK: true, RequestObject: signed(nil)})
