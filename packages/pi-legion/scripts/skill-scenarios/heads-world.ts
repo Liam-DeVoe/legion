@@ -110,17 +110,14 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
 /** `heads-issue <file> <scenario> [<case>]`: the run's issue, before rig.sh's heads_fixture makes
  * branches named after it. First the GitHub stand-in holds the run's repository and no pull
  * request, since the delivery settings read GitHub before Dispatch stores them
- * (settings_delivery.go); then the run's project LWEVAL is mapped to the repository and the
+ * (settings_delivery.go); then the run's repository is made project LWEVAL's default repository and the
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
  * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
 export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
-  await agentPut(`/api/v1/settings/repo-projects/${HEADS_REPO}`, {
-    default: true,
-    project: "LWEVAL",
-  });
+  await agentPut("/api/v1/projects/LWEVAL/default-repository", { repo: HEADS_REPO });
   await agentPut("/api/v1/settings/delivery", {
     deploy_repo: HEADS_REPO,
     deploy_workflow_path: ".github/workflows/deploy.yml",
