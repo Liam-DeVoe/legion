@@ -295,7 +295,7 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 		held.Tasks = append(held.Tasks, block)
 	}
 	for _, role := range stored.Roles {
-		held.Roles = append(held.Roles, plan.PlanRole{Name: role.Role, Type: plan.Type(role.Type), Model: role.Model, Prompt: role.Prompt})
+		held.Roles = append(held.Roles, role.PlanRole())
 	}
 	return held
 }

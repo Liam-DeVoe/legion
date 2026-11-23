@@ -80,7 +80,8 @@ func resolveClaimRole(ctx context.Context, read planRoleReader, roles []config.R
 			return claimRole{}, err
 		}
 		if found {
-			planned = &stepplan.PlanRole{Name: row.Role, Type: stepplan.Type(row.Type), Model: row.Model, Prompt: row.Prompt}
+			defined := row.PlanRole()
+			planned = &defined
 		}
 	}
 	var d stepplan.Deployment

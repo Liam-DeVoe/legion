@@ -201,6 +201,12 @@ type PlanRole struct {
 	Prompt      string
 }
 
+// PlanRole is the role as the plan package reads a role block (plan.PlanRole): its name, its type,
+// its model and its prompt.
+func (r PlanRole) PlanRole() plan.PlanRole {
+	return plan.PlanRole{Name: r.Role, Type: plan.Type(r.Type), Model: r.Model, Prompt: r.Prompt}
+}
+
 // PlanAgent is the agent of the step (plan.AgentOf): the agent of its key, which every step of that
 // key shares in any task, or for a step with no key the agent of that step alone.
 func (s PlanStep) PlanAgent() plan.Agent {

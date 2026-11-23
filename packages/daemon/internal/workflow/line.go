@@ -568,7 +568,8 @@ func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (lostStepAt, boo
 	}
 	var planned *plan.PlanRole
 	if i := slices.IndexFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == step.Role }); i >= 0 {
-		planned = &plan.PlanRole{Name: w.Roles[i].Role, Type: plan.Type(w.Roles[i].Type), Model: w.Roles[i].Model}
+		defined := w.Roles[i].PlanRole()
+		planned = &defined
 	}
 	switch def, source := plan.RoleOf(step.Role, planned, d); {
 	case source == plan.SourceNone:
