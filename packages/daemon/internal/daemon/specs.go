@@ -97,7 +97,9 @@ type specs struct {
 	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
-	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// refuses it there, while a tmux pane holds one App's bundle and reads that App alone: the
+	// role's own, or, while the architect does a step of its plan whose key is owner, the App of
+	// that step's role (ownerActsAs).
 	// The daemon answers it from what GitHub last answered of that App's installations
 	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
 	// gh bundle of it, which costs no read of its own on a launch. It names the claim's issue,
@@ -639,7 +641,8 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
 // answered from that owner's directory.
 //
-// It names no repository list: a role's token is its App's own, with no repository narrowing,
+// It names no repository list: a role's token is an App's own (its role's App, or, while the owner
+// does a step of the key owner, the App of that step's role), with no repository narrowing,
 // so the project's repositories are no bound on the work and the list would be a whole
 // installation's worth of names — 216 of them for this deployment's largest owner when that
 // spec was written. What the agent needs is the account its token acts on and that it reaches
@@ -741,7 +744,8 @@ func ModelsFragment(models []string) string {
 	return "The models of this deployment, which a role of your plan can name: " + strings.Join(models, ", ") + "."
 }
 
-// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
+// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the order of today's
+// line and of the default steps, which binds no plan, since a plan's steps stand in any order.
 var stepRoleOrder = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers
