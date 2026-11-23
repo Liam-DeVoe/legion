@@ -7153,7 +7153,7 @@ a GitHub that never answered, an answer that is not 2xx (GitHub's 401 for a toke
 A stage proof calls it once in `prerequisites`, after `require_app_inputs` and `write_github_apps` and before its first write anywhere and any check that needs a login.
 `role_app ROLE` then prints the login of the App the role acts as on its own claim (the implement App's for the implementer and the merger, the review App's for every other role, the controller's included), as REST and git name it, and `role_app_slug ROLE` the bare slug GraphQL names the bot by;
 either fails, saying so, when `read_app_logins` has not run.
-Neither names the App an architect's slot holds while the architect does a step of its own plan, which is that step's role's App: at `implementer:owner`, the implement App's.
+Neither names the App an architect's slot holds while the architect acts as another role, which is that role's App: under `implementer:owner`, the implement App's at that step, at the retro where that step is the task's last implementation step, and while a merge forward the daemon asked of the architect has not ended.
 `lib/app-logins.test.ts` runs the helper, and `read_app_logins` over it, against a stand-in GitHub, `lib/github-apps.test.ts` runs the input checks over the same stand-in, and `lib/reviewer-thread.test.ts` drives `reviewer_thread` with the logins set.
 
 `clean_smoke_main` is Stage 3's `smoke-main-clean` and the cleanup inside Stage 4b's `done`:
