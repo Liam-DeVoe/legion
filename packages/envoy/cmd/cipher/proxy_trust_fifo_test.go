@@ -67,8 +67,8 @@ func runPrepareAirlock(t *testing.T, what string, environ []string, caPEM string
 // open the pipe, and the bundle writer opens it without waiting for a writer and reads it as
 // empty: prepareAirlock answers, and writes the bundle, since a file the decision will not read
 // cannot show that it holds the root. The SSL_CERT_FILE row holds for prepareAirlock alone: in a
-// run, agent-secrets' own connection to the broker reads SSL_CERT_FILE before prepareAirlock does,
-// and waits on such a pipe until its timeout (readTrustFile).
+// run whose broker URL is https, agent-secrets' own connection to the broker reads SSL_CERT_FILE
+// before prepareAirlock does, and waits on such a pipe until its timeout (readTrustFile).
 func TestPrepareAirlockDoesNotWaitOnANamedPipeWithNoWriter(t *testing.T) {
 	root := proxyTestRoot(t, "test proxy root")
 	system := writeLoginFile(t, "ca-certificates.crt", root)
