@@ -232,16 +232,13 @@ func main() {
 	// operator believes are in force. The file is read once; a change to it rolls the pods.
 	rules, err := readAirlockRules(cfg.AirlockRulesFile)
 	fatal(err)
-	// A broker with result entries starts only with the rules entry their grants are held to
-	// (config.ResultEntryRules): without it a run's placeholder would open nothing, or every route
-	// of Dispatch's host.
-	if len(cfg.ExchangeResultWorkflows) > 0 {
-		fatal(config.ResultEntryRules(rules))
-	}
-	// And a broker with a private destination starts only when exactly one entry binds its host,
-	// of kind dpop with an allow list, carried in Authorization alone (config.PrivateUpstreamRules):
-	// that one entry's allowed requests are all that reach the destination.
-	fatal(config.PrivateUpstreamRules(rules, cfg.AirlockPrivateUpstream))
+	// The results capability, checked on every broker whatever its result entries
+	// (config.AirlockResultRules): every broker with an airlock port serves every result grant of
+	// the database it shares, so a pod with no result entry of its own still sends a run's token
+	// to the host DISPATCH_RESULTS_TOKEN binds. The entry binds one exact host, the private
+	// destination's, and no other entry binds that host or is of kind dpop; result entries need
+	// the entry, and a destination needs the entry to bind its host.
+	fatal(config.AirlockResultRules(rules, cfg.AirlockPrivateUpstream, len(cfg.ExchangeResultWorkflows) > 0))
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name the rules hold back hands
@@ -804,20 +801,16 @@ func main() {
 	}
 	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
 	// device login's two routes and the health check (api.RegisterEdge), on the same request
-	// deadline and timeouts as the API, since what it serves is the API's own handlers on a
-	// server of its own. Its answers are recorded by answer.EdgeMiddleware: their lines name
-	// port=edge and their samples port="edge", and the mux's own 404 and 405 write no line.
+	// deadline and read and write timeouts as the API, since what it serves is the API's own
+	// handlers on a server of its own, and on an idle timeout above its load balancer's 600-second
+	// keepalive (newEdgeServer). Its answers are recorded by answer.EdgeMiddleware: their refusal
+	// lines name port=edge and their samples port="edge", and the mux's own 404 and 405 write no
+	// refusal line. Every request it answers writes its access-log line (edgeHandler).
 	var edgeServer *http.Server
 	if started.EdgeListener != nil {
 		edgeMux := http.NewServeMux()
 		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
-		edgeServer = &http.Server{
-			Handler:           withRequestDeadline(answer.EdgeMiddleware(edgeMux, answers), requestDeadline),
-			ReadHeaderTimeout: srv.ReadHeaderTimeout,
-			ReadTimeout:       srv.ReadTimeout,
-			WriteTimeout:      srv.WriteTimeout,
-			IdleTimeout:       srv.IdleTimeout,
-		}
+		edgeServer = newEdgeServer(edgeMux, answers, slog.Default(), srv)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its

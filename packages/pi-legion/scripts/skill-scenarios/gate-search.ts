@@ -1,9 +1,9 @@
 // gate-search.ts: each sentence that states the merge condition in a text that a reviewer or an
 // architect reads, which facts of the spec's R14 to R16 it states, and a flag on each one that
-// states fewer. A text that states the condition with fewer facts is one that an agent can take for
-// the whole rule: a reviewer approved a head whose line read `yes, from implementer` because a
-// reference stated the gate as "no pass standing at the head being reviewed", with no word of the
-// two roles that its role prompt asks for.
+// states fewer, or that states a gate R14 rules out. A text that states the condition with fewer
+// facts is one that an agent can take for the whole rule, and one that asks a pass from the
+// implementer and from the tester sets a gate R14 does not: the state at the head decides,
+// whoever recorded the pass.
 //
 //   bun gate-search.ts <checkout> [--generated <dir>]
 //
@@ -25,9 +25,10 @@
 // architect's acceptance, or another statement of when a pull request may merge (`merge`, such as
 // the retro's read before `merging`). An entry below gives the kind where the hit's words do not:
 // they make it the architect's when they name an acceptance or a sign-off, and the reviewer's
-// otherwise. A statement states each fact that NEEDS lists for its kind, as FACTS words it; one that
-// lacks a fact is FLAGGED. A hit that states no merge condition is kept only by an entry that gives
-// the reason, so a new sentence that states the condition is judged by its own words.
+// otherwise. A statement states each fact that NEEDS lists for its kind, as FACTS words it, and
+// none that FORBIDS lists for it; one that lacks a fact of NEEDS, or states one of FORBIDS, is
+// FLAGGED. A hit that states no merge condition is kept only by an entry that gives the reason, so
+// a new sentence that states the condition is judged by its own words.
 //
 // Exit 0: no flag and no fault. Exit 1: a FAULT line for each flag, for each entry that matches no
 // hit or more than one in a text, for a hit that two entries match, and for a run that read no text,
@@ -60,7 +61,19 @@ const CHECK =
 const ARCHITECT = /\baccept(s|ed|ance|ing)?\b|\bsign(s|ed|ing)?[ _-]?off\b/i;
 const NAMING_THE_CHECK = String.raw`\bnam(e|es|ing)\b[^.]{0,30}\bcheck\b`;
 
-/** A fact of R14 to R16, and the words that state it: a statement states it when each matches. */
+/** Each form in which a gate asks a pass of named roles, taken from the sentences that held R14's
+ * two-role rule in the reviewer's role prompts: a pass from the implementer and from the tester
+ * (with "both", "alike", or a clause between them), a line that names one of the two roles alone
+ * as no pass, and CI's results that stand for both roles. A statement that holds any of them goes
+ * against the fact `roles`. */
+export const TWO_ROLE_FORMS: readonly RegExp[] = [
+  /\bfrom the implementer and\b[^.:;]{0,60}?\bfrom the tester\b|\bfrom the tester and\b[^.:;]{0,60}?\bfrom the implementer\b/i,
+  /\bone of the two roles alone\b/i,
+  /\bstands? for both roles\b/i,
+];
+
+/** A fact of R14 to R16, and the words that state it: a statement states it when each matches. A
+ * fact that FORBIDS lists is one a gate must not go against, and its words are the ones that do. */
 export const FACTS: Record<string, { readonly name: string; readonly says: readonly RegExp[] }> = {
   line: {
     name: "R14: the reviewed head's own line decides",
@@ -71,10 +84,8 @@ export const FACTS: Record<string, { readonly name: string; readonly says: reado
     says: [/\banother (commit|head)\b|\bother heads?\b/i],
   },
   roles: {
-    name: "R14: a pass from the implementer and one from the tester",
-    says: [
-      /\bfrom the implementer and (one |a pass )?from the tester\b|\bfrom the tester and (one |a pass )?from the implementer\b/i,
-    ],
+    name: "R14: the state at the head decides, whoever recorded the pass",
+    says: [new RegExp(TWO_ROLE_FORMS.map((form) => form.source).join("|"), "i")],
   },
   ci: {
     name: "R14: a pass from CI for a check that CI proves",
@@ -116,9 +127,18 @@ export const FACTS: Record<string, { readonly name: string; readonly says: reado
  * the architect's, and for another statement of when a pull request may merge, R14 and the state
  * that R15 and R16 both act on. */
 export const NEEDS: Record<Kind, readonly string[]> = {
-  reviewer: ["line", "other head", "roles", "ci", "not known", "refusal", "no wait"],
+  reviewer: ["line", "other head", "ci", "not known", "refusal", "no wait"],
   architect: ["not known", "send back", "no acceptance", "no wait"],
-  merge: ["line", "other head", "roles", "ci", "not known"],
+  merge: ["line", "other head", "ci", "not known"],
+};
+
+/** The facts that a statement of each kind of gate goes against when it says their words: a
+ * reviewer's gate, or another statement of when a pull request may merge, that asks a pass from
+ * the implementer and from the tester. */
+export const FORBIDS: Record<Kind, readonly string[]> = {
+  reviewer: ["roles"],
+  architect: [],
+  merge: ["roles"],
 };
 
 const ACCEPTANCE_STEP =
@@ -329,18 +349,23 @@ export function gateSearch(
         }
         const kind = owner?.gate ?? (ARCHITECT.test(sentence.text) ? "architect" : "reviewer");
         const statement = statementOf(all, index);
-        const states = NEEDS[kind].filter((id) =>
-          FACTS[id]?.says.every((pattern) => pattern.test(statement))
-        );
+        const stated = Object.entries(FACTS)
+          .filter(([, fact]) => fact.says.every((pattern) => pattern.test(statement)))
+          .map(([id]) => id);
+        const states = NEEDS[kind].filter((id) => stated.includes(id));
         const lacks = NEEDS[kind].filter((id) => !states.includes(id));
+        const against = FORBIDS[kind].filter((id) => stated.includes(id));
+        const flags: [string, string[]][] = [];
+        if (lacks.length > 0) flags.push(["lacks", lacks]);
+        if (against.length > 0) flags.push(["goes against", against]);
         gates++;
         lines.push(
-          `${where} GATE ${kind}${owner === undefined ? " (by its words)" : ""}: states ${states.join(", ") || "none"}${lacks.length > 0 ? `; FLAG: lacks ${lacks.join(", ")}` : ""}\n    ${words}`
+          `${where} GATE ${kind}${owner === undefined ? " (by its words)" : ""}: states ${states.join(", ") || "none"}${flags.map(([verb, ids]) => `; FLAG: ${verb} ${ids.join(", ")}`).join("")}\n    ${words}`
         );
-        if (lacks.length > 0) {
+        if (flags.length > 0) {
           flagged++;
           faults.push(
-            `${where} states the ${kind}'s merge condition and lacks ${lacks.map((id) => FACTS[id]?.name).join("; ")}: ${words}`
+            `${where} states the ${kind}'s merge condition and ${flags.map(([verb, ids]) => `${verb} ${ids.map((id) => FACTS[id]?.name).join("; ")}`).join(", and ")}: ${words}`
           );
         }
       });

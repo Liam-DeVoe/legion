@@ -83,13 +83,15 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "from the implementer and from the tester both",
-    cut: "Remove the two-role requirement.",
+    has: "whoever recorded the pass: Dispatch's state decides your approval",
+    cut: "Restore the two-role requirement.",
+    restore: "from the implementer and from the tester both",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "results from CI stand for both roles",
-    cut: "Remove the two-role comparison from the CI sentence.",
+    has: "its state comes from its results from CI",
+    cut: "Restore the two-role comparison in the CI sentence.",
+    restore: "results from CI stand for both roles",
   },
   {
     file: "packages/daemon/internal/prompts/roles/mechanics/headless.md",
@@ -98,8 +100,9 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
-    has: "from the implementer and from the tester both",
-    cut: "Remove the two-role requirement.",
+    has: "That state decides, whoever recorded the pass",
+    cut: "Restore the two-role requirement.",
+    restore: "from the implementer and from the tester both",
   },
   {
     file: "skills/legion-controller/references/daily-report.md",
@@ -349,7 +352,7 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "results from CI stand for both roles: the one that command derives from its CI run",
+    has: "its state comes from its results from CI: the one that command derives from its CI run",
     cut: "Remove the results `dispatch results` prints under a check CI proves from the sentence on that check.",
   },
   {
@@ -450,13 +453,14 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
 ];
 
 export const RULES: Record<string, Rule> = {
-  "ablate-two-roles": {
+  "restore-two-roles": {
     roles: ["reviewer"],
-    rule: "A check with no `ci_check` has a pass at a head only from the implementer and from the tester both.",
+    rule: "A check passes the reviewer's gate when its line at the head reads yes, whoever recorded the pass.",
     patterns: [
       /implementer[^.]*\btester|tester[^.]*\bimplementer/i,
       /\b(both|two|which|each) roles?\b|implementer.s own|from the implementer\b|from the tester\b/i,
       /implementer records|tester records|records? (its|their|your) own/i,
+      /\bwhoever recorded the pass\b|\bits state comes from\b/i,
     ],
     entries: ENTRIES_TWO_ROLES,
   },

@@ -1,8 +1,16 @@
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { fileLimit, ROW_MARGIN_MS } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  CI_CHECK,
+  type CIResultsStack,
+  type JobRun,
+  startCIResultsStack,
+  useCIResultsStackDirectory,
+} from "../../test/ci-results-stack";
+import { dispatchStackEnabled } from "../../test/dispatch-stack";
 
 // Each row starts the real entry once, as results-reading-one-line.test.ts's rows do, whose start
 // took 9.97 s at a load of 568 on 288 CPUs: 60 s for that start, and the row clock's margin.
@@ -10,11 +18,15 @@ setDefaultTimeout(fileLimit(60_000 + ROW_MARGIN_MS));
 
 // What a CI job's `dispatch result --issue` prints goes into its runner's log, which reads a line
 // that starts with `::`, and a `##[` anywhere, as a workflow command. Each line it prints stays one
-// line, by runnerlog.Printable's rule (runner-log.ts), when the check id or Dispatch's refusal holds
-// a line break or `::error`. A job's log that `dispatch results --issue` prints follows the same
-// rule: the whole log is one line, its line breaks written as `\n`, and no line is a workflow
-// command. The real entry runs as a child process against a stub of Dispatch, as `agent-secrets
-// result-grant` starts it: with the airlock's placeholder of the run and nothing else.
+// line, by runnerlog.Printable's rule (runner-log.ts), when Dispatch's refusal holds a line break
+// or `::error`. Those rows run the real entry as a CI job's step runs it, through the stack's
+// `jobCommand` (ci-results-stack.ts): the child of the real `agent-secrets result-grant`, which
+// trades the run's token at the real broker and gives the command the airlock's placeholder of
+// the run alone, on the way through the broker's airlock proxy to the real Dispatch server.
+//
+// A job's log that `dispatch results --issue` prints follows the same rule: the whole log is one
+// line, its line breaks written as `\n`, and no line is a workflow command. That read is a
+// session's, no CI job's, and runs the real entry against a stub of Dispatch.
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
@@ -28,19 +40,18 @@ afterAll(() => {
 /** A fresh home for each run, which the fixture removes after the test that made it. */
 const makeHome = temporaryDirectories("ci-job-one-line");
 
-/** The lines the entry prints, run with `env` beside Dispatch's stub and a fresh home. */
-async function run(
-  argv: readonly string[],
+/** The lines `command` prints, run with `env`, PATH and a fresh home. */
+async function printedBy(
+  command: readonly string[],
   env: Readonly<Record<string, string>>
 ): Promise<string[]> {
   const home = makeHome();
-  const child = Bun.spawn([process.execPath, entry, ...argv], {
+  const child = Bun.spawn([...command], {
     cwd: home,
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,
       DISPATCH_STATE_DIR: home,
-      DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
       ...env,
     },
     stdout: "pipe",
@@ -54,24 +65,13 @@ async function run(
   return `${stdout}${stderr}`.replace(/\n$/, "").split("\n");
 }
 
-/** A CI job's command as `agent-secrets result-grant` starts it: the airlock's placeholder of its
- *  run in its variable, which the command presents alone. The command reads only that the variable
- *  is set (`isJobResult`), and holds its value as a secret, so the value is a random fixture. */
-const asJob = (): Record<string, string> => ({
-  DISPATCH_RESULTS_TOKEN: fixtureSecret("result"),
-});
-
-const record = (check: string) => [
-  "result",
-  "--issue",
-  "ACME-1",
-  "--check",
-  check,
-  "--verdict",
-  "pass",
-  "--commit",
-  SHA,
-];
+/** The lines the entry prints, run with `env` beside Dispatch's stub. */
+function run(argv: readonly string[], env: Readonly<Record<string, string>>): Promise<string[]> {
+  return printedBy([process.execPath, entry, ...argv], {
+    DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+    ...env,
+  });
+}
 
 /** No printed line is a workflow command. */
 function noWorkflowCommand(printed: readonly string[]): void {
@@ -80,43 +80,90 @@ function noWorkflowCommand(printed: readonly string[]): void {
   ).toEqual([]);
 }
 
-describe("dispatch result --issue as a CI job: each printed line stays one line", () => {
-  test("a check id that holds a line break and ::error, which Dispatch's refusal names", async () => {
-    const check = "c1\n::error title=x::injected";
-    answer = () =>
-      Response.json(
-        {
-          code: "UNKNOWN_CHECK",
-          error: `${check} is no check of this issue's Verification document or of one above it`,
-        },
-        { status: 400 }
-      );
-    const printed = await run(record(check), asJob());
-    noWorkflowCommand(printed);
-    expect(printed).toHaveLength(1);
-  });
+const stackDirectory = useCIResultsStackDirectory();
 
-  test("a refusal of Dispatch whose text holds a line break", async () => {
-    answer = () =>
-      Response.json(
-        { code: "CHECK_NOT_THIS_JOBS", error: "check c1 names CI job x\n::warning::y" },
-        { status: 409 }
-      );
-    const printed = await run(record("c1"), asJob());
-    noWorkflowCommand(printed);
-    expect(printed).toHaveLength(1);
-  });
+describe.skipIf(!dispatchStackEnabled)(
+  "dispatch result --issue as a CI job: each printed line stays one line",
+  () => {
+    let stack: CIResultsStack | undefined;
 
-  test("the control: a refusal with no line break prints one line", async () => {
-    answer = () =>
-      Response.json(
-        { code: "CHECK_NOT_THIS_JOBS", error: "check c1 names CI job x" },
-        { status: 409 }
+    /** The running stack, or the error that says why no row can run. */
+    function running(): CIResultsStack {
+      if (stack === undefined) throw new Error("the CI results stack did not start");
+      return stack;
+    }
+
+    /** A run of the job go-checks on a push of the issue's branch at `sha`, with a check run of
+     *  its own. */
+    function pushAt(sha: string, checkRunId: number, overrides: Partial<JobRun> = {}): JobRun {
+      return {
+        sha,
+        ref: `refs/heads/legion/${running().issue}`,
+        job: "go-checks",
+        runAttempt: 1,
+        checkRunId,
+        ...overrides,
+      };
+    }
+
+    /** The lines the job `run` prints for its pass of `check` at the commit it tested, run as a CI
+     *  job's step runs it: through the stack's `jobCommand`, with the job's variables alone. */
+    function recordAs(run: JobRun, check: string): Promise<string[]> {
+      const argv = [
+        "result",
+        "--issue",
+        running().issue,
+        "--check",
+        check,
+        "--verdict",
+        "pass",
+        "--commit",
+        run.sha,
+      ];
+      return printedBy(
+        running().jobCommand([process.execPath, entry, ...argv]),
+        running().jobEnv(run)
       );
-    const printed = await run(record("c1"), asJob());
-    expect(printed).toEqual(["CHECK_NOT_THIS_JOBS: check c1 names CI job x"]);
-  });
-});
+    }
+
+    beforeAll(async () => {
+      stack = await startCIResultsStack({ work: stackDirectory });
+    }, 600_000);
+    afterAll(async () => {
+      await stack?.stop();
+    }, 60_000);
+
+    test("a check id that holds a line break and ::error, which Dispatch's refusal names", async () => {
+      const check = `${CI_CHECK}\n::error title=x::injected`;
+      const printed = await recordAs(pushAt("a".repeat(40), 301), check);
+      noWorkflowCommand(printed);
+      expect(printed).toEqual([
+        `UNKNOWN_CHECK: ${CI_CHECK}\\n::error title=x::injected is no check of this issue's Verification document or of one above it`,
+      ]);
+    }, 120_000);
+
+    // Dispatch's refusals of a job's result name the check as the caller wrote it (UNKNOWN_CHECK,
+    // the row above), and quote each other text a job sets, as Go quotes a string: here the name
+    // of the job's check run, which a matrix value sets, holding a line break and ::warning.
+    test("a refusal of Dispatch that quotes a check run name holding a line break and ::warning", async () => {
+      const printed = await recordAs(
+        pushAt("b".repeat(40), 302, { legName: "x\n::warning::y" }),
+        CI_CHECK
+      );
+      noWorkflowCommand(printed);
+      expect(printed).toEqual([
+        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "go-checks", and this token's check run is "go-checks (x\\n::warning::y)": a job records results only for the checks whose ci_check names its check run`,
+      ]);
+    }, 120_000);
+
+    test("the control: a refusal with no line break prints exactly its one line", async () => {
+      const printed = await recordAs(pushAt("c".repeat(40), 303, { legName: "x" }), CI_CHECK);
+      expect(printed).toEqual([
+        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "go-checks", and this token's check run is "go-checks (x)": a job records results only for the checks whose ci_check names its check run`,
+      ]);
+    }, 120_000);
+  }
+);
 
 describe("dispatch results --issue: a job's log prints on one line, and no line is a workflow command", () => {
   /** The read of ACME-1, whose check c1 CI proves holds one result its job recorded. */

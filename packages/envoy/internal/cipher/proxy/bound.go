@@ -530,6 +530,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	scheme, upstreamHost := "https", info.target
 	if s.toDestination(info.host) {
 		transport, scheme, upstreamHost = s.private, s.privateUpstream.URL.Scheme, s.privateUpstream.URL.Host
+		// A call the destination did not answer is answered without the transport's error,
+		// which names the destination's in-cluster address (destinationUnreachable).
+		upstreamFailed = s.destinationUnreachable(info.host, r.URL.Path)
 	}
 	if kind == proxyrules.KindDPoP {
 		// The swap put the run's token in; resultTransport signs its proof with the pod's key,
@@ -1108,6 +1111,12 @@ func headerOf(headers [][2]string) http.Header {
 // statusWriter records the status the service answered, which the call's log line names. It
 // unwraps, so every http.ResponseController call but a flush reaches the real writer, and the
 // flush that streams each write (FlushInterval -1) reaches it through FlushError.
+//
+// An informational answer (1xx, but 101, which ends the exchange) is not the status the call
+// ended with, and goes to the command without the two headers that say whose answer it is
+// (ownAnswer): ReverseProxy copies a 1xx answer's headers to the command as the service sent
+// them, and ModifyResponse, which sets Airlock-Forwarded and removes the service's Airlock-Code,
+// sees only the final answer, so a service could otherwise pass for the proxy in a 1xx.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -1132,6 +1141,12 @@ func (w *statusWriter) FlushError() error {
 }
 
 func (w *statusWriter) WriteHeader(status int) {
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		w.Header().Del(forwardedHeader)
+		w.Header().Del(codeHeader)
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	if w.status == 0 {
 		w.status = status
 	}

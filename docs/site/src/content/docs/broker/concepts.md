@@ -1452,8 +1452,9 @@ What the airlock does not stop is as much of the design as what it does:
   broker with a rules file refuses to start without that setting, or when no range in it holds
   that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
   The one exception is `BROKER_AIRLOCK_PRIVATE_UPSTREAM` (`<host>=<url>`): the allowed requests
-  of the one `dpop` entry that binds that host go to the URL, at an address the proxy refuses to
-  every other request, and a tunnel or plain-HTTP request to that address stays refused.
+  of the entry `DISPATCH_RESULTS_TOKEN`, which binds that host alone, go to the URL, at an
+  address the proxy refuses to every other request and never at a loopback, link-local or
+  metadata server's address, and a tunnel or plain-HTTP request to that address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

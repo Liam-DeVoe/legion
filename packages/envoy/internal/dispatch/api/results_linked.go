@@ -76,23 +76,30 @@ const linkedPullRequestReads = 10
 // held once, and a reader could not tell it from the real head, since both print as twelve
 // characters.
 //
-// It refuses in two ways. Where Dispatch's own list of the links could not be read
-// (linkedRepositories), it answers that error, a server error to the caller, and nothing is
-// stored, whatever GitHub said of repo: the record cannot tell whether a linked repository holds
-// the commit. And where GitHub proved that repo does not hold the commit and every other
+// It refuses in two ways. Where GitHub does not say that repo holds the commit — it proves repo
+// does not, or its read of repo did not answer — and Dispatch's own rows that say which other
+// repositories count could not be read, the heads of the issue's pull requests
+// (delivery.HeadsAttributedTo) or the list of its links (linkedRepositories), it answers that
+// error, a server error to the caller, and nothing is stored: the record cannot tell whether the
+// commit is the head of a pull request of another repository, nor which repositories to ask, so
+// a refusal would leave out a repository R17 has it name, and a stored result would be taken to
+// be repo's while another repository may hold it. A commit GitHub says repo holds is taken to be
+// repo's whether or not the heads could be read, as a commit no head names is, and the links are
+// not read for it. And where GitHub proved that repo does not hold the commit and every other
 // repository either does not count or, counting, is proved not to hold it either — which
 // delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
 // commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. A refusal with links left unread
 // for the bound says how many, since a link past it may name the repository that holds the
 // commit.
 //
-// Where Dispatch cannot read one of the repositories and no repository is shown to hold the
-// commit, it stores the result, taken to be repo's (R17): a read that did not answer — a rate
-// limit, a 5xx, a transport failure — of repo or of any other repository, and a repository the
-// App is not installed on or whose token is refused it (delivery.RepositoryUnreadable). No such
-// answer can block the result a closed issue takes, the production check's after-merge result —
-// whose merge commit is on the branch its pull request merged into and is held anyway — and a
-// repository Dispatch cannot read records the result as before.
+// Where Dispatch read its own rows and cannot read one of the repositories, and no repository is
+// shown to hold the commit, it stores the result, taken to be repo's (R17): a read that did not
+// answer — a rate limit, a 5xx, a transport failure — of repo or of any other repository, and a
+// repository the App is not installed on or whose token is refused it
+// (delivery.RepositoryUnreadable). No such answer can block the result a closed issue takes, the
+// production check's after-merge result — whose merge commit is on the branch its pull request
+// merged into and is held anyway — and a repository Dispatch cannot read records the result as
+// before.
 //
 // It answers a repository other than repo only where the head's row names it or GitHub said that
 // repository holds the commit: the first that does. Every other result it stores is taken to be
@@ -106,17 +113,18 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	heads, err := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
-	if err != nil {
-		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
-			"issue", issueKey, "commit", sha, "error", err)
-	}
+	// heads is nil where the read failed, so no head matches: the commit is asked of repo, and
+	// headsErr refuses the record wherever GitHub does not say that repo holds it.
+	heads, headsErr := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
 	if at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool { return head.HeadSHA == sha }); at >= 0 {
 		return headRepositoryOther(heads[at], *repo), nil
 	}
 	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
 	if err == nil && held {
 		return nil, nil
+	}
+	if headsErr != nil {
+		return nil, headsErr
 	}
 	// unread is a repository Dispatch could not read. It refuses nothing by itself (R17): it
 	// leaves the commit repo's wherever no other repository is shown to hold it.

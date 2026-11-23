@@ -24383,8 +24383,8 @@ describe("consumer delivery", () => {
 // A real natsd and a real listener: the session registers for a consumer, and the listener
 // relays it. There is no second rollout state to prove any more — a listener whose grant cannot
 // give a consumer refuses the registration, and the session receives nothing at all.
-// Reserved out here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` has stopped the stack writing into it.
+// Reserved out here, at the file's module scope. Once the `describe` has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", () => {

@@ -7,10 +7,10 @@ body: |-
   its CI run goes on, holds the move): to the reviewer when each reads yes, and otherwise back to
   the implementer with a task naming each check that does not read yes, a check Dispatch could not
   read among them. Its `test` handoff's `implementerProof` is `{how}` alone, it records a check it
-  runs and finds failing with `--verdict fail`, and a check the implementer left no pass of at that
-  head with a fail of its own too, since the daemon reads no handoff's `failures` and a pass of its
-  own there would otherwise read yes; it is told Dispatch's own rule of a yes: a pass of any role
-  with no fail at that commit. The reviewer is told no phase completion carries a verdict
+  runs and finds failing with `--verdict fail` and an entry in `failures`, and its own fail, not the
+  handoff's `failures`, sends the issue back, since the daemon reads no handoff's `failures`; it is
+  told Dispatch's own rule of a yes: a pass of any role with no fail at that commit. The reviewer is
+  told no phase completion carries a verdict
   (`VERDICT_NOT_TAKEN`) and that the evidence of each check is the line of its head in
   `dispatch results`; the prompt no longer names `VERDICT_ROLE_FORBIDDEN` or `Tester's verdict:`.
   The architect is told a tester's `phase-finished` notice says, in its `reason`, each check that

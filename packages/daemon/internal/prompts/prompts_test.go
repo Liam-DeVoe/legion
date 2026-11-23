@@ -64,8 +64,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"The head your test record names is the only head the move reads, so a completion whose record names none is refused, by the `legion` tool or by the daemon (`TESTED_HEAD_REQUIRED`): write a new `test` handoff with `head` set to the commit you tested, then complete again.",
 			"A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass",
 			"`implementerProof` (`{how}` alone)",
-			"record a fail of it with `dispatch result --issue <issue> --check <block id> --role tester --verdict fail --commit <head sha>`, its `observed` naming why no pass of the implementer stands at that head, with the state and the results your read showed there: a fail the implementer recorded, a pass and a fail that make the head not known, or no result at all, which you say only where the read shows none",
-			"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer, and a pass of yours already at that head does not stand in its way, since a pass and a fail at one head make the check not known.",
+			"or with `--verdict fail` and an entry in `failures` for one that fails",
+			"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer.",
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
@@ -292,10 +292,11 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 // reviewer that a verdict is the tester's or that its task names the tester's, or the architect
 // that the tester's notice carries one. Each role is told where the decision comes from instead:
 // the tester that the states move the issue, and that its own fail, not its handoff's `failures`,
-// sends back a check the implementer proved nothing of, a pass of its own at that head included
-// (Dispatch reads such a head yes, and decideTesting reads no handoff); the reviewer that its
-// evidence is the line of its head in `dispatch results`; and the architect what the tester's
-// notice says: each failing check when the move sent the issue back, and when it waits, the checks
+// sends back a check that fails (decideTesting reads no handoff), and no longer that it fails a
+// check for want of the implementer's yes, since Dispatch reads one pass of any role yes; the
+// reviewer that its evidence is the line of its head in `dispatch results`; and the architect what
+// the tester's notice says: each failing check when the move sent the issue back, and when it
+// waits, the checks
 // it waits for only where the daemon knows which, since a wait for a tested head, for the states
 // through the test record's serial, or for the head's set of checks names none (decideTesting's
 // reasons). The tester's prompt also says Dispatch's own rule of a yes, a pass of any role with no
@@ -319,12 +320,12 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 		{claim.RoleTester, false,
 			[]string{"and no `verdict`", "The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names",
 				"whichever role recorded the pass", "say in your `test` handoff's `implementerProof.how` how you judged those results",
-				"record a fail of it with `dispatch result", "a pass of yours already at that head does not stand in its way",
-				"a fail the implementer recorded, a pass and a fail that make the head not known"},
+				"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer."},
 			[]string{`verdict: "pass"`, `verdict: "fail"`, "the verdict lets the daemon choose", "implementerProof.verdict", `"verified" | "rejected"`,
 				"record the verdict in your `test` handoff", "a pass from one role alone is no pass", "complete the phase as a failure",
 				"back to the implementer at once", "even while another still waits", "and so does a check Dispatch could not read",
-				"record no result of your own for it", "its state there is no", "its `observed` saying that the implementer left no result at that head"}},
+				"record no result of your own for it", "its state there is no", "its `observed` saying that the implementer left no result at that head",
+				"does not read yes from the implementer is a test failure", "a pass of yours already at that head does not stand in its way"}},
 		{claim.RoleReviewer, false,
 			[]string{"No phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`): your decision is the review you submit on GitHub, and the evidence of each check is the line of your head in `dispatch results`."},
 			[]string{"VERDICT_ROLE_FORBIDDEN", "Tester's verdict:", "A `verdict` is the tester's alone"}},

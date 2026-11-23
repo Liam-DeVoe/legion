@@ -1913,6 +1913,7 @@ export const dispatchToolSpecs = [
       "that Dispatch asked, and says how many linked pull requests it left unread past that " +
       "bound. Record the result after the commit is pushed. A repository Dispatch cannot read, " +
       "and a read of GitHub that does not answer, records the result as before. " +
+      "Where the issue has no repository, the result is recorded as before. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +
@@ -1940,9 +1941,13 @@ export const dispatchToolSpecs = [
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
       "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
-      "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself prints " +
-      "its code and its words; each says nothing reached Dispatch and exits 1, and only a 503 is " +
-      "asked again. A call that Dispatch's check of the run's token (429 " +
+      "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself before " +
+      "the write left it (Airlock-Forwarded: false) prints its code and its words; each says " +
+      "nothing reached Dispatch and exits 1, and only a 503 is asked again. An answer the proxy " +
+      "gives itself after the write may have left it (Airlock-Forwarded: unknown) is asked again " +
+      "under the same key and, if no answer settles it, prints " +
+      '{"write_outcome_unknown":"<code>"} and exits 1. A call that Dispatch\'s check of the ' +
+      "run's token (429 " +
       "BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
       "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
       "one bound, 60 s from its start, which every write runs under, and no round starts in its " +
@@ -2049,7 +2054,9 @@ export const dispatchToolSpecs = [
       "<commit>: <state>`: `yes, from <roles>. Pass <id> decides it.`; `no, as fail <id> counts " +
       "there.`; `no, as it holds no result.`; `not known, as pass <id> and fail <id> count at " +
       "this commit.`, which a later pass does not end and a retraction of the wrong one does; " +
-      "or `not known, as Dispatch could not read CI run <run> there.`. A merged pull request's " +
+      "`not known, as Dispatch could not read CI run <run> there.`; or `not known, as Dispatch " +
+      "could not read the repository of its issue, which says whether the CI job's result " +
+      "there takes the place of CI run <run>.`. A merged pull request's " +
       "head prints as `#<number> (merged)`, a pull request of another repository than the " +
       "issue's as `<owner>/<repo>#<number>`, and a branch head as `branch <name>`. A reviewer and " +
       "a tester read the line of their own head. Then `  The <m> merged pull requests decide " +

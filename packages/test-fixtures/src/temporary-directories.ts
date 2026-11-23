@@ -33,6 +33,15 @@ export type TemporaryDirectoryOptions = {
   real?: boolean;
   /** The directory the one directory is made in, `tmpdir()` by default; see {@link memoryRoot}. */
   root?: string;
+  /**
+   * Removes the directory in a process of its own that the `afterAll` starts and does not wait
+   * for, in place of the removal the `afterAll` waits for. It is for a directory whose removal can
+   * take long on a slow disk, such as a stack's working directory, which holds the binaries the
+   * stack built: a removal the `afterAll` waits for runs on the limit the file states, and one past
+   * it fails the hook (NO_HOOK_LIMIT says how), for a time that depends on the disk and not on the
+   * code under test. The directory can outlive its scope by the time its removal takes.
+   */
+  removeInBackground?: boolean;
 };
 
 /** What {@link memoryRoot} takes. */
@@ -200,6 +209,9 @@ export function temporaryDirectories(
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
  * somehow exists already fails the file rather than handing two suites one directory.
+ *
+ * With `removeInBackground` the `afterAll` starts the removal in a process of its own instead of
+ * removing the directory itself (see {@link TemporaryDirectoryOptions}).
  */
 export function temporaryDirectory(
   prefix: string,
@@ -215,9 +227,28 @@ export function temporaryDirectory(
     mkdirSync(directory, { mode: 0o700 });
   }, NO_HOOK_LIMIT);
   afterAll(() => {
-    removeEvery([directory]);
+    if (options.removeInBackground === true) removeInBackground(directory);
+    else removeEvery([directory]);
   }, NO_HOOK_LIMIT);
   return directory;
+}
+
+/**
+ * Starts the removal of `directory` in a process of its own (REMOVAL_SCRIPT) and returns at once,
+ * so the `afterAll` that calls it takes no time the disk decides. The process is not waited for:
+ * it may outlive the `bun test` process, and neither Bun's hook limits nor the file's limit judge
+ * it. A directory a `-t` filter or a skipped `describe` never made is nothing to remove. A
+ * directory it cannot remove is named on the run's stderr; unlike a hook that throws, it fails no
+ * file, since by then the file may be over. It starts in this package's directory, for the reason
+ * removeEvery gives.
+ */
+function removeInBackground(directory: string): void {
+  Bun.spawn([process.execPath, REMOVAL_SCRIPT, directory], {
+    cwd: import.meta.dir,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "inherit",
+  }).unref();
 }
 
 /** `-`, the one character the name template trims from a caller's prefix. */

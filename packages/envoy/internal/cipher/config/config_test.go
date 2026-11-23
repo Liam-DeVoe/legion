@@ -734,53 +734,78 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 // TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne: BROKER_AIRLOCK_PRIVATE_UPSTREAM is one
 // <host>=<url> entry, read as that host and that URL, and unset is none. Two entries, the setting
 // with no rules file, an entry not of that form, a host that is not one lower-case host name, and a
-// URL that does not parse, is not http or https, names no host, or carries a user, a path or a query
-// each refuse the start, naming the setting and the fault. A refusal of a URL with a user quotes no
-// part of it, since the user may carry a password.
+// URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
+// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost,
+// a name under .localhost, a loopback, link-local, unspecified or multicast address, a cloud
+// metadata server's IPv6 address) each refuse the start, naming the setting and the fault. No
+// refusal quotes the URL's user, path, query or fragment, where a credential can sit. A loopback
+// URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the local stack's stand-in of
+// Dispatch, is read.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
 		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.AirlockPrivateUpstream, err)
 	}
-	for _, row := range []struct{ value, wantURL string }{
-		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "http://dispatch.dispatch.svc.cluster.local:8766"},
-		{" dispatch.test=https://10.0.0.5/ ", "https://10.0.0.5/"},
+	for _, row := range []struct{ value, dialAllow, wantURL string }{
+		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
+		{" dispatch.test=https://10.0.0.5/ ", "", "https://10.0.0.5/"},
+		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "http://127.0.0.1:8766"},
+		{"dispatch.test=http://localhost", "localhost:80", "http://localhost"},
 	} {
 		e := airlockEnv()
 		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
 		cfg, err := Load(env(e))
 		if err != nil {
-			t.Fatalf("Load(%s=%q): %v", setting, row.value, err)
+			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q): %v", setting, row.value, row.dialAllow, err)
 		}
 		if got := cfg.AirlockPrivateUpstream; got.Host != "dispatch.test" || got.URL == nil || got.URL.String() != row.wantURL {
 			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
 		}
 	}
-	// The URL's user carries a word a refusal must not quote; the URL is put together here, so the
-	// word is one constant the check below reads too.
+	// The URL's user, path, query and fragment carry a word a refusal must not quote; each URL is
+	// put together here, so the word is one constant the check below reads too.
 	const userWord = "secret-word"
-	for _, row := range []struct{ name, value, want string }{
-		{"two entries", "dispatch.test=http://10.0.0.5:8766 other.test=http://10.0.0.6:8766", "names 2 entries"},
-		{"an entry with no =", "dispatch.test", "must be one <host>=<url> entry"},
-		{"an entry with no URL", "dispatch.test=", "must be one <host>=<url> entry"},
-		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "in lower case, with no"},
-		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "in lower case, with no"},
-		{"a URL that does not parse", "dispatch.test=http://[10.0.0.5", "does not parse"},
-		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21", "is not http or https"},
-		{"a URL with no host", "dispatch.test=http://:8766", "names no host"},
-		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "carries a user"},
-		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/p", "has the path"},
-		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q", "has a query"},
+	for _, row := range []struct{ name, value, dialAllow, want string }{
+		{"two entries", "dispatch.test=http://10.0.0.5:8766 other.test=http://10.0.0.6:8766", "", "names 2 entries"},
+		{"an entry with no =", "dispatch.test", "", "must be one <host>=<url> entry"},
+		{"an entry with no URL", "dispatch.test=", "", "must be one <host>=<url> entry"},
+		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a URL that does not parse", "dispatch.test=http://[10.0.0.5", "", "does not parse"},
+		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21/" + userWord, "", "must be http or https"},
+		{"a URL with no host", "dispatch.test=http://:8766/" + userWord, "", "names no host"},
+		{"a URL with port 0", "dispatch.test=http://10.0.0.5:0/" + userWord, "", "port outside 1 to 65535"},
+		{"a URL with port 65536", "dispatch.test=http://10.0.0.5:65536", "", "port outside 1 to 65535"},
+		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "", "carries a user"},
+		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/" + userWord, "", "has a path"},
+		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q=" + userWord, "", "has a query"},
+		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
+		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
+		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
+		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},
+		{"a loopback address", "dispatch.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
+		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
+		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
+		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
+		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
+		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
+		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
 	} {
 		e := airlockEnv()
 		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
 		_, err := Load(env(e))
 		if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), row.want) {
 			t.Errorf("%s: Load(%s=%q) = %v; want a refusal naming the setting and %q", row.name, setting, row.value, err, row.want)
 			continue
 		}
 		if strings.Contains(err.Error(), userWord) {
-			t.Errorf("%s: the refusal quotes the URL's user: %v", row.name, err)
+			t.Errorf("%s: the refusal quotes a part of the URL a credential can sit in: %v", row.name, err)
 		}
 	}
 	e := validEnv()
@@ -798,12 +823,13 @@ func privateEntry() proxyrules.SecretRule {
 	return entry
 }
 
-// TestAPrivateUpstreamNeedsOneBindingEntry: PrivateUpstreamRules takes rules in which exactly one
-// entry binds the destination's host (proxyrules.HostBound, so a "*." entry over the host binds it
-// too), of kind dpop, with a non-empty allow list, carried in Authorization alone (an entry naming no
-// headers carries the default, Authorization). No entry for the host, a second entry over it, an
-// entry of no kind, no allow list, an empty one and another header are each refused, naming the
-// setting and what is wrong. With no destination set, any rules are taken.
+// TestAPrivateUpstreamNeedsOneBindingEntry: AirlockResultRules takes rules in which the one entry
+// that binds the destination's host is DISPATCH_RESULTS_TOKEN, bound to that host alone, of kind
+// dpop, with a non-empty allow list, carried in Authorization alone (an entry naming no headers
+// carries the default, Authorization). No entry for the host, a second entry over it
+// (proxyrules.HostBound, so a "*." entry over the host binds it too), an entry of no kind, no allow
+// list, an empty one and another header are each refused, naming the setting or the entry and what
+// is wrong. With no destination, no result entries and no dpop entry, any rules are taken.
 func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	e := airlockEnv()
@@ -813,15 +839,15 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		t.Fatalf("Load(%s): %v", setting, err)
 	}
 	upstream := cfg.AirlockPrivateUpstream
-	if err := PrivateUpstreamRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}, upstream); err != nil {
+	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}, upstream, false); err != nil {
 		t.Fatalf("the one entry: %v", err)
 	}
 	defaultHeader := privateEntry()
 	defaultHeader.Headers = nil
-	if err := PrivateUpstreamRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, upstream); err != nil {
+	if err := AirlockResultRules(proxyrules.Rules{Secrets: []proxyrules.SecretRule{defaultHeader}}, upstream, false); err != nil {
 		t.Fatalf("the entry with the default header: %v", err)
 	}
-	if err := PrivateUpstreamRules(proxyrules.Rules{}, PrivateUpstream{}); err != nil {
+	if err := AirlockResultRules(proxyrules.Rules{}, PrivateUpstream{}, false); err != nil {
 		t.Fatalf("no destination and no rules: %v", err)
 	}
 	pattern := proxyrules.SecretRule{Name: "WILDCARD_TOKEN", Hosts: []string{"*.test"}}
@@ -829,8 +855,8 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 		name, says string
 		spoil      func(*proxyrules.Rules)
 	}{
-		{"no entry for the host", "no entry", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
-		{"a second entry *.test", "2 entries", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
+		{"no entry for the host", "names the host dispatch.test", func(r *proxyrules.Rules) { r.Secrets[0].Hosts = []string{"other.test"} }},
+		{"a second entry *.test", "WILDCARD_TOKEN", func(r *proxyrules.Rules) { r.Secrets = append(r.Secrets, pattern) }},
 		{"an entry of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Secrets[0].Kind = "" }},
 		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = nil }},
 		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Secrets[0].Allow = []proxyrules.Allow{} }},
@@ -838,9 +864,9 @@ func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
 	} {
 		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{privateEntry()}}
 		c.spoil(&rules)
-		err := PrivateUpstreamRules(rules, upstream)
-		if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), c.says) {
-			t.Errorf("%s: err = %v, want a refusal naming %s and %q", c.name, err, setting, c.says)
+		err := AirlockResultRules(rules, upstream, false)
+		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
+			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
 		}
 	}
 }
