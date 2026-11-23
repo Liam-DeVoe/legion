@@ -78,9 +78,6 @@ func TestAStandInDeadlineEndsAsTheDeadlineItStandsInFor(t *testing.T) {
 			before := time.Now()
 			row.stand(pass, cancel, cancelStandParent)
 			after := time.Now()
-			// The child is waited for first, with no read of the stand-in before it: every read
-			// of the stand-in looks at its parent first, so a read here would end it whether or
-			// not it learns its parent's end on its own, as a waiting child needs it to.
 			Receive(t, "the end of the stand-in's child", standChild.Done())
 			Receive(t, "the stand-in's end", stand.Done())
 			if row.passes {
@@ -149,5 +146,33 @@ func TestAStandInDeadlineReadsItsParentsEndAtOnce(t *testing.T) {
 				t.Errorf("the stand-in reads Err %v and cause %v right after its parent ended, want %v and %v, as the real deadline's child", stand.Err(), context.Cause(stand), real.Err(), context.Cause(real))
 			}
 		})
+	}
+}
+
+// A StandInDeadline that nothing reads still ends when its parent ends: a waiter that took its
+// Done before the parent ended, such as the goroutine the standard library starts to end a context
+// derived from it, is woken with no read of the stand-in after the end. The wait below reads the
+// channel alone, never the stand-in, since every read of the stand-in looks at its parent first and
+// would end it on its own.
+func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
+	errParent := errors.New("the parent's cause")
+	parent, cancelParent := context.WithCancelCause(context.Background())
+	defer cancelParent(nil)
+	stand, _, cancel := StandInDeadline(parent)
+	defer cancel()
+	done := stand.Done()
+	cancelParent(errParent)
+	if !Holds(time.Minute, Poll, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}) {
+		t.Fatalf("a stand-in nothing read was still open a minute after its parent ended")
+	}
+	if stand.Err() != context.Canceled || context.Cause(stand) != errParent {
+		t.Errorf("the stand-in reads Err %v and cause %v, want %v and %v, its parent's", stand.Err(), context.Cause(stand), context.Canceled, errParent)
 	}
 }
