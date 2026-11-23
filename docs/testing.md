@@ -589,7 +589,9 @@ A test of a place that writes such a file starts `testexec.ForkBeside` and runs 
 as it is written, many times; it fails on a run refused with `ETXTBSY`. gVisor runs a file some
 process holds open for writing, so there such a test passed with the fault present (every one of
 them, under gVisor in a build pod, 2026-11-23). `ForkBeside` first runs a program it holds open
-for writing itself, and skips the test, saying why, on a kernel that does not refuse it.
+for writing itself. A kernel that runs it skips the test, saying so, except under
+`GITHUB_ACTIONS`, where it fails, since CI's runners refuse such a run; any other answer (a
+`TMPDIR` mounted `noexec`, no `/bin/sh`) fails the test, naming the answer.
 
 Three kinds of file write such a file with `programfile.Write`, or with `testexec.WriteFile` in a
 test: every file that is no test file (the code a deployment runs, and a test-support package, a
@@ -616,7 +618,9 @@ Each module's `internal/textcheck` holds those three kinds of file to the rule w
 - a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
 - a dot import of `os`.
 
-It leaves out `programfile.Write` itself. It reads each file's syntax alone, with no types, so it
+It leaves out `programfile.Write` itself: the function `Write` of
+`github.com/sjawhar/envoy/programfile`, and nothing else, so another function of that package, or
+a package of that name elsewhere, is read. It reads each file's syntax alone, with no types, so it
 does not see:
 
 - a `Chmod` in another function than the open, or of the same path spelled another way, such as
