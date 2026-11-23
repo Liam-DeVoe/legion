@@ -26,7 +26,7 @@ import type { ViewSlotProps } from "./stage";
  * and the node the address names, which the view keeps whatever the words filter leaves and puts
  * the focus on.
  */
-export function ViewSpecSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
+export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
@@ -82,6 +82,9 @@ export function ViewSpecSlot({ issue, onAddressDrawn, route }: ViewSlotProps): R
           column; on a phone 4 px from the left edge and 10 px from the right, as the outline. */}
       <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto">
         <SpecFilterBody
+          // The reader's acts since the address was followed, which the stage watches and the
+          // body's landing reads: a reader who acted keeps the page as they left it.
+          {...(acts === undefined ? {} : { addressActs: acts })}
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
           // The words filter's Escape comes before the view is left; turning the view off with

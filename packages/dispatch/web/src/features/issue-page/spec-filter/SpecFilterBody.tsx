@@ -68,7 +68,6 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
-import { ReaderActsWatch } from "../slots/body";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
@@ -132,6 +131,7 @@ const NOTHING = (): void => {};
  * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
  */
 export function SpecFilterBody({
+  addressActs,
   context,
   emptyLine,
   holdsEscape,
@@ -144,6 +144,11 @@ export function SpecFilterBody({
   root,
   view,
 }: {
+  /** The reader's acts since they followed the address: a controller their first act aborts,
+   *  which the stage starts once for each following (`StageSlot`'s `ReaderActsWatch`) and the
+   *  landing reads, as the outline's does (`IssueTree`'s `addressActs`). None where the body is
+   *  drawn without the stage, which then lands as where the reader made no act. */
+  addressActs?: RefObject<AbortController | undefined>;
   /** The ids of the rows the filter draws only as context, drawn faint (R2, R32). */
   context: ReadonlySet<string>;
   /** What the body says where the filter's query left no statement. */
@@ -454,20 +459,18 @@ export function SpecFilterBody({
   // landing would move them again. The row is not on the page until the reads that hold it have
   // answered, so this looks again on every drawing of the columns, and the address is taken only
   // once its row is found. The reader's first act since they followed the address ends the
-  // landing (`acts`), as it ends the outline's: a reader who acted before the reads settled - a
-  // key, a turn of the wheel, a press on another control, while the stage held the focus on the
-  // first statement - keeps the focus where they put it and the page where they had it, and the
-  // landing does nothing to the page: no focus, no scroll, no hold. Watched only from the
-  // landing's start, a read that answered late pulled them back to the address's row. The landing
-  // is keyed on the following and the node (`landingKey`), as the outline's is: a link to the
-  // node the reader moved away from, followed again, lands again, and the columns drawn again at
-  // the same following land nowhere again.
+  // landing (`addressActs`), as it ends the outline's: a reader who acted before the reads
+  // settled - a key, a turn of the wheel, a press on another control, while the stage held the
+  // focus on the first statement - keeps the focus where they put it and the page where they had
+  // it, and the landing does nothing to the page: no focus, no scroll, no hold. Watched only from
+  // the landing's start, a read that answered late pulled them back to the address's row. The
+  // landing is keyed on the following and the node (`landingKey`), as the outline's is: a link to
+  // the node the reader moved away from, followed again, lands again, and the columns drawn again
+  // at the same following land nowhere again.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
-  // The reader's acts since they followed the address: a controller their first act aborts,
-  // started once for each following (`ReaderActsWatch`, drawn below keyed on it).
+  // The following, which the landing is keyed on with the node.
   const following = useFollowing();
-  const acts = useRef<AbortController | undefined>(undefined);
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || !readsSettled || statements.length === 0) return;
@@ -478,9 +481,9 @@ export function SpecFilterBody({
     taken.current = landingKey;
     // The landing ends as it starts: the reader has acted since the following, and the page
     // stays as they left it.
-    if (acts.current?.signal.aborted === true) return;
+    if (addressActs?.current?.signal.aborted === true) return;
     landOnRow(row, landingHold);
-  }, [following, readsSettled, reveal, statements]);
+  }, [addressActs, following, readsSettled, reveal, statements]);
 
   useTreeKeymap({
     container: tree,
@@ -543,8 +546,8 @@ export function SpecFilterBody({
   // focus there (`landOnRow`). It is the tab stop where the reader has acted since the following
   // as well, and moves no focus then: the stage gives the tab-stop row only a focus that rests on
   // nothing, and a row the reader moved to holds the tab stop itself (`stop`). No render reads
-  // whether they have acted - an act aborts `acts` and draws nothing - so a tab stop that read it
-  // would move at whatever render came next.
+  // whether they have acted - an act aborts `addressActs` and draws nothing - so a tab stop that
+  // read it would move at whatever render came next.
   const addressed = readsSettled ? statements.find((node) => node.id === reveal) : undefined;
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop)
@@ -552,7 +555,6 @@ export function SpecFilterBody({
       : (addressed ?? statements[0])?.id;
   return (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
-      <ReaderActsWatch into={acts} key={following} />
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
           inside a tree would break the tree's own structure of rows. The view's own reads'

@@ -573,9 +573,6 @@ test("a press outside the stage before the Spec view's reads settle keeps the fo
       control,
       `the reads settling after the press moved the focus to ${focusedRow() ?? document.activeElement?.tagName}`
     ).toHaveFocus();
-    for (const row of view.container.querySelectorAll("[data-spec-body] [data-node-row]")) {
-      expect(row, `the Spec view's row ${focusedRow()} took the focus`).not.toHaveFocus();
-    }
   } finally {
     control.remove();
   }
