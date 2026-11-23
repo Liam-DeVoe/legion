@@ -7,7 +7,7 @@ Kubernetes deployments (`docs/kubernetes.md`) get a pod boundary instead.
 
 The daemon gets GitHub App installation tokens from the secrets broker; the App private keys
 stay in the broker.
-Raw key secrets are not used.
+This runbook's daemon uses no raw key secret.
 Configure each App with `app_id` and `token_command`, as [the App section](#the-legion-implementer-and-legion-reviewer-apps) shows.
 
 `secrets` and `agent-secrets` are two CLIs over two stores, and a name can exist in both.
@@ -169,7 +169,7 @@ The controller's default owner is refused at once instead, because `ControllerCr
 The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 What an install changes for a running pod is in `docs/kubernetes.md`.
 
-Each App needs its own `app_id` and `token_command`, with no second credential source.
+Each App needs its own `app_id` and exactly one credential source, and this runbook's is `token_command`.
 See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rotation procedure.
 
 ## What a pane's `gh`, `git` and `jj` are
@@ -532,7 +532,7 @@ Dispatch accepts a broker token.
 
 `roles` defines roles of the deployment's own, which a step of an owner's plan names as it names Legion's planner, implementer, tester, reviewer and acceptance.
 Each key is the role's name: a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`).
-Each value holds the role's `type`, `prompt_file`, `model` and `github_app`.
+Each value holds the role's `type` and `prompt_file`, and may hold its `model` and `github_app`.
 The `type` of its steps is one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds.
 The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.
 The `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose.

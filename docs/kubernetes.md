@@ -5153,7 +5153,8 @@ The row is `present` when no live session fails it and at least one proved it, i
 <fact>`, `; `-joined, the first three then ` +N more`, and carrying no `configLine` — no `capabilities.decided` line exists for a live row, since a session's failing check is a fact to fix (the operator's, or the issue's architect's), not a deployment decision, and `legion config check` says nothing of live rows;
 and `unchecked` before any live session has reported, its detail `no session has reported yet (<decision>): <summary>`, where the decision is the issue whose check proves the row (`repository-extensions`:
 dispatch://LEGION-629; `github`: dispatch://LEGION-631; the other four: dispatch://LEGION-663).
-Nothing measures again mid-session, so a session that booted during a Dispatch, GitHub or search-provider outage reads open until its next boot.
+A process measures at most three times.
+So a session whose three measurements all fell in a Dispatch, GitHub or search-provider outage reads open until its next boot.
 
 The report appears in four places.
 The daemon's log: at each ready that carries a report, one `capabilities: session reported` line (`claim`, `role`, `issue`, `locator`, `incarnation`, `elapsedMs` and the `rows` as JSON) and one `capability <name> is open: <fact>` warning per row the session's check failed, the session in the same attributes;
@@ -9053,8 +9054,13 @@ each issue's pod (every role of it alike) and the image probe's.
   a file mounted by `sub_path` is never refreshed in a running pod, so a changed file reaches a role once its pod is replaced.
 
 - **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod is replaced, as for a change of the secrets broker's enrollment.
-  At the restart, every role of an affected pod that is running is reported `StaleAddress` at the boot's re-adoption, whether or not `role_config_files` names it, its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name>
-  items [...]`; the supervisor relaunches each at once, uncharged, so each running turn is lost and each role resumes its session in the new pod, and the issue pod is replaced with its disk, which takes the unpushed work of every role in it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+  After the restart, `PodDrift` reads every affected issue pod as drifted for each role in it, whether or not `role_config_files` names that role: `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name>
+  items [...]`.
+  The sweep opens the pod's update round, as for any drift of a pod, and each role keeps running until the round replaces the pod.
+  The round asks each role to push its work and answer `ready_for_update`, and each role then resumes its session uncharged in the new pod.
+  The old pod's disk goes with it, and so does the work no role pushed ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+  Where the key names the controller, its pod, which no round covers, is reported `StaleAddress` at the boot's re-adoption instead.
+  The supervisor relaunches the controller at once, uncharged, so its running turn is lost.
   A pod with no role running at the restart is replaced at the first launch into it, which ends no turn, since none is running.
   So add the mount and the key when no role of an affected issue is mid-turn and every role has pushed.
   **Who can read the files:** only loading is per role.
@@ -9202,7 +9208,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
   the daemon opens an update round on each drifted pod, which asks the issue's roles, each on its own Envoy topic, to push their work, let their subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and replaces the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn, a subagent or a background job still running at the bound ends with the pod;
   a pod no round covers is replaced by the first launch into it.
-  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
+  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   So turn an experiment on knowing the cost:
   declare an arm that names files when no role of an affected issue is mid-turn and every role has pushed.
   An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.

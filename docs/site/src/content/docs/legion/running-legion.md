@@ -654,8 +654,11 @@ What each part is for:
   restarts onto a new IP. Beside it, `bind` is only where the daemon listens: it may be `0.0.0.0`,
   but not loopback, where no pod reaches it.
 - **`github_apps`**: each App takes exactly one of `private_key` (the PEM itself),
-  `private_key_command` (a command whose output is the PEM) or `private_key_secret`. The daemon
-  finds each App's installations itself; `installations` (owner to installation id) is optional.
+  `private_key_command` (a command whose output is the PEM), `private_key_secret` or
+  `token_command`. With `token_command` the daemon holds no key and runs the command for each
+  lease it needs. The daemon finds each App's installations itself. `installations` (owner to
+  installation id) is optional, and an App with `token_command` takes none, since the command's
+  release names each installation.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
@@ -885,10 +888,11 @@ What each part is for:
   only the overlays every role names, so a deployment that turns fallback on for some roles alone
   records `capabilities.decided.model-fallback`. Only loading is per role: every role of a pod, and every pane
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
-  to a running deployment replaces every affected issue pod at the restart: each of its running
-  roles, named or not, loses its turn and resumes its session uncharged in a new pod, and the old
-  pod's disk goes with it, unpushed work included, unless the disk is a kept volume (a pod with no
-  role running is replaced at the first launch into it). Add it when no role of an affected issue
+  to a running deployment opens an update round on every affected issue pod after the restart.
+  The round asks each of its roles, named or not, to push its work and answer `ready_for_update`,
+  and then replaces the pod. Each role resumes its session uncharged in the new pod. The old pod's
+  disk goes with it, with any work not pushed, unless the disk is a kept volume. A pod with no
+  role running is replaced at the first launch into it. Add it when no role of an affected issue
   is mid-turn and every role has pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
