@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Eight sentences of the operator guides each say what the code does, and the sentence each one
+// Nine sentences of the operator guides each say what the code does, and the sentence each one
 // replaced is gone from its text. Each text is read as prose (proseOf), so a line break or a
 // comment's `#` decides nothing. Each case names the code its sentence states:
 //   - a role's model: a role of `roles` that names a `model` is launched on it
@@ -16,6 +16,10 @@ import (
 //     tellChecks), and the reviewer answers each bot thread (roles/core/reviewer.md);
 //   - a role's gh leases: every directory of a role's bundle holds the role's own App lease, and
 //     only a controller's bundle holds read leases (appauth's GitHubCredential, mintBundle);
+//   - a renamed repository's leases: a rename's old owner's directory holds the serving owner's
+//     lease only where the App is not installed on that old owner, and the bundle's pairs route
+//     the moved repository to the serving owner's directory (appauth's bundleDirs, cmd/legion's
+//     ghConfigDirFor);
 //   - a merged root's wait: its phase stays merging while its Dispatch status is retro
 //     (workflow's closeMerged, phaseStatus);
 //   - a resumed session's model: every pod launch names `--model` (sandbox's agentArgv), and the
@@ -105,6 +109,18 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 					"every other owner the role's App is installed on keeps one read lease on its own installation",
 					"the write lease for the role's own repository stands in two directories and no others",
 				},
+			}},
+		},
+		{
+			name: "a resolving rename routes the moved repository and leaves each installed owner its own lease",
+			texts: []text{{
+				path: daemonDesign,
+				want: []string{
+					"A resolving pair changes where the moved repository is answered from.",
+					"Where the role's App is not installed on the recorded owner, that owner's directory holds the lease of the owner serving the repository.",
+					"Where the App is installed on both owners, each directory holds its own owner's lease.",
+				},
+				gone: []string{"the directory named for the recorded owner and the directory of the owner that serves that repository now hold one lease"},
 			}},
 		},
 		{
