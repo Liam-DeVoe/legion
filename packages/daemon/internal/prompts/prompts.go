@@ -171,7 +171,7 @@ func (c *Composer) ComposeSubOwner(role string) (Parts, error) {
 	default:
 		return Parts{}, fmt.Errorf("compose sub-owner prompt: role %q is neither architect nor one of Legion's step roles", role)
 	}
-	return c.parts(shared, []string{"sub-owner.md"}), nil
+	return c.parts(shared, []string{"architect-common.md", "sub-owner.md"}), nil
 }
 
 // stepRoleParts are the shared parts of one of Legion's step roles: the phase workers' common core,

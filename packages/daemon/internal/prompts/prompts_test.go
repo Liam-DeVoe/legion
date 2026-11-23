@@ -1065,7 +1065,7 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 		{"implementer", "the implementer's shared parts", []string{shared("core/common.md"), shared("core/implementer.md"), shared("mechanics/headless.md"), shared("implementer.md"), daemon("architect-common.md"), daemon("sub-owner.md")}},
 	} {
 		t.Run(tc.role, func(t *testing.T) {
-			parts, err := composer.ComposeSubOwner(tc.role)
+			parts, err := composer.Compose(claim.RoleArchitect, false)
 			if err != nil {
 				t.Fatalf("ComposeSubOwner(%q): %v", tc.role, err)
 			}
