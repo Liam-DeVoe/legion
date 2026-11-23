@@ -118,7 +118,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
 		testerRunsTheApp = "read CI for everything static"
-		redTest          = "the test itself is not theirs to change"
+		redTest          = "The test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
 	contains := func(file, needle string, want bool) {
