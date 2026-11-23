@@ -542,6 +542,12 @@ type PullRequestOpened struct {
 	Number  int
 	Branch  string
 	HeadSHA string
+	// HeadRepo is the repository the pull request's head branch lives in, as GitHub names it
+	// (head.repo.full_name; the listener's head_repo): Repo itself for a branch of the repository,
+	// another for a fork's, and empty when GitHub no longer has it (a deleted fork) or the source
+	// read none. The workflow records a pull request only when this is Repo, since anyone may open a
+	// fork's pull request and name its head an issue's branch or a task's.
+	HeadRepo string
 	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
 	// base.ref), empty from a listener that predates the field; the workflow records it so a push
 	// onto that branch finds the pull request again (record.PullRequest.Base).
@@ -568,7 +574,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(), Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {

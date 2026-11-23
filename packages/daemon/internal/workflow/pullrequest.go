@@ -160,8 +160,17 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // is on (viewOfPullRequest): the merge it waits on is the task's, and it moves the task where its
 // implementer's completion waits for it. It is recorded only on a branch a task of its issue holds
 // (issueForBranch): one on any other branch of an issue's shape, a reopen or a redelivered open of
-// a pull request whose row the record deleted among them, is none of the issue's.
+// a pull request whose row the record deleted among them, is none of the issue's. And it is
+// recorded only when its head is a branch of its own repository (fact.HeadRepo is fact.Repo, as
+// sameRepository compares names): a fork's pull request, which anyone may open and whose branch
+// may carry any name, an issue's or a task's among them, is none of the issue's, and neither is
+// one whose source named no repository for the head, which no source can show is the issue's.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
+	if !e.sameRepository(fact.HeadRepo, fact.Repo) {
+		e.logOnCommit(ctx, "workflow: a pull request whose head is no branch of its own repository is not recorded",
+			"repo", fact.Repo, "pullRequest", fact.Number, "branch", fact.Branch, "headRepo", fact.HeadRepo)
+		return intake.Result{}, nil
+	}
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
 		return intake.Result{}, err

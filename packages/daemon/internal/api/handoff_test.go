@@ -117,8 +117,8 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 				_, _ = io.WriteString(w, "[]")
 				return
 			}
-			_, _ = fmt.Fprintf(w, `[{"number":42,"state":"open","html_url":"https://github.com/%s/pull/42","body":"Dispatch: LEGION-208","head":{"ref":"legion/LEGION-208","sha":%q},"base":{"ref":"main"},"updated_at":%q}]`,
-				g.repo, g.pullHead, g.pullUpdatedAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(w, `[{"number":42,"state":"open","html_url":"https://github.com/%s/pull/42","body":"Dispatch: LEGION-208","head":{"ref":"legion/LEGION-208","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":%q}]`,
+				g.repo, g.pullHead, g.repo, g.pullUpdatedAt.Format(time.RFC3339))
 		case path == "pulls/42/files":
 			_, _ = io.WriteString(w, g.pullFiles)
 		default:
