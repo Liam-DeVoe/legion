@@ -205,9 +205,12 @@ const waitingForPaused = new WeakSet<QueryClient>();
  *
  * It is for a caller whose hold over the read has a bound of its own (`api/read-bound.ts`'s
  * `readWithinBound`): the control it holds stays held until the read answers or that bound runs
- * out, so a read the network never answers still lets it go. Every other caller keeps TanStack's
- * answer, at once, so a hold with no bound never waits for the network to come back. `read` runs
- * at once, and the waiting covers the reads it starts in that one turn and no later ones.
+ * out, so a read the network never answers still lets it go. Every other caller is answered at
+ * once for a query whose fetch the network had already paused. A query that was idle is fetched
+ * by the read itself, for every caller, and a fetch the browser starts offline waits until the
+ * network returns (`api/read-bound.ts`): a hold with no bound over such a read waits that long.
+ * `read` runs at once, and the waiting covers the reads it starts in that one turn and no later
+ * ones.
  */
 export function waitingForPausedReads<T>(client: QueryClient, read: () => T): T {
   waitingForPaused.add(client);

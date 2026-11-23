@@ -7277,13 +7277,13 @@ test("Save delivery settings keeps the keyboard focus through a save whose re-re
 });
 
 // SLOW(>=2s): the Delivery page opened eight times, at two widths, by two presses, with its Window
-// select scrolled wholly out of sight and left wholly in sight.
+// control scrolled wholly out of sight and left wholly in sight.
 // INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p3g-h and -p3g-b at
 // da0804df and a1c78223, and this row in -p3-red-h at da0804df): with a brush window set - the
 // address's `ws` and `we`, as a drag along the chart's time axis sets them - the Delivery page's
 // header draws "clear brush window" in its generated line. Its press takes the button away with
 // the brush, and the header's hand-off (`useFocusPlace` in DeliveryPage.tsx), finding no other
-// control in that line, focuses the Window select on the line above with the browser's own
+// control in that line, focuses the Window control on the line above with the browser's own
 // scroll. With the page scrolled so that the select stands wholly above the window and the button
 // wholly in it, the page scrolls back to the select, by Enter and by a click. With the select's
 // foot 8 px above the window it scrolls 153 px in Chromium and Firefox and 52 px in WebKit at
@@ -7296,7 +7296,7 @@ test("Save delivery settings keeps the keyboard focus through a save whose re-re
 // focused control taken away, for which Firefox and WebKit fire no `focusout`, and each engine's
 // own scroll of a focused control into view: the clause of the `webkit` and `firefox` projects
 // that names the page-own focus row (e2e/playwright.config.ts).
-test("clear brush window pressed with the Window select scrolled out of sight scrolls the Delivery page nothing and hands the focus to no control out of sight @firefox @webkit", async ({
+test("clear brush window pressed with the Window control scrolled out of sight scrolls the Delivery page nothing and hands the focus to no control out of sight @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -7311,13 +7311,13 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
     await page.setViewportSize(size);
     for (const placed of ["out of sight", "in sight"] as const) {
       for (const press of ["Enter", "click"] as const) {
-        const at = `${size.width}x${size.height}, the Window select ${placed}, by ${press}`;
+        const at = `${size.width}x${size.height}, the Window control ${placed}, by ${press}`;
         await page.goto(brushed);
         const header = page.locator("header", {
           has: page.getByRole("heading", { level: 1, name: "Delivery timeline" }),
         });
         const clear = header.getByRole("button", { exact: true, name: "clear brush window" });
-        const windowSelect = header.locator("select").first();
+        const windowSelect = listTrigger(header, "Window");
         await expect(clear, `${at}: the brush drew no clear brush window`).toBeVisible();
         await expect(page.getByTestId("delivery-chart")).toBeVisible();
         // The page is drawn whole below the header, so it scrolls as far as the case needs: its
@@ -7400,7 +7400,7 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
         if (landed.body) {
           wrong.push(`${at}: the focus is on the body, scrollY ${before} -> ${landed.scrollY}`);
         } else if (placed === "in sight" && !onSelect) {
-          wrong.push(`${at}: the focus is on ${where}, not on the Window select`);
+          wrong.push(`${at}: the focus is on ${where}, not on the Window control`);
         } else if (!landed.ownStop && !landed.meets) {
           wrong.push(`${at}: the focus is on ${where}, out of sight`);
         }

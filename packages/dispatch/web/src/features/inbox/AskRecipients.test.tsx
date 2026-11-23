@@ -1,12 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue } from "../../__tests__/focus-rescue";
 import { heldNotDisabled } from "../../__tests__/held-press";
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { AskRecipients, reachLabel, reachRows } from "./AskRecipients";
@@ -344,6 +346,59 @@ test("an Unsubscribe confirmed keeps the focus through its write, and the read a
     stopFocusFixup();
     out.resolve();
     page.unmount();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Offline, the read of the subscribers an Unsubscribe's landing starts waits for the network:
+// the app's query client fetches the idle query itself, and TanStack pauses that fetch until the
+// browser is back online. The hold through that read has a bound of its own, the request deadline
+// (`REQUEST_DEADLINE_MS`), so the Unsubscribe is let go there rather than held until the network
+// returns, and the card says why its recipients are not read.
+test("offline, an Unsubscribe's hold through the read after its write ends at the request deadline, and the card says why", async () => {
+  const out = Promise.withResolvers<void>();
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    () => out.promise
+  );
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = await renderRecipients({
+    client,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const online = onlineManager.isOnline();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", { name: "Unsubscribe" });
+    await page.user.click(unsubscribe);
+    const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+    await page.user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(1));
+    // The Unsubscribe as the reader meets it, and what the card says of its recipients' read.
+    const drawn = () => ({
+      said: within(section).queryByText(/^Could not load the recipients\./)?.textContent ?? null,
+      unsubscribe: unsubscribe.getAttribute("aria-disabled") === "true" ? "held" : "free",
+    });
+    await onFakeClock(async () => {
+      onlineManager.setOnline(false);
+      await act(async () => out.resolve());
+      await tick(REQUEST_DEADLINE_MS - 1_000);
+      expect(drawn()).toEqual({ said: null, unsubscribe: "held" });
+
+      await tick(2_000);
+      expect(drawn()).toEqual({
+        said: "Could not load the recipients. Dispatch could not be reached.",
+        unsubscribe: "free",
+      });
+    });
+  } finally {
+    page.unmount();
+    // The paused read goes with the cache, so the network's return starts no request.
+    client.clear();
+    onlineManager.setOnline(online);
+    out.resolve();
     unsubscribeIssueSession.mockRestore();
   }
 });

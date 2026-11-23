@@ -1,5 +1,6 @@
 import { type ReactNode, useId, useState } from "react";
 
+import type { ControlSize } from "../../components/control-names";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import {
   borderStrong,
@@ -18,7 +19,10 @@ import {
   type WindowChoice,
 } from "./lib/window";
 
-const fieldClass = `rounded border px-2 py-1 text-sm ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
+/** The look the Window list's trigger and the custom range's fields share. The trigger takes its
+ *  room from the page's size (`MultiSelect`'s `size`); each field writes its own. */
+const fieldLook = `rounded border text-sm ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
+const fieldClass = `${fieldLook} px-2 py-1`;
 
 /** The option of the Window list that opens the custom range's fields. */
 const CUSTOM = "custom";
@@ -48,11 +52,13 @@ function draftDates(value: WindowChoice): { from: string; to: string } {
  *  of whole UTC days, picked from the shared list's single pick (`MultiSelect`), whose text box
  *  narrows the options as the reader types. A custom range is applied only once both dates are set
  *  and it spans at most 84 days, the server's limit; a longer one is refused here with the limit
- *  stated. */
+ *  stated. The list's trigger takes `size`, the page's (`ControlSize`). */
 export function WindowControl({
+  size = "comfortable",
   value,
   onChange,
 }: {
+  size?: ControlSize;
   value: WindowChoice;
   onChange: (next: WindowChoice) => void;
 }): ReactNode {
@@ -111,7 +117,8 @@ export function WindowControl({
         }}
         options={WINDOW_OPTIONS}
         searchLabel="Search windows"
-        triggerClassName={`${fieldClass} text-left`}
+        size={size}
+        triggerClassName={`${fieldLook} text-left`}
         value={custom || value.kind === "custom" ? CUSTOM : value.preset}
       />
       {custom ? (

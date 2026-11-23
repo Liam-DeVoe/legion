@@ -140,8 +140,11 @@ interface SharedProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  /** How much room the default trigger takes outside `NoTooltips`; a `triggerClassName` decides
-   *  for itself. */
+  /** How much room the trigger takes (`controlPadding`): the page's size, which the page passes.
+   *  The default trigger outside `NoTooltips` takes the comfortable size where none is passed. A
+   *  `triggerClassName` draws a host's own look, and the size passed with it is added to it, so a
+   *  host's trigger is sized as the page's other controls are; one passed without a size keeps
+   *  the room it writes itself. */
   readonly size?: ControlSize;
   /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
    *  name starts with it in place of `label`, before what the trigger shows. */
@@ -233,7 +236,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     optionDetailLabel,
     optionLabel = (value: string) => value,
     searchLabel,
-    size = "comfortable",
+    size,
     triggerAriaLabel,
     triggerClassName,
     triggerTextClassName = "",
@@ -247,10 +250,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const panelId = `${id}-panel`;
   const tooltips = useTooltips();
   const trigger =
-    triggerClassName ??
-    (tooltips
-      ? `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
-      : ON_PAGE.trigger);
+    triggerClassName === undefined
+      ? tooltips
+        ? `rounded-lg border text-sm font-semibold ${controlPadding[size ?? "comfortable"]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+        : ON_PAGE.trigger
+      : size === undefined
+        ? triggerClassName
+        : `${controlPadding[size]} ${triggerClassName}`;
   const listboxId = `${id}-options`;
   const nameId = `${id}-name`;
   const shownId = `${id}-shown`;

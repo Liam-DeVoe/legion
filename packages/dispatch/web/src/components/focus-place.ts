@@ -1511,8 +1511,8 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
 
 /** Focuses `target` without a scroll: what a press drew where its control stood, which stands
  *  where the reader was, a control given back after a loss the reader did not cause, a modal
- *  dialog's own stop, and the control the Agents page hands a pin's moved focus to
- *  (`controlsLikeRow`). Answers whether it took the focus. */
+ *  dialog's own stop, a region's own stop (`focusOwnStop`), and the control the Agents page hands
+ *  a pin's moved focus to (`controlsLikeRow`). Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;

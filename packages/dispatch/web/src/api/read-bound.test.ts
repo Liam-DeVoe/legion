@@ -124,9 +124,8 @@ test("a read waiting on a paused fetch is let go at the request deadline, not at
 });
 
 // Every other caller keeps TanStack's own answer for a query whose fetch is already paused: the
-// invalidation resolves at once, so a hold with no bound of its own - the ones the architect's
-// ruling of 2026-11-21 19:4xZ leaves as main has them - never waits for the network to come
-// back. Only the call that asks waits (`waitingForPausedReads`).
+// invalidation resolves at once, so a hold with no bound of its own does not wait on that fetch.
+// Only the call that asks waits (`waitingForPausedReads`).
 test("an invalidation that does not ask to wait resolves at once for a query whose fetch is paused", async () => {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.mount();

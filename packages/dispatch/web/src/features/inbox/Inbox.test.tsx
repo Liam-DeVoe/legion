@@ -1057,8 +1057,8 @@ test("Inbox filtered to an agent with no open asks says so and still offers to c
   }
 });
 
-/** The agent `?agent=session-1` names, as the registry lists it. */
-function plannerAgents() {
+/** The agent `?agent=session-1` names, as the registry lists it, by `title`. */
+function plannerAgents(title = "Planner") {
   return spyOn(api, "listAgents").mockResolvedValue([
     {
       capabilities: [],
@@ -1071,10 +1071,102 @@ function plannerAgents() {
       roles: [],
       session_id: "session-1",
       state: "live",
-      title: "Planner",
+      title,
     },
   ]);
 }
+
+/** Tailwind's own definitions of the utilities the chips line and the agent chip's box are laid
+ *  out by. happy-dom applies a stylesheet it is given but lays nothing out, so how wide a box may
+ *  be is read from its computed style with these in the document. */
+const CHIP_WIDTH_CSS =
+  ".flex{display:flex}.inline-flex{display:inline-flex}.shrink-0{flex-shrink:0}.min-w-0{min-width:0}.max-w-full{max-width:100%}" +
+  String.raw`.\[\&\>\*\]\:shrink-0>*{flex-shrink:0}`;
+
+// The chips line holds no control wider than itself: a chip whose words do not fit is cut short
+// with an ellipsis by its own `max-w-full`. The agent narrowing's chip sits in a box with the
+// agent's live link, and the line keeps each box it holds from shrinking, so that box must be no
+// wider than the line itself, and the chip's own box must give way to the link inside it, so the
+// link stays in the line too. Each box from the line's child down to the chip is read from its
+// computed style: it is no wider than the box it is in where its `max-width` is that box's width,
+// or where it may shrink (`flex-shrink` above 0) below its words (`min-width: 0`) in a flex box.
+test("an agent title longer than the chips line draws the agent chip no wider than the line, beside its live link", async () => {
+  const title = `Planner of ${"the release train ".repeat(12).trim()}`;
+  const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([fromPlanner]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ask: fromPlanner,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  });
+  const listAgents = plannerAgents(title);
+  const css = document.createElement("style");
+  css.textContent = CHIP_WIDTH_CSS;
+  document.head.appendChild(css);
+  const view = render(
+    <MemoryRouter initialEntries={["/?agent=session-1"]}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <Inbox />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const chip = await screen.findByRole("button", { name: "Clear agent filter" });
+    await waitFor(() => expect(chip.textContent).toBe(`Asks from ${title}×`));
+    const strip = chip.closest<HTMLElement>("[data-chip-strip]");
+    if (strip === null) throw new Error("the agent chip is drawn outside the chips line");
+    // Each box from the line's own child down to the chip, outermost first, by its tag and mark.
+    const boxes: HTMLElement[] = [];
+    for (
+      let box: HTMLElement | null = chip;
+      box !== null && box !== strip;
+      box = box.parentElement
+    ) {
+      boxes.unshift(box);
+    }
+    const named = (box: HTMLElement) =>
+      `${box.tagName.toLowerCase()}${box.hasAttribute("data-agent-name") ? "[data-agent-name]" : ""}${box === chip ? '[data-control="chip"]' : ""}`;
+    const gives = (box: HTMLElement) => {
+      const style = getComputedStyle(box);
+      const parent = box.parentElement;
+      const inFlex = parent !== null && getComputedStyle(parent).display.endsWith("flex");
+      return inFlex && style.flexShrink !== "0" && style.minWidth === "0";
+    };
+    const [agentBox, chipBox] = boxes;
+    const link = within(strip).getByRole("link", {
+      name: `Open live conversation with ${title}`,
+    });
+    expect({
+      boxes: boxes.map(
+        (box) =>
+          `${named(box)}: ${getComputedStyle(box).maxWidth === "100%" || gives(box) ? "no wider than its box" : "as wide as its words"}`
+      ),
+      link:
+        agentBox?.contains(link) && chipBox !== undefined && gives(chipBox)
+          ? "the chip gives way to the live link in its box"
+          : "the chip keeps its words' width beside the live link",
+    }).toEqual({
+      boxes: boxes.map((box) => `${named(box)}: no wider than its box`),
+      link: "the chip gives way to the live link in its box",
+    });
+  } finally {
+    view.unmount();
+    css.remove();
+    listAgents.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
 
 test("the agent narrowing is the row's shared chip, and its press leaves for the Inbox it narrowed as a link does", async () => {
   const user = userEvent.setup();

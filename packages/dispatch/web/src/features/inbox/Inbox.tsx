@@ -2345,23 +2345,28 @@ function InboxBody({
   // The agent narrowing's chip is the row's shared removable chip, drawn as `filterChips` draws
   // the other narrowings' chips, and named for what its press does. The agent's live link sits
   // beside it, outside it. `whitespace-pre` keeps the space before an attribution suffix, which
-  // a flex item would drop.
+  // a flex item would drop. The box is never wider than the chips line (`max-w-full`), and the
+  // chip's own box gives way inside it (`min-w-0`), so a long agent title is cut short with an
+  // ellipsis by the chip's own `max-w-full`, as every other chip is, and the live link stays in
+  // the line.
   const agentChip =
     agentSubject === undefined ? undefined : (
       <AgentName
         {...agentSubject}
-        className="flex items-center whitespace-pre"
+        className="flex max-w-full items-center whitespace-pre"
         control={(name) => (
-          <Chip
-            aria-label="Clear agent filter"
-            onClick={clearAgent}
-            removable
-            selected
-            title={`Asks from ${agentText.part(agentSubject)}${waitingOnYou}`}
-          >
-            Asks from {name}
-            {waitingOnYou}
-          </Chip>
+          <span className="flex min-w-0">
+            <Chip
+              aria-label="Clear agent filter"
+              onClick={clearAgent}
+              removable
+              selected
+              title={`Asks from ${agentText.part(agentSubject)}${waitingOnYou}`}
+            >
+              Asks from {name}
+              {waitingOnYou}
+            </Chip>
+          </span>
         )}
         kind="control"
       />
