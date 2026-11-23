@@ -588,12 +588,12 @@ export interface EvalsViewParams {
  *  project-timeline views and its evals' detail reads), which a write of the project's eval rows
  *  invalidates: a delivery settings save writes each target it changes as a new version of that
  *  project's eval. */
-export const projectEvalsQueryKey = (project: string) => ["evals", project] as const;
+export const evalsProjectKey = (project: string) => ["evals", project] as const;
 
 /** One project's evals of one kind, live (dispatch://INFRA-2918/artifact/plan-md, D3): the body of
  *  `GET /api/v1/projects/{key}/evals` for the window, sent as the view's window, and the rest of
  *  its query, sent as the view's query, a page of EVALS_VIEW_LIMIT at `offset`. Keyed under the
- *  project's evals (`projectEvalsQueryKey`) by the view, so a change of the window, the compare
+ *  project's evals (`evalsProjectKey`) by the view, so a change of the window, the compare
  *  range, the repositories or the narrowing subscribes its own entry. Only a delivery view carries
  *  the narrowing: the evals it narrows are delivery evals (D7a), so a view of another kind answers
  *  the same with or without it, and a facet change subscribes no such view again. */
@@ -618,7 +618,7 @@ export const evalsViewQuery = (params: EvalsViewParams) => {
   } as const;
   return queryOptions({
     ...LIVE,
-    queryKey: [...projectEvalsQueryKey(params.project), "view", view],
+    queryKey: [...evalsProjectKey(params.project), "view", view],
     queryFn: (context) => subscribeLive(context, view),
   });
 };
@@ -667,7 +667,7 @@ export const itemsViewQuery = (params: ItemsViewParams) => {
   } as const;
   return queryOptions({
     ...LIVE,
-    queryKey: [...projectEvalsQueryKey(params.project), "items", view],
+    queryKey: [...evalsProjectKey(params.project), "items", view],
     queryFn: (context) => subscribeLive(context, view),
   });
 };
@@ -707,7 +707,7 @@ export const projectTimelineViewQuery = (params: ProjectTimelineViewParams) =>
   queryOptions({
     ...LIVE,
     placeholderData: keepPreviousData,
-    queryKey: [...projectEvalsQueryKey(params.project), "timeline", params],
+    queryKey: [...evalsProjectKey(params.project), "timeline", params],
     queryFn: (context) =>
       subscribeLive(context, projectTimelineView(params, PROJECT_TIMELINE_PAGE)),
   });
@@ -732,7 +732,7 @@ export function growProjectTimelineView(
  *  version, which the view's delta carries, reads it again (plan D11a). */
 export const evalDetailQuery = (project: string, slug: string, version: number) =>
   queryOptions({
-    queryKey: [...projectEvalsQueryKey(project), "detail", slug, version],
+    queryKey: [...evalsProjectKey(project), "detail", slug, version],
     queryFn: () => api.getEval(project, slug, { limit: 1 }),
   });
 
@@ -746,8 +746,8 @@ export interface EvalsAcrossProjectsParams {
 }
 
 /** The prefix of every page of the cross-project read, which a delivery settings save invalidates
- *  beside the project's own evals (`projectEvalsQueryKey`), since the targets it writes are evals
- *  that read lists. No project key is lowercase, so no project's prefix holds it. */
+ *  beside the project's own evals (`evalsProjectKey`), since the targets it writes are evals that
+ *  read lists. No project key is lowercase, so no project's prefix holds it. */
 export const evalsAcrossProjectsQueryKey = ["evals", "across"] as const;
 
 /** Every project's evals (dispatch://INFRA-2918/artifact/plan-md, D11; spec R11): `GET

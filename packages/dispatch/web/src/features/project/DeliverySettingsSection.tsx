@@ -5,8 +5,8 @@ import { Link } from "react-router-dom";
 import { api, apiErrorMessage } from "../../api/client";
 import {
   evalsAcrossProjectsQueryKey,
+  evalsProjectKey,
   projectDeliverySettingsQuery,
-  projectEvalsQueryKey,
 } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type {
@@ -400,7 +400,7 @@ export function DeliverySettingsSection({
       // tab's reads and the cross-project read hold; the tab's live views learn of it from
       // Dispatch, as a delta.
       void queryClient.invalidateQueries({
-        queryKey: projectEvalsQueryKey(project),
+        queryKey: evalsProjectKey(project),
         predicate: (query) => !isLiveQuery(query),
       });
       void queryClient.invalidateQueries({ queryKey: evalsAcrossProjectsQueryKey });
