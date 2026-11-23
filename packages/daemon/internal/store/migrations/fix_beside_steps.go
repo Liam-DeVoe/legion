@@ -1,5 +1,12 @@
 package migrations
 
+// FixBesideSteps is the version of 20261123134547_fix_beside_steps.up.sql, the migration of the
+// release that starts a fix beside the other steps of a task, whose header carries that release's
+// way back (WayBack): the one spelling of it every test that runs or reads that block names. Its
+// migration adds columns to tables older releases' ways back drop (plan_tasks, step_starts,
+// pending_task_deliveries), so a rollback past it to any of them runs this way back first.
+const FixBesideSteps = 20261123134547
+
 // RunningFixSQL is the number of the fix of an issue's task that runs at the issue's generation, 0
 // for none, as one expression over a row of issues: a row of task_fixes in state running
 // (20261123134547_fix_beside_steps). A fix that still reads its failed job is none yet, since its
