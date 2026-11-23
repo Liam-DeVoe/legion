@@ -21,6 +21,10 @@ import (
 // pushed under an inherited GIT_LITERAL_PATHSPECS=1; a binary file no parent holds; and an
 // octopus. Each case's control shows the combined diff prints no line naming the host, and the
 // text file, the control of the merge read itself, shows one.
+//
+// The last case is a merge that turns a submodule's entry of its first parent into a file whose
+// blob is the id that entry named. The first parent's diff showed only "Subproject commit <id>",
+// so nothing read the blob, and the merge keeps the "same" id: it is read whole all the same.
 func TestAMergesBinaryFilesAreReadAsText(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
@@ -130,6 +134,43 @@ func TestAMergesBinaryFilesAreReadAsText(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a merge that makes a file of a submodule's entry whose id is a blob naming a host", func(t *testing.T) {
+		object := func(t *testing.T, content string) string {
+			t.Helper()
+			path := filepath.Join(t.TempDir(), "content")
+			write(t, path, content)
+			return strings.TrimSpace(fixture.Out(repo, "git", "hash-object", "-w", "--no-filters", path))
+		}
+		// tree is a tree of the one entry sub, of mode and id.
+		tree := func(t *testing.T, mode, id string) string {
+			t.Helper()
+			index := fixture.With("GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index"))
+			index.Run(repo, "git", "update-index", "--add", "--cacheinfo", mode+","+id+",sub")
+			return strings.TrimSpace(index.Out(repo, "git", "write-tree"))
+		}
+		hidden := object(t, "base\x00\n"+named)
+		ours := fixture.Run(repo, "git", "commit-tree", tree(t, "160000", hidden), "-m", "ours: sub a submodule's entry", "-p", base)
+		side := fixture.Run(repo, "git", "commit-tree", tree(t, "100644", object(t, "base\x00\nside\n")), "-m", "the side: sub a file", "-p", base)
+		merge := fixture.Run(repo, "git", "commit-tree", tree(t, "100644", hidden), "-m", "the merge", "-p", ours, "-p", side)
+		fixture.Run(repo, "git", "branch", "--force", "gitlink-ours", ours)
+		fixture.Run(repo, "git", "branch", "--force", "gitlink-side", side)
+		fixture.Run(repo, "git", "push", "--quiet", "origin", "gitlink-ours", "gitlink-side")
+		control := []string{"git", "diff-tree", "-r", "-c", "-p", "--text", "--no-commit-id", merge}
+		if out := fixture.Out(repo, control...); strings.Contains(out, theHost) || !strings.Contains(out, "Binary files differ") {
+			t.Fatalf("%s prints the host or no binary file, so the case is not the one it names:\n%s", strings.Join(control, " "), out)
+		}
+		err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public).Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: "refs/heads/gitlink-ours", LocalSHA: merge, RemoteRef: "refs/heads/gitlink-ours", RemoteSHA: ours}},
+		})
+		want := []string{"sub: " + theClass}
+		if refused := refusal(t, err); refused.By != byRules || !slices.Equal(refused.Lines, want) {
+			t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
+		}
+	})
 }
 
 // A merge whose combined diff prints a file as binary, and that publishes no text its first

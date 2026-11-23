@@ -432,19 +432,24 @@ type binaryFile struct {
 // parent; the read also takes the lines it gains from the other parents, which is more than the
 // resolution, but only for these files, and each line once.
 //
-// Three entries publish no text the first parent does not hold and are not read: a file the
-// merge deletes; one whose blob the merge keeps from its first parent, changing only its mode or
-// its type (a file made executable, or a symlink), which the combined diff lists because the mode
-// differs from every parent's; and a submodule's entry, whose id is a commit of another
-// repository. A file new against the first parent, or that was a submodule there, is read whole
-// (Guard.blobLines). A read of two blobs that prints no "+++" line, a diff of nothing, is an error:
-// the two blobs differ.
+// The cases, in the order they are decided. A file the merge deletes, and a submodule's entry in
+// the merge, whose id is a commit of another repository, publish no text and are not read. A file
+// new against the first parent, or that was a submodule's entry there, is read whole
+// (Guard.blobLines): the first parent's diff showed at most "Subproject commit <id>", so no read
+// of this push or of the destination has read the blob's text, even where the merge's blob id is
+// the id that entry named. A file whose blob the merge keeps from a first parent that held it as a
+// file, changing only its mode or its type (a file made executable, or a symlink), publishes no
+// text that parent lacks and is not read; the combined diff lists it because its mode differs
+// from every parent's. Every other file is read as the diff of its two blobs, and a read that
+// prints no "+++" line, a diff of nothing, is an error: the two blobs differ.
 func (g *Guard) mergeBinaryLines(ctx context.Context, dir, commit string, file binaryFile, emit func(Record) error) error {
 	switch {
-	case zeroSHA(file.result), file.resultMode == gitlinkMode, file.first == file.result:
+	case zeroSHA(file.result), file.resultMode == gitlinkMode:
 		return nil
 	case zeroSHA(file.first), file.firstMode == gitlinkMode:
 		return g.blobLines(ctx, dir, file, emit)
+	case file.first == file.result:
+		return nil
 	}
 	read, header := false, true
 	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
