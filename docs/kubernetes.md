@@ -2317,7 +2317,9 @@ A stored task is sent as it stands, so the same migration appends ` Last reviewe
 Since the release whose owner does a step, the column also holds the commit a verdict reported at a review step no review on GitHub decides.
 Those steps are a reviewer's on an issue with no pull request, the fresh agent of `acceptance`'s, and each review step of the owner's.
 Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own, the column holds the pull request's head.
-A `complete_step` holds the head of the `review` record it reported instead, so the two differ when the head moved.
+The owner's `complete_step` at `reviewer:owner` holds the head of the `review` record it reported instead, so the two differ when the head moved.
+At a review step of a role the deployment or the plan defines, it holds the commit the owner's workspace stands on.
+At `acceptance:owner` it is applied as `sign_off` or `request_backward_move`, so it holds the pull request's head.
 A task of the role reviewer ends with both sentences, the owner's `reviewer:owner` step included.
 Each other role whose step is of the type review is told its row's commit alone, in the phase its step runs as: ` Last reviewed commit: <sha>.`.
 A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.
@@ -2803,7 +2805,8 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 #### Rolling back below the release whose owner does a step
 
 The release that lets the owner of an issue's task do a step of its own adds one architect notice kind, `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
-It adds one supervise op too, `slot_credential`, which the end of a step an architect ran for the owner queues (`endStep` in `workflow/steps.go`).
+It adds one supervise op too, `slot_credential`, queued at the end of a step or a retro an architect ran for the owner.
+Its writers are `endStep` in `workflow/steps.go` and `endOffWalk` in `workflow/run_end.go`.
 It brings the owner's slot back to its own App, unless another step of the owner's began since, whose App the slot then holds.
 Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry of the route `POST /legion/v1/steps/complete`.
 A daemon of any release before it knows neither, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`), so an `owner-step` or `slot_credential` row still queued when that image is pinned can never be decoded.

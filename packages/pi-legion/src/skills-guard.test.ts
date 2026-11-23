@@ -646,8 +646,8 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
 test("the retro skill names who does the retro and how the owner completes it", () => {
   expect(
     lacks("legion-retro/SKILL.md", [
-      /with no pull request, its end closes the issue/,
-      /last step of the type implementation does it[^.]*the owner does it[^.]*`complete_step`, `step: 0`/,
+      /With no pull request, its end closes the issue/,
+      /last step of the type implementation does it, as that step's role\. Where there is none, or it is the owner's, the owner does it[^.]*`complete_step`, `step: 0`/,
       /Update the PR body\*\*, where the issue has a pull request/,
     ])
   ).toEqual([]);
@@ -730,7 +730,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /with no tester step the implementation step's agent[^.;]*real surface/,
-      /with neither step, the retro's agent sends it during retro/,
+      /With neither step, the retro's agent sends it during retro/,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
       /no tester step[^.;]*the implementer's evidence[^.;]*read/,
@@ -750,7 +750,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     ]),
     ...lacks("legion-worker/references/review-threads.md", [
       /no reviewer step[^.;]*implementation step lists unresolved bot threads[^.;]*retro's agent does at retro/,
-      /`gh` acts as the implement App only while it does an implementation step, not at its retro/,
+      /its `gh` acts as the implement App while it does that step\. It does so at its retro too, where the task's last implementation step is its own/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /no reviewer step[^.;]*no Legion approval/,
@@ -860,7 +860,7 @@ test("retro never waits for a CI run, as the implementer's prompt says", () => {
   ).toContain("Never wait for, watch or poll the pull request's remote CI");
   expect(
     lacks("legion-retro/SKILL.md", [
-      /run that has not concluded[^.]*never wait for, watch or poll it/,
+      /run that has not concluded[^.]*neither a pass nor a fail yet\. Never wait for, watch or poll it/,
     ])
   ).toEqual([]);
 });
@@ -951,9 +951,9 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /Read it with `--at <head>`, which compares every check with that one commit\./,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
-      /On an issue with no pull request each such check reads `no_head`: no run can prove it, so its words are wrong for that task\./,
+      /On an issue with no pull request each such check reads `no_head`\. No run can prove it, so its words are wrong for that task\./,
       /hold their verdict with a `WAITING` line until the check is rewritten/,
-      /No step passes while such a check stands, and the retro holds its completion for it/,
+      /No reviewer or acceptance step passes while such a check stands, and the retro holds its completion for it/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
       /`dispatch results --issue <issue> --at <head>`/,
@@ -996,7 +996,33 @@ test("the skills say how the owner's retro and review read an issue, and when a 
       /the step ends by its verdict, not by a review on GitHub\./,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /not a retry loop: complete again once its cause is fixed, or as its code below says\./,
+      /not a retry loop: complete again once its cause is fixed, or as its code says\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the owner's retro of its own implementation step acts as the implement App", () => {
+  expect([
+    ...lacks("legion-architect/references/own-steps.md", [
+      /That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step\./,
+      /Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did\./,
+      /At the end of the step or of such a retro, Legion writes your own App back to your slot\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the plan guide names which ci_check holds the merge on a task with no review step", () => {
+  expect([
+    ...lacks("legion-architect/references/plan.md", [
+      /a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the worker skill says a TASK_STOPPED report is never sent again", () => {
+  expect([
+    ...lacks("legion-worker/SKILL.md", [
+      /`TASK_STOPPED`: your handoff counts as used; never send it again\./,
     ]),
   ]).toEqual([]);
 });

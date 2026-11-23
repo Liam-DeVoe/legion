@@ -21,7 +21,8 @@ At retro it answers the threads it finds; a run still going may open more, so re
   ```
 
   When GitHub refuses, send the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
-  Where the owner does that step (`implementer:owner`), its `gh` acts as the implement App only while it does an implementation step, not at its retro.
+  Where the owner does that step (`implementer:owner`), its `gh` acts as the implement App while it does that step.
+  It does so at its retro too, where the task's last implementation step is its own, and resolves those threads there.
 
 - The implementation step's agent, or at retro the retro's agent, records each thread in the PR body's `Threads` section.
   Each is stamped with the head it just pushed, or at retro with the head retro found.
