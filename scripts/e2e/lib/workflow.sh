@@ -1017,18 +1017,19 @@ close_unpassed_run_pull_requests() {
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
-# The record keeps each role's phase row: what the role's `handoff_complete` reported at the
-# completion the daemon accepted — for a file-backed phase (planning, implementing, testing,
-# reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
-# session, its id and version, which the daemon read back from Dispatch and held to the claim's
-# session, and the head that record's body names, which the `legion` tool holds to be the commit
-# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
-# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
-# and the merger the commit the workspace stands on — emptied when the role's next phase starts,
-# and, on the implementer's row, the review round (its returns to implementing). The issue moves
+# The record keeps a phases row for each step a role runs, and one for the implementer's retro:
+# what the role's `handoff_complete` reported at the completion the daemon accepted — for a
+# file-backed phase (planning, implementing, testing, reviewing) the Dispatch handoff record the
+# role wrote with `dispatch handoff-write` under its own session, its id and version, which the
+# daemon read back from Dispatch and held to the claim's session, and the head that record's body
+# names, which the `legion` tool holds to be the commit the workspace stands on, pushed to
+# `legion/<issue>@origin`, for the implementer's implementing round and which a planner's, a
+# tester's or a reviewer's record naming none leaves out; for retro and the merger the commit the
+# workspace stands on — emptied when that row's step runs again, and, on the implementer's one row
+# of an issue with no plan rows, the review round (its returns to implementing). The issue moves
 # out of every phase but merging on that phase's completion, and out of merging on the daemon's
 # read of the merged pull request, so a checker reads the row right after the transition it
-# follows, before the role's next phase can empty it. A production check's look is no phase: its
+# follows, before the step's next run can empty it. A production check's look is no phase: its
 # report moves no phase and writes no handoff (a verdict and a summary, no commit, no record), so
 # it is read from the daemon's state's `check`, below, never from this record.
 
