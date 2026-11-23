@@ -10,15 +10,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // planGiven is the plan an owner gave with register_plan, stored at the generation the route gave
 // it at: the issue's own, or 0 for an issue the daemon had not recorded, whose plan waits there for
-// the issue's first step. It has three parts, each its own function: the judgement of the version
-// (versionRefusal), its write (writeVersion), and what the write starts on a recorded issue
-// (afterVersion). Each refusal writes nothing and leaves the fact unspent, so the same
+// the issue's first step. It has four parts, each its own function: the judgement of the version
+// (versionRefusal), its write (writeVersion), what the write starts on a recorded issue
+// (afterVersion), and the end of the issue where the version leaves only tasks that are done or
+// left (leaveWhereDone). Each refusal writes nothing and leaves the fact unspent, so the same
 // registration, whose id names the issue, the generation, the document and the version (api's
 // registerPlan), applies when it is given again: a version refused while its task ran is taken
 // after stop_task, and the owner's plan given again at the generation the record holds meets the
@@ -37,7 +39,46 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if err != nil || !given.recorded {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.afterVersion(ctx, tx, fact, given, written)
+	if err := e.afterVersion(ctx, tx, fact, given, written); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.leaveWhereDone(ctx, tx, fact.Issue)
+}
+
+// leaveWhereDone ends the run of the issue keyed key where the version just taken left each of its
+// tasks done or left the workflow (issuePhaseOfTasks rule 1): one that removes the last task that
+// was not done, a stopped or a waiting one. The issue is written where its tasks put it, done, with
+// the Dispatch status done (putScope), and leaves the workflow with the status done, as the close
+// at a merge does (leave): a root lingers its tree, and a child tells the architect above it. It
+// opens no production check of its own: each merge opened its own, and the leave opens one only
+// for a merge that has none. An issue that is done already, or whose tasks put it anywhere else,
+// is left as it stands.
+func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) error {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || issue.Phase == phase.Done {
+		return err
+	}
+	scopes, err := e.scopes(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	var walks []Walk
+	for _, s := range scopes {
+		if !s.Planned() {
+			return nil
+		}
+		walks = append(walks, s.walk)
+	}
+	if at, _ := issuePhaseOfTasks(walks); walks == nil || at != phase.Done {
+		return nil
+	}
+	written, err := e.putScope(ctx, tx, &scopes[0])
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a version left only tasks that are done, and the issue leaves the workflow", "issue", key, "tree", written.Tree,
+		"status", written.Status)
+	return e.leave(ctx, tx, written, "done")
 }
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil
