@@ -2461,10 +2461,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if stops {
 		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, record.StandsAt(issue), stepSite{}, handoff))
 	}
-	// A move into the step of a role neither the deployment nor the plan in force defines starts no role: the task
-	// stops where it stands, naming the step (stopLostRole), and the step it stood at ends as the
-	// move would have ended it. A move stands in a phase a hold stands in, so a refusal of the
-	// stop is an error.
+	// A move into a step no role may start (lostAt: its role neither the deployment nor the plan in
+	// force defines, or the plan defines it on a model the deployment no longer lists) starts no
+	// role: the task stops where it stands, naming the step (stopLostRole), and the step it stood
+	// at ends as the move would have ended it. A move stands in a phase a hold stands in, so a
+	// refusal of the stop is an error.
 	if lost, ok := w.lostAt(row.ToPlace, e.cfg.Deployment); ok {
 		refusal, err := e.stopLostRole(ctx, tx, issue, w, lost, endOfTransition(w, trigger, record.StandsAt(issue), stepSite{}, handoff))
 		if err == nil && refusal != nil {
@@ -2818,32 +2819,34 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 }
 
-// stopLostRole stops w's task of issue, whose step at lost names a role neither the engine's
-// deployment nor the plan in force defines (Walk.lostAt): the daemon restarted with settings that dropped the role while a
-// task still had a step of it to run. The task stops where it stands as stop_task stops it
-// (stopTask), its step ending as end says, with the reason that names the step and the role, and
-// the task's owner is told once, in a task-stopped notice that names the lost role. The owner's
-// next version of the plan, or a person who defines the role again and sets the root back to
+// stopLostRole stops w's task of issue, whose step at lost no role may start (Walk.lostAt): its
+// role is one neither the engine's deployment nor the plan in force defines, or one the plan
+// defines on a model the deployment does not list. The daemon restarted with settings that
+// dropped the role or the model while a task still had a step of it to run. The task stops where
+// it stands as stop_task stops it (stopTask), its step ending as end says, with the reason that
+// names the step and the role, and the model where the model is what was lost, and the task's
+// owner is told once, in a task-stopped notice that names the role. The owner's next version of
+// the plan, or a person who defines the role or lists the model again and sets the root back to
 // todo, starts the task again. It answers stopTask's refusal of a stop that cannot stand where the
 // issue stands now (a root that waits on a person before its first step), and writes nothing then.
-func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost record.TaskPlace, end StepEnd) (*intake.Refusal, error) {
-	role := w.Steps[lost.Position-1].Role
-	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
-	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
+func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost lostStepAt, end StepEnd) (*intake.Refusal, error) {
+	role := w.Steps[lost.place.Position-1].Role
+	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, lost.why)
 	from := record.StandsAt(issue)
-	if refusal, err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil || refusal != nil {
+	if refusal, err := e.stopTask(ctx, tx, issue, w, lost.why, said, end); err != nil || refusal != nil {
 		return refusal, err
 	}
 	return nil, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: from, Reason: said})
 }
 
 // stopLostRoles stops, at the daemon's boot, the task of each issue of the project in the workflow
-// whose task still has a step to run of a role neither the engine's deployment nor the plan in force defines
-// (Walk.lostStep), running or waiting: the settings are read at the start, so a restart is where a
-// role leaves the deployment while the store still names it. A task its plan already holds
-// (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
-// that waits on a person before its first step) is passed over with one log line: the move into
-// its first step stops it then (transition's lostAt).
+// whose task still has a step to run that no role may start (Walk.lostStep), running or waiting: a
+// step of a role neither the engine's deployment nor the plan in force defines, or of a role the
+// plan defines on a model the deployment does not list. The settings are read at the start, so a
+// restart is where a role leaves the deployment, or a model leaves `models`, while the store still
+// names it. A task its plan already holds (planHold) has nothing to stop. A task whose stop cannot
+// stand where its issue stands now (a root that waits on a person before its first step) is passed
+// over with one log line: the move into its first step stops it then (transition's lostAt).
 //
 // A restart is also where the deployment can take the name of a role the plan in force of an
 // issue defines. That issue keeps its plan's role until a version of its plan changes it
@@ -2885,8 +2888,8 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			return err
 		}
 		if refusal != nil {
-			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
-				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
+			e.logOnCommit(ctx, "workflow: a task whose step no role may start under the deployment is not stopped where it stands",
+				"issue", issue.Key, "task", w.Task, "step", lost.place.Position, "why", lost.why, "reason", refusal.Message)
 		}
 	}
 	for _, name := range names {

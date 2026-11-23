@@ -420,42 +420,66 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, ""
 }
 
-// lostAt says whether place is a step of w's task whose role neither d nor the plan in force
-// (Roles) defines: a role the deployment lost, whose step no role may start (stopLostRole).
-// Legion's own roles are in every deployment (config.Config.Deployment, and New's default), and a
-// role of the plan is kept with the version that defines it, so only a role of a deployment's own
-// can be lost.
-func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
-	step, ok := w.planStepAt(place)
-	if !w.Stored || !ok {
-		return record.TaskPlace{}, false
-	}
-	if _, defined := d.Roles[step.Role]; defined || slices.ContainsFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == step.Role }) {
-		return record.TaskPlace{}, false
-	}
-	return place, true
+// lostStepAt is a step of a task that no role may start (Walk.lostAt): its place, and why, in the
+// words the task's stop gives (stopLostRole).
+type lostStepAt struct {
+	place record.TaskPlace
+	why   string
 }
 
-// lostStep is the first step w's task still has to run whose role neither d nor the plan in force defines (lostAt): the
-// step it stands at and each after it, or every step of a task at no act; none for a task at its
-// retro or its merge, done, left or stopped.
-func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
+// lostAt says whether place is a step of w's task that no role may start (stopLostRole): a step
+// whose role neither d nor the plan in force (Roles) defines, a role the deployment lost; or a
+// step whose role the plan in force defines with a model d does not list, a model the deployment
+// no longer lists. Legion's own roles are in every deployment (config.Config.Deployment, and New's
+// default), and a role of the plan is kept with the version that defines it, so only a role of a
+// deployment's own can be lost. A role of the plan is read before a role of d of its name, as the
+// daemon reads it for a claim of the issue, and its model is checked whether d defines that name
+// or not: register_plan judged the model against the models listed then, and the plan's role,
+// carried into each later generation (record.Store.CarryPlan), keeps it while the settings change
+// under it. A role of no model starts on the default model, which every deployment runs.
+func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (lostStepAt, bool) {
+	step, ok := w.planStepAt(place)
+	if !w.Stored || !ok {
+		return lostStepAt{}, false
+	}
+	if i := slices.IndexFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == step.Role }); i >= 0 {
+		model := w.Roles[i].Model
+		if model == "" || slices.Contains(d.Models, model) {
+			return lostStepAt{}, false
+		}
+		listed := "it lists none"
+		if len(d.Models) > 0 {
+			listed = "it lists " + strings.Join(d.Models, ", ")
+		}
+		return lostStepAt{place: place, why: fmt.Sprintf("step %d names the role %s, whose model %s the deployment no longer lists; %s",
+			place.Position, step.Role, model, listed)}, true
+	}
+	if _, defined := d.Roles[step.Role]; defined {
+		return lostStepAt{}, false
+	}
+	return lostStepAt{place: place, why: fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", place.Position, step.Role)}, true
+}
+
+// lostStep is the first step w's task still has to run that no role may start (lostAt): the step
+// it stands at and each after it, or every step of a task at no act; none for a task at its retro
+// or its merge, done, left or stopped.
+func (w Walk) lostStep(d plan.Deployment) (lostStepAt, bool) {
 	if !w.Stored || w.State != record.TaskRunning && w.State != record.TaskWaiting {
-		return record.TaskPlace{}, false
+		return lostStepAt{}, false
 	}
 	first := 1
 	switch w.Place.Kind {
 	case record.PlaceStep:
 		first = w.Place.Position
 	case record.PlaceRetro, record.PlaceMerge:
-		return record.TaskPlace{}, false
+		return lostStepAt{}, false
 	}
 	for n := first; n <= len(w.Steps); n++ {
 		if lost, ok := w.lostAt(record.TaskPlace{Kind: record.PlaceStep, Position: n}, d); ok {
 			return lost, true
 		}
 	}
-	return record.TaskPlace{}, false
+	return lostStepAt{}, false
 }
 
 // reviewFails says whether the step at w.Place, whose fail is the move, counts a review round
