@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -4193,14 +4194,20 @@ func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record
 //     news its role is owed, read from the record as it stands now (newsForStart), with no
 //     Dispatch read: an item whose change set is not recorded is left owed. The opening's start is
 //     the start that ends the hold of a claim the hold stopped, so it carries the news that no
-//     news-only start may hand that claim, behind the opening's sentences. A news-only start the
-//     record owes nothing now finishes. Any other start carries its own text alone.
-//  4. A start that ends the hold of a claim the hold stopped (an opening's start, or any start of
-//     a claim stopped by the hold) gives the claim a task behind the opening's sentences, which
-//     carry today's open message where the tree's record of its last opening names it
-//     (workflow.OpeningTellsTheGate). That task is the holder's one delivery of the opening, so
-//     its holder row is settled as told first (settleHeldOpening), and the news the start
-//     carries, and every send of it, names no second opening.
+//     news-only start may hand that claim, behind the opening's sentences. Where the hold's end
+//     keeps the task the claim kept (supervise.OpeningKeeps), the news is rendered over that kept
+//     work, with its review round: the work the kept task's news carries (record.DeliveryNews.Task),
+//     else the kept task's work (supervise.Delivery.Work). So the one task the hold's end gives
+//     carries this news (supervise.Machine.EndHold). A news-only start the record owes nothing now
+//     finishes. Any other start carries its own text alone.
+//  4. A start that finds its claim stopped by the hold gives the claim a task behind the opening's
+//     sentences, which carry today's open message where the tree's record of its last opening
+//     names it (workflow.OpeningTellsTheGate). That task is the holder's one delivery of the
+//     opening, so its holder row is settled as told first (settleHeldOpening), and the news the
+//     start carries, and every send of it, names no second opening. A start that finds no claim
+//     the hold stopped settles nothing, an opening's start among them: a later opening can owe
+//     its holder the opening, and that start gives no opening's sentences (openingStartFindsNoHold,
+//     supervise.Machine.EndHold).
 func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
 	machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
 	if payload.News {
@@ -4217,13 +4224,30 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 	if err := r.startWaitsForTheHold(ctx, issue, payload.Role, payload.CheckLook); err != nil {
 		return startNews{}, false, err
 	}
-	if payload.Opening != "" || (found && stoppedByHold(machine.Claim())) {
+	if found && stoppedByHold(machine.Claim()) {
 		if err := r.settleHeldOpening(ctx, issue, payload.Role); err != nil {
 			return startNews{}, false, err
 		}
 	}
 	if !payload.News && payload.Entry == 0 && payload.Opening == "" {
 		return startNews{task: payload.Task, roundNamed: payload.RoundNamed}, false, nil
+	}
+	if found {
+		if held := machine.Claim(); stoppedByHold(held) &&
+			supervise.OpeningKeeps(held.Pending, payload.Generation, payload.Entry, payload.ResendEntry) {
+			work := held.Pending.Work()
+			if len(held.Pending.News) > 0 {
+				var told record.DeliveryNews
+				if err := json.Unmarshal(held.Pending.News, &told); err != nil {
+					return startNews{}, false, fmt.Errorf("decode the news the task %s of %s kept carries: %w", held.Pending.ID, token, err)
+				}
+				work = told.Task
+			}
+			payload.Task, payload.RoundNamed = work, held.Pending.RoundNamed
+			if payload.Opening != "" {
+				payload.Task = supervise.OpeningTask(payload.Opening, work)
+			}
+		}
 	}
 	if news, err = r.newsForStart(ctx, issue, payload, token); err != nil {
 		return startNews{}, false, err

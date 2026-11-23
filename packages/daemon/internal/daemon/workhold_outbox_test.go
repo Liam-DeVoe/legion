@@ -59,18 +59,33 @@ const holdGrace = 2 * time.Minute
 // the spec alone where steps is nil, and the version of the spec the root's phase holder and its
 // architect took (took).
 //
-// took is the version whose approval opens the gate in the rig's cases. Each holder took it, so
-// the record owes it no news of that approval (record.OwedNews): the cases hold the hold's close
-// and opening, and the news of an approved version, which main's own tests hold, waits on nothing
-// here. The merger's start waits for no news (mergerWaitsForTheDesignGate), a start carries no
-// news, and the opening tells each live holder the open message with the words that nothing its
-// issue holds changed since that version (openingDelivery, openedTo).
+// By default took is the version whose approval opens the gate in the rig's cases. That is above
+// the approved version, a state no writer of the told rows makes: each holder took that version,
+// so the record owes it no news of that approval (record.OwedNews). The default stays so because
+// the tester's opening-text cases pin the opening task word for word, with no news after its work
+// (TestWorkHoldStartsAStopMadeWhileTheOpeningCommitsWithTheOpeningsTask among them). So in a
+// default case the merger's start waits for no news (mergerWaitsForTheDesignGate), a start carries
+// no news, and the opening tells each live holder the open message with the words that nothing
+// its issue holds changed since that version (openingDelivery, openedTo).
+//
+// A case that holds the news an opening's start carries seeds took at the approved version
+// (withNews), as a phase's first start records it (record.Store.BaselineTold). Each approval of a
+// later version then owes the holders its news, and the design_changes row that approval queues
+// records what changed (outboxDispatch answers no changed section). The merger's start waits until
+// that is recorded, and a start carries that news after its work (heldNews).
 type holdTree struct {
 	key, project, document string
 	approved, took         int
 	at                     phase.Phase
 	hold                   config.Hold
 	steps                  []record.DesignStep
+}
+
+// withNews is tree with its holders' told rows at the approved version, so each approval of a later
+// version owes them its news (holdTree).
+func (tree holdTree) withNews() holdTree {
+	tree.took = tree.approved
+	return tree
 }
 
 // legionTree is LEGION-208 standing in at under hold, its spec (artifact-208) approved at version
@@ -467,6 +482,21 @@ func (r *workHoldRig) openedTo(role claim.Role, version int) string {
 		return fmt.Sprintf("%s Nothing the tree holds changed since version %d, which you took.", r.openedMessage(version), r.tree.took)
 	}
 	return fmt.Sprintf("%s Nothing your issue holds changed since version %d, which your phase took.", r.openedMessage(version), r.tree.took)
+}
+
+// heldNews is the news the root's phase holder in phase at is told of the spec from version from
+// to version to, in a case whose holders took the approved version (withNews): the change list,
+// which names no section, since the rig's Dispatch answers none (outboxDispatch.ArtifactChanges),
+// and the rule its role's prompt carries.
+func (r *workHoldRig) heldNews(at phase.Phase, from, to int) string {
+	return fmt.Sprintf("The approved design of %[1]s changed for %[1]s, which you hold in %[2]s:\n"+
+		"- The spec document (%[3]s): version %[5]d, since version %[4]d, which your phase last took.\n"+
+		"  Dispatch named no changed section or block of it.\n"+
+		"  Read it: `dispatch doc-read --issue %[1]s --artifact %[3]s --version %[5]d`\n\n"+
+		"As your role's prompt says, read each named section and check at the new version: if your work is stale, "+
+		"call `request_backward_move` with a reason that names the version and the change; if it is current, write a `dispatch comment` "+
+		"on %[1]s that names the version and why; an issue whose pull request has merged never moves back.",
+		r.tree.key, at, r.tree.document, from, to)
 }
 
 // opening is the sentences the one task of the opening starts with: the close message's two, that
@@ -2835,15 +2865,17 @@ func TestWorkHoldPublishesNoCloseThatANewerCloseOutran(t *testing.T) {
 }
 
 // Spec step 7 ("one task"), for a claim that an opening started and a later close stopped before
-// any turn took the opening's task. The opening of version 4 starts the implementer, and the close
-// of version 5 reaches it while it launches: its close message meets no session that holds the
-// role, and its stop is held until the implementer's ready and made there, before the implementer
-// takes the task. The claim keeps that task, the first opening's sentences in front of its work,
-// and the daemon restarts, so the claim is read back from the store. The opening of version 5 then
-// starts it with one task: the newest opening's sentences once, then the work once, and not the
-// first opening's sentences behind them.
+// any turn took the opening's task. The holders took the approved version 3 (withNews). The
+// opening of version 4 starts the implementer, with the news of version 4 after its work, and the
+// close of version 5 reaches it while it launches: its close message meets no session that holds
+// the role, and its stop is held until the implementer's ready and made there, before the
+// implementer takes the task. The claim keeps that task, the first opening's sentences in front of
+// its work, and the daemon restarts, so the claim is read back from the store. The opening of
+// version 5 then starts it with one task: the newest opening's sentences once, then the work once,
+// and not the first opening's sentences behind them, then the news the claim is owed now, of
+// version 5, in place of the kept task's news of version 4.
 func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *testing.T) {
-	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork).withNews())
 	token := r.token(claim.RoleImplementer)
 	r.working(claim.RoleImplementer)
 	r.close(4)
@@ -2856,7 +2888,7 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 	r.runOnce()
 	work := workflow.ResumePhaseTask(r.issue())
 	if c := r.machine(claim.RoleImplementer).Claim(); c.State == supervise.StateSuspended || c.Pending == nil ||
-		c.Pending.Task != r.opening(4, 4)+"\n\n"+work {
+		c.Pending.Task != r.opening(4, 4)+"\n\n"+work+"\n\n"+r.heldNews(phase.Implementing, 3, 4) {
 		t.Fatalf("after the first opening the implementer is %s by %q holding %+v, want it launching with the first opening's task",
 			c.State, c.SuspendedBy, c.Pending)
 	}
@@ -2870,7 +2902,7 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 	if prompts := r.conn(claim.RoleImplementer).Prompts(); len(prompts) != 0 {
 		t.Fatalf("the implementer was prompted %+v with the gate closed, want nothing: the stop is made at its ready", prompts)
 	}
-	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Task != r.opening(4, 4)+"\n\n"+work ||
+	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || c.Pending.Task != r.opening(4, 4)+"\n\n"+work+"\n\n"+r.heldNews(phase.Implementing, 3, 4) ||
 		c.Pending.Opening != r.opening(4, 4) {
 		t.Fatalf("the stopped implementer keeps %+v, want the first opening's task, marked with its sentences", c.Pending)
 	}
@@ -2883,7 +2915,68 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 
 	r.approve(5, 13)
 	r.drain()
-	r.wantStarted(claim.RoleImplementer, launched, r.opening(5, 5)+"\n\n"+work)
+	r.wantStarted(claim.RoleImplementer, launched, r.opening(5, 5)+"\n\n"+work+"\n\n"+r.heldNews(phase.Implementing, 3, 5))
+}
+
+// The merger's news under `work`, for a merger whose cut turn left it a task no turn took. The
+// holders took the approved version 3 (withNews). The merger is at work on its merge task when the
+// gate closes, and its turn does not end within the 2 minutes, so the hold's stop cuts it. The
+// claim keeps the task, which its cut turn did not finish. The opening's start waits until what
+// changed in the approved version is recorded, as every start of a merger waits, and then starts
+// the merger with one task: the opening's sentences, the kept merge task, and the news of version
+// 4 after it, so the merger reads what changed before it merges. A restart before the opening
+// reads the kept task back from the store, and a first attempt of the opening's start that waits
+// for the news to be recorded gives the same task.
+func TestWorkHoldOpeningGivesAMergerTheNewsWithTheTaskItsCutTurnKept(t *testing.T) {
+	const mergeTask = "Merge the pull request of LEGION-208."
+	for _, miss := range []string{"none", "a restart before the opening", "a first attempt that waits for the news"} {
+		t.Run(miss, func(t *testing.T) {
+			r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork).withNews())
+			token := r.token(claim.RoleMerger)
+			r.live(claim.RoleMerger)
+			r.handle(claim.RoleMerger, supervise.RequestDeliver{Claim: token, Task: mergeTask, ID: "outbox:9001", Row: 9001,
+				Phase: phase.Merging, Generation: 1, Entry: 1})
+			r.handle(claim.RoleMerger, supervise.StreamTurnStart{Claim: token})
+			r.close(4)
+			r.runOnce()
+			r.runOnce()
+			if fired := r.clock.fire(holdGrace); fired != 1 {
+				t.Fatalf("fired %d timers at the 2 minutes, want the merger's stop's one", fired)
+			}
+			r.wantHeld(claim.RoleMerger, 1, "2 minutes after the close message")
+			if c := r.machine(claim.RoleMerger).Claim(); c.Pending == nil || c.Pending.Task != mergeTask || !c.Pending.ConfirmedAt.IsZero() {
+				t.Fatalf("the stopped merger keeps %+v, want the merge task its cut turn worked, unconfirmed", c.Pending)
+			}
+			launched := 1
+			if miss == "a restart before the opening" {
+				// The restart's supervisor runs on a runtime of its own, whose launches count from none.
+				r.restart()
+				launched = 0
+			}
+
+			r.approve(4, 12)
+			if miss == "a first attempt that waits for the news" {
+				if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where issue = $1 and kind = 'design_changes'`,
+					r.tree.key, r.clock.Now().Add(10*time.Minute)); err != nil {
+					t.Fatalf("put the reconcile of the news on its backoff: %v", err)
+				}
+				r.runOnce()
+				r.wantHeld(claim.RoleMerger, launched, "while what changed is not recorded")
+				if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
+					t.Fatalf("the outbox holds %d starts of the merger, want the opening's start waiting for the news", got)
+				}
+				r.clock.advance(11 * time.Minute)
+			}
+			r.drain()
+			task := r.opening(4, 4) + "\n\n" + mergeTask + "\n\n" + r.heldNews(phase.Merging, 3, 4)
+			r.wantStarted(claim.RoleMerger, launched, task)
+			readyClaimAs(t, r.sup, token, claim.RoleMerger, "ses-merger")
+			r.machine(claim.RoleMerger).Wait()
+			if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) == 0 || !strings.HasSuffix(prompts[len(prompts)-1].Message, task) {
+				t.Fatalf("at its ready the merger was prompted %+v, want the one task with the news after the merge task", prompts)
+			}
+		})
+	}
 }
 
 // Under `merge`, a merger whose start is only queued at the close, its lane running nothing of

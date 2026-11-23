@@ -889,8 +889,9 @@ func TestWorkHoldStartsItsClaimsWhenTheChangeIsUndone(t *testing.T) {
 
 // H32: a gate that opens before the outbox made a stop makes none: the opening writes no stop and
 // starts no claim the hold never stopped, every live claim is told the gate opened, a holder owed
-// news by the task that carries that news (openingDelivery), and with the record gone the stops
-// still queued read a tree that holds no work.
+// news by the task that carries that news (openingDelivery), the released merger whose stop was
+// not made among them, and with the record gone the stops still queued read a tree that holds no
+// work.
 func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	rig := newHoldRig(t)
 	engine := rig.engine(config.HoldWork)
@@ -909,7 +910,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	wantMessages(t, rig.pool, "LEGION-208", closeMessages["LEGION-208"])
 	wantMessages(t, rig.pool, "LEGION-209", append(closeMessages["LEGION-209"], opened("LEGION-209", claim.RoleArchitect),
 		opened("LEGION-209", claim.RolePlanner)))
-	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-209/holder")
+	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-209/holder", "LEGION-210/holder")
 	if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
 		t.Fatalf("after the opening the record holds %+v, want none", hold)
 	}
@@ -920,6 +921,36 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 		}
 		return err
 	})
+}
+
+// The work hold's opening tells each holder the opening once, as tellGateMoved does under `merge`
+// for every holder it addresses, live or not: a holder that the hold did not stop and that is
+// owed news is sent no open message, and its told row owes the opening, so the task that carries
+// its news leads with the opened sentence. Here the root's architect is owed news, since the rig
+// records no told row: its idle pod was released after the close, or it holds no claim. A
+// restart cannot change the outcome, since the engine keeps nothing between facts, and neither can
+// a failed attempt, since the opening's settle is in the transaction that opens the gate.
+func TestWorkHoldOpeningOwesTheOpeningToAHolderOwedNewsThatIsNotLive(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave string
+	}{
+		{name: "a released architect", leave: `update claims set state = 'suspended', suspended_by = 'released' where token = $1`},
+		{name: "an architect with no claim", leave: `delete from claims where token = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newHoldRig(t)
+			engine := rig.engine(config.HoldWork)
+			rig.close(engine, 4)
+			rig.stopsMade(legionStops...)
+			if _, err := rig.pool.Exec(t.Context(), tc.leave, treeRoleToken(t, "LEGION-208", claim.RoleArchitect)); err != nil {
+				t.Fatalf("leave the root's architect not live: %v", err)
+			}
+			rig.open(engine, 4)
+			wantMessages(t, rig.pool, "LEGION-208", legionCloseMessages(t, 4)["LEGION-208"])
+			assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect")
+		})
+	}
 }
 
 // H30, decision 18: a start written for a held role while the gate was closed — here the
@@ -1226,6 +1257,9 @@ func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
 	engine := rig.engine(config.HoldWork)
 	rig.close(engine, 4)
 	rig.open(engine, 4)
+	// The opening read the implementer live and owed news, so its told row owes the opening, as it
+	// does the root architect's and the released merger's, whose stop was not made.
+	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-209/holder", "LEGION-210/holder")
 	if starts := holdStartsOf(t, rig.pool, "LEGION-209"); len(starts) != 0 {
 		t.Fatalf("the opening started %s, want nothing: it read the implementer live", asJSON(starts))
 	}
@@ -1250,6 +1284,8 @@ func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
 	}
 	wantLines(t, rig.logged.String(), "workflow: the work hold's opening starts a claim it stopped",
 		[]heldClaim{{"LEGION-209", claim.RoleImplementer}})
+	// The one start tells the opening, so the implementer's told row owes it no more (openHeldClaims).
+	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-210/holder")
 }
 
 // H33 and the architect's ruling of 2026-11-22, for the fact of the hold's end

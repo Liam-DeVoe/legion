@@ -378,9 +378,9 @@ type gateOpening struct {
 // (workHoldBooted). fallback is the hold the end names where the tree holds no work_holds row.
 //
 // At the gate's opening (opened, nil at the boot's end, which opens no gate) each holder is told
-// the opening once, as under `merge` (heldOpening): a live holder by openingDelivery, a claim the
-// hold stopped by the task that starts it, and a child's architect that holds a member owed news
-// by that news (settleChildArchitectOpenings).
+// the opening once, as under `merge` (heldOpening): a holder the hold did not stop by
+// openingDelivery, live or not, a claim the hold stopped by the task that starts it, and a child's
+// architect that holds a member owed news by that news (settleChildArchitectOpenings).
 //
 // It takes the tree's work_holds row for update before it reads the tree's claims
 // (record.Store.LockWorkHold), and the transaction deletes the row, keeps it as the record of the
@@ -435,7 +435,7 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 		e.logOnCommit(ctx, "workflow: the opening is owed to each holder owed news, and the task carrying their news tells it",
 			"tree", root.Tree, "step", string(opened.step), "version", opened.version, "holders", opening.byNews)
 	}
-	return e.endWorkHold(ctx, tx, root, claims, ended, closing)
+	return e.endWorkHold(ctx, tx, root, claims, ended, closing, locked != nil)
 }
 
 // heldOpening is what the work hold's opening decides each claim's opening by: the opened
@@ -479,10 +479,14 @@ func (e *Engine) readHeldOpening(ctx context.Context, tx pgx.Tx, root record.Iss
 // heldOpeningMessage is the message the work hold's opening sends claim c of root's tree, "" for
 // none, the caller sending nothing to a claim that is not live:
 //
-//   - a live holder, the root's architect or the claim that holds its member's phase, is told as
-//     openingDelivery decides, which its told row then records (record.Store.SettleOpening): owed
-//     news, it is sent nothing and its row owes the opening, which the task carrying its news
-//     leads with; else it is sent the opened message, and its row is settled as told;
+//   - a holder the hold did not stop, the root's architect or the role that holds its member's
+//     phase, is told as openingDelivery decides, as tellGateMoved decides for every holder under
+//     `merge`. Owed news, it is sent nothing and its told row owes the opening, which the task
+//     carrying its news leads with, whether its claim is live or not: a released claim, a claim
+//     that failed, retired or that an operator suspended, and a role with no claim among them.
+//     A live holder owed no news is sent the opened message, and its row is settled as told. A
+//     holder that is not live and owed no news is sent nothing, and its row stays as the close
+//     left it;
 //   - a child's architect whose news carries the opening is sent nothing
 //     (settleChildArchitectOpenings);
 //   - any other live claim, a child's architect or a worker of a phase its issue has left, is sent
@@ -496,8 +500,11 @@ func (e *Engine) heldOpeningMessage(ctx context.Context, tx pgx.Tx, opening *hel
 		audience, holder = record.AudienceArchitect, true
 	}
 	switch {
-	case holder && c.live():
+	case holder && !c.state().WorkHeld():
 		way := openingDelivery(opening.owed, opening.told, c.issue.Key, audience, opening.opened, opening.step, opening.version)
+		if !way.byNews && !c.live() {
+			return "", nil
+		}
 		if err := e.store.SettleOpening(ctx, tx, c.issue.Key, audience, way.byNews); err != nil {
 			return "", err
 		}
@@ -517,15 +524,19 @@ func (e *Engine) heldOpeningMessage(ctx context.Context, tx pgx.Tx, opening *hel
 // (record.Store.OpenWorkHold). Each claim the hold stopped is started (openHeldClaims) with the
 // task built from that record (heldClaimOpening), which is the opening's sentences around ended.
 // closing is the hold its caller read with the row locked (tellAndEndWorkHold), which names the
-// version that closed the gate, or the caller's fallback where the row is gone already. A
-// fallback is no row, so the record keeps no opening of it.
-func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, ended string, closing record.WorkHold) error {
+// version that closed the gate, or the caller's fallback where the row is gone already (stood is
+// false). A fallback is no row, so the record keeps no opening of it. The start then builds the
+// sentences of a hold no record keeps, which tell no opening of the gate (HeldClaimOpening), so
+// the opening settles no holder row as told (openHeldClaims' told).
+func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, claims []treeClaim, ended string,
+	closing record.WorkHold, stood bool) error {
 	at := e.now()
 	if err := e.store.OpenWorkHold(ctx, tx, root.Tree, at, ended); err != nil {
 		return err
 	}
 	closing.OpenedAt, closing.Opening = at, ended
-	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(&closing, root.Tree), closing.Version, tellsOpening(&closing, root))
+	return e.openHeldClaims(ctx, tx, root, claims, heldClaimOpening(&closing, root.Tree), closing.Version,
+		stood && tellsOpening(&closing, root))
 }
 
 // tellsOpening is whether the opening's sentences built from opened, the record of root's tree's

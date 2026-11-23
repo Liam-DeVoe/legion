@@ -1002,10 +1002,17 @@ func TestWorkHoldReleaseStartsTheClaimWithItsKeptTask(t *testing.T) {
 // The hold's end keeps no task of news alone (Delivery.NewsOnly). Such a task holds no work, so
 // the one task is the opening start's own, and the news the kept task told, which no turn
 // confirmed, is still owed for the opening's start to carry (the daemon's startNewsOf). A kept
-// task that carries news keeps that news with its work, under the newest opening's sentences, so
-// each send renders the news again behind them (Deps.DesignNews).
+// task that carries news keeps its work under the newest opening's sentences. The opening's start
+// carries the news the claim is owed now, which the daemon renders over that kept work, and that
+// news goes with the one task in place of the kept task's own: a merger the hold stopped reads
+// what changed before it merges. The start's news goes with the work after a restart, which reads
+// the kept task back from the store, and after an attempt of the hold's end that a session refusal
+// answered (resumeRefusal), which changes nothing of the claim. A start that carries no news
+// leaves the kept task's news with its work, and each send renders that news again behind the
+// sentences (Deps.DesignNews).
 func TestWorkHoldOpeningOfAClaimThatKeptNews(t *testing.T) {
 	news := []byte(`{"task":"` + phaseTask + `"}`)
+	const told = phaseTask + "\n\nThe news of the approved version."
 	// releasedWith is a claim released while it held task, which no turn took, that the hold's
 	// stop took over at once.
 	releasedWith := func(t *testing.T, task RequestDeliver) *harness {
@@ -1019,6 +1026,31 @@ func TestWorkHoldOpeningOfAClaimThatKeptNews(t *testing.T) {
 		h.wantHeld()
 		return h
 	}
+	// keptTold is a claim that kept told, the task of entry 2 that carries news.
+	keptTold := func(t *testing.T) *harness {
+		t.Helper()
+		return releasedWith(t, RequestDeliver{Task: told, ID: "outbox:7", Row: 7, Phase: phase.Implementing,
+			Generation: 1, Entry: 2, News: news})
+	}
+	// startWithNews is the opening's start as the daemon builds it over the kept task: its text is
+	// the opening's sentences, the kept work and the news the claim is owed now, and it carries
+	// that news apart.
+	startWithNews := func(h *harness) RequestDeliver {
+		start := openingStart(h)
+		start.Task = holdOpening + "\n\n" + phaseTask + "\n\nThe news of version 5."
+		start.News = []byte(`{"task":"` + phaseTask + `","items":[{"to":5}]}`)
+		return start
+	}
+	wantTheStartsNews := func(t *testing.T, h *harness, start RequestDeliver) {
+		t.Helper()
+		if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
+			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
+		}
+		p := h.wantPendingTask(start.Task)
+		if string(p.News) != string(start.News) || p.Opening != holdOpening || p.ID != start.ID || p.Entry != 2 {
+			t.Fatalf("the one task is %+v, want the kept work of entry 2 with the start's news, under the start's id, behind the opening's sentences", p)
+		}
+	}
 	t.Run("a task of news alone gives way to the opening start's own", func(t *testing.T) {
 		h := releasedWith(t, RequestDeliver{Task: "A person approved a new version of the design.",
 			ID: "outbox:7", Row: 7, Phase: phase.Implementing, Generation: 1, News: news, NewsOnly: true})
@@ -1030,10 +1062,33 @@ func TestWorkHoldOpeningOfAClaimThatKeptNews(t *testing.T) {
 			t.Fatalf("the one task is %+v, want the opening start's own, with no news and the opening apart", p)
 		}
 	})
-	t.Run("a kept task's news goes with its work", func(t *testing.T) {
-		const told = phaseTask + "\n\nThe news of the approved version."
-		h := releasedWith(t, RequestDeliver{Task: told, ID: "outbox:7", Row: 7, Phase: phase.Implementing,
-			Generation: 1, Entry: 2, News: news})
+	t.Run("the start's news goes with the kept task's work", func(t *testing.T) {
+		h := keptTold(t)
+		wantTheStartsNews(t, h, startWithNews(h))
+	})
+	t.Run("the start's news goes with the kept task's work after a restart", func(t *testing.T) {
+		h := keptTold(t)
+		h.restart()
+		wantTheStartsNews(t, h, startWithNews(h))
+	})
+	t.Run("the start's news goes with the kept task's work after a refused attempt", func(t *testing.T) {
+		h := keptTold(t)
+		h.store.setHold(sessionID(session), claim.Token("legion-legion-LEGION-209-tester"))
+		h.restart()
+		start := startWithNews(h)
+		var refused *RefusedError
+		if resumed, err := h.m.EndHold(h.ctx, &start); resumed || !errors.As(err, &refused) {
+			t.Fatalf("the hold's end of a claim recording a session another claim holds = %v, %v; want a refusal", resumed, err)
+		}
+		h.wantHeld()
+		if p := h.wantPendingTask(told); string(p.News) != string(news) {
+			t.Fatalf("the refused claim holds %+v, want the task it kept with its own news", p)
+		}
+		h.store.setHold(sessionID(session), h.token)
+		wantTheStartsNews(t, h, start)
+	})
+	t.Run("a start that carries no news leaves the kept task's news with its work", func(t *testing.T) {
+		h := keptTold(t)
 		start := openingStart(h)
 		if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
 			t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
