@@ -490,6 +490,12 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
 		// the delivery views read the delivery rows alone.
 		return false
+	case delivery.ChangeKindProductionEvents:
+		// One write of the record of deploys and failed changes (dispatch://INFRA-978). No view
+		// reads the record: the refresher does, and rewrites the three failure evals' day rows of
+		// each project the row counts for, whose eval_days change marks that project's evals view;
+		// the delivery views read the delivery rows alone.
+		return false
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read
 		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),

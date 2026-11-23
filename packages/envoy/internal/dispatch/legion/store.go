@@ -322,3 +322,28 @@ func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, erro
 	}
 	return current, nil
 }
+
+// ControllerSession is the session project's daemon names as its registered controller, from the
+// newest good read (FieldController), and false where the daemon names none or Dispatch has read
+// no state of it. The reject of a production event proves the project's controller by it
+// (dispatch://INFRA-978, R8): a caller whose own session a credential proved and equals it.
+func ControllerSession(ctx context.Context, db Queryer, project string) (string, bool, error) {
+	rows, err := db.Query(ctx, `
+		select value #>> '{}' from legion_current
+		where project = $1 and issue_key = $2 and field = $3 and jsonb_typeof(value) = 'string'
+	`, project, AdmissionKey, FieldController)
+	if err != nil {
+		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+	}
+	defer rows.Close()
+	session := ""
+	for rows.Next() {
+		if err := rows.Scan(&session); err != nil {
+			return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
+	}
+	return session, session != "", nil
+}

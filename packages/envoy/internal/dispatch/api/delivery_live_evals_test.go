@@ -131,12 +131,19 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		t.Logf("%s of %s marks %d of %d views: %v", change.Kind, change.Ref, len(marked), len(views), marked)
 	}
 
-	filing := delivery.Change{Seq: 1, Kind: "issue_filings", Repo: "INFRA", Ref: "INFRA-7", TNew: &hourAgo}
+	// A filing and a write of the record of deploys and failed changes: no view reads either, the
+	// refresher does, and its eval_days change marks the evals view.
 	filingMarks := 0
-	for _, view := range views {
-		if view.view.touchedBy(filing, now) {
-			filingMarks++
-			t.Errorf("issue_filings of INFRA-7 marks %s, want no view", view.what)
+	for _, change := range []delivery.Change{
+		{Seq: 1, Kind: "issue_filings", Repo: "INFRA", Ref: "INFRA-7", TNew: &hourAgo},
+		{Seq: 1, Kind: delivery.ChangeKindProductionEvents, Repo: "INFRA", Ref: "0193a1b2-0000-7000-8000-000000000001", TNew: &hourAgo},
+		{Seq: 1, Kind: delivery.ChangeKindProductionEvents, Repo: "INFRA", Ref: "0193a1b2-0000-7000-8000-000000000002", TOld: &dayAgo, TNew: &hourAgo},
+	} {
+		for _, view := range views {
+			if view.view.touchedBy(change, now) {
+				filingMarks++
+				t.Errorf("%s of %s marks %s, want no view", change.Kind, change.Ref, view.what)
+			}
 		}
 	}
 
@@ -179,7 +186,7 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 			t.Errorf("the settings applied: touchedBy(%s) = %t, want %t", view.what, got, evalsPage)
 		}
 	}
-	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks no evals view, and the settings applied every one and no other view",
+	t.Logf("issue_filings and production_events mark %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks no evals view, and the settings applied every one and no other view",
 		filingMarks, len(views), len(others), evalsMarks)
 }
 

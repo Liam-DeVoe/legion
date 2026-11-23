@@ -40,6 +40,11 @@ import (
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
 // insert carries TNew alone, a delete TOld alone.
 //
+// A production_events row holds none either: Repo carries the project key of the record's row and
+// Ref its id (migration 20261123002037). TOld and TNew are the time the row counts on before and
+// after: a deploy's finished_at, or a failure's blamed deploy's; a failure whose restored_at moved
+// logs a second change, carrying its restored_at before and after.
+//
 // A settings row is a write of the delivery settings: its Repo, Ref, TOld and TNew are empty.
 type Change struct {
 	Seq     int64
@@ -68,6 +73,9 @@ const (
 	ChangeKindEvalVersions = "eval_versions"
 	ChangeKindEvalDays     = "eval_days"
 	ChangeKindIssueFilings = "issue_filings"
+	// ChangeKindProductionEvents is a write of the record of deploys and failed changes
+	// (dispatch://INFRA-978, R13).
+	ChangeKindProductionEvents = "production_events"
 )
 
 // EvalDaysWrittenBySettingsRewrite is the RunKind of an eval_days change that the refresher's
@@ -158,9 +166,12 @@ const ChangesChannel = "delivery_changes"
 // first, for the rest of its transaction, so those transactions are short and do their reads
 // before it.
 //
-// No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261117100001), and the drain moves them into the log in
-// a short transaction of its own after they commit.
+// No eval, refresher, Legion facts or production event write takes it: their changes wait in the
+// outbox (delivery_changes_pending, migration 20261117100001), and the drain moves them into the
+// log in a short transaction of its own after they commit. The production event writers
+// (dispatch://INFRA-978) write in transactions of their own that take no lock, the GitHub adapter
+// after the run write that made a run a deploy has committed, so no transaction that takes the
+// lock locks a production_events row and that table holds no position.
 const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 
 // queueLockChanges queues the change log's lock (lockChangesStatement) into batch, so the
