@@ -138,6 +138,9 @@ import (
 // The record that a claim took another role (20261123033101) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
 // its own here (migration_20261123033101_test.go).
+// The repair of the open resume per claim (20261123114449) is applied after it and touches no
+// outbox_kind_check: over 20261121183336's present shape it closes no row and changes no index, so
+// it needs no row of its own here (migration_20261123114449_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -148,7 +151,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
-	20261122072945, 20261122102933, 20261123033101,
+	20261122072945, 20261122102933, 20261123033101, 20261123114449,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -167,8 +170,8 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
 // the claim of each resume's 20261121183336, the claim of each backstop's 20261122072945, the
-// claims a release suspended's 20261122102933 and the record that a claim took another role's
-// 20261123033101.
+// claims a release suspended's 20261122102933, the record that a claim took another role's
+// 20261123033101 and the repair of the open resume per claim's 20261123114449.
 // That is why the loop below holds the list rather than counting it, so that a version added above
 // any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
