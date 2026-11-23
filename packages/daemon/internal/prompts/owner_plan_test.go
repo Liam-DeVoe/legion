@@ -155,6 +155,8 @@ func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 				{"started its work before Legion took plans has no task text"},
 				{"such an issue", "comment on the issue", "by message"},
 				{"hold also where a general skill offers another place"},
+				{"list of open items", "`open-items.md`", "is such a place"},
+				{"Write no decision for an agent in it", "do not keep it as the record of the work"},
 				{"issue and its plan are the record of the work to be done"},
 			} {
 				if !clauseHolds(composed, terms...) {

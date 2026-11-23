@@ -763,6 +763,8 @@ test("a decision for an agent goes into its task's text, and a message reaches t
       /started its work before Legion took plans has no task text/,
       /such an issue[^.;]*comment on the issue[^.;]*by message/,
       /hold also where a general skill offers another place/,
+      /A list of open items, such as an issue's `open-items\.md`, is such a place/,
+      /Write no decision for an agent in it, and do not keep it as the record of the work/,
       /issue and its plan are the record of the work to be done/,
     ])
   ).toEqual([]);
@@ -993,7 +995,7 @@ test("a worker's first step reads the issue, its task and the handoffs, and no o
 // So the worker skill names that list and says the agent reads it not at all.
 test("a worker reads no list of open items, even one with an item for its role", () => {
   countedOncePerFile(
-    "Read no list of open items of the issue, even one with an item for your role. What your architect wants of you comes in your task or a message.",
+    "Read no list of open items, even one naming your role.",
     ["skills/legion-worker/SKILL.md"]
   );
 });

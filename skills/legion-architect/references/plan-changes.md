@@ -27,6 +27,8 @@ A planner's task blocks do not go in that version: Legion refuses a version that
 An issue that started its work before Legion took plans has no task text.
 On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
 These rules hold also where a general skill offers another place for a decision.
+A list of open items, such as an issue's `open-items.md`, is such a place.
+Write no decision for an agent in it, and do not keep it as the record of the work.
 The issue and its plan are the record of the work to be done.
 
 ## The notices
