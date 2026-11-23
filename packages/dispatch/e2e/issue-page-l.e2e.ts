@@ -1187,11 +1187,11 @@ test("the answer line's field keeps room to type beside options that almost fill
 });
 
 // The tester's red row (round 13), the root spec's R18 and R19: no part of the page scrolls in
-// two dimensions from 320 px to 1440 px, and nothing a reader could read before is lost. A row
-// of the box's picker draws its detail on one line (`RefPickerList`'s `TruncatedText`), a
-// document's address runs past a phone's width, and the page draws no tooltip to give back an
-// ellipsis's cut. So when such a row is listed, the list stays inside the box, the page stays one
-// screen wide, and the row draws its whole detail.
+// two dimensions from 320 px to 1440 px, and nothing a reader could read before is lost. A
+// document's address runs past a phone's width, and the page draws no tooltip to give back what an
+// ellipsis cuts, so on the issue page a row of the box's picker draws its whole detail, wrapped
+// (`RefPickerList`'s `WRAPPED_LINE`). So when such a row is listed, the list stays inside the box,
+// the page stays one screen wide, and no part of the row cuts its detail.
 test("the box's picker keeps the page one screen wide when a row's detail is long @phone", async ({
   browser,
 }) => {
