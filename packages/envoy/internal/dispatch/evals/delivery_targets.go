@@ -177,24 +177,27 @@ var deliveryJudges = func() map[string][]string {
 // default repository moves neither until that commit. Where no source reads deployRepo, no project
 // is named, and where the project holds no version of a slug yet, the slug's catalogue entry
 // stands in: the definition and series the seed writes, whose target is main's
-// (measures.DefaultTargets). A slug neither holds is absent.
+// (measures.DefaultTargets). A slug neither holds is absent. An empty deployRepo, which no source
+// reads (delivery.SourceRepoOf resolves none to ""), names no project, so it reads nothing.
 func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
-	tx, err := s.BeginSnapshot(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
-	}
-	defer tx.Rollback(ctx)
-	projects, err := publishedSettingsIn(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("read the project whose deploy source reads %s: %w", deployRepo, err)
-	}
 	entries := make(map[string]Entry, len(slugs))
-	for _, rule := range delivery.DeployRules(projects) {
-		if ruleKey(rule.DeployRepo) == ruleKey(deployRepo) {
-			if entries, err = projectEntries(ctx, tx, rule.Project, slugs); err != nil {
-				return nil, err
+	if deployRepo != "" {
+		tx, err := s.BeginSnapshot(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
+		}
+		defer tx.Rollback(ctx)
+		projects, err := publishedSettingsIn(ctx, tx)
+		if err != nil {
+			return nil, fmt.Errorf("read the project whose deploy source reads %s: %w", deployRepo, err)
+		}
+		for _, rule := range delivery.DeployRules(projects) {
+			if ruleKey(rule.DeployRepo) == ruleKey(deployRepo) {
+				if entries, err = projectEntries(ctx, tx, rule.Project, slugs); err != nil {
+					return nil, err
+				}
+				break
 			}
-			break
 		}
 	}
 	for _, slug := range slugs {

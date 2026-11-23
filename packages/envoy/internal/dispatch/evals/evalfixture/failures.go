@@ -470,8 +470,8 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 		return prodevents.DeployForRun(ctx, pool, runs[index].repo, runID(index))
 	}
 	signalRefs := map[string]string{
-		prodevents.SignalRevert:        "revert:" + delivery.PullRequestName(appRepo, 4),
-		prodevents.SignalIncidentIssue: "incident:" + incident,
+		prodevents.SignalRevert:        signals.RevertSourceRef(appRepo, 4),
+		prodevents.SignalIncidentIssue: signals.IncidentSourceRef(incident),
 	}
 	landed := func(ctx context.Context) (bool, error) {
 		for index, run := range runs {
@@ -542,7 +542,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			post.finished.Format(time.RFC3339)), post.finished, reached))
 	}
 	signalRefs[prodevents.SignalAPI] = "page-1"
-	signalRefs[prodevents.SignalPerson] = "person:" + deploys["R4"].ID + ":" + failuresFlagger.ID
+	signalRefs[prodevents.SignalPerson] = prodevents.PersonSourceRef(deploys["R4"].ID, failuresFlagger.ID)
 	for _, post := range []prodevents.Event{
 		{ProjectKey: second, Source: prodevents.SourceAPI, SourceRef: signalRefs[prodevents.SignalAPI], Signal: new(prodevents.SignalAPI),
 			DeployID: new(deploys["P1"].ID), DetectedAt: new(at(1, 13, 30)), Actor: failuresPoster},
@@ -809,7 +809,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 	for _, result := range issue.results {
 		if err := add("result.recorded", failuresTester, model.CheckResultEventPayload{
 			ResultID: result.id(issue.project), Issue: issue.key, CheckIssue: issue.key, CheckArtifactID: artifact,
-			CheckBlockID: result.block, CheckVersion: 1, When: "after_merge", Verdict: result.verdict, Role: "tester",
+			CheckBlockID: result.block, CheckVersion: 1, When: model.CheckWhenAfterMerge, Verdict: result.verdict, Role: "tester",
 			CommitSHA: result.commit,
 		}, result.at); err != nil {
 			return fmt.Errorf("encode the result %s of %s: %w", result.block, issue.key, err)

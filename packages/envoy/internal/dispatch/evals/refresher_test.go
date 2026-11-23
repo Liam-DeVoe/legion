@@ -135,17 +135,6 @@ func deployRule(t testing.TB, pool *store.Pool, repo string) delivery.DeliverySe
 	return delivery.DeliverySettings{}
 }
 
-// sourceOf is a github_workflow source holding rule's workflow, jobs and steps, naming repo (nil:
-// the project's default repository).
-func sourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput {
-	return delivery.SourceInput{
-		Kind: delivery.SourceKindGitHubWorkflow, Repo: repo, DeployWorkflowPath: new(rule.DeployWorkflowPath),
-		ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
-		StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
-		PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
-	}
-}
-
 // eventsSource is a source that reads the project's posted deploys.
 var eventsSource = delivery.SourceInput{Kind: delivery.SourceKindEvents}
 

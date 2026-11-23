@@ -215,7 +215,7 @@ A project's failure measures count each signal where the project has the failure
 
 - `check_fail` (failure source `check_results`): a `fail` result of a check whose `when` is `after_merge`.
   It blames the deploy that first shipped the result's commit, of any project, and is written under the project of the issue the result was recorded on, with that issue's pull requests, the result's actor, and the result's time as `detected_at`.
-  Its `source_ref` is `check:<check block id>@<deploy id>`.
+  Its `source_ref` is `check:<check document id>/<check block id>@<deploy id>`: block ids are per document, so two documents' checks of one block id on one deploy write two rows.
   The result route writes it as soon as the result commits, and the production signals loop, which reads the `result.recorded` event, writes it where that write was lost.
   A result whose commit no deploy row holds yet makes its row when such a deploy row lands, and a result that no deploy ever ships makes none.
   A retraction of the result (`POST /api/v1/results/{id}/retract`) rejects the row with the retraction's reason and actor, unless another `fail` of the same check that is not retracted, whose commit the same deploy first shipped, still stands behind it.

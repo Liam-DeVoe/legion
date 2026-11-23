@@ -11,9 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -780,7 +777,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 // and the days eval_day_members holds it, and the pull requests it shipped, under when they were
 // last counted. A row the record still holds that is no posted deploy (a GitHub deploy, whose run
 // a source repository's rows count, or a failure) names no day: it moves no row of these evals.
-// Each project's rows are read in one statement (readRecordRows).
+// Each project's rows are read in one statement (prodevents.ChangedRows).
 func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
 	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
@@ -788,7 +785,7 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[s
 			continue
 		}
 		ids := slices.Sorted(maps.Keys(changed[project]))
-		stored, err := readRecordRows(ctx, r.store.database.Pool, project, ids)
+		stored, err := prodevents.ChangedRows(ctx, r.store.database.Pool, project, ids)
 		if err != nil {
 			return err
 		}
@@ -797,14 +794,14 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[s
 		prs := map[string]pullRequestRef{}
 		for _, id := range ids {
 			row, found := stored[id]
-			if found && !row.posted {
+			if found && !row.Posted {
 				continue
 			}
 			for _, day := range changed[project][id] {
 				named[day] = true
 			}
 			members = append(members, PostedMember(id))
-			for _, ref := range row.pullRequests {
+			for _, ref := range row.PullRequests {
 				if name, number, ok := parsePullRequestRef(ref); ok {
 					prs[PullRequestMember(name, number)] = pullRequestRef{repo: name, number: number}
 				}
@@ -842,54 +839,6 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[s
 		}
 	}
 	return nil
-}
-
-// recordRow is what applyPosted reads of a row of a project's record: whether it is a posted deploy
-// (kind deploy, source api), and the pull requests it names.
-type recordRow struct {
-	posted       bool
-	pullRequests []string
-}
-
-// readRecordRows reads, in q, the rows of project's record (production_events) ids names, by each
-// id as given: one statement, a probe of the table's key for each. An id the record does not hold,
-// or one that is no uuid, is absent.
-func readRecordRows(ctx context.Context, q delivery.Querier, project string, ids []string) (map[string]recordRow, error) {
-	canonical := make(map[string]string, len(ids))
-	keys := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if parsed, err := uuid.Parse(id); err == nil {
-			canonical[id] = parsed.String()
-			keys = append(keys, parsed.String())
-		}
-	}
-	held := map[string]recordRow{}
-	if len(keys) == 0 {
-		return held, nil
-	}
-	rows, err := q.Query(ctx, `
-		select id::text, kind = '`+prodevents.KindDeploy+`' and source = '`+prodevents.SourceAPI+`', pull_requests
-		from production_events
-		where project_key = $1 and id = any($2::uuid[])
-	`, project, keys)
-	if err != nil {
-		return nil, fmt.Errorf("read the %d production events of %s the page names: %w", len(keys), project, err)
-	}
-	found := map[string]recordRow{}
-	var id string
-	var row recordRow
-	if _, err := pgx.ForEachRow(rows, []any{&id, &row.posted, &row.pullRequests}, func() error {
-		found[id] = recordRow{posted: row.posted, pullRequests: slices.Clone(row.pullRequests)}
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the %d production events of %s the page names: %w", len(keys), project, err)
-	}
-	for given, key := range canonical {
-		if row, ok := found[key]; ok {
-			held[given] = row
-		}
-	}
-	return held, nil
 }
 
 // shippedNeighbours is the deploy runs, each with its start day, whose shipped pull requests the

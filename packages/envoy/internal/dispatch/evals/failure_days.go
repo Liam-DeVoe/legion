@@ -904,9 +904,9 @@ const (
 )
 
 // FailureItem is one row of the record behind a failure measure's day rows of a range
-// (FailureItemsIn): a deploy or a failure, its relation to the measure's numbers, the repository
-// of the deploy it is counted through (the repository rows it is in), the moment it counts on, how
-// many counted failures blame a deploy, and a restored failure's minutes to restore.
+// (FailureRecord.Items): a deploy or a failure, its relation to the measure's numbers, the
+// repository of the deploy it is counted through (the repository rows it is in), the moment it
+// counts on, how many counted failures blame a deploy, and a restored failure's minutes to restore.
 type FailureItem struct {
 	Event    prodevents.Event
 	Relation string
@@ -916,19 +916,18 @@ type FailureItem struct {
 	Minutes  *float64
 }
 
-// FailureItemsIn reads in q the rows of the record behind slug's day rows, one of the failure
-// measures of project, on the days of days from the project's first day on, as its rows count them
-// (failureRecord.day): none where its measures are off. Deploys first, in the order they finished,
-// then failures:
-//
-//   - change-fail-rate: each deploy of the range, failed or deployed, and each counted failure
-//     that blames one (counted), on its deploy's finish;
-//   - failed-deploy-recovery: each counted failure restored in the range (restored, at its restore,
-//     with its minutes) and each counted failure of a deploy of the range not restored yet
-//     (not_restored, on its deploy's finish), and the deploys they blame (blamed);
-//   - deployment-rework-rate: each deploy of the range, restoring or deployed, and each counted
-//     failure a restoring one restored (restored, on that deploy's finish).
-func FailureItemsIn(ctx context.Context, q delivery.Querier, project, slug string, days Range) ([]FailureItem, error) {
+// FailureRecord is the record behind one failure measure's day rows of a project, read once
+// (FailureRecordIn), whose Items answers each range's rows from it.
+type FailureRecord struct {
+	slug     string
+	failures failureProject
+	record   failureRecord
+}
+
+// FailureRecordIn reads in q the record behind slug's day rows, one of the failure measures of
+// project: its deploys and failures from the project's first day on (readFailureRecord), nil where
+// its measures are off or slug is none of them.
+func FailureRecordIn(ctx context.Context, q delivery.Querier, project, slug string) (*FailureRecord, error) {
 	settings, err := delivery.GetProjectSettings(ctx, q, project)
 	if errors.Is(err, delivery.ErrNoSettings) {
 		return nil, nil
@@ -948,6 +947,25 @@ func FailureItemsIn(ctx context.Context, q delivery.Querier, project, slug strin
 	if err != nil {
 		return nil, err
 	}
+	return &FailureRecord{slug: slug, failures: failures, record: record}, nil
+}
+
+// Items is the rows of the record behind the measure's day rows on the days of days from the
+// project's first day on, as its rows count them (failureRecord.day), none for a nil record (its
+// measures off). Deploys first, in the order they finished, then failures:
+//
+//   - change-fail-rate: each deploy of the range, failed or deployed, and each counted failure
+//     that blames one (counted), on its deploy's finish;
+//   - failed-deploy-recovery: each counted failure restored in the range (restored, at its restore,
+//     with its minutes) and each counted failure of a deploy of the range not restored yet
+//     (not_restored, on its deploy's finish), and the deploys they blame (blamed);
+//   - deployment-rework-rate: each deploy of the range, restoring or deployed, and each counted
+//     failure a restoring one restored (restored, on that deploy's finish).
+func (f *FailureRecord) Items(days Range) []FailureItem {
+	if f == nil {
+		return nil
+	}
+	slug, failures, record := f.slug, f.failures, f.record
 	from := days.From
 	if from.Before(failures.since) {
 		from = failures.since
@@ -1009,5 +1027,5 @@ func FailureItemsIn(ctx context.Context, q delivery.Querier, project, slug strin
 		}
 	}
 	slices.SortStableFunc(deploys, func(a, b FailureItem) int { return a.At.Compare(b.At) })
-	return slices.Concat(deploys, counted), nil
+	return slices.Concat(deploys, counted)
 }

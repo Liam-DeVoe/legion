@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -74,7 +75,7 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 		DeployRepo: alphaRepo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
 	}
-	saved := putSources(t, pool, "OWNER", settings.PopulationAuthors, sourceOf(settings, new(alphaRepo)))
+	saved := putSources(t, pool, "OWNER", settings.PopulationAuthors, deliverytest.SourceOf(settings, new(alphaRepo)))
 	stored := saved.Rules()[0]
 	for _, pr := range []struct {
 		repo   string

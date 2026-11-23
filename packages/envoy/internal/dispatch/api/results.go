@@ -43,12 +43,10 @@ var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
 // resultCommitSHA is the commit a result ran at, as the column's own check spells it.
 var resultCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// The two values of a check's `when`, beside before_merge (docs.CheckWhenBeforeMerge), that the
-// closed enum pmdoc/schema/blocks.json declares under `choices`.
-const (
-	checkWhenAfterMerge    = "after_merge"
-	checkWhenDefaultBranch = "default_branch"
-)
+// checkWhenDefaultBranch is a value of a check's `when`, beside before_merge
+// (docs.CheckWhenBeforeMerge) and after_merge (model.CheckWhenAfterMerge), that the closed enum
+// pmdoc/schema/blocks.json declares under `choices`.
+const checkWhenDefaultBranch = "default_branch"
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
 // and how much of the check's own words the line of a derived result carries (ciVerdictLine),
@@ -196,7 +194,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 // after it and writes the same row, and a result whose commit no deploy row holds yet makes its
 // row when one lands.
 func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
-	if written.result.Verdict != "fail" || written.check.Attributes.When != checkWhenAfterMerge {
+	if written.result.Verdict != "fail" || written.check.Attributes.When != model.CheckWhenAfterMerge {
 		return
 	}
 	if _, err := signals.RecordCheckFailure(ctx, s.deps.Store.Pool, written.result.ID); err != nil {
@@ -476,7 +474,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// branch: such a check can only be proved once the issue has closed, so refusing it would make
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != checkWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
+	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != model.CheckWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
 		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}

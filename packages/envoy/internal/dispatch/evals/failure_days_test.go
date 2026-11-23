@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
@@ -53,7 +54,7 @@ func (r *refresherRig) seedFailureProjects(t *testing.T) {
 func (r *refresherRig) putFailures(t *testing.T, project, job string, sources []string, since time.Time, extra ...delivery.SourceInput) {
 	t.Helper()
 	input := delivery.ProjectSettingsInput{
-		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{sourceOf(ruleOfJob(job), nil)}, extra...),
+		Project: project, Delivery: true, Sources: append([]delivery.SourceInput{deliverytest.SourceOf(ruleOfJob(job), nil)}, extra...),
 		PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{}, FailureSources: sources,
 	}
 	if len(sources) > 0 {

@@ -248,7 +248,7 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		event.DeployID = &deploy
 		if person {
-			event.SourceRef = "person:" + deploy + ":" + actor.ID
+			event.SourceRef = prodevents.PersonSourceRef(deploy, actor.ID)
 			if supplied := strings.TrimSpace(input.SourceRef); supplied != "" && supplied != event.SourceRef {
 				writeError(w, prodevents.CodeInput, http.StatusBadRequest, fmt.Sprintf(
 					"a person's flag is keyed by the server, %s, so a second flag of one deploy writes nothing; send no source_ref, or that one",

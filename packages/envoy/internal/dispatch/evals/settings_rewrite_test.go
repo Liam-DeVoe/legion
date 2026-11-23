@@ -85,13 +85,13 @@ func (r *refresherRig) putSettings(t *testing.T, settings delivery.DeliverySetti
 		main = new(settings.DeployRepo)
 	}
 	// The first source is the one settings move; every later one keeps its repository.
-	sources := []delivery.SourceInput{sourceOf(settings, main)}
+	sources := []delivery.SourceInput{deliverytest.SourceOf(settings, main)}
 	for i, source := range held.Sources {
 		switch {
 		case source.Kind == delivery.SourceKindEvents:
 			sources = append(sources, eventsSource)
 		case i > 0 && source.Repo != nil && (main == nil || !strings.EqualFold(*source.Repo, *main)):
-			sources = append(sources, sourceOf(settings, source.Repo))
+			sources = append(sources, deliverytest.SourceOf(settings, source.Repo))
 		}
 	}
 	// A save that changes nothing is not made: delivery.PutProjectSettings moves every kept source's
@@ -117,9 +117,9 @@ func sameSource(stored delivery.DeploySource, input delivery.SourceInput) bool {
 // rows.
 func readAlso(t *testing.T, r *refresherRig, fixture deliverytest.Fixture, repos ...string) {
 	t.Helper()
-	sources := []delivery.SourceInput{sourceOf(fixture.Settings, nil)}
+	sources := []delivery.SourceInput{deliverytest.SourceOf(fixture.Settings, nil)}
 	for _, repo := range repos {
-		sources = append(sources, sourceOf(fixture.Settings, new(repo)))
+		sources = append(sources, deliverytest.SourceOf(fixture.Settings, new(repo)))
 	}
 	putSources(t, r.database.Pool, fixture.Project, fixture.Settings.PopulationAuthors, sources...)
 }
@@ -2279,11 +2279,11 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 			t.Fatalf("%s: %s's sources read the repositories %v, want one", what, deliveries.Project, repos.Owned(deliveries.Project))
 		}
 		repo := repos.Owned(deliveries.Project)[0]
-		built, err := BuiltSettingsIn(t.Context(), r.database.Pool, repo)
-		if err != nil || built == nil {
+		built, err := BuiltSettingsIn(t.Context(), r.database.Pool, []string{repo})
+		if err != nil || built[0] == nil {
 			t.Fatalf("%s: the settings a read takes are %v (%v)", what, built, err)
 		}
-		return repo, *built
+		return repo, *built[0]
 	}
 	sameBuiltSettings := func(built, want delivery.DeliverySettings) bool {
 		want.Project = deliveries.Project
@@ -2348,7 +2348,7 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 	}
 	widened := ruleOfJob(opsJob)
 	widened.ProductionJobNames = []string{opsJob, alphaJob}
-	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, sourceOf(ruleOfJob(alphaJob), nil), sourceOf(widened, new(alphaOps)))
+	putSources(t, r.database.Pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(widened, new(alphaOps)))
 	r.pass(t)
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got.n != 3 {
 		t.Errorf("ALPHA counts %d deploys after acme/alpha-ops' rule names alphaJob, want 3: 1001, 2001 and 2002", got.n)

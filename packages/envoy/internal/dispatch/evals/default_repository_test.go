@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 )
 
 // The attribution of what a repository holds to the projects whose default repository it is
@@ -79,7 +80,7 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"default-repository-test"}', $2)`,
 		alphaRepo, day.AddDate(0, 0, -1))
 	production := "production / apply"
-	putSources(t, pool, "ALPHA", []string{"dev-ana"}, sourceOf(delivery.DeliverySettings{
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliverytest.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
 		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, nil))

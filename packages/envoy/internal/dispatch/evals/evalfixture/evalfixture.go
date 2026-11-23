@@ -410,17 +410,12 @@ func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, 
 	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
-	source := delivery.SourceInput{
-		Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(settings.DeployWorkflowPath),
-		ProductionJobNames: settings.ProductionJobNames, ProductionApplyStepName: settings.ProductionApplyStepName,
-		StagingE2EJobName: settings.StagingE2EJobName, StagingApplyJobName: settings.StagingApplyJobName,
-		PRChecksWorkflowPath: new(settings.PRChecksWorkflowPath), PRChecksRollupJobName: settings.PRChecksRollupJobName,
-	}
+	var repo *string
 	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
-		source.Repo = new(settings.DeployRepo)
+		repo = new(settings.DeployRepo)
 	}
 	return saveSettings(ctx, pool, delivery.ProjectSettingsInput{
-		Project: project, Delivery: true, Sources: []delivery.SourceInput{source},
+		Project: project, Delivery: true, Sources: []delivery.SourceInput{deliverytest.SourceOf(settings, repo)},
 		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
 	}, by)
 }

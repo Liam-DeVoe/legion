@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -564,8 +565,8 @@ func (r *refresherRig) seedSources(t *testing.T) {
 		values ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
 		omegaApp, sourcesDay.AddDate(0, 0, -1))
 	authors := []string{"dev-ana"}
-	putSources(t, pool, "ALPHA", authors, sourceOf(ruleOfJob(alphaJob), nil), sourceOf(ruleOfJob(opsJob), new(alphaOps)))
-	putSources(t, pool, "OMEGA", authors, sourceOf(ruleOfJob(omegaJob), nil), eventsSource)
+	putSources(t, pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
+	putSources(t, pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{Project: "DELTA", Delivery: false, Sources: []delivery.SourceInput{eventsSource}})
 	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
 	r.deployRun(t, alphaApp, 1001, at(10), alphaJob)

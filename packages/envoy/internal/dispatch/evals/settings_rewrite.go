@@ -212,41 +212,48 @@ func keptOf(built map[string]builtRule) []keptRepo {
 	return kept
 }
 
-// BuiltSettingsIn is, read in q, the rule repo's stored delivery and CI rows answer under: the rule
-// of the source that reads it now (delivery.DeployRules over delivery.ListProjectSettings), with
-// each field eval_days_rules records (sameBuiltRule: the four a day row reads and the source's
-// project) as the refresher recorded it with the rows (recordRules), and repo spelled as its rows
-// are keyed; the recorded fields alone where no source reads it now; nil where neither holds it.
-// Between a save of the settings and the refresher's commit that brings the rows to them, a reader
-// of the evals then reads the rows and the rule they were built under together, the old one whole,
-// and from that commit on the new one whole. Where no pass has recorded the repository's rule (a
-// source the refresher has not reached yet), it is the saved one.
-func BuiltSettingsIn(ctx context.Context, q delivery.Querier, repo string) (*delivery.DeliverySettings, error) {
+// BuiltSettingsIn is, read in q, the rule each of repos' stored delivery and CI rows answer under,
+// in the order of repos: the rule of the source that reads it now (delivery.DeployRules over
+// delivery.ListProjectSettings), with each field eval_days_rules records (sameBuiltRule: the four a
+// day row reads and the source's project) as the refresher recorded it with the rows
+// (recordRules), and the repository spelled as its rows are keyed; the recorded fields alone where
+// no source reads it now; nil where neither holds it. Between a save of the settings and the
+// refresher's commit that brings the rows to them, a reader of the evals then reads the rows and
+// the rule they were built under together, the old one whole, and from that commit on the new one
+// whole. Where no pass has recorded the repository's rule (a source the refresher has not reached
+// yet), it is the saved one. It reads the settings and the record once, whatever the number of
+// repos, and nothing where repos is empty.
+func BuiltSettingsIn(ctx context.Context, q delivery.Querier, repos []string) ([]*delivery.DeliverySettings, error) {
+	if len(repos) == 0 {
+		return nil, nil
+	}
 	projects, err := delivery.ListProjectSettings(ctx, q)
 	if err != nil {
 		return nil, err
-	}
-	var settings *delivery.DeliverySettings
-	for _, rule := range delivery.DeployRules(projects) {
-		if ruleKey(rule.DeployRepo) == ruleKey(repo) {
-			settings = &rule
-			break
-		}
 	}
 	built, err := builtUnderIn(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	recorded, held := built[ruleKey(repo)]
-	switch {
-	case held && settings != nil:
-		settings.ProductionJobNames, settings.ProductionApplyStepName = recorded.rule.ProductionJobNames, recorded.rule.ProductionApplyStepName
-		settings.StagingE2EJobName, settings.StagingApplyJobName = recorded.rule.StagingE2EJobName, recorded.rule.StagingApplyJobName
-		settings.Project, settings.DeployRepo = recorded.rule.Project, recorded.rule.DeployRepo
-	case held:
-		settings = &recorded.rule
+	rules := delivery.DeployRules(projects)
+	answers := make([]*delivery.DeliverySettings, len(repos))
+	for i, repo := range repos {
+		var settings *delivery.DeliverySettings
+		if at := slices.IndexFunc(rules, func(rule delivery.DeliverySettings) bool { return ruleKey(rule.DeployRepo) == ruleKey(repo) }); at >= 0 {
+			settings = new(rules[at])
+		}
+		recorded, held := built[ruleKey(repo)]
+		switch {
+		case held && settings != nil:
+			settings.ProductionJobNames, settings.ProductionApplyStepName = recorded.rule.ProductionJobNames, recorded.rule.ProductionApplyStepName
+			settings.StagingE2EJobName, settings.StagingApplyJobName = recorded.rule.StagingE2EJobName, recorded.rule.StagingApplyJobName
+			settings.Project, settings.DeployRepo = recorded.rule.Project, recorded.rule.DeployRepo
+		case held:
+			settings = &recorded.rule
+		}
+		answers[i] = settings
 	}
-	return settings, nil
+	return answers, nil
 }
 
 // recordRules records, in q, built as the rules the stored delivery and CI rows stand built under

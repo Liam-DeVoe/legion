@@ -306,44 +306,24 @@ func readDeployRepos(ctx context.Context, q delivery.Querier) ([]keptRepo, error
 
 // readPostedRepos reads the events repository of each of rules (eventsRule: one per project with
 // delivery on and an events source) that holds a posted deploy, with its rule and its start: the
-// UTC midnight of its first posted deploy's finish. One statement probes, for each project, the
-// low end of production_events' index of the posted deploys, (project_key, finished_at) where kind
-// is deploy and source api (migration 20261123002035), so a page reads one row of the record for
-// each project whatever its length. A pull request merged before that day that a posted deploy
-// names is an item of no day of the repository, as one merged before a source repository's first
-// run is of no day of it (keptRepo.since).
+// UTC midnight of its first posted deploy's finish (prodevents.FirstPostedAt, one row of the record
+// for each project). A pull request merged before that day that a posted deploy names is an item
+// of no day of the repository, as one merged before a source repository's first run is of no day
+// of it (keptRepo.since).
 func readPostedRepos(ctx context.Context, q delivery.Querier, rules []delivery.DeliverySettings) ([]keptRepo, error) {
-	if len(rules) == 0 {
-		return nil, nil
-	}
 	projects := make([]string, len(rules))
 	for i, rule := range rules {
 		projects[i] = rule.Project
 	}
-	rows, err := q.Query(ctx, `
-		select given.at, first.finished_at
-		from unnest($1::text[]) with ordinality as given(project_key, at)
-		cross join lateral (
-			select finished_at from production_events
-			where project_key = given.project_key and kind = '`+prodevents.KindDeploy+`' and source = '`+prodevents.SourceAPI+`'
-			  and finished_at is not null
-			order by finished_at
-			limit 1
-		) first
-		order by given.at
-	`, projects)
+	firsts, err := prodevents.FirstPostedAt(ctx, q, projects)
 	if err != nil {
-		return nil, fmt.Errorf("read the first posted deploys of %d projects: %w", len(rules), err)
+		return nil, err
 	}
 	var repos []keptRepo
-	var at int64
-	var first time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&at, &first}, func() error {
-		rule := rules[at-1]
-		repos = append(repos, keptRepo{name: rule.DeployRepo, since: measures.Midnight(first), rule: rule})
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the first posted deploys of %d projects: %w", len(rules), err)
+	for i, first := range firsts {
+		if first != nil {
+			repos = append(repos, keptRepo{name: rules[i].DeployRepo, since: measures.Midnight(*first), rule: rules[i]})
+		}
 	}
 	return repos, nil
 }
@@ -353,9 +333,6 @@ func readPostedRepos(ctx context.Context, q delivery.Querier, rules []delivery.D
 func eventsRule(project string) delivery.DeliverySettings {
 	return delivery.DeliverySettings{Project: project, DeployRepo: EventsRepo(project), ProductionJobNames: []string{}}
 }
-
-// postedEnd is the end of the window postedDeploys reads: later than any deploy finishes.
-var postedEnd = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // postedDeploy is what a day's rows read of a posted deploy (postedDayAs): its row id, the moment
 // it finished, its repository ("" for none), and each pull request it names in the shape
@@ -376,28 +353,18 @@ type postedRecord struct {
 	naming     map[pullRequestRef][]postedDeploy
 }
 
-// postedDeploys reads, in q, project's posted deploys that finished from from on: the rows of the
-// record of kind deploy and source api, which a system posted to the project's route
-// (dispatch://INFRA-978, R1 and R12), one range of production_events' index of the posted deploys,
-// (project_key, finished_at) where kind is deploy and source api (migration 20261123002035). The
-// GitHub adapter's deploy rows, source github, are a repository's runs, which a source repository's
-// rows count already.
+// postedDeploys reads, in q, project's posted deploys that finished from from on
+// (prodevents.PostedDeploysFrom): the rows of the record of kind deploy and source api, which a
+// system posted to the project's route (dispatch://INFRA-978, R1 and R12).
 func postedDeploys(ctx context.Context, q delivery.Querier, project string, from time.Time) (postedRecord, error) {
-	rows, err := q.Query(ctx, `
-		select id::text, finished_at, repo, pull_requests from production_events
-		where project_key = $1 and kind = '`+prodevents.KindDeploy+`' and source = '`+prodevents.SourceAPI+`'
-		  and finished_at >= $2 and finished_at < $3
-		order by finished_at desc, id desc
-	`, project, from, postedEnd)
+	posted, err := prodevents.PostedDeploysFrom(ctx, q, project, from)
 	if err != nil {
-		return postedRecord{}, fmt.Errorf("read the posted deploys of %s: %w", project, err)
+		return postedRecord{}, err
 	}
 	record := postedRecord{finishedOn: map[time.Time][]postedDeploy{}, naming: map[pullRequestRef][]postedDeploy{}}
-	var one postedDeploy
-	var refs []string
-	if _, err := pgx.ForEachRow(rows, []any{&one.id, &one.finishedAt, &one.repo, &refs}, func() error {
-		deploy := postedDeploy{id: one.id, finishedAt: one.finishedAt, repo: one.repo}
-		for _, ref := range refs {
+	for _, one := range posted {
+		deploy := postedDeploy{id: one.ID, finishedAt: one.FinishedAt, repo: one.Repo}
+		for _, ref := range one.PullRequests {
 			if repo, number, ok := parsePullRequestRef(ref); ok {
 				deploy.shipped = append(deploy.shipped, pullRequestRef{repo: repo, number: number})
 			}
@@ -408,9 +375,6 @@ func postedDeploys(ctx context.Context, q delivery.Querier, project string, from
 			key := foldedRef(pr.repo, pr.number)
 			record.naming[key] = append(record.naming[key], deploy)
 		}
-		return nil
-	}); err != nil {
-		return postedRecord{}, fmt.Errorf("read the posted deploys of %s: %w", project, err)
 	}
 	for _, deploys := range record.naming {
 		slices.SortFunc(deploys, func(a, b postedDeploy) int {

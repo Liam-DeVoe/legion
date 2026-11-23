@@ -33,7 +33,7 @@ import (
 // the pull requests and deploy runs a delivery eval counts (`pull_request`, `deploy`, from the
 // delivery reads the day rows are built with, delivery/measure_rows.go); the deploys and failures
 // of the record a failure measure counts (`deploy`, `failure`, from production_events, as the
-// failure rows count them, evals.FailureItemsIn), each with its relation to the measure's numbers;
+// failure rows count them, evals.FailureRecordIn), each with its relation to the measure's numbers;
 // the runs a CI eval times (`run`) and, for pr-ci, each job's figures (`job`); and the open P0
 // issues with no owner (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where
 // the project's day rows counted it (eval_day_members, evals.Store.CountedIn), so the items are the
@@ -141,26 +141,29 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), whose
-// rules the delivery and CI rows of each are read under (repoRules, read once a request), the
-// reads the range's readers share (evalRangeReads), and tx, the answer's one snapshot, which every
-// read of the answer reads in.
+// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), the
+// reads every range of the request shares (evalRequestReads), the reads the range's readers share
+// (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
 type evalItemsRead struct {
 	project     string
 	entry       evals.Entry
 	request     evalItemsRequest
 	rng         evalItemsRange
 	deployRepos *evals.DeployRepos
-	rules       *evalRepoRules
+	once        *evalRequestReads
 	shared      *evalRangeReads
 	tx          pgx.Tx
 }
 
-// evalRepoRules is the rules of the deploy repositories an items read's eval reads (repoRules),
-// read once for every range of the request, since no range moves them.
-type evalRepoRules struct {
-	rules []delivery.DeliverySettings
-	read  bool
+// evalRequestReads is the reads of an items request its readers keep for every range, each made
+// once a request, since no range moves them: the rules of the deploy repositories its eval reads
+// (repoRules), whose delivery and CI rows each is read under, and the record behind a failure
+// measure (failureItemsOf), which each range filters.
+type evalRequestReads struct {
+	rules        []delivery.DeliverySettings
+	rulesRead    bool
+	failures     *evals.FailureRecord
+	failuresRead bool
 }
 
 // evalRangeReads is the reads of one range its readers keep, each made once a range: the items
@@ -320,9 +323,9 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	}
 	definition := entry.Definition
 	var sources []evalItemSource
-	built := &evalRepoRules{}
+	once := &evalRequestReads{}
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, rules: built, shared: &evalRangeReads{}, tx: tx}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, once: once, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !kept(kind.kind) {
@@ -400,27 +403,31 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 // order: the rule the day builder counted that repository's rows by, whichever project's source
 // reads it, so a project with no source of its own reads the rows its pull requests' issues count
 // for it. An eval no deploy repository moves, and an events repository, whose posted deploys no
-// rule judges, have none. They are read once a request (evalRepoRules).
+// rule judges, have none. They are read once a request (evalRequestReads), in one read of the
+// settings and the recorded rules.
 func (s *server) repoRules(ctx context.Context, read evalItemsRead) ([]delivery.DeliverySettings, error) {
-	if read.rules.read {
-		return read.rules.rules, nil
+	if read.once.rulesRead {
+		return read.once.rules, nil
+	}
+	var repos []string
+	for _, repo := range evals.DeployRepoOf(read.entry.Definition, read.deployRepos) {
+		if repo != "" && !evals.IsEventsRepo(repo) {
+			repos = append(repos, repo)
+		}
+	}
+	built, err := evals.BuiltSettingsIn(ctx, read.tx, repos)
+	if err != nil {
+		return nil, err
 	}
 	var rules []delivery.DeliverySettings
-	for _, repo := range evals.DeployRepoOf(read.entry.Definition, read.deployRepos) {
-		if repo == "" || strings.HasPrefix(repo, delivery.SourceKindEvents+":") {
-			continue
-		}
-		rule, err := evals.BuiltSettingsIn(ctx, read.tx, repo)
-		if err != nil {
-			return nil, err
-		}
+	for i, rule := range built {
 		if rule != nil {
 			one := *rule
-			one.DeployRepo = repo
+			one.DeployRepo = repos[i]
 			rules = append(rules, one)
 		}
 	}
-	read.rules.rules, read.rules.read = rules, true
+	read.once.rules, read.once.rulesRead = rules, true
 	return rules, nil
 }
 
@@ -769,15 +776,20 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 }
 
 // failureItemsOf is the rows of the record behind read's eval, a failure measure, on the range's
-// days, as its day rows count them (evals.FailureItemsIn), read once a range (evalRangeReads): its
-// deploys and its failures both read them. Of a request naming repositories it keeps those counted
-// through a deploy of one of them, the rows of those repositories' day rows.
+// days, as its day rows count them (evals.FailureRecord.Items over the record evals.FailureRecordIn
+// reads once a request, evalRequestReads), kept once a range (evalRangeReads): its deploys and its
+// failures both read them. Of a request naming repositories it keeps those counted through a
+// deploy of one of them, the rows of those repositories' day rows.
 func (s *server) failureItemsOf(ctx context.Context, read evalItemsRead) ([]evals.FailureItem, error) {
-	if !read.shared.failuresRead {
-		items, err := evals.FailureItemsIn(ctx, read.tx, read.project, read.entry.Definition.Slug, read.rng.days)
+	if !read.once.failuresRead {
+		record, err := evals.FailureRecordIn(ctx, read.tx, read.project, read.entry.Definition.Slug)
 		if err != nil {
 			return nil, err
 		}
+		read.once.failures, read.once.failuresRead = record, true
+	}
+	if !read.shared.failuresRead {
+		items := read.once.failures.Items(read.rng.days)
 		if len(read.request.repos) > 0 {
 			items = slices.DeleteFunc(items, func(item evals.FailureItem) bool { return !slices.Contains(read.request.repos, item.Repo) })
 		}

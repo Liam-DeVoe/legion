@@ -244,3 +244,39 @@ func TestTheFailureMeasuresItemsAnswerTheirDeploysAndFailures(t *testing.T) {
 		}
 	}
 }
+
+// TestAFailureMeasuresItemsOfTwoRangesAreEachRangesOwn: the items route of each failure measure,
+// read with a compare range, reads the record behind its numbers once for both ranges, and
+// answers for each range the deploys and failures, with their relations, that a read of that
+// range alone answers: the window's of the second day, and the compare range's of the first.
+func TestAFailureMeasuresItemsOfTwoRangesAreEachRangesOwn(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	seedFailureHistory(t, database)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, failuresNow)
+	type item struct {
+		key, kind, relation, at string
+	}
+	read := func(slug, query, label string) []item {
+		t.Helper()
+		answer := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/FAIL/evals/"+slug+"/items?"+query)
+		var items []item
+		for _, row := range answer.Items {
+			if row.Range == label && (row.RowKind == evalRowDeploy || row.RowKind == evalRowFailure) {
+				relation, _ := row.Cols["relation"].(string)
+				items = append(items, item{key: row.RowKey, kind: row.RowKind, relation: relation, at: row.MeasuredAt.Format(time.RFC3339Nano)})
+			}
+		}
+		return items
+	}
+	both := failureWindowQuery(1, 2) + "&" + url.Values{
+		"compare_from": {failuresDay.Format(time.RFC3339)}, "compare_to": {failuresDay.AddDate(0, 0, 1).Format(time.RFC3339)},
+	}.Encode()
+	for _, slug := range []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate} {
+		for _, one := range []struct{ label, alone string }{{evals.RangeWindow, failureWindowQuery(1, 2)}, {evals.RangeCompare, failureWindowQuery(0, 1)}} {
+			got, want := read(slug, both, one.label), read(slug, one.alone, evals.RangeWindow)
+			if len(want) == 0 || !slices.Equal(got, want) {
+				t.Errorf("%s's %s items read with the other range are %+v, want %+v, those of a read of it alone", slug, one.label, got, want)
+			}
+		}
+	}
+}
