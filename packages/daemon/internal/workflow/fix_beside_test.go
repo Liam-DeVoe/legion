@@ -108,8 +108,11 @@ func TestAnApprovalAfterTheFixEndedStartsNoRetroBeforeTheWay(t *testing.T) {
 			t.Fatalf("a record of a retro's run was written before the way after the fix: %+v", write)
 		}
 	}
-	assertStrings(t, "the phase-finished notices of the review", outboxStrings(t, r.pool, `select payload->>'kind' from outbox
-		where kind = 'notice' and issue = $1 and payload->>'kind' = 'phase-finished' and payload->>'phase' = 'reviewing'`, "LEGION-208"), nil)
+	// The approval's own move would tell its phase-finished with no reason; the way's move back
+	// names its reason.
+	assertStrings(t, "the phase-finished notices of the approval", outboxStrings(t, r.pool, `select payload->>'kind' from outbox
+		where kind = 'notice' and issue = $1 and payload->>'kind' = 'phase-finished' and payload->>'phase' = 'reviewing'
+		and coalesce(payload->>'reason', '') = ''`, "LEGION-208"), nil)
 	assertPhase(t, r.pool, phase.Testing)
 }
 

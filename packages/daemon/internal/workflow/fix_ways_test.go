@@ -171,32 +171,28 @@ func hookEngine() *Engine {
 	return engine
 }
 
-// firings is how many prompts of hook the outbox holds.
-func (r *fixRig) firings(hook string) int {
+// firings is each move back hook fired on, as `<from>-<to>`, from the prompts the outbox holds.
+func (r *fixRig) firings(hook string) []string {
 	r.t.Helper()
-	n := 0
+	var moves []string
 	for _, prompt := range hookPrompts(r.t, r.pool) {
 		if prompt.Hook == hook {
-			n++
+			moves = append(moves, phase.Pair(prompt.From, prompt.To))
 		}
 	}
-	return n
+	return moves
 }
 
 // A fix's return fires the deployment's hooks as every return does: a hook with no moves and an
-// every of 1 fires on the way-2 return from a hold for the fix. The control, kept: the same hook on
-// a way-3 end, which is no return, does not fire.
+// every of 1 fires on the way-2 return from a hold for the fix, the return to the step after the
+// fix. The control, kept: the same hook on a way-3 end, which is no return, does not fire.
 func TestAHookFiresOnAFixsReturn(t *testing.T) {
 	r := fixAfterReview(t, hookEngine(), TriggerReviewRejected, false, headTwo)
-	if n := r.firings(everyReturn.Name); n != 1 {
-		t.Fatalf("the hook fired %d times on the fix's return, want once", n)
-	}
+	assertStrings(t, "the hook's firings", r.firings(everyReturn.Name), []string{reviewingTesting})
 
 	t.Run("a way-3 end fires nothing", func(t *testing.T) {
 		r := fixAfterReview(t, hookEngine(), TriggerReviewApproved, true, fixHead)
-		if n := r.firings(everyReturn.Name); n != 0 {
-			t.Fatalf("the hook fired %d times on a way-3 end, want never", n)
-		}
+		assertStrings(t, "the hook's firings", r.firings(everyReturn.Name), nil)
 	})
 }
 
@@ -218,6 +214,9 @@ func TestAWayIsTakenOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := fixAfterReview(t, returnEngine(), tc.trigger, tc.after, tc.end)
 			way := r.latestFix().Way
+			if way == 0 {
+				t.Fatalf("the fix took no way: %+v", r.latestFix())
+			}
 			r.move(tc.next, "", record.PhaseRow{})
 			if counts := r.counts(); counts.Pass != 1 {
 				t.Fatalf("the task counts %+v one step past the way, want one return", counts)
