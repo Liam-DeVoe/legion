@@ -1755,6 +1755,15 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects/{key}/evals/{slug}", { key: project, slug }, query);
   }
 
+  /** One page of every project's evals in the project read's item shape and envelope `{items,
+   *  total, limit, offset}`, by project and then by slug, the page running across projects:
+   *  `project`, repeated, names the projects read, and with none named every project the reader
+   *  may read is read. The window, compare range, kind, repo and page keys are the project
+   *  read's. */
+  listEvals(query: Query<"/api/v1/evals", "get"> = {}) {
+    return this.read("/api/v1/evals", {}, query);
+  }
+
   /** One page of the rows behind an eval's numbers over a window and a compare range, `{items,
    *  total, limit, offset}`: each row's `row_key`, `row_kind`, `cols` and `href`. `row_kind` keeps
    *  one kind (`issue` for unowned-p0's open P0 issues with no owner); `limit` is 1 to 200. */

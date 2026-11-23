@@ -11,7 +11,7 @@ import {
   iconRailText,
 } from "../../theme/classes";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
-import { buildProjectPath } from "../refs/routes";
+import { buildProjectPath, EVALS_PATH } from "../refs/routes";
 
 /**
  * The shell's navigation on the issue page, from the phone's width up: a 56 px column of icons
@@ -58,7 +58,7 @@ export function IconRail({
       />
       <RailLink icon={AGENTS_ICON} label="Agents" to="/agents" />
       <RailLink icon={PRIORITIES_ICON} label="Priorities" to={PRIORITIES_PATH} />
-      <RailLink icon={EVALS_ICON} label="Evals" to="/evals" />
+      <RailLink icon={EVALS_ICON} label="Evals" to={EVALS_PATH} />
       {/* The issue's own project, marked as where the reader is by the accent rule at its edge
           as well as its colour. */}
       {project === undefined ? null : (

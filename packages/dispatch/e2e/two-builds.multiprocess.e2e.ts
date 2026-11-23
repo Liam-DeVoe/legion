@@ -524,6 +524,7 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [evalsTab(page)],
       url: "/projects/CORE/evals",
     },
+    { route: "/evals", shows: (page) => [heading(page, "Evals")], url: "/evals" },
     {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",

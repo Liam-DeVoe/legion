@@ -424,6 +424,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "excluded",
+    name: "evals",
+    pattern: "/evals",
+    reason:
+      "It draws every project's evals with the Evals tab's chart, and its own browser row is " +
+      "the plan's T28 (dispatch://INFRA-2918, @evals k11), which seeds the two projects it " +
+      "compares; a baseline taken before that seed would only be thrown away.",
+  },
+  {
+    kind: "excluded",
     name: "delivery",
     pattern: "/delivery",
     reason:
