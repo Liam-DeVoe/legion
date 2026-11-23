@@ -1238,7 +1238,7 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
 // route refuses is never what Done asks it for. A window whose To comes before its From, picked in
 // the Closed filter's panel or written in an address, holds no time and so no close; a day count
 // past the earliest date a read can send holds every close. Neither draws a failed read.
-// SLOW(>=2s): ACME seeded, and Done opened over three windows, one of them picked in its panel.
+// SLOW(>=2s): ACME seeded, and Done opened over four windows, one of them picked in its panel.
 test("a Closed window the list route would refuse draws no failed read: To before From lists no row, and a count past every date lists every done row", async ({
   browser,
 }) => {
@@ -1276,9 +1276,21 @@ test("a Closed window the list route would refuse draws no failed read: To befor
     await expect(failed).toBeHidden();
     expect(refused).toEqual([]);
 
-    // The same window in an address: no row.
+    // The same window in an address: no row, and its chip shows the window.
+    const closedChip = control(controlRow(page), CONTROL.chip).filter({
+      hasText: /^Closed: 2026-11-10 to /,
+    });
     await page.goto(`/projects/${ACME}/issues?view=done&f.closed=2026-11-10..2026-11-03`);
     await expect(noRow).toBeVisible();
+    await expect(closedChip).toHaveCount(1);
+    await expect(failed).toBeHidden();
+    expect(refused).toEqual([]);
+
+    // k9, found by INFRA-3221's tester: a To day equal to its From day holds no moment either, so
+    // Done lists no row, sends no request the route refuses, and its chip shows the window.
+    await page.goto(`/projects/${ACME}/issues?view=done&f.closed=2026-11-10..2026-11-10`);
+    await expect(noRow).toBeVisible();
+    await expect(closedChip).toHaveCount(1);
     await expect(failed).toBeHidden();
     expect(refused).toEqual([]);
 
@@ -1382,6 +1394,121 @@ test("while a newly picked Closed window's page read is out, Done's tab counts n
       "aria-label",
       tabName("Done", day.length, true)
     );
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
+// k6 (R2 and the Design's Loading), found by INFRA-3221's tester: the list route names in a page's
+// `sort` member the sort it applied, and names none where it was asked for none. Done draws nothing
+// of a page whose answer names no sort, no row and no count at any moment from the page's open to
+// the alert; it reads that page three times, each read 500 ms or more after the one before, as the
+// shared retry policy waits (`queryRetryDelay`), and then says the server did not sort it. A
+// windowed read whose rows lose `closed_at` lists no row and shows no alert.
+// SLOW(>=2s): ACME seeded, the list route read six times, and Done opened twice over answers this
+// row rewrites, the first through three reads 500 ms apart.
+test("the list route names the sort it applied, Done draws nothing of an unsorted page before its alert after three reads 500 ms apart, and a windowed read that loses closed_at lists no row and no alert", async ({
+  browser,
+}) => {
+  const daemon = await seedAcme();
+  const context = await asUser(browser, "alice");
+  try {
+    // Each answer names the sort it applied, and the answer to no sort names none.
+    for (const sort of ["-closed_at", "closed_at"]) {
+      for (const offset of [0, 50]) {
+        const read = await listPage(`status=done&sort=${sort}&limit=25&offset=${offset}`);
+        expect([read.status, read.body.sort], `sort=${sort} at offset ${offset}`).toEqual([
+          200,
+          sort,
+        ]);
+      }
+    }
+    const refused = await listPage("status=done&sort=title&limit=25&offset=0");
+    expect([refused.status, refused.body.code]).toEqual([400, "INVALID_QUERY"]);
+    const own = await listPage("status=done&limit=25&offset=0");
+    expect(own.status).toBe(200);
+    expect(Object.hasOwn(own.body, "sort"), "the answer to no sort names no sort").toBe(false);
+
+    // Done over page answers with their sort taken out, watched from the page's open.
+    const page = await context.newPage();
+    const starts: number[] = [];
+    let older = true;
+    await page.route(/\/api\/v1\/issues\?.*sort=-closed_at/, async (route) => {
+      if (!older) return route.continue();
+      starts.push(Date.now());
+      const response = await route.fetch();
+      const body: { sort?: string } = await response.json();
+      delete body.sort;
+      await route.fulfill({ response, json: body });
+    });
+    // Every distinct drawn state: the rows the table lists and the Done tab's accessible name.
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      Object.assign(window, { __doneStates: seen });
+      new MutationObserver(() => {
+        const rows = document.querySelectorAll("tbody tr[data-issue-row]").length;
+        const done = [...document.querySelectorAll('[role="tab"]')].find((tab) =>
+          (tab.getAttribute("aria-label") ?? "").startsWith("Done")
+        );
+        const state = `${rows}|${done?.getAttribute("aria-label") ?? ""}`;
+        if (seen.at(-1) !== state) seen.push(state);
+      }).observe(document, { attributes: true, childList: true, subtree: true });
+    });
+    await page.goto(`/projects/${ACME}/issues?view=done`);
+    const unsorted = page
+      .getByRole("alert")
+      .filter({ hasText: "The server did not sort the closed issues by close time." });
+    await expect(unsorted).toBeVisible();
+    const states = await page.evaluate(
+      () => (window as unknown as { __doneStates: string[] }).__doneStates
+    );
+    expect(
+      states.filter((state) => state !== "0|" && state !== `0|${tabName("Done")}`),
+      "a drawn row or a Done count before the alert"
+    ).toEqual([]);
+    expect(starts, "the reads of the page before the alert").toHaveLength(3);
+    expect(
+      starts.slice(1).map((start, index) => start - (starts[index] ?? 0) >= 500),
+      "each read 500 ms or more after the one before"
+    ).toEqual([true, true]);
+    const issuesTableHere = issuesTable(page);
+    await expect(issuesTableHere.locator("tbody tr[data-issue-row]")).toHaveCount(0);
+    await expect(page.getByText(/^Rows 1–/)).toHaveCount(0);
+
+    // A server that applies the sort answers Retry with the page and its count.
+    older = false;
+    await unsorted.getByRole("button", { name: "Retry loading issues" }).click();
+    const closed = await listIssuesWhere({ project: ACME, status: ["done"] });
+    await expect(page.getByRole("tab", { name: /^Done/ })).toHaveAttribute(
+      "aria-label",
+      tabName("Done", closed.length)
+    );
+    await expect(issuesTableHere.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    await expect(unsorted).toHaveCount(0);
+
+    // A windowed read whose rows lose closed_at: no row and no alert under the tabs.
+    const windowed = await context.newPage();
+    let stripped = 0;
+    await windowed.route(/\/api\/v1\/issues\?.*closed_since=/, async (route) => {
+      const response = await route.fetch();
+      const body: unknown = await response.json();
+      const rows = Array.isArray(body)
+        ? body
+        : ((body as { issues?: Record<string, unknown>[] | null }).issues ?? []);
+      for (const row of rows as Record<string, unknown>[]) delete row.closed_at;
+      stripped += rows.length;
+      await route.fulfill({ response, json: body });
+    });
+    await windowed.goto(`/projects/${ACME}/issues?view=done&f.closed=28d&sort=-priority`);
+    await expect(windowed.getByText("No issues match these filters.")).toBeVisible();
+    expect(stripped, "the windowed read's rows the route answered").toBeGreaterThan(0);
+    await expect(issuesTable(windowed).locator("tbody tr[data-issue-row]")).toHaveCount(0);
+    await expect(
+      windowed
+        .getByRole("alert")
+        .filter({ hasText: /Could not load|did not sort|closed issues|Could not read/ })
+    ).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();
