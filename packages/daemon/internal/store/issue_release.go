@@ -242,7 +242,9 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 //
 //   - at the boundary, where no role process of the pod has been stopped yet, a task, notice,
 //     message or start of the issue addressed to a role of the pod that the release did not
-//     queue itself. One below the release's own rows was queued by a transaction already in
+//     queue itself, a start that waits for its pod excepted (pods.StartWaitsForPodPrefix), since
+//     the next pod is the one that serves it.
+//     One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
 //     goes rather than the pod.
@@ -431,8 +433,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return nil
 		}
 		// A role started or resumed since the mark, or a start queued above the release's own
-		// rows, is the pod being used again: the teardown would take a pod with a live role in
-		// it, and the stop that would have caught it has already run. The release reads every
+		// rows that does not wait for its pod, is the pod being used again: the teardown would
+		// take a pod with a live role in it, and the stop that would have caught it has already
+		// run. The release reads every such
 		// queued start row where IssueSuspension reads only a production check's look, and
 		// needs no narrowing of its own: the read above has already returned a cancel for an
 		// issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an issue

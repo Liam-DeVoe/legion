@@ -379,9 +379,9 @@ const HoldEscalated HoldReason = "escalated"
 // (TaskPlace.Started) waits for that step again, as a task never stopped does.
 const HoldTaskStopped HoldReason = "task-stopped"
 
-// HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
-// acceptance step, while issues beneath it are still open (From is phase.Retro, which holds no
-// slot): the retro starts once the last of them has left.
+// HoldForChildren is a hold that stands in place of the retro of an issue whose task's last step
+// is not the owner's acceptance, while issues beneath it are still open (From is phase.Retro,
+// which holds no slot): the retro starts once the last of them has left.
 const HoldForChildren HoldReason = "children"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
@@ -488,9 +488,10 @@ func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.Answere
 
 // WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
 // the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// the role that works the issue at it (RoleAt: workflow.RoleFor of it, or at step the role of the
+// running step) is the role whose failure holds the issue, the role the stranded report names,
+// and the role the operator's retry of a phase worker acts for (api's retryClaim), which read it
+// here rather than each keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
@@ -506,6 +507,17 @@ func (i Issue) RoleAt(p phase.Phase) claim.Role {
 		return i.StepRole
 	}
 	return phase.RoleFor(p)
+}
+
+// StepIsOf says whether the step the issue stands at is role's to report on, where the phase alone
+// cannot say: at phase.Step, every role the deployment defines runs as the one phase, so only the
+// role of the running step (StepRole) works it, and a report or a task of another such role is of
+// a step the task has left or not reached. Every other phase is one role's, which the caller reads
+// from the phase, so it answers true there. It is the one statement of that rule: the engine's
+// judgement of a completion (workflow's handoff), the completion route's fallback to a held task
+// (api's heldTaskNotCurrent) and the judges of queued work (HoldsQueued) all read it.
+func (i Issue) StepIsOf(role claim.Role) bool {
+	return i.Phase != phase.Step || role == i.StepRole
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -591,11 +603,12 @@ type PhaseRow struct {
 	// record and which the implementer's plugin holds to be its pushed @- on
 	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
-	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
-	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
-	// phase from the last, which is what the handoff completion key is built on (internal/api's
-	// handoffPosition), and so it is never reset while the record of the work stands: a completion
-	// at a commit an earlier pass already reported has to be a fact of its own.
+	// Pass counts the moves the issue has made back to an earlier step of its task (by the task's
+	// order, workflow's Walk.MovesBack), each of which runs the task's steps again from the step it
+	// went back to. It tells one pass through a phase from the last, which is what the handoff
+	// completion key is built on (internal/api's handoffPosition), and so it is never reset while
+	// the record of the work stands: a completion at a commit an earlier pass already reported has
+	// to be a fact of its own.
 	Pass int
 	// HandoffRecord and HandoffVersion are the Dispatch handoff record the role's completion of its
 	// current phase named, for a phase with a handoff (phase.Handoff), and that record's version
@@ -605,8 +618,9 @@ type PhaseRow struct {
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
 	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
+	// and so does the fail of a step of the type review whose agent is not the owner; nothing
+	// else opens one — a tester's fail, the fail of a step of another type and a worker's
+	// backward move each raise Pass and leave this count where it stands. What review_round_cap bounds is Rounds less
 	// ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
@@ -616,7 +630,7 @@ type PhaseRow struct {
 	// (workflow's recordRound).
 	ConflictRounds int
 	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is counted on the
 	// implementer's row alone, beside Pass and in the same place (workflow's recordPass), and the
 	// two count the same moves to different ends: Pass rises on every move back, because a phase
@@ -655,7 +669,8 @@ type PhaseRow struct {
 	// approved or requested changes, submitted as the review App from the session the claims
 	// record holds for the claim the daemon starts the reviewer under (workflow's review,
 	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// reviewer's row holds it, beside the row of a role of the deployment whose step is of the type
+	// review, which holds the commit its step's newest run read (workflow's recordStepReview). A person's review does not move it, since the reviewer did not read
 	// that commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
@@ -1134,13 +1149,18 @@ const (
 )
 
 // MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, every phase after it up to the merge, which the issue keeps while the implementer
-// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment defines runs, after the
-// implementer or before it (a step before it has no pull request, so nothing is asked there). An
-// issue that stands in none of them - before its implementation, or out of the workflow - has no
-// pull request work to merge forward. They are also the phases a head move is read for a conflict
-// in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both read it
-// through StandsIn, so a hold from one of them counts as standing there.
+// already is; testing, reviewing, accepting, retro and merging (in the default steps, every phase
+// after implementing up to the merge), which the issue keeps while the implementer merges
+// (dispatch://INFRA-4374 R1); and step, where a role the deployment defines runs, after the
+// implementer or before it: a step before it is asked a merge forward only when the issue holds an
+// open pull request there, as it does after a todo restarts the task or a later version of the
+// plan moves the step, and the merge forward asks nothing of an issue with none. An
+// issue that stands in none of them - admitted, awaiting_person or planning, where in the default
+// steps nothing is implemented yet, or out of the workflow - is asked for no merge forward,
+// wherever its task places the planner. They are also the phases a head move is read for a
+// conflict in, and, but implementing, where the next push of the head is read, the phases a push
+// to the base is read for (classify.MergeStateReadOwed), since that read is what can lead to the
+// ask. Both read it through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
@@ -2820,8 +2840,8 @@ func (i Issue) LingersAt(generation uint64) bool {
 }
 
 // Readmittable says whether a todo on this record starts a new generation of its tree: it is a
-// root, and its tree lingers after its sign-off or was closed. A child's done is only the
-// child's.
+// root whose tree lingers after its close (Lingers), or a root that is done. A child's done is
+// only the child's.
 //
 // It is the one definition of that question, because two readers decide opposite ways on it and
 // neither may fire where the other does: admission re-admits such a todo at a new generation
@@ -2854,7 +2874,7 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
+// queuedFor and, at the phase step, at a step of role (StepIsOf). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
@@ -2867,7 +2887,7 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+	return i.Phase == queuedFor && i.StepIsOf(role)
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still

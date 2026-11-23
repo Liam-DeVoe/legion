@@ -187,10 +187,11 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // builds comes through) and a root architect's start that claims the decisions it names
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the
 // daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
-// two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
+// two of each task of the reviewer, in each phase, and the one sentence of the commit a review
+// step of a role of the deployment read last, so a kind of task added later cannot be queued
 // without them.
 //
-// Only a start of the reviewer that carries a task and does not hold the sentences already is
+// Only a start of the reviewer or of a role of the deployment (namesTheRound) that carries a task and does not hold the sentences already is
 // named, so no other row reads the record for them. Such a start reads the phase its issue stands
 // in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
 // the task is queued, and it then carries the typed fact that its task ends with the daemon's
@@ -697,8 +698,9 @@ type startMarks struct {
 	// transition's start and the promotion's start of a mid-phase worker, each sending what enter
 	// answers (start, StartPromotedWorker), and the send of an owed entry whose row stores a task
 	// (sendOwedEntry). A task composed for the start is given the sentences whatever its text holds.
-	// Only the reviewer's task holds them, so only a start of the reviewer carries the fact the
-	// mark makes (started): the stored task of any other role names no review round.
+	// Only the tasks of the reviewer and of a role of the deployment hold them (namesTheRound), so
+	// only their starts carry the fact the mark makes (started): the stored task of any other role
+	// names no review round.
 	stored bool
 	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
 	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
@@ -740,7 +742,7 @@ type startMarks struct {
 // asking what such a row carries reads this request and no other, and a field added here
 // reaches every one of those starts. It goes through startOrOwe, so the worker comes back on
 // the one row that carries its new task, and that row waits for the issue's admission slot where
-// the phase it starts holds one: a transition's start into a phase up to the review puts a
+// the phase it starts holds one: a transition's start into a phase that keeps a slot puts a
 // worker to work on the change, which is exactly what the cap counts. The issue carries the
 // phase the transition wrote on it, so the rule reads the phase the start is for. Whether the
 // start is news of its issue is marks.reasserts, handed on as the movement startOrOwe marks or
@@ -803,7 +805,7 @@ const (
 // A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
 // a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
 // the issues the daemon has started whose change is still to write, each holding its row from
-// its start until its work is past its review, except while it waits on another issue
+// its start while it stands in a phase that keeps one, except while it waits on another issue
 // (record.KeepsSlot, blockers.waitsOf), so a start claimable at once
 // would put a worker to work on an issue holding no slot — where the cap is full that is what
 // it would do — and a worker put to work on an issue the cap has not admitted is what a start
@@ -869,9 +871,9 @@ const (
 // readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
 // a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
 // might never be offered. The last is sent to a worker already at work on the phase it is in —
-// its agent has just reported ready — so in a phase up to its review the issue holds the row the
+// its agent has just reported ready — so in a phase that keeps a slot the issue holds the row the
 // cap counts already or gave it back to wait on another issue, a wait that stops none of its
-// work, and past its review it needs none (record.KeepsSlot), so this one has nothing to wait
+// work, and in accepting, retro or merging it needs none (record.KeepsSlot), so this one has nothing to wait
 // for in any case. The work of an entry that same ready worker stands below is sent through
 // SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
@@ -1110,7 +1112,7 @@ const (
 // report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
 // summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
 //
-// A merger started in merging at the head a merge forward landed past the review, while the
+// A merger started in merging at the head a merge forward landed on once the issue stood in accepting, retro or merging, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
 // to merge that head only once the reviewer's approval of it is on the pull request: the daemon
 // records no decision outside reviewing, so the approval is the merger's to read on GitHub. The

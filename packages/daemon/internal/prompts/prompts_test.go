@@ -38,6 +38,126 @@ func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testin
 	}
 }
 
+// A step of a role the deployment defines writes no handoff, so its composition tells it how it
+// reports instead: with handoff_complete, the verdict, its commit and a summary, and return_to on a
+// fail. The part of that composition that is Legion's own, go/worker-common.md, says so where it
+// lists the phases that end with a handoff record. It also says which report the `Handoff:` line
+// names after a return, and that such a step's summary follows its reported line. No `Reason:`
+// line comes with such a fail, so no part promises one. The owner's part says where to read such a
+// role's report on a `worker-died`. The implementer's parts say where to read the round such a role
+// sent back, and that implementing answers such a fail. Each part is read alone, so one part's
+// words cannot stand for another's. This shows the text is loaded, never that an agent follows it.
+func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "checker.md")
+	if err := os.WriteFile(promptFile, []byte("# Checker\n\nCheck the change against the issue's spec.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var composed strings.Builder
+	for _, path := range composer.ComposeStep(promptFile).RolePromptPaths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		composed.Write(body)
+	}
+	holdsAndRetires(t, "the composition of a role of the deployment", composed.String(), []string{
+		"Report your step with handoff_complete: the verdict pass or fail, the commit your workspace stands on, and a `summary` of what you found.",
+		"The next step's task carries that summary after your verdict.",
+		"With fail you may name `return_to`, the place of an earlier step of your task.",
+	}, []string{"and the commit your workspace stands on; with fail"})
+	for _, part := range []struct {
+		name, text    string
+		want, retired []string
+	}{
+		{"go/worker-common.md", goPart(t, "worker-common.md"), []string{
+			"ends with a handoff record on the Dispatch issue, under the phase's word (`plan`, `implement`, `test` or `review`); `step`, the phase of a role of the deployment, writes none",
+			"the `Handoff:` line names the report of the step that failed, where that step wrote one. A step of a role of the deployment writes none: its `Step <i> (<role>) reported: <verdict>.` line, with that step's summary after it, says what it found.",
+		}, []string{"and the `Reason:` line say what it found"}},
+		{"go/architect-common.md", goPart(t, "architect-common.md"), []string{"or, for a role of the deployment, which writes none, the verdict of its step"}, nil},
+		{"go/implementer.md", goPart(t, "implementer.md"), []string{
+			"answer a review, a failed test, the fail of a step of a role of the deployment, or a send-back",
+		}, []string{"a failed test or a send-back"}},
+		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{
+			"its `Step <i> (<role>) reported:` line and that step's summary after it, since that step writes no handoff",
+		}, []string{"line and the `Reason:` line"}},
+		{"go/reviewer.md", goPart(t, "reviewer.md"), []string{
+			"A `verdict` is the tester's or a role of the deployment's, never yours, and the daemon refuses one from you (`VERDICT_ROLE_FORBIDDEN`)",
+		}, []string{"the tester's and a role of the deployment's"}},
+	} {
+		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
+	}
+}
+
+// The implementer's parts name every trigger of a forward merge that its skill names, so the two
+// lists agree. Retro's own work commits nothing, and a merge forward the daemon asks for in retro
+// is no part of it, so the parts that say retro commits nothing say "of its own". Each part is
+// read alone. This shows the text is loaded, never that an implementer follows it.
+func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
+	for _, part := range []struct {
+		name, text    string
+		want, retired []string
+	}{
+		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
+			"Merge the base forward only on one of six triggers.",
+			"(in `implementing` and `retro` your own assignment and its completion stand)",
+			"The controller asks you to, because of a conflict.",
+			"The architect's move back names a parent's last round.",
+		}, []string{"one of four triggers"}},
+		{"go/implementer.md", goPart(t, "implementer.md"), []string{
+			"Retro commits nothing and pushes nothing of its own:",
+			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
+		}, nil},
+		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{"Retro writes no handoff and commits nothing of its own,"}, nil},
+	} {
+		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
+	}
+}
+
+// The owner is told the roles a step of its plan may name by the list its launch gives after its
+// addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
+// part can know. Its prompt says where a step of such a role runs, that it runs at the phase step
+// whatever its type, and that it reports pass or fail. It also says what goes on after a task
+// stops because the deployment no longer defines the role of one of its steps. Both architect
+// compositions share that part, so both are read. This shows the text is loaded, never that an
+// owner follows it.
+func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, isRoot := range []bool{true, false} {
+		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
+			"A role of this deployment runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
+			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
+		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands in your plan, and reports"})
+	}
+}
+
+// The owner's move back from accepting to `step` works only where it says which earlier step of
+// the task runs as `step`: the daemon refuses a move to `step` with two such steps and no
+// `return_to`. So each part that tells the owner of request_backward_move also tells it that
+// rule, naming the legion tool's own field, each read alone, since the composition joins one
+// architect part of go/ and one of roles/ to architect-common.md, and a part that keeps the words
+// before `return_to` would tell its reader the move goes through. This shows the text is loaded,
+// never that an owner follows it.
+func TestAMoveBackToStepIsToldWithReturnTo(t *testing.T) {
+	const rule = "`request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`."
+	for _, part := range []struct{ name, text string }{
+		{"go/architect-common.md", goPart(t, "architect-common.md")},
+		{"go/architect.md", goPart(t, "architect.md")},
+		{"go/architect-root.md", goPart(t, "architect-root.md")},
+		{"roles/architect.md", rolePart(t, "architect.md")},
+		{"roles/architect-root.md", rolePart(t, "architect-root.md")},
+	} {
+		holdsAndRetires(t, part.name, part.text, []string{rule}, nil)
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The

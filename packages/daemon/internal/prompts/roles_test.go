@@ -61,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
+// goPart is one embedded daemon prompt part, by its path under go/.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile("go/" + name)
+	if err != nil {
+		t.Fatalf("read the daemon part go/%s: %v", name, err)
+	}
+	return string(body)
+}
+
 func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	for _, file := range modeNeutral {
 		text := rolePart(t, file)
@@ -99,7 +109,7 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	}
 }
 
-// Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
+// Every role of Legion's a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 	for _, role := range claim.Roles {
@@ -556,10 +566,10 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
+		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
-		// core every phase worker but the merger composes and in the oracle core the composer joins for
+		// core every phase worker of Legion's but the merger composes and in the oracle core the composer joins for
 		// no role, which is where a later core would copy the sentence from (dispatch://INFRA-924).
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},

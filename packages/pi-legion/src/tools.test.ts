@@ -195,8 +195,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-  "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
+  "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. Only a completion with the verdict " +
   "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
   "(RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
@@ -234,9 +234,10 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
-  "counts a review round. " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
+  "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
+  "A move to `step` goes to the one earlier step that runs as `step`; with two, `return_to` names the one, by its place in the task. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -251,9 +252,11 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; " +
-  "a step may carry a key after its role: acceptance carries `owner` and no other, any other role any key but `owner` or none, " +
-  "and the steps of one key run as one agent in one claim and one session (`implementer:a tester:a`); a " +
+  "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
+  "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
+  "step and after each step of the type implementation; a step may carry a key after its role: acceptance carries `owner` and no " +
+  "other, any other role any key but `owner` or none, and the steps of one key run as one agent in one claim and one session " +
+  "(`implementer:a tester:a`); a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -285,11 +288,12 @@ const STOP_TASK_TERMS = {
   ],
 } as const;
 
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code its text gives. */
+/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
+ * the sign-off moves the task, and names each refusal code its text gives. */
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [
+    "moving its task to its next step, or to retro where the acceptance is the task's last step",
     "(SIGNOFF_OUTSIDE_ACCEPTING)",
     "(SIGNOFF_CHILD_IN_WORKFLOW",
     "(ISSUE_NOT_OWNED",
@@ -1564,8 +1568,8 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to accepting once the pull request is mergeable, and the reviewer
-    // completes after it.
+    // once, an approval to its task's next step (accepting, in the default steps) once the pull
+    // request is mergeable, and the reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
@@ -1945,7 +1949,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
   });
 }
 
-/** The phase workers of an issue, in the order the summary lists them under the architect. */
+/** Legion's phase workers of an issue, in the order the summary lists them under the architect. */
 const WORKER_ROLES = ["planner", "implementer", "tester", "reviewer", "merger"] as const;
 
 /** The state at the size that cut the controller's read (dispatch://INFRA-329): the 92 issues
@@ -2256,7 +2260,7 @@ test("the controller reads the state without a grant and sets an issue's status 
 });
 
 // Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in their workflow order, so the controller sees the claim that works a step.
+// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];

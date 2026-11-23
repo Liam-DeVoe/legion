@@ -612,10 +612,11 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 	}
 }
 
-// issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role,
-// as here, named as the sandbox runtime names them: the provisioning Secret `<sandbox>-boot`
-// (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots (roleSecretName),
-// one for each of Legion's six roles, each the slot of the agent named for that role.
+// issueSandboxSecrets are the Secrets an issue's Sandbox owns under a deployment that defines no
+// role of its own, named as the sandbox runtime names them: the provisioning Secret
+// `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots
+// (roleSecretName), one for each of Legion's six roles, each the slot of the agent named for that
+// role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}
 	for _, role := range claim.Roles {
@@ -709,7 +710,7 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 				hold, marked, queued, workflow.IdleHoldUnownedSandboxGone)
 		}
 	}
-	// recordedAfterDeletes fails the test unless writes delete each of the seven Secrets of the
+	// recordedAfterDeletes fails the test unless writes delete each of the Secrets of the
 	// Sandbox name, each delete answered status, and then write the release's record, answered OK,
 	// once and after the last delete.
 	recordedAfterDeletes := func(t *testing.T, writes []apiWrite, name string, status int) {

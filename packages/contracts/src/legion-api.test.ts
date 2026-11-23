@@ -926,7 +926,7 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
 // check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
@@ -1447,8 +1447,8 @@ test("register_plan answers each task of the plan it took with its steps", () =>
 });
 
 // Contract 211 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
-// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
-// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// (its owner stopped its task with stop_task) or `children` (a parent whose task's last step is
+// not the owner's acceptance waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
 test("a state with a stopped task and a parent held for its children parses", () => {
   const state = fixture("state.json") as {
@@ -2994,11 +2994,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
 
 // The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
 // each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
-// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// failed implementer, whose issue is held, LEGION-211's suspended one, LEGION-212's retired
 // tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
-// relaunch (contract 56) — four keys each, neither the suspended nor the retired one wider than
-// the failed one, the fourth the claim's token, which tells two claims of one role on one issue
-// apart — and a state with none carries an empty list rather than none.
+// relaunch (contract 56), and LEGION-241's failed checker, a role of the deployment (contract 221)
+// — four keys each, neither the suspended nor the retired one wider than the failed one, the
+// fourth the claim's token, which tells two claims of one role on one issue apart — and a state
+// with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   // Each claim is the one named for its role, so its token is that role's own (`roleToken`).

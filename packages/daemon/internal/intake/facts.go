@@ -811,7 +811,8 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps); any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
 // reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
@@ -1020,7 +1021,7 @@ type HandoffComplete struct {
 	// Entry is the entry of the role's phase the completing claim serves (the claim's
 	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
 	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
-	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
+	// with the same rule (EntryFence), and holds a review step's commit to it: only a
 	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
@@ -2013,7 +2014,7 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
+// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
 // beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
@@ -2245,9 +2246,8 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
+// own. A move back raises a new entry of the step it returns to, whose work is done again, so a
+// verdict reported for the earlier entry would stand as the new entry's. The worker does the new
 // task's work and writes a handoff of its own for it, which StaleEntryInstruction says.
 //
 // clause says what refused this completion (BehindEntryClause).

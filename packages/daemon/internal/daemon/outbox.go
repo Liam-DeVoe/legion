@@ -2551,11 +2551,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
-		// would replace it with the issue's disk, and only the pod's update round or its release may
-		// (ruling 18). The claim runs in the slot of its agent (claim.Token.Slot), which is the role's
-		// own for a claim named by its role, and the slot of a keyed agent's first step for a step of
-		// another role, whose own resources the launch needs too. A token that names no slot runs in
-		// no pod, and the start is refused.
+		// would replace it with the issue's disk, and only the pod's update round or its release may.
+		// The claim runs in the slot of its agent (claim.Token.Slot), which is the role's own for a
+		// claim named by its role, and the slot of a keyed agent's first step for a step of another
+		// role, whose own resources the launch needs too. A token that names no slot runs in no pod,
+		// and the start is refused.
 		slot, ok := token.Slot()
 		if !ok {
 			return fmt.Errorf("start %s of %s: its claim token %s names no slot of a pod", payload.Role, issue.Key, token)
@@ -4045,9 +4045,8 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 }
 
 // podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
-// pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
-// the pod was made before (before: that the deployment defined what the pod lacks, in
-// runtime.PodLacks's
+// pod of issue under a deployment with no idle release: the pod, the waiting role, what the pod
+// was made before (before: that the deployment defined what the pod lacks, in runtime.PodLacks's
 // words, or that its launchers waited for a new role's credential), what is true now, and that the
 // pod's disk can hold work a role did not push. It tells nobody to take the pod away.
 func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, before string) string {

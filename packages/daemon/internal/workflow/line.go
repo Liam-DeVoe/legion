@@ -410,7 +410,7 @@ func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlac
 	if !w.Stored || !ok {
 		return record.TaskPlace{}, false
 	}
-	if _, defined := d.Roles[step.Role]; defined {
+	if d.Defines(step.Role) {
 		return record.TaskPlace{}, false
 	}
 	return place, true
@@ -430,6 +430,14 @@ func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
 	case record.PlaceRetro, record.PlaceMerge:
 		return record.TaskPlace{}, false
 	}
+	return w.lostFrom(first, d)
+}
+
+// lostFrom is the first step of w's task from step first on whose role d does not define
+// (lostAt). lostStep reads it from where a task that runs stands; a stopped task's end of its stop
+// reads it from step 1, since every step of the task is still to run once it goes on
+// (keepLostStop).
+func (w Walk) lostFrom(first int, d plan.Deployment) (record.TaskPlace, bool) {
 	for n := first; n <= len(w.Steps); n++ {
 		if lost, ok := w.lostAt(record.TaskPlace{Kind: record.PlaceStep, Position: n}, d); ok {
 			return lost, true

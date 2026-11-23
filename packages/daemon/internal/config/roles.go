@@ -195,7 +195,7 @@ func CheckRolePrompts(roles []Role) error {
 }
 
 // issueRoles are the roles of an issue the deployment runs: Legion's six (claim.Roles), in the
-// order the workflow reaches them, then each role of `roles`, in the file's order.
+// order the default steps reach them, then each role of `roles`, in the file's order.
 func (c Config) issueRoles() []claim.Role {
 	return c.withRoles(claim.Roles)
 }

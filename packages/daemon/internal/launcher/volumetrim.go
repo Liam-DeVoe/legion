@@ -22,8 +22,8 @@ import (
 // oldest entries of the four reclaimable roots, and the episode number a report is counted
 // under. The report itself is volumereport.go's and the size walk it carries volumewalk.go's.
 // It runs in the launcher process, which is PID 1 of an issue pod's roles container, beside the
-// six roles whose caches fill the one volume they share, 50 GiB by default (INFRA-2009: a pod
-// filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
+// roles of the issue, whose caches fill the one volume they share, 50 GiB by default
+// (INFRA-2009: a pod filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
@@ -144,9 +144,9 @@ const (
 // validates them too, but it is another binary across a connection this design expects to carry
 // version skew both ways, and the cost of believing a bad one here is paid by the whole pod:
 // time.NewTicker panics on a non-positive period, a fault on each start of the interval loop, so
-// three in a row would switch off the one guard of the volume six live roles share (run), a high
-// mark of 0 would sweep the caches of a volume that is empty, and an age of 153,722,868 minutes
-// or more can wrap the sweep's cutoff past the sweep's own start, which makes every entry of
+// three in a row would switch off the one guard of the volume the pod's live roles share (run), a
+// high mark of 0 would sweep the caches of a volume that is empty, and an age of 153,722,868
+// minutes or more can wrap the sweep's cutoff past the sweep's own start, which makes every entry of
 // every root eligible however recently it was written (sweep, shimwire.VolumeMinAgeMax). The
 // ranges themselves are the wire's own (shimwire.VolumeMarkMin and the five beside it). The
 // daemon's loader reads the three maxima among them, and its minimum of 1 is its own
@@ -629,8 +629,8 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // because a process that cannot keep its invariants should die and be restarted (the one recover
 // outside the trimmer, leakguard's compile, turns the panic regexp.MustCompile raises on a pattern
 // of the embedded rule file into an error) — because this goroutine runs in the process that is
-// PID 1 of the roles container: its panic takes the container down and costs six live roles their
-// round, over a cache sweep that nothing depends on. The fault is logged with its stack and
+// PID 1 of the roles container: its panic takes the container down and costs the pod's live roles
+// their round, over a cache sweep that nothing depends on. The fault is logged with its stack and
 // carried into the next report, and three in a row of one kind of work stop the trimmer until
 // the launcher process restarts (fault, run), which no other ending of the four does.
 //

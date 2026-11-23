@@ -347,8 +347,8 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	artifactID := strings.ToLower(req.ArtifactID)
 	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
-	// The gate is the tree root's: it opens planning for the whole tree, so a child's document
-	// cannot stand in for the root's review.
+	// The gate is the tree root's: its opening lets each issue of the whole tree start its task's
+	// first step, so a child's document cannot stand in for the root's review.
 	if !ok || !s.rootArchitectOf(w, r, grant, recorded, gateRoute) {
 		return
 	}
@@ -1652,7 +1652,7 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 }
 
 // rerunChild runs a child the architect owns (childOfTree: for a sub-architect, an issue under its
-// own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
+// own) again once it is out of the workflow, parked or closed, by moving it to todo in Dispatch,
 // the move a human would make, and applies that move to the record before it answers
 // (applyOwnStatusWrite), as the move's event would: the child's next run enters its tree at
 // admitted (the workflow's ReenterChild), and its slot starts the first step of its plan, the

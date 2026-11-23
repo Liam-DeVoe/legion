@@ -901,8 +901,8 @@ primary_issue() {
   pass
 
   # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
-  # records its handoff and completes, exercise the round counter, the return to implementing,
-  # and the third `pr-blocked` publication. Every recovery repeats the real workers.
+  # records its handoff and completes its phase, exercise the round counter, the return to
+  # implementing, and the third `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -916,9 +916,9 @@ primary_issue() {
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The request for changes ends the round whether or not the reviewer has completed
-    # (workflow's roundRejected), so the proof waits for the reviewer's handoff record, within a
-    # turn's budget, before it checks it.
+    # The review ends the round whether or not the reviewer has completed (workflow's
+    # roundRejected), and its completion names its handoff record, so the proof waits for that
+    # record, within a turn's budget, before it checks it.
     wait_for_phase "$root_issue" implementing 1200
     until_true "$phase_seconds" "the reviewer's round $round handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
     assert_handoff_record "$root_issue" reviewer reviewing "$round"
@@ -1085,7 +1085,7 @@ primary_issue() {
 
   begin smoke-main-clean
   # The merged pull request carried no handoff (A2): no commit of it changes only .legion/, and no
-  # file it merged is under .legion/, since every phase's handoff is a record on the Dispatch issue.
+  # file it merged is under .legion/, since every handoff is a record on the Dispatch issue.
   handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of $repo#$pr_number"
   [ -z "$handoff_pushes" ] || fail "$repo#$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
   merged_files=$(pull_request_product_files) || fail "could not read the files of $repo#$pr_number"

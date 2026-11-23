@@ -676,14 +676,67 @@ function lacks(relative: string, duties: RegExp[]) {
 }
 
 test("an implementer and owner task is accepted on the evidence its steps give", () => {
-  const missing = lacks("legion-architect/references/acceptance.md", [
-    /`acceptance:owner` enters `accepting`/,
-    /has a tester step[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step[^.;]*approval/,
-    /no tester step[^.;]*the implementer's evidence/,
-  ]);
+  const missing = [
+    ...lacks("legion-architect/references/acceptance.md", [
+      /Only a task whose steps name `acceptance:owner` enters `accepting`/,
+      /tester step comes before your acceptance[^.;]*--phase test/,
+      /`dispatch results --issue <issue>`[^.;]*the head the step before your acceptance passed/,
+      /reviewer step comes before your acceptance[^.;]*approval/,
+      /no tester step before your acceptance[^.;]*the implementer's evidence/,
+      /steps after your acceptance in the task run, then retro/,
+      /the daemon acts once the issue moves into `accepting`, `retro` or `merging`/,
+      /In `accepting`, `retro` or `merging`, where the task has a reviewer step, the daemon asks the reviewer/,
+      // Each sentence a reader of the acceptance showed false is gone: the last step can come after
+      // the acceptance, and a reviewer step after it leaves `accepting` short of any review.
+      /^(?![\s\S]*each check at the last step's head)/,
+      /^(?![\s\S]*Past review)/,
+      /^(?![\s\S]*on entry to `accepting`, or `retro` without)/,
+      /^(?![\s\S]*`Steps:` line names `acceptance:owner`)/,
+    ]),
+    ...lacks("legion-architect/SKILL.md", [
+      /your acceptance is the task's last step[^.;]*`sign_off` starts retro/,
+      /`before_merge` check at the head the step before your acceptance passed/,
+      /^(?![\s\S]*the last step's head)/,
+    ]),
+  ];
   expect(missing).toEqual([]);
+});
+
+// A person's later request is a requirement only in a spec version they approve, as the architect's
+// prompt parts say (`go/architect-common.md`, `roles/architect-root.md`). With no tester step only
+// the implementer runs the checks, except the owner's subagent in the last round of a parent whose
+// pull request already merged (`references/acceptance.md`, "The last round"). Each sentence a reader
+// of the acceptance showed false is gone. This shows the text ships, never that a role follows it.
+test("the architect's references say when a later request binds and who runs the checks again", () => {
+  expect([
+    ...lacks("legion-architect/references/acceptance.md", [
+      /later request is a requirement only in a spec version they approve/,
+      /^(?![\s\S]*request after your sign-off is a requirement of this issue)/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /^(?![\s\S]*nobody runs them again)/,
+    ]),
+  ]).toEqual([]);
+});
+
+// A parent whose task has no acceptance step is held before its retro while issues beneath it are
+// in the workflow, as the architect's prompt parts say; no worker holds `accepting`, though a merge
+// forward asks workers for work there; and an issue with no `before_merge` check is accepted on
+// what the owner's comment says proves each item, as the root prompt says. Each sentence a reader
+// of the newest head showed false is gone. This shows the text ships, never that a role follows it.
+test("the architect's skill says what holds a parent before retro, who holds accepting and how a gap is accepted", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /otherwise the pass of the task's last step starts it, or holds a parent before it/,
+      /In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase/,
+      /every requirement has a check \(with no `before_merge` check, your comment says how each is proven\)/,
+      /^(?![\s\S]*enters, no worker runs)/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow/,
+    ]),
+  ]).toEqual([]);
 });
 
 test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
@@ -693,7 +746,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
       /implementer with no tester step[^.;]*real surface/,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
-      /no tester step[^.;]*the implementer's evidence[^.;]*read/,
+      /no earlier tester step[^.;]*the implementer's evidence[^.;]*read/,
     ]),
   ]).toEqual([]);
 });
@@ -741,6 +794,27 @@ test("an issue runs the default steps unless its architect registers a plan befo
   ]).toEqual([]);
 });
 
+// Each rule of the worker and retro skills states its exceptions where it is stated, so no other
+// sentence of the skills or the prompts contradicts it: a kept volume keeps more than the tracked
+// work, a parent can be held before its retro, a merge forward the daemon asks for in retro is no
+// part of retro, a tool that takes no rating is never refused for its absence, and step 3 writes
+// no comment when no point qualifies.
+test("the worker and retro skills state the exceptions of their rules", () => {
+  expect([
+    ...lacks("legion-worker/SKILL.md", [
+      /nothing else of the disk survives, unless the deployment keeps the pod's volume/,
+      /without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave/,
+    ]),
+    ...lacks("legion-retro/SKILL.md", [
+      /Retro commits nothing and pushes nothing of its own:/,
+      /A merge forward that the daemon's merge-forward message asks of you is no part of retro/,
+      /In the workspace retro itself changes nothing\./,
+      /The daemon refuses a completion without them where your tool takes them \(`PLAN_RATING_REQUIRED`\)/,
+      /The message is posted, and so is step 3's comment where a point qualified\./,
+    ]),
+  ]).toEqual([]);
+});
+
 // The admission table is read raw, since each of its rows is a line, and it lists the contract's
 // held reasons in the contract's order.
 test("the controller reads every held reason, and a stopped task's phase in its report", () => {
@@ -751,7 +825,7 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
   expect(held).toEqual([...LEGION_HELD_REASONS]);
   expect(admission).toMatch(
-    /\| `children_before_retro` \|[^|]*without `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
+    /\| `children_before_retro` \|[^|]*last step is not `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
   );
   expect(admission).toMatch(
     /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/
@@ -868,7 +942,7 @@ test("the architect's wake table sends each owner-plan notice to where its handl
     ]),
     ...lacks("legion-architect/references/plan-changes.md", [
       /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,
-      /\*\*`retro-held`:\*\*[^*]*no `acceptance:owner` step[^*]*Run each issue it names to done/,
+      /\*\*`retro-held`:\*\*[^*]*last step, which is not your `acceptance:owner` step[^*]*Run each issue it names to done/,
       /\*\*`plan-not-taken`:\*\*[^*]*`stop_task` the task that runs now/,
     ]),
     ...lacks("legion-architect/references/acceptance.md", [
