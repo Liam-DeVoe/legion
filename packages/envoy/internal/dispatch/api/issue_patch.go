@@ -160,10 +160,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
 	}
 
 	key := r.PathValue("key")
@@ -475,7 +485,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The pull requests this change of the links decides the issue of: a pull request is the
 	// issue's while the issue links it (R19 of the spec of several open pull requests), so each is
-	// judged again in this transaction from what Dispatch stored of it (delivery.LinksChanged),
+	// judged again in this transaction from what Dispatch stored of it (delivery.Attributor.LinksChanged),
 	// with no read of GitHub: a link a person makes by hand is answered from what Dispatch holds.
 	var changedHeads []delivery.HeadOfChangedLink
 	if input.ExternalLinks != nil {
@@ -520,7 +530,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		changedHeads, err = delivery.LinksChanged(r.Context(), tx, key, changedLinkURLs(removed, *input.ExternalLinks))
+		changedHeads, err = s.deps.Attributor.LinksChanged(r.Context(), tx, key, changedLinkURLs(removed, *input.ExternalLinks))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

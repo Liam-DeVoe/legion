@@ -92,7 +92,7 @@ type stackedWorld struct {
 	issue   string
 	other   string
 	// readThrough writes a pull request's head row as production's read-through of its head
-	// commit writes it (delivery.ReadThroughCommitPulls), attributed from GitHub's answer.
+	// commit writes it (delivery.Attributor.ReadThroughCommitPulls), attributed from GitHub's answer.
 	readThrough func(pull stackedPull)
 	// attribution is the issue and the source the head row of the pull request number names.
 	attribution func(number int) (string, string)
@@ -145,7 +145,7 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		t: t, handler: handler, issue: issue.Key, other: other,
 		readThrough: func(pull stackedPull) {
 			t.Helper()
-			if written, _, err := delivery.ReadThroughCommitPulls(ctx, database.Pool, served.deps.GitHub, nil,
+			if written, _, err := served.deps.Attributor.ReadThroughCommitPulls(ctx, database.Pool, served.deps.GitHub, nil,
 				"acme/widgets", pull.head, time.Now()); err != nil || written != 1 {
 				t.Fatalf("write the head of #%d through the read of its commit: %d written, %v", pull.number, written, err)
 			}
