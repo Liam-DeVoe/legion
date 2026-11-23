@@ -449,12 +449,13 @@ func mayRevoke(login string, approver, operator *string, groups record.Groups, a
 // every approver stands as before.
 //
 // It fails open only while Dispatch does not answer (projectaccess.Unanswered: the read's bound or
-// deadline passing, a transport failure, a gateway's 502, 503 or 504, one of Dispatch's own codes
-// for its outage, or a 500 naming no code or INTERNAL, which Dispatch answers while its database
-// fails), unlike every other read of a person's member kind, and only for the person the grant
-// names as its approver. It then approves and logs it (RevokeUncheckedMessage). A revoke only
-// takes access away and releases nothing, and a revoke refused through an outage would delay the
-// person ending a grant that leaks; what it costs is that a person Dispatch calls a restricted
+// deadline passing, a transport failure, a 408 or a 429, a gateway's 502, 503 or 504, one of
+// Dispatch's own codes for its outage, or a 500 naming no code or INTERNAL, which Dispatch answers
+// while its database fails), unlike every other read of a person's member kind, and only for the
+// person the grant names as its approver. It then approves and logs it (RevokeUncheckedMessage).
+// A revoke only takes access away and releases nothing, and a revoke refused through an outage
+// would delay the person ending a grant that leaks; what it costs is that a person Dispatch calls a
+// restricted
 // member could end a grant that names them as its approver while Dispatch does not answer. So it
 // asks Dispatch itself (projectaccess.AskedNow), never answered by a failure an earlier read kept.
 // Every other failure is an answer that lasts until somebody fixes it (Dispatch refusing the

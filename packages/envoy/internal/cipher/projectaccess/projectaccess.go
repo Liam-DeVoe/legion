@@ -115,10 +115,12 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
-	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 502, 503
-	// or 504 whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
-	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
-	// whose body names no code or names internalCode.
+	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 408 or a
+	// 429, whatever its body names (RFC 9110 section 15.5.9, RFC 6585 section 4: the request was
+	// not taken in time, or is to be made later); a 502, 503 or 504 whose body names no code of
+	// Dispatch's, a gateway's or a load balancer's page in front of it, or one that names a code
+	// Dispatch answers for its own outage (outageCodes); and a 500 whose body names no code or
+	// names internalCode.
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 )
 
@@ -144,9 +146,10 @@ const internalCode = "INTERNAL"
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
-// answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
-// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); and a 500
-// whose body names no code or internalCode, the 500 Dispatch answers while its database fails.
+// answer arrived (dispatchread.ErrNoAnswer); a 408 or a 429, whatever its body names; a 502, 503
+// or 504 whose body names no code of Dispatch's, or one of the codes Dispatch answers for its own
+// outage (outageCodes); and a 500 whose body names no code or internalCode, the 500 Dispatch
+// answers while its database fails.
 // Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
 // broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
 // not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
@@ -726,11 +729,11 @@ func (c *Client) sweepLocked() {
 // (dispatchread.Reader.Get), which a caller never mints through. A 404 is an answer, returned as
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
-// serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
-// whose body names no code, or one of outageCodes, and a 500 whose body names no code or
-// internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
-// code is Dispatch's answer. Every other status, a transport failure and a body it could not read
-// or decode are errors naming what failed and never the token.
+// serve the route, a wrong path behind an ingress) is a failure naming its code. A 408 or a 429,
+// a 502, 503 or 504 whose body names no code, or one of outageCodes, and a 500 whose body names no
+// code or internalCode, are errUnavailable, Dispatch not answering now (Unanswered); a 5xx naming
+// any other code is Dispatch's answer. Every other status, a transport failure and a body it
+// could not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -744,6 +747,8 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 				return http.StatusNotFound, nil
 			}
 			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+		case http.StatusRequestTimeout, http.StatusTooManyRequests:
+			return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
 		case http.StatusInternalServerError:
 			if code == "" || code == internalCode {
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)

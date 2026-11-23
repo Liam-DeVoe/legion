@@ -778,7 +778,9 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // only while Dispatch does not answer, a failure that clears by itself, and only for the person the
 // grant names as its approver. Dispatch not answering is the read's own bound passing, a transport
 // failure before Dispatch's whole answer arrived (a connection it hangs up, an answer cut short, a
-// name server that does not answer in time), a 502, 503 or 504 that names no code of Dispatch's, a
+// name server that does not answer in time), a 408 or a 429 whatever its body names (a proxy that
+// did not take the read in time, Dispatch asking the broker to come back later), a 502, 503 or 504
+// that names no code of Dispatch's, a
 // gateway's page in front of it, or one of the codes Dispatch answers for its own outage
 // (DATABASE_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE), and a 500 that names no code or Dispatch's
 // INTERNAL, which is how Dispatch answers a read its database failed. The grant's named approver's
@@ -836,6 +838,8 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		{"Dispatch answers after the read's bound", func(_ *testing.T, r approverRows) { r.dispatch.SetStall(dispatchRelayWait); r.asks() }},
 		{"Dispatch answers 500 INTERNAL", answers(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal server error"}`)},
 		{"Dispatch answers 500 naming no code", answers(http.StatusInternalServerError, `<html>internal server error</html>`)},
+		{"a proxy in front of Dispatch answers 408", answers(http.StatusRequestTimeout, `<html>408 Request Timeout</html>`)},
+		{"Dispatch answers 429", answers(http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"too many requests; try again in 1s"}`)},
 		{"Dispatch hangs up before it answers", reads(hangingUp)},
 		{"Dispatch's answer is cut short", reads(func(t *testing.T) string {
 			return projectaccesstest.NewRefusing(t, http.StatusOK, projectaccesstest.RefusalCutShort)
@@ -959,6 +963,12 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		{"answers 503 naming no code", func(s *projectaccesstest.Server) { s.SetDown(true) }},
 		{"answers 500 INTERNAL", func(s *projectaccesstest.Server) {
 			s.SetAnswer(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal server error"}`)
+		}},
+		{"answers 408", func(s *projectaccesstest.Server) {
+			s.SetAnswer(http.StatusRequestTimeout, `<html>408 Request Timeout</html>`)
+		}},
+		{"answers 429", func(s *projectaccesstest.Server) {
+			s.SetAnswer(http.StatusTooManyRequests, `{"code":"RATE_LIMITED","error":"too many requests; try again in 1s"}`)
 		}},
 	} {
 		t.Run("while Dispatch's person route "+outage.name+", the named approver's revoke goes ahead", func(t *testing.T) {
