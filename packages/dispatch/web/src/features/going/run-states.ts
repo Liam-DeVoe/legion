@@ -199,15 +199,17 @@ export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answe
 
 /**
  * How the end of a run in `state`, stopped or failed with `reason` (its end frame's, or its
- * record's), reads for its person (design v2, state 9): never a code or the reason's own words,
- * which are written for a developer. A bound is a pause: "Stopped at Standard's time limit", with
- * how long the model was busy where the reason says it was busy for more than half the time
- * ("· the model was busy for 52s of it"), what the run did so far (`didSoFar`, "read 14 items")
- * and Continue, with Continue in Deep below Deep. A stop the model's provider refused says so and
- * what the person can do: Continue, or ask in other words, where its end offered Continue, else
- * ask in other words. A Stop keeps what it did: "Stopped · kept what it did", or why its grant
- * ended it. A failure is one sentence and Try again, or the sentence of state 13 for a Dispatch
- * with no answering model. Undefined for a run that has not stopped or failed.
+ * record's), reads for its person (design v2, state 9, rule 7): never a code or the reason's own
+ * words, which are written for a developer, and one next step. A bound is a pause: "Stopped at
+ * Standard's time limit", with how long the model was busy where the reason says it was busy for
+ * more than half the time ("· the model was busy for 52s of it"), what the run did so far
+ * (`didSoFar`, "read 14 items") and Continue, with Continue in Deep below Deep. A stop the model's
+ * provider refused says so and what the person can do: Continue, or ask in other words, where its
+ * end offered Continue, else ask in other words. A Stop keeps what it did and says what that was,
+ * "Stopped · kept what it did: read 1 item", with Try again; one its grant ended says why, and
+ * offers nothing a lapsed grant would refuse again. A failure is one sentence and Try again, or
+ * the sentence of state 13 for a Dispatch with no answering model. Undefined for a run that has
+ * not stopped or failed.
  */
 export function endWords(
   state: RunState,
@@ -249,14 +251,22 @@ export function endWords(
         };
       }
       const grant = GRANT_WORDS[code];
+      if (grant !== undefined) {
+        return {
+          action: undefined,
+          continueInDeep: false,
+          noModel: false,
+          text: `Stopped because ${grant} · kept what it did`,
+        };
+      }
       return {
-        action: undefined,
+        action: "retry",
         continueInDeep: false,
         noModel: false,
         text:
-          grant === undefined
+          didSoFar === ""
             ? "Stopped · kept what it did"
-            : `Stopped because ${grant} · kept what it did`,
+            : `Stopped · kept what it did: ${didSoFar}`,
       };
     }
     case "failed": {

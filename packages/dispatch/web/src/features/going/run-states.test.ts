@@ -222,19 +222,29 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
   );
 });
 
-test("a Stop keeps what it did, and never repeats the reason's code", () => {
+// A Stop keeps what it did and says what that was, with Try again as its one next step (design
+// v3, rule 7): "kept what it did" alone said nothing of what it kept, and gave nothing to do.
+test("a Stop keeps what it did, says what that was, offers Try again, and never repeats the reason's code", () => {
   const stopped = endWords("stopped_person", "STOPPED: its person stopped it", "standard", "");
   expect(stopped).toEqual({
-    action: undefined,
+    action: "retry",
     continueInDeep: false,
     noModel: false,
     text: "Stopped · kept what it did",
   });
   expect(stopped?.text).not.toContain("STOPPED");
   expect(
+    endWords("stopped_person", "STOPPED: its person stopped it", "standard", "read 1 item")?.text
+  ).toBe("Stopped · kept what it did: read 1 item");
+  // A stop its grant ended says why, and offers no Try again that the lapsed grant would refuse.
+  expect(
     endWords("stopped_person", "SESSION_ENDED: the person this run acts for signed out", "fast", "")
-      ?.text
-  ).toBe("Stopped because you signed out · kept what it did");
+  ).toEqual({
+    action: undefined,
+    continueInDeep: false,
+    noModel: false,
+    text: "Stopped because you signed out · kept what it did",
+  });
   expect(endWords("stopped_person", "SIGN_IN_EXPIRED: …", "fast", "")?.text).toBe(
     "Stopped because your sign-in expired · kept what it did"
   );

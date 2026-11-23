@@ -21,7 +21,7 @@ function renderSection(): void {
   );
 }
 
-test("the mode is Ask by default, and choosing Auto-review writes it to Dispatch", async () => {
+test("the approval mode is Ask by default, and choosing Auto-review writes it to Dispatch and says it was saved", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "myGoingSettings").mockResolvedValue({ mode: "ask" });
   const put = answerRoute<(input: GoingSettings, bounds: WriteBounds) => Promise<GoingSettings>>(
@@ -35,12 +35,22 @@ test("the mode is Ask by default, and choosing Auto-review writes it to Dispatch
     const review = screen.getByRole("radio", { name: "Auto-review" });
     expect(ask).toBeChecked();
     expect(review).not.toBeChecked();
+    // The setting is named as spec v61 names it, inside a card like every other section's.
+    const group = screen.getByRole("group", { name: "Approval mode" });
+    expect(group.className).toContain("rounded-xl");
+    expect(review).toHaveAccessibleDescription(
+      "A review of the plan lets through the plain changes your words ask for."
+    );
+    expect(screen.getByTestId("going-settings-saved").textContent).toBe("");
 
     await user.click(review);
 
     await waitFor(() => expect(put).toHaveBeenCalledWith({ mode: "auto_review" }, keyedAttempt));
     await waitFor(() => expect(review).toBeChecked());
     expect(ask).not.toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByTestId("going-settings-saved")).toHaveTextContent("Saved: Auto-review.")
+    );
   } finally {
     cleanup();
     read.mockRestore();

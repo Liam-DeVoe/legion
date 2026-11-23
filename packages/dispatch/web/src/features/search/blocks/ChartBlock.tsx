@@ -62,10 +62,11 @@ const SLANTED_LABEL_MAX = 96;
 /**
  * The echarts option of a chart (design v2, state 5): one series of `points` drawn as `mark`,
  * named as the spec's `y` field is headed, so hovering a bar or a point shows a tooltip with that
- * point's place and its value; the axes in `palette`'s colours, and no animation. Every place
- * along the axis shows its label, and no two collide: each sits level, wrapped at its words to the
- * width of its place in a chart `width` pixels wide, or slants where that place is too narrow for
- * a word.
+ * point's place and its value; each bar or point labelled with its value above it, as the
+ * products the design follows label theirs, so the numbers read without a hover; the axes in
+ * `palette`'s colours, and no animation. Every place along the axis shows its label, and no two
+ * collide: each sits level, wrapped at its words to the width of its place in a chart `width`
+ * pixels wide, or slants where that place is too narrow for a word.
  */
 export function chartOption(
   points: readonly ChartPoint[],
@@ -81,11 +82,13 @@ export function chartOption(
       : { overflow: "truncate", rotate: 45, width: SLANTED_LABEL_MAX };
   return {
     animation: false,
-    grid: { bottom: 8, containLabel: true, left: 8, right: 16, top: 16 },
+    // The top of the grid leaves room for the label above the tallest bar.
+    grid: { bottom: 8, containLabel: true, left: 8, right: 16, top: 24 },
     series: [
       {
         data: points.map((point) => point.value),
         itemStyle: { color: SERIES_COLOR },
+        label: { color: palette.label, position: "top", show: true },
         lineStyle: { color: SERIES_COLOR },
         name,
         type: mark,

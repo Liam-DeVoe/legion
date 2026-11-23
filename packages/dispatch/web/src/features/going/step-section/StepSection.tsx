@@ -37,7 +37,14 @@
 
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
-import { dangerText, linkHoverText, linkText, textMutedOnSurface } from "../../../theme/classes";
+import {
+  dangerText,
+  linkHoverText,
+  linkText,
+  pageQuietText,
+  textMutedOnSurface,
+  textSecondaryOnSurface,
+} from "../../../theme/classes";
 import { TimedWords } from "../../refs/dispatch-time";
 import { buildReferencePath } from "../../refs/routes";
 import type { RunStep } from "../run-frames";
@@ -116,15 +123,17 @@ const NAMED_KINDS: ReadonlySet<string> = new Set(KIND_WORDS.map(([kind]) => kind
  * failed step counts as "1 step failed", not with its kind, since it did not do what its kind
  * says; and a slip counts nowhere, since it did nothing and its person has nothing to do about
  * it. A step of a kind this page does not know counts among "other steps". Steps that were all
- * slips are said in no words at all: "".
+ * slips are said in no words at all: "". Once the run's plan ran, `plan` says what that did
+ * ("applied 3 changes") in place of "proposed a plan", which is no longer the last thing the run
+ * did.
  */
-export function foldWords(steps: readonly RunStep[]): string {
+export function foldWords(steps: readonly RunStep[], plan?: string): string {
   const counts = steps.filter((step) => !step.slip);
   const done = counts.filter((step) => !step.refused);
   const parts: string[] = [];
   for (const [kind, words] of KIND_WORDS) {
     const ofKind = done.filter((step) => step.kind === kind);
-    if (ofKind.length > 0) parts.push(words(ofKind));
+    if (ofKind.length > 0) parts.push(kind === "plan" && plan !== undefined ? plan : words(ofKind));
   }
   const other = done.filter((step) => !NAMED_KINDS.has(step.kind)).length;
   if (other > 0) parts.push(counted(other, "other step"));
@@ -141,10 +150,14 @@ function workedTime(workedMs: number | undefined): string | undefined {
 }
 
 /** What the line steps fold into says after how long the run worked: what the steps were made
- *  of (`foldWords`), with its first letter a capital where no time comes before it, and "Steps"
- *  for steps that were all slips and no time to say. */
-function workedRest(steps: readonly RunStep[], time: string | undefined): string {
-  const words = foldWords(steps);
+ *  of (`foldWords`, with what the run's plan did), with its first letter a capital where no time
+ *  comes before it, and "Steps" for steps that were all slips and no time to say. */
+function workedRest(
+  steps: readonly RunStep[],
+  time: string | undefined,
+  plan: string | undefined
+): string {
+  const words = foldWords(steps, plan);
   if (time !== undefined) return words;
   return words === "" ? "Steps" : words.charAt(0).toUpperCase() + words.slice(1);
 }
@@ -155,11 +168,15 @@ function workedRest(steps: readonly RunStep[], time: string | undefined): string
  * 14 items, searched twice". A run whose time `workedTime` does not say, and older steps folded
  * while the run works (state 3), say what the steps were made of alone: "Read 6 items, searched
  * twice". Steps that were all slips say only the time, "Worked for 12 s", or with no time to
- * say, "Steps".
+ * say, "Steps". `plan` is what the run's plan did once it ran (`foldWords`).
  */
-export function workedWords(steps: readonly RunStep[], workedMs: number | undefined): string {
+export function workedWords(
+  steps: readonly RunStep[],
+  workedMs: number | undefined,
+  plan?: string
+): string {
   const time = workedTime(workedMs);
-  const rest = workedRest(steps, time);
+  const rest = workedRest(steps, time, plan);
   if (time === undefined) return rest;
   return rest === "" ? `Worked for ${time}` : `Worked for ${time} · ${rest}`;
 }
@@ -168,14 +185,16 @@ export function workedWords(steps: readonly RunStep[], workedMs: number | undefi
  *  (`going-steps-fold-time`), so that a screenshot can mask the one part that moves with the
  *  run's pace. */
 function WorkedLine({
+  plan,
   steps,
   workedMs,
 }: {
+  readonly plan: string | undefined;
   readonly steps: readonly RunStep[];
   readonly workedMs: number | undefined;
 }): ReactNode {
   const time = workedTime(workedMs);
-  const rest = workedRest(steps, time);
+  const rest = workedRest(steps, time, plan);
   if (time === undefined) return rest;
   return (
     <>
@@ -280,8 +299,9 @@ function LabelWords({
 
 /** One step's line: its words in the present tense with a shimmer while it runs, in the past
  *  tense with its result once it ended, or the sentence of a call that failed, in red; a slip's
- *  line is grey, as any ended call's, with what the model tried. The newest line of a run that
- *  works carries the run's timer on the right. */
+ *  line is a lighter grey than an ended call's, with what the model tried, since it did nothing.
+ *  The newest line of a run that works carries the run's timer right beside its words, where the
+ *  eye reads it with them. */
 function StepLine({
   step,
   timer,
@@ -289,9 +309,10 @@ function StepLine({
   readonly step: RunStep;
   readonly timer: number | undefined;
 }): ReactNode {
+  const ink = step.refused ? dangerText : step.slip ? textMutedOnSurface : textSecondaryOnSurface;
   return (
     <li
-      className={`flex min-w-0 items-baseline gap-2 text-xs ${step.refused ? dangerText : textMutedOnSurface}`}
+      className={`flex min-w-0 items-baseline gap-2 text-[13px] ${ink}`}
       data-kind={step.kind}
       data-running={String(step.running)}
       data-testid="going-step"
@@ -305,7 +326,7 @@ function StepLine({
         {step.running ? "…" : null}
       </span>
       {timer === undefined ? null : (
-        <RunTimer className="ml-auto" since={timer} testId="going-step-timer" />
+        <RunTimer className={textMutedOnSurface} since={timer} testId="going-step-timer" />
       )}
     </li>
   );
@@ -335,7 +356,9 @@ function headed(steps: readonly RunStep[]): readonly HeadedSteps[] {
 
 /** The lines of `steps`: each run of calls under its grey header line where the model wrote one,
  *  then "and N more…" for the running calls past `RUNNING_LINES`. The newest line carries the
- *  run's timer, counted from `timer`, where one is given. */
+ *  run's timer, counted from `timer`, where one is given and a call runs; a run that works with
+ *  no call running - the model is writing or deciding - ends with "Thinking…" and the timer
+ *  instead, so a working run never reads as idle. */
 function StepList({
   more,
   steps,
@@ -345,14 +368,26 @@ function StepList({
   readonly steps: readonly RunStep[];
   readonly timer: number | undefined;
 }): ReactNode {
-  const newest = more > 0 ? undefined : steps.at(-1)?.id;
+  const callRuns = more > 0 || steps.some((step) => step.running);
+  const newest = more > 0 || !callRuns ? undefined : steps.at(-1)?.id;
   return (
     <div className="space-y-0.5" data-testid="going-steps">
       {headed(steps).map((group) => (
         <div className="space-y-0.5" key={group.first}>
           {group.header === "" ? null : (
-            <p className={`truncate text-xs ${textMutedOnSurface}`} data-testid="going-step-words">
-              <TimedWords text={group.header} />
+            // Once every call of the run ended, the header drops the "…" the model may have ended
+            // it with, so it does not read as work still going on.
+            <p
+              className={`truncate text-[13px] ${textMutedOnSurface}`}
+              data-testid="going-step-words"
+            >
+              <TimedWords
+                text={
+                  group.steps.some((step) => step.running)
+                    ? group.header
+                    : group.header.replace(/\s*(?:…|\.\.\.)$/u, "")
+                }
+              />
             </p>
           )}
           <ol aria-label="Steps" className={`space-y-0.5 ${group.header === "" ? "" : "pl-3"}`}>
@@ -364,13 +399,22 @@ function StepList({
       ))}
       {more === 0 ? null : (
         <p
-          className={`flex items-baseline gap-2 text-xs ${textMutedOnSurface}`}
+          className={`flex items-baseline gap-2 text-[13px] ${textSecondaryOnSurface}`}
           data-testid="going-steps-more"
         >
           <span className={SHIMMER}>and {more} more…</span>
           {timer === undefined ? null : (
-            <RunTimer className="ml-auto" since={timer} testId="going-step-timer" />
+            <RunTimer className={textMutedOnSurface} since={timer} testId="going-step-timer" />
           )}
+        </p>
+      )}
+      {timer === undefined || callRuns ? null : (
+        <p
+          className={`flex items-baseline gap-2 text-[13px] ${textSecondaryOnSurface}`}
+          data-testid="going-steps-thinking"
+        >
+          <span className={SHIMMER}>Thinking…</span>
+          <RunTimer className={textMutedOnSurface} since={timer} testId="going-thinking-timer" />
         </p>
       )}
     </div>
@@ -392,7 +436,7 @@ function FoldLine({
   return (
     <button
       aria-expanded={open}
-      className={`flex min-h-6 max-w-full items-center gap-1 text-left text-xs hover:underline ${textMutedOnSurface}`}
+      className={`flex min-h-6 max-w-full items-center gap-1 text-left text-xs hover:underline ${pageQuietText}`}
       data-testid={testId}
       onClick={onToggle}
       type="button"
@@ -419,11 +463,15 @@ function FoldLine({
  * design v2, states 4 and 9) - and while the rows of an approved plan run (state 7), every step
  * folds into one grey line, "Worked for 1 min 48 s · read 14 items, searched twice ›", as Happy's
  * section is summed up once it is over; a click opens them, and its mark turns to say so. The
- * line counts what the end of a stopped run counts ("read 14 items so far").
+ * line counts what the end of a stopped run counts ("read 14 items so far"), and says what the
+ * run's plan did once it ran (`planWords`, "applied 3 changes"). The line of a run that stopped
+ * or failed starts open (`opened`): its steps are what it found so far.
  */
 export function StepSection({
   folded,
   live,
+  opened = false,
+  planWords,
   since,
   steps,
   workedMs,
@@ -433,6 +481,10 @@ export function StepSection({
   readonly steps: readonly RunStep[];
   /** Whether the run works, so that its newest line carries its timer. */
   readonly live: boolean;
+  /** Whether the folded line starts open, until the person closes or opens it. */
+  readonly opened?: boolean;
+  /** What the run's plan did once its rows ran, said in place of "proposed a plan". */
+  readonly planWords?: string;
   /** When the person asked for the run, in this page's clock: what its timer counts from. */
   readonly since: number;
   /** Whether the run no longer works, or its approved plan's rows run, so that every step folds
@@ -442,7 +494,9 @@ export function StepSection({
   readonly workedMs: number | undefined;
 }): ReactNode {
   const [olderOpen, setOlderOpen] = useState(false);
-  const [workedOpen, setWorkedOpen] = useState(false);
+  // Undefined until the person presses the line, so a run that comes to a stop opens it then.
+  const [pressedOpen, setPressedOpen] = useState<boolean>();
+  const workedOpen = pressedOpen ?? opened;
   if (steps.length === 0) {
     return null;
   }
@@ -450,10 +504,10 @@ export function StepSection({
     return (
       <div className="space-y-1" data-testid="going-steps-section">
         <FoldLine
-          onToggle={() => setWorkedOpen((open) => !open)}
+          onToggle={() => setPressedOpen(!workedOpen)}
           open={workedOpen}
           testId="going-steps-fold"
-          words={<WorkedLine steps={steps} workedMs={workedMs} />}
+          words={<WorkedLine plan={planWords} steps={steps} workedMs={workedMs} />}
         />
         {workedOpen ? <StepList more={0} steps={steps} timer={undefined} /> : null}
       </div>

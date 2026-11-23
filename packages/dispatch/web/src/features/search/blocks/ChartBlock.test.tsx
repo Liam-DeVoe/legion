@@ -66,6 +66,19 @@ test("hovering a bar or a point shows its value, the series named as its field i
   }
 });
 
+// Each bar or point carries its value above it (design v3, state 5), as the products the design
+// follows label theirs, so the counts read without a hover.
+test("each bar or point is labelled with its value", () => {
+  for (const mark of ["bar", "line"] as const) {
+    const option = chartOption(chartPoints(byStatus), mark, "Issues", palette, 720);
+    expect(option.series).toEqual([
+      expect.objectContaining({
+        label: { color: palette.label, position: "top", show: true },
+      }),
+    ]);
+  }
+});
+
 /** Seven places along the axis, as a chart of a project's issues by status draws them. */
 const sevenStatuses: BlockOf<"chart"> = {
   ...byStatus,

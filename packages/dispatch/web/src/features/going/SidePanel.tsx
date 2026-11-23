@@ -194,7 +194,9 @@ export function SidePanel(): ReactNode {
           onRetry={asking.retry}
         />
       )}
-      <div className={`shrink-0 border-t p-3 ${borderDefault}`}>
+      {/* While History shows, its filter is the one box on the screen (design v3, state 11);
+          the panel's box stays in place, hidden, so its words and its focus come back with it. */}
+      <div className={`shrink-0 border-t p-3 ${history ? "hidden" : ""} ${borderDefault}`}>
         <BoxRow
           box={
             <BoxFrame chip={chip} chipTitle={chip}>

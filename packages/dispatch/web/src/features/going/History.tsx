@@ -6,13 +6,14 @@ import type { GoingConversation } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   inputClasses,
+  surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { openConversation, shownState, useGoingValue } from "./going-store";
+import { openConversation, shownState, titleWords, useGoingValue } from "./going-store";
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
 import { PROVIDER_REFUSED_WORDS, providerRefused, type RunState, runEnded } from "./run-states";
@@ -72,15 +73,18 @@ interface Listed {
  * as a filing from the line on top does (R9), holds that run's Undo (R6).
  *
  * The box at its top takes the focus as it opens, and typing filters the rows by the words of
- * every question of a conversation. Enter in it opens the first row; Down and Up move the focus
- * through the rows, Up from the first going back to the box, Enter opens the row the focus is on,
- * and typing on a row goes on in the box.
+ * every question of a conversation. While the focus is in it, the first row is drawn selected,
+ * as Enter in it opens that row; Down and Up move the focus through the rows, Up from the first
+ * going back to the box, Enter opens the row the focus is on, and typing on a row goes on in the
+ * box. The surface draws no box of its own beside this one while History shows.
  */
 export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode {
   const conversations = useQuery(goingConversationsQuery());
   const runs = useGoingValue((of) => of.runs);
   const undone = useGoingValue((of) => of.undone);
   const [filter, setFilter] = useState("");
+  // Whether the focus is in the box, where the first row is the one Enter opens.
+  const [inBox, setInBox] = useState(true);
   const box = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const ids = useId();
@@ -116,7 +120,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         refused:
           (state === "stopped_bound" || state === "stopped_person") && providerRefused(reason),
         state,
-        title: held.at(-1)?.words ?? "",
+        title: titleWords(held.at(-1)?.words ?? ""),
         // Undo is offered only while the run holds a write Undo can still take back, as
         // Dispatch keeps it: not once it was undone, on this page or another, and not for a
         // run whose writes were all messages, which are sent, not undone. An Undo pressed on
@@ -130,6 +134,8 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
     rows: listed.filter((row) => row.group === group),
     words,
   })).filter(({ rows }) => rows.length > 0);
+  // The row Enter in the box opens, drawn selected while the focus is there.
+  const firstRow = groups[0]?.rows[0]?.conversation.id;
 
   const walk = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -200,7 +206,8 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                   key={row.conversation.id}
                 >
                   <button
-                    className={`flex w-full min-w-0 items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm ${surfaceMutedHoverBg}`}
+                    className={`flex w-full min-w-0 items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm ${surfaceMutedHoverBg} ${inBox && row.conversation.id === firstRow ? surfaceMutedBg : ""}`}
+                    data-selected={inBox && row.conversation.id === firstRow ? "true" : undefined}
                     data-history-row=""
                     data-testid="going-history-open"
                     onClick={() => open(row.conversation)}
@@ -255,7 +262,9 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         aria-label="Filter History"
         className={`block w-full rounded-lg border px-3 py-1.5 text-sm outline-none ${inputClasses(true)}`}
         data-testid="going-history-filter"
+        onBlur={() => setInBox(false)}
         onChange={(event) => setFilter(event.target.value)}
+        onFocus={() => setInBox(true)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();

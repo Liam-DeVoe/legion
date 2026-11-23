@@ -1471,6 +1471,45 @@ test("a chip narrows the search, reads back in the person's words, and comes off
   }
 });
 
+// Every filter is one pill as tall as the box, naming its field and its value (design v3, state
+// 1, as Linear's filters are), and "Updated since" is a menu of days back, with a day of the
+// person's own inside it, not a bare date box reading "mm/dd/yyyy".
+test("each filter is one pill naming its field and its value, and Updated since is a menu of days back", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+  try {
+    await searchFor(user, "astrolabe");
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByTestId("search-filters-button")).toHaveAttribute("aria-expanded", "true");
+    const status = screen.getByRole("button", { name: "Status" });
+    expect(status).toHaveTextContent("StatusAny");
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent("ProjectAny");
+    const since = screen.getByRole("button", { name: "Updated since" });
+    expect(since).toHaveTextContent("Updated sinceAny time");
+    expect(since.className).toBe(status.className);
+    expect(screen.queryByLabelText("On a day")).toBeNull();
+
+    await user.click(since);
+    const menu = screen.getByRole("list", { name: "Updated since" });
+    expect(
+      within(menu)
+        .getAllByRole("button")
+        .map((choice) => choice.textContent)
+    ).toEqual(["Today", "Last 7 days", "Last 30 days", "Last 90 days"]);
+    expect(within(menu).getByLabelText("On a day")).toHaveAttribute("type", "date");
+    await user.click(within(menu).getByRole("button", { name: "Last 7 days" }));
+    expect(
+      await screen.findByRole("button", { name: /^Remove Updated since / })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Updated since" })).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 // A search made from an issue or a project page searches everything, as a search made from
 // anywhere does. The page's project rides under `number_project`, which the route reads a bare
 // issue number in and narrows nothing by, so the bar shows no chip claiming a narrowing.
@@ -1554,7 +1593,10 @@ test("the empty box lists Continue on the last hour's conversation, then at most
   try {
     const box = screen.getByRole("combobox", { name: "Search" });
     await waitFor(() => expect(optionIds()[0]).toBe("search-option-continue"));
-    expect(screen.getByRole("option", { name: `Continue: ${WORDS}` })).toBeTruthy();
+    // Continue names the conversation by its title: its question with a capital.
+    expect(
+      screen.getByRole("option", { name: "Continue: Who looks after the comet" })
+    ).toBeTruthy();
     const recent = within(screen.getByRole("group", { name: "Recent" })).getAllByRole("option");
     expect(recent.map((row) => row.textContent)).toEqual(
       items.slice(0, 5).map((item) => item.label)
@@ -1565,6 +1607,15 @@ test("the empty box lists Continue on the last hour's conversation, then at most
     expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Continue · Esc Close");
     // Nothing asks the person to type: the empty box says nothing under its rows.
     expect(screen.queryByText("Type at least 2 characters")).toBeNull();
+    // The search has no header: its box is on top, History and the move are in its foot, and Esc
+    // in the foot's hints is its one Close (design v3, state 1).
+    expect(screen.queryByTestId("going-header")).toBeNull();
+    const foot = screen.getByTestId("search-foot");
+    expect(within(foot).getByRole("button", { name: "History" })).toBeInTheDocument();
+    expect(within(foot).getByRole("button", { name: "Keep at the side" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    expect(dialog.firstElementChild?.contains(box)).toBe(true);
 
     await user.click(box);
     await user.keyboard("{Enter}");
@@ -1811,7 +1862,7 @@ test("Enter turns the bar into the conversation at once: the search parts leave,
     // Thinking from the moment of Enter, and titles it.
     expect(screen.getByTestId("going-run-words")).toHaveTextContent(WORDS);
     expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 0 s");
-    expect(screen.getByTestId("going-title")).toHaveTextContent(WORDS);
+    expect(screen.getByTestId("going-title")).toHaveTextContent("Who looks after the comet");
     // The box is the one it was, still focused, now under the conversation, with the chip on its
     // left and the level beside it.
     expect(talkBox()).toBe(box);

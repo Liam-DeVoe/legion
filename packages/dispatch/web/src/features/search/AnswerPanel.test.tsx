@@ -517,6 +517,12 @@ test("each frame of the stream is drawn as its own line, and the item frames are
     );
     expect(chip.closest("a")).toHaveAttribute("href", "/issues/LEGION-3");
     expect(screen.queryByTestId("going-answer-items")).toBeNull();
+    // The answer carries the ✦ the line on top marks the agent's words with (design v3, state 1),
+    // hidden from a screen reader, which hears the answer's words alone.
+    const mark = screen.getByTestId("going-answer-mark");
+    expect(mark).toHaveTextContent("✦");
+    expect(mark).toHaveAttribute("aria-hidden", "true");
+    expect(mark.nextElementSibling).toBe(text);
     // Nothing the model wrote is a link, an image or a tag: the one link is the item frame's.
     expect(text.querySelector("img, b")).toBeNull();
     const links = screen.getByTestId("going-answer").querySelectorAll("a");

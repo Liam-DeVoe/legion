@@ -138,7 +138,9 @@ test("a run that failed because the Dispatch has no answering model says so in o
   }
 });
 
-test("a failure reads one sentence and Try again, which runs the same words again", async () => {
+// A failure ends in the same grey card as a bound and a Stop (design v3, state 9): one sentence,
+// then Try again as its one next step, a button as Continue is.
+test("a failure reads one sentence in the end card and Try again, which runs the same words again", async () => {
   const user = userEvent.setup();
   const retried: string[] = [];
   const restore = await showRun(
@@ -147,10 +149,39 @@ test("a failure reads one sentence and Try again, which runs the same words agai
     { onRetry: (words) => retried.push(words) }
   );
   try {
-    const line = await screen.findByTestId("going-run-state");
-    expect(line.textContent).toBe("Dispatch could not reach the model. Try again");
-    expect(line.textContent).not.toMatch(/MODEL_FAILED|502/u);
-    await user.click(within(line).getByRole("button", { name: "Try again" }));
+    const card = await screen.findByTestId("going-run-end");
+    const line = within(card).getByTestId("going-run-state");
+    expect(line.textContent).toBe("Dispatch could not reach the model.");
+    expect(card.textContent).not.toMatch(/MODEL_FAILED|502/u);
+    expect(line.className).not.toContain(dangerText);
+    await user.click(within(card).getByRole("button", { name: "Try again" }));
+    expect(retried).toEqual(["where is DEMO-15"]);
+  } finally {
+    restore();
+  }
+});
+
+// A Stop ends in the same card: what it kept, in words, and Try again.
+test("a Stop says what it kept and offers Try again, in the end card", async () => {
+  const user = userEvent.setup();
+  const retried: string[] = [];
+  const restore = await showRun(
+    "stopped",
+    [
+      ["tool", { items: ["DEMO-2"], kind: "read", label: "Read DEMO-2", step: 2, tool: "read" }],
+      ["end", { offers: [], reason: "STOPPED: its person stopped it", state: "stopped" }],
+    ],
+    { onRetry: (words) => retried.push(words) }
+  );
+  try {
+    const card = await screen.findByTestId("going-run-end");
+    expect(within(card).getByTestId("going-run-state").textContent).toBe(
+      "Stopped · kept what it did: read 1 item"
+    );
+    // What it found so far stands above the card, its steps open.
+    expect(screen.getByTestId("going-steps-fold")).toHaveAttribute("aria-expanded", "true");
+    expect(stepWords()).toEqual(["Read DEMO-2"]);
+    await user.click(within(card).getByRole("button", { name: "Try again" }));
     expect(retried).toEqual(["where is DEMO-15"]);
   } finally {
     restore();
@@ -186,14 +217,11 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
     expect(within(bound).getByTestId("going-run-state").textContent).toBe(
       "Stopped at Standard's time limit · read 5 items so far"
     );
-    // One line above the card, closed, with no step drawn under it until it opens.
+    // One line above the card, open, its steps what the run found so far; a click closes it.
     const fold = screen.getByTestId("going-steps-fold");
     expect(fold).toHaveAccessibleName("Worked for 1 s · read 5 items");
-    expect(fold).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("going-steps-older")).toBeNull();
-    expect(stepWords()).toEqual([]);
-    await user.click(fold);
     expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByTestId("going-steps-older")).toBeNull();
     expect(stepWords()).toEqual([
       "Read DEMO-2",
       "Read DEMO-3",
@@ -201,6 +229,11 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
       "Read DEMO-5",
       "Read DEMO-6",
     ]);
+    await user.click(fold);
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(stepWords()).toEqual([]);
+    // Continue in Deep stands beside Continue at the same height.
+    expect(within(bound).getByTestId("going-run-continue-deep").className).toContain("py-[7px]");
     await user.click(within(bound).getByTestId("going-run-continue"));
     await user.click(within(bound).getByTestId("going-run-continue-deep"));
     expect(continued).toEqual([
@@ -756,7 +789,6 @@ test("a tool frame after its call frame, or before its reply frame, draws one li
 });
 
 test("no running line stays once the run ended: a call its end cut draws no line", async () => {
-  const user = userEvent.setup();
   const restore = await showRun("stopped", [
     ["call", { kind: "read", label: "Reading DEMO-15", step: 2, text: "Checking.", tool: "read" }],
     ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
@@ -767,10 +799,11 @@ test("no running line stays once the run ended: a call its end cut draws no line
     await waitFor(() =>
       expect(screen.getByTestId("going-run-state").textContent).toContain("Stopped")
     );
-    // The stopped run's steps fold into one line, which counts only the call that ended.
+    // The stopped run's steps fold into one line, open as what it found so far, which counts
+    // only the call that ended.
     const fold = screen.getByTestId("going-steps-fold");
     expect(fold).toHaveAccessibleName("Worked for 1 s · read 1 item");
-    await user.click(fold);
+    expect(fold).toHaveAttribute("aria-expanded", "true");
     expect(stepLines()).toEqual([["Read DEMO-15", "false"]]);
     // The prose stays as the header of the call it heads; the stopped run has no timer.
     expect(screen.getByTestId("going-step-words").textContent).toBe("Checking.");
@@ -1024,9 +1057,11 @@ const appliedFrames: readonly (readonly [string, unknown])[] = [
 ];
 
 // Design v3, state 7: an applied plan draws its steps' fold line, its answer, then its card, in
-// that order. Undo takes the changes back and leaves the answer as it was written, and a grey line
-// under the answer says when they were taken back.
-test("an applied plan's run draws the fold line, the answer, then the card, and after Undo says when under the answer", async () => {
+// that order, and its fold line says what the run did last, "applied 1 change", not "proposed a
+// plan". The card's Undo says what it takes back. Once pressed, the answer, which speaks of the
+// changes, turns grey and the line under it reads "Undone"; the card's title says what was taken
+// back, so no second line under the answer says it again.
+test("an applied plan's run says what it applied, and after Undo greys its answer and reads Undone", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
   const undo = answerRoute<
@@ -1045,28 +1080,38 @@ test("an applied plan's run draws the fold line, the answer, then the card, and 
       },
     ],
   }));
-  const restore = await showRun("done", appliedFrames);
+  const proposed: readonly [string, unknown] = [
+    "tool",
+    { items: [], kind: "plan", label: "Proposed a plan", step: 3, tool: "propose_plan" },
+  ];
+  const [readFrame, ...rest] = appliedFrames;
+  const restore = await showRun(
+    "done",
+    readFrame === undefined ? rest : [readFrame, proposed, ...rest]
+  );
   try {
     const card = await screen.findByTestId("going-plan");
     const undoButton = await within(card).findByTestId("going-undo-button");
+    expect(undoButton).toHaveTextContent(/^Undo 1 change$/u);
     const fold = screen.getByTestId("going-steps-fold");
+    await waitFor(() => expect(fold).toHaveAccessibleName(/· read 1 item, applied 1 change$/u));
     const answered = screen.getByTestId("going-run-answer");
     expect(fold.compareDocumentPosition(answered)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(answered.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(screen.queryByTestId("going-run-undone")).toBeNull();
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Done$/u);
 
-    const before = Date.now();
     await user.click(undoButton);
-    const undone = await screen.findByTestId("going-run-undone");
-    const after = Date.now();
-    expect([before, after].map((at) => `Undone at ${clockWords(at)}`)).toContain(
-      undone.textContent ?? ""
+    await waitFor(() =>
+      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(
+        "Undone · 1 change reverted"
+      )
     );
-    expect(answered.compareDocumentPosition(undone)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(undone.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(undone.className).toContain(textMutedOnSurface);
-    // The answer stays as it was written.
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u);
+    // The answer keeps its words, in grey, and no line under it says when.
     expect(answered.textContent).toBe(appliedAnswer);
+    expect(answered).toHaveAttribute("data-undone", "true");
+    expect(answered.className).toContain(textMutedOnSurface);
+    expect(screen.getByTestId("going-run").textContent ?? "").not.toContain("Undone at");
   } finally {
     read.mockRestore();
     restore();
@@ -1074,22 +1119,21 @@ test("an applied plan's run draws the fold line, the answer, then the card, and 
 });
 
 // A run undone before this page was opened - in another tab, or before a reload - says so as
-// Dispatch keeps it (`undone_at`): "Undone at" under its answer, at that time, and its card offers
-// no Undo, which has nothing left to take back.
-test("a run undone before this page was opened says when under its answer, as Dispatch keeps it, and offers no Undo", async () => {
+// Dispatch keeps it (`undone_at`): its card's title reads "Undone" at that time, its answer is
+// grey under "Undone", and its card offers no Undo, which has nothing left to take back.
+test("a run undone before this page was opened says so on its card, as Dispatch keeps it, and offers no Undo", async () => {
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
   const undoneAt = "2026-11-18T11:35:00Z";
   const restore = await showRun("done", appliedFrames, { run: { undone_at: undoneAt } });
   try {
     const card = await screen.findByTestId("going-plan");
     await waitFor(() =>
-      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(/^Applied 1 change/u)
+      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(
+        `Undone · ${clockWords(Date.parse(undoneAt))}`
+      )
     );
-    const undone = screen.getByTestId("going-run-undone");
-    expect(undone.textContent).toBe(`Undone at ${clockWords(Date.parse(undoneAt))}`);
-    expect(screen.getByTestId("going-run-answer").compareDocumentPosition(undone)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u);
+    expect(screen.getByTestId("going-run-answer")).toHaveAttribute("data-undone", "true");
     expect(within(card).queryByTestId("going-undo-button")).toBeNull();
   } finally {
     read.mockRestore();

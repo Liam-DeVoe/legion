@@ -33,6 +33,7 @@ import {
   quoteAccentBorder,
   quoteBodyText,
   secondaryButtonCompact,
+  secondaryButtonPaired,
   successText,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -82,6 +83,7 @@ import {
   specSentences,
   tickedCount,
   toggledDraft,
+  undoableCount,
   valuesNowWords,
   valueWords,
   wasReverted,
@@ -269,9 +271,8 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
 }
 
 /** The issue a row changes, as an answer names an item (design v3, state 6): its chip, with its
- *  key, a dot in its status's colour and its title (`ItemChip`). The chip takes the room the row
- *  has: where the row has no room for both, the fields beside it go under it, and a title longer
- *  than the whole row goes on onto the next line, never cut. */
+ *  key, a dot in its status's colour and its title (`ItemChip`), on one line, its title cut with
+ *  "…" where the row is narrower than it. */
 function ItemSlot({ item }: { readonly item: string }): ReactNode {
   return (
     <span className="min-w-0" data-item={item} data-testid="going-plan-item">
@@ -371,17 +372,20 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
 /**
  * One field a row writes, in the issue page's words (design v3, rule 6): as a line, its name, the
  * value now in the page's grey, which no reader takes for a link, and the new value ("Priority: No
- * priority → P2"); as a new issue's title, the value alone; as a part of a new issue's line, the
- * value with the word that says what it is ("under CORE-1"). While the row waits, a press on the
- * new value, or its Edit, opens the field's own control from the issue page: the priority menu,
- * the label picker, the status menu, the assignee picker, or a box of text; the status menu and the
- * assignee picker stand as the new value itself, as the priority menu does. A value of a field
- * that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one shows that issue's
- * title and "(new)" (`newIssues`), and its edit box holds the value itself, which the person may
- * replace with an issue's key. The edit box starts from the new value of the plan it is drawn
- * for, and its caller keys it to that plan, so a revised plan or a new run's never opens with an
- * earlier plan's value or the person's unsaved typing. An edited value says "Edited". Once Undo
- * took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No priority", all grey.
+ * priority → P2"), each value in one look - a priority and a status by their words, labels as
+ * chips - whatever the field; as a new issue's title, the value alone; as a part of a new issue's
+ * line, the value with the word that says what it is ("under CORE-1"). While the row waits, each
+ * line the person may edit has one Edit, whatever its field, which swaps the new value for the
+ * field's own control from the issue page and opens it: the priority menu, the label picker, the
+ * status menu, the assignee picker, or a box of text; a pick puts the value back in its words. A
+ * title or a part of a new issue's line is pressed to edit it instead, and a title also says Edit.
+ * A value of a field that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one
+ * shows that issue's title and "(new)" (`newIssues`), and its edit box holds the value itself,
+ * which the person may replace with an issue's key. The edit box starts from the new value of the
+ * plan it is drawn for, and its caller keys it to that plan, so a revised plan or a new run's
+ * never opens with an earlier plan's value or the person's unsaved typing. An edited value says
+ * "Edited". Once Undo took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No
+ * priority", all grey.
  */
 function FieldChange({
   change,
@@ -408,12 +412,38 @@ function FieldChange({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(typeof next === "string" ? next : "");
   const box = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (editing) box.current?.focus();
-  }, [editing]);
+  const line = useRef<HTMLDivElement>(null);
   const named = fieldWords(field).toLowerCase();
   const shown = change.namesNewIssue ? newIssues : undefined;
   const edit = editable ? change.edit : undefined;
+  // A line's Edit swaps its value for the field's control, which opens at once: a menu's select
+  // shows its options, a picker its list, and a box of text takes the focus.
+  const lineEdit = shape === "line" && edit !== undefined;
+  useEffect(() => {
+    if (!editing) return;
+    if (box.current !== null) {
+      box.current.focus();
+      return;
+    }
+    if (!lineEdit) return;
+    const select = line.current?.querySelector("select");
+    if (select === null || select === undefined) {
+      line.current?.querySelector<HTMLButtonElement>("[data-plan-control] button")?.click();
+      return;
+    }
+    select.focus();
+    if ("showPicker" in select && typeof select.showPicker === "function") {
+      try {
+        select.showPicker();
+      } catch {
+        // A browser that opens no menu from a script leaves the menu focused, where Space opens it.
+      }
+    }
+  }, [editing, lineEdit]);
+  const submit = (value: unknown) => {
+    onEdit(value);
+    setEditing(false);
+  };
   const nextValue = <FieldValue against={now} field={field} newIssues={shown} value={next} />;
   if (reverted && shape === "line") {
     // Undo took the change back: the value it wrote, struck out, then the old value it put back,
@@ -439,9 +469,9 @@ function FieldChange({
     );
   }
   let value: ReactNode;
-  if (edit === "priority" && (editing || next !== null)) {
+  if (edit === "priority" && (editing || (!lineEdit && next !== null))) {
     value = (
-      <span data-plan-edit="" data-testid="going-plan-next">
+      <span data-plan-control="" data-plan-edit="" data-testid="going-plan-next">
         <PriorityEditor
           issueKey={issueKey}
           write={{
@@ -450,25 +480,25 @@ function FieldChange({
             retry: undefined,
             shown: issuePriority(typeof next === "number" ? next : null),
             stopped: undefined,
-            submit: onEdit,
+            submit,
           }}
         />
       </span>
     );
-  } else if (edit === "status") {
+  } else if (edit === "status" && (editing || !lineEdit)) {
     value = (
-      <span data-plan-edit="" data-testid="going-plan-next">
+      <span data-plan-control="" data-plan-edit="" data-testid="going-plan-next">
         <StatusMenu
           label={`Status of ${issueKey}`}
-          onPick={onEdit}
+          onPick={submit}
           status={typeof next === "string" ? next : ""}
           statuses={issueStatuses}
         />
       </span>
     );
-  } else if (edit === "assignee") {
+  } else if (edit === "assignee" && (editing || !lineEdit)) {
     value = (
-      <span data-plan-edit="" data-testid="going-plan-next">
+      <span data-plan-control="" data-plan-edit="" data-testid="going-plan-next">
         <AssigneeEditor
           issueKey={issueKey}
           write={{
@@ -478,7 +508,7 @@ function FieldChange({
             retry: undefined,
             shown: typeof next === "string" && next !== "" ? next : null,
             stopped: undefined,
-            submit: onEdit,
+            submit,
           }}
         />
       </span>
@@ -487,10 +517,7 @@ function FieldChange({
     value = (
       <LabelsEditor
         labels={Array.isArray(next) ? next.filter((label) => typeof label === "string") : []}
-        onEdit={(labels) => {
-          onEdit(labels);
-          setEditing(false);
-        }}
+        onEdit={submit}
         project={project}
       />
     );
@@ -500,8 +527,7 @@ function FieldChange({
         className="flex items-center gap-1"
         onSubmit={(event) => {
           event.preventDefault();
-          onEdit(text);
-          setEditing(false);
+          submit(text);
         }}
       >
         <input
@@ -521,8 +547,8 @@ function FieldChange({
         </button>
       </form>
     );
-  } else if (edit !== undefined) {
-    // A part of a new issue's line is pressed to edit it; a line and a title also say Edit.
+  } else if (edit !== undefined && !lineEdit) {
+    // A part of a new issue's line is pressed to edit it; a title also says Edit.
     value = (
       <>
         <button
@@ -564,6 +590,7 @@ function FieldChange({
       className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 ${shape === "title" ? "text-sm font-medium" : "text-xs"}`}
       data-field={field}
       data-testid="going-plan-field"
+      ref={line}
     >
       {shape === "line" ? (
         <>
@@ -580,6 +607,20 @@ function FieldChange({
         </>
       ) : null}
       {value}
+      {lineEdit && !editing ? (
+        <>
+          {" "}
+          <button
+            aria-label={`Edit ${named}`}
+            className={secondaryButtonCompact}
+            data-plan-edit=""
+            onClick={() => setEditing(true)}
+            type="button"
+          >
+            Edit
+          </button>
+        </>
+      ) : null}
       {change.edited ? (
         <>
           {" "}
@@ -607,8 +648,9 @@ function Quote({ text }: { readonly text: string }): ReactNode {
 /**
  * A message row (R7): whom it reaches and how - "Message to ‹session› on DEMO-15 · as a BTW", a
  * broadcast's "Message to 4 sessions · as an aside" with the sessions under it, a message on an
- * issue's "Message on DEMO-15" - and the whole text as a quote. While it waits it says that a
- * message cannot be undone once sent (R6).
+ * issue's conversation, "Message on DEMO-15 · to its conversation", where every reader of the
+ * issue reads it - and the whole text as a quote. While it waits it says that a message cannot be
+ * undone once sent (R6).
  */
 function MessageBody({
   row,
@@ -643,7 +685,7 @@ function MessageBody({
         "Message in its conversation"
       ) : (
         <>
-          Message on <ItemSlot item={onIssue} />
+          Message on <ItemSlot item={onIssue} /> · to its conversation
         </>
       );
   }
@@ -827,13 +869,16 @@ export function PlanRowView({
   const review = reviewWords(plan, row);
   // A row says how it stands once its plan no longer waits, and where it failed while the plan
   // waits (a row Auto-review ran); a discarded plan's rows ran nothing and say nothing of it.
+  // Once Undo answered, the row's one status line is what became of its change (`undo`): a sent
+  // message reads "Sent, not undone" alone, not "Sent" above it.
   const outcome =
+    undo === undefined &&
     review === undefined &&
     plan.state !== "rejected" &&
     (plan.state !== "waiting" || row.state === "failed")
       ? rowOutcome(row)
       : undefined;
-  const resultMessage = outcome === undefined ? rowResultMessage(row) : "";
+  const resultMessage = outcome === undefined && undo === undefined ? rowResultMessage(row) : "";
   // A change Undo took back whole reads reverted, with no check; one that stayed keeps its check
   // and its line says why.
   const reverted = undo !== undefined && wasReverted(undo);
@@ -865,10 +910,12 @@ export function PlanRowView({
       <DocumentBody document={document} issue={row.issue || textOf(args.issue)} label={label} />
     );
   } else if (kind === "change" || kind === "claim") {
+    // The chip, then each field it changes under it, in the bar and in the panel alike: the
+    // fields start at one edge in every row, whatever the width of the chip above them.
     body = (
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <ItemSlot item={item} />{" "}
-        <div className="min-w-0 space-y-1">{changes.map((change) => field(change, "line"))}</div>
+      <div className="space-y-1">
+        <ItemSlot item={item} />
+        <div className="space-y-1">{changes.map((change) => field(change, "line"))}</div>
       </div>
     );
   } else {
@@ -881,13 +928,14 @@ export function PlanRowView({
       </div>
     );
   }
-  // What a row takes out is marked in red until Undo puts it back.
+  // What a row takes out is marked in red until Undo puts it back. The mark is a bar in a gutter
+  // every row keeps, so a marked row's tick stands in the same column as every other row's.
   const removing = removes && !reverted;
-  const marked = removing
-    ? `border-l-4 pl-2 ${calloutDangerBorder}`
+  const gutter = removing
+    ? calloutDangerBorder
     : changed
-      ? `border-l-4 pl-2 ${calloutWarningBorder}`
-      : "";
+      ? calloutWarningBorder
+      : "border-transparent";
   return (
     <li
       className={`border-t py-2 outline-none first:border-t-0 focus-visible:ring-2 ${focusVisibleRing} ${borderDefault}`}
@@ -900,7 +948,12 @@ export function PlanRowView({
       data-ticked={waiting ? String(ticked) : undefined}
       tabIndex={-1}
     >
-      <div className={`flex items-start gap-2 ${marked}`}>
+      <div className="flex items-start gap-2">
+        <span
+          aria-hidden="true"
+          className={`-ml-1 w-0 self-stretch border-l-4 ${gutter}`}
+          data-testid="going-plan-row-gutter"
+        />
         {waiting ? (
           <input
             aria-label={label}
@@ -1016,7 +1069,7 @@ export function PlanControls({
             ) : null}
           </button>
           <button
-            className={secondaryButtonCompact}
+            className={secondaryButtonPaired}
             data-testid="going-plan-reject"
             disabled={answering.pending}
             onClick={answering.reject}
@@ -1035,19 +1088,25 @@ export function PlanControls({
   );
 }
 
-/** The approval mode the plan's run is in, "Ask" or "Auto-review", as a link to where the person
- *  sets it. */
+/** The approval mode the plan's run is in, as a quiet line that says what it is - "Approval:
+ *  Ask ›" or "Approval: Auto-review ›" - and links to where the person sets it: a lone "Ask" read
+ *  as an action. It never breaks: in a narrow panel it goes under the title whole. */
 function ModeLink({ mode }: { readonly mode: GoingPlanAnswer["mode"] }): ReactNode {
   const routed = useInRouterContext();
-  const className = `text-xs underline ${linkText} ${linkHoverText}`;
+  const className = `shrink-0 text-xs whitespace-nowrap hover:underline ${textMutedOnSurface}`;
   const title = "Set which changes wait for you, in Settings";
+  const words = (
+    <>
+      Approval: {MODE_WORDS[mode]} <span aria-hidden="true">›</span>
+    </>
+  );
   return routed ? (
     <Link className={className} data-testid="going-plan-mode" title={title} to={MODE_SETTING_PATH}>
-      {MODE_WORDS[mode]}
+      {words}
     </Link>
   ) : (
     <a className={className} data-testid="going-plan-mode" href={MODE_SETTING_PATH} title={title}>
-      {MODE_WORDS[mode]}
+      {words}
     </a>
   );
 }
@@ -1078,24 +1137,26 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
  * "Applied 3 changes · 16:42", the time its last row ran (`useRanAt`) or its run ended
  * (`appliedAt`), whichever this page knows first, each row ticks in place, and a
  * failed row's "Say what to do instead" puts the cursor in the box. From the first row that ran,
- * the card keeps one Undo (R6); once pressed, its title reads "Undone · 3 changes reverted" and
- * each row says what became of its change. An old turn's card (`folded`, design v2, state 8)
- * draws a plan that no longer waits as its one line, "Applied 3 changes · Undo", which opens it.
- * A run undone before this page was opened (`undone`) offers no Undo. A plan that could not be
- * read says so, with Retry.
+ * the card keeps one Undo (R6), which says what it takes back, "Undo 2 changes": a message stays
+ * sent, so it counts in no Undo, and a plan of messages alone offers none. Once pressed, its title
+ * reads "Undone · 3 changes reverted" and each row says what became of its change, in one line.
+ * An old turn's card (`folded`, design v2, state 8) draws a plan that no longer waits as its one
+ * line, "Applied 3 changes · Undo 3 changes", which opens it. A run undone before this page was
+ * opened (`undoneAt`) reads "Undone · 11:35 AM" and offers no Undo. A plan that could not be read
+ * says so, with Retry.
  */
 export function PlanCard({
   answering,
   appliedAt,
   folded = false,
-  undone = false,
+  undoneAt,
 }: {
   readonly answering: PlanAnswering;
   readonly appliedAt?: number;
   readonly folded?: boolean;
-  /** Whether the plan's run was undone before this page was opened, as Dispatch says: its card
-   *  offers no Undo, which has nothing left to take back. */
-  readonly undone?: boolean;
+  /** When the plan's run was undone before this page was opened, as Dispatch says, in this page's
+   *  clock: its card says so and offers no Undo, which has nothing left to take back. */
+  readonly undoneAt?: number;
 }): ReactNode {
   const going = useGoing();
   const plan = answering.plan;
@@ -1137,7 +1198,7 @@ export function PlanCard({
     appliedAt === undefined || ranAt === undefined
       ? (appliedAt ?? ranAt)
       : Math.min(appliedAt, ranAt);
-  const title = cardTitle(plan, lines, folded ? undefined : appliedTime);
+  const title = cardTitle(plan, lines, folded ? undefined : appliedTime, undoneAt);
   // The rows the page draws are the open plan's, which an old turn's card is not.
   const onPage = folded ? new Set<number>() : new Set([...going.onPage.values()].flat());
   const rows = (plan.rows ?? []).filter((row) => !onPage.has(row.row));
@@ -1145,8 +1206,9 @@ export function PlanCard({
   const unmatched = (lines ?? []).filter(
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
+  const undoable = undoableCount(plan);
   const undo =
-    lines === undefined && !undone && (plan.rows ?? []).some((row) => row.state === "done") ? (
+    lines === undefined && undoneAt === undefined && undoable > 0 ? (
       <button
         className={secondaryButtonCompact}
         data-testid="going-undo-button"
@@ -1154,7 +1216,7 @@ export function PlanCard({
         onClick={undoing.undo}
         type="button"
       >
-        Undo
+        {undoable === 1 ? "Undo 1 change" : `Undo ${undoable} changes`}
       </button>
     ) : null;
   const refusal =
@@ -1205,10 +1267,10 @@ export function PlanCard({
       data-state={plan.state}
       data-testid="going-plan"
     >
-      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <header className="flex items-baseline justify-between gap-3">
         <h3
           aria-live="polite"
-          className={`text-sm font-semibold ${textPrimaryOnSurface}`}
+          className={`min-w-0 flex-1 text-sm font-semibold ${textPrimaryOnSurface}`}
           data-testid="going-plan-title"
         >
           {folded && !waiting ? (

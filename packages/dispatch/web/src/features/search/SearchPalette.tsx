@@ -40,6 +40,7 @@ import {
   movePanel,
   newConversation,
   openConversation,
+  titleWords,
   useGoingValue,
   useSendQueued,
 } from "../going/going-store";
@@ -54,6 +55,7 @@ import {
   boxInputStyle,
   boxWords,
   ConversationHeader,
+  MoveButton,
 } from "../going/RunControls";
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
@@ -203,11 +205,13 @@ function SearchResultIcon({ kind }: { kind: SearchResultKind }): ReactNode {
   };
 
   if (kind === "issue") {
+    // An issue's own glyph, a card with its lines, not a clock: the row's status pill is the one
+    // place it says how the issue stands.
     return (
       <svg {...common}>
         <title>Issue result</title>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v4l2.5 2" />
+        <rect height="14" rx="2.5" width="16" x="4" y="5" />
+        <path d="M8 10h8M8 14h5" />
       </svg>
     );
   }
@@ -306,10 +310,10 @@ function PaletteOption({
   );
 }
 
-/** A hit: its kind's icon, its owner - the issue's key and title, or the project document's
- *  project and name - with the issue's status, and the snippet the server marked. A hit that is
- *  the issue itself names its key alone above its title, which is its text, so the row shows the
- *  title once. A hit of a done issue reads muted. */
+/** A hit, on one line as the line on top is (design v3, state 1): its kind's icon, its owner's
+ *  key, then its words at the size of the line on top - the issue's title for a hit that is the
+ *  issue itself, else the owner's name and the snippet the server marked - and the issue's status
+ *  at its end, the one place the row says it. A hit of a done issue reads muted. */
 function ResultOption({
   active,
   onSelect,
@@ -339,6 +343,7 @@ function ResultOption({
   const document = result.owner.kind === "issue" ? result.artifact?.name : undefined;
   const itself = hitIsItsIssue(result);
   const title = itself ? issueHitTitle(result, source) : undefined;
+  const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
 
   return (
     <PaletteOption
@@ -349,38 +354,36 @@ function ResultOption({
       status={status}
     >
       <div
-        className={`flex min-w-0 items-center gap-2 text-xs ${
+        className={`flex min-w-0 items-center gap-2 text-sm ${
           muted ? textMutedOnSelectedCard : textSecondaryOnSurface
         }`}
       >
         {kind === undefined ? null : <SearchResultIcon kind={kind} />}
-        <span className="shrink-0 font-semibold">{owner.key}</span>
-        <span className="min-w-0 flex-1 truncate">
-          {itself ? null : document === undefined ? owner.name : `${owner.name} · ${document}`}
-        </span>
+        <span className="shrink-0 text-xs font-semibold">{owner.key}</span>
+        {itself ? null : (
+          <span className="max-w-[40%] min-w-0 shrink-0 truncate text-xs">
+            {document === undefined ? owner.name : `${owner.name} · ${document}`}
+          </span>
+        )}
+        {title === undefined ? (
+          <MarkdownPreview
+            className={`min-w-0 flex-1 text-sm ${words}`}
+            highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+            lines={1}
+            markdown={source}
+            tree={result.snippet_tree}
+          />
+        ) : (
+          <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>{title}</span>
+        )}
         {status === undefined ? null : (
           <span
-            className={`shrink-0 rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
+            className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
           >
             {statusText(status)}
           </span>
         )}
       </div>
-      {title === undefined ? (
-        <MarkdownPreview
-          className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-          highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-          lines={2}
-          markdown={source}
-          tree={result.snippet_tree}
-        />
-      ) : (
-        <p
-          className={`mt-1 line-clamp-2 text-sm break-words ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-        >
-          {title}
-        </p>
-      )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );
@@ -850,7 +853,7 @@ function PaletteDialog({
   // Continue on the empty box: the newest conversation History lists, where it is from the last
   // hour, by its first question.
   const newest = conversations.data?.rows?.[0];
-  const newestTitle = newest?.runs?.at(-1)?.words ?? "";
+  const newestTitle = titleWords(newest?.runs?.at(-1)?.words ?? "");
   const continueRow: OfferRow | undefined =
     !talking &&
     searchText === "" &&
@@ -1151,7 +1154,8 @@ function PaletteDialog({
         <button
           aria-controls={FILTERS_PANEL_ID}
           aria-expanded={filtersOpen}
-          className={secondaryButtonCompact}
+          // Pressed while the filters show, as History is pressed while it shows.
+          className={`${secondaryButtonCompact} aria-expanded:border-sky-600 aria-expanded:bg-sky-50 dark:aria-expanded:border-sky-400 dark:aria-expanded:bg-sky-950`}
           data-testid="search-filters-button"
           onClick={() => setFiltersOpen((shown) => !shown)}
           type="button"
@@ -1188,33 +1192,39 @@ function PaletteDialog({
           ref={dialog.containerRef}
           role="dialog"
         >
-          <ConversationHeader
-            history={history}
-            move="Keep at the side"
-            onClose={onClose}
-            onHistory={() => setHistory((shown) => !shown)}
-            onMove={() => movePanel({ kind: "keep_at_side" }, login)}
-            onNew={() => {
-              newConversation();
-              setHistory(false);
-            }}
-          />
-          {/* The conversation the bar holds, above its box: the runs, their steps and their
-              plan, or History in their place. */}
-          {talking ? (
-            history ? (
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <History onOpen={() => setHistory(false)} />
-              </div>
-            ) : (
-              <ConversationView
-                answering={asking.answering}
-                onContinue={asking.onContinue}
-                onRetry={asking.retry}
-              />
-            )
+          {/* The header names the conversation, or History while it shows (design v3, states 2
+              and 11). The search before Enter has none: its box is on top, as Raycast's and
+              Notion's are, with History and the move in its foot (state 1). */}
+          {talking || history ? (
+            <ConversationHeader
+              history={history}
+              move="Keep at the side"
+              onClose={onClose}
+              onHistory={() => setHistory((shown) => !shown)}
+              onMove={() => movePanel({ kind: "keep_at_side" }, login)}
+              onNew={() => {
+                newConversation();
+                setHistory(false);
+              }}
+            />
           ) : null}
-          <div className={`shrink-0 p-3 ${talking ? "border-t" : "border-b"} ${borderDefault}`}>
+          {/* The conversation the bar holds, above its box: the runs, their steps and their
+              plan; or History in their place, with its own filter box the only box on the
+              screen. */}
+          {history ? (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <History onOpen={() => setHistory(false)} />
+            </div>
+          ) : talking ? (
+            <ConversationView
+              answering={asking.answering}
+              onContinue={asking.onContinue}
+              onRetry={asking.retry}
+            />
+          ) : null}
+          <div
+            className={`shrink-0 p-3 ${history ? "hidden" : ""} ${talking ? "border-t" : "border-b"} ${borderDefault}`}
+          >
             <BoxRow
               box={box}
               hint={talking ? boxHint(asking, query) : undefined}
@@ -1226,9 +1236,8 @@ function PaletteDialog({
               </p>
             )}
           </div>
-          {talking ? null : (
+          {talking || history ? null : (
             <>
-              {history ? <History onOpen={() => setHistory(false)} /> : null}
               {/* What narrows the search and what the words themselves can do, behind the
                   Filters button: the chips the reader has added with the controls for the rest,
                   and the three operator forms. */}
@@ -1381,20 +1390,41 @@ function PaletteDialog({
                   />
                 </div>
               ) : null}
-              {/* The keys of the highlighted row alone (design v3, state 1), quieter than any
-                  row above them - and only where there is a pointer that can hover, since a
-                  touch reader has none of these keys and the line would cost them its height. */}
-              <p
-                className={`hidden shrink-0 border-t px-3 py-2 text-xs pointer-fine:block ${borderDefault} ${textMutedOnSurface}`}
-                data-testid="search-keyboard-hints"
+              {/* The foot: the keys of the highlighted row alone (design v3, state 1), quieter
+                  than any row above them - and only where there is a pointer that can hover,
+                  since a touch reader has none of these keys - then History and the move, which
+                  the search keeps here rather than in a header of their own. Esc in the hints is
+                  the one Close the search shows. */}
+              <div
+                className={`flex shrink-0 items-center gap-2 border-t px-3 py-1.5 ${borderDefault}`}
+                data-testid="search-foot"
               >
-                {enterHint === undefined ? null : (
-                  <>
-                    <Key>↵</Key> {enterHint} ·{" "}
-                  </>
-                )}
-                <Key>Esc</Key> Close
-              </p>
+                <p
+                  className={`hidden min-w-0 flex-1 text-xs pointer-fine:block ${textMutedOnSurface}`}
+                  data-testid="search-keyboard-hints"
+                >
+                  {enterHint === undefined ? null : (
+                    <>
+                      <Key>↵</Key> {enterHint} ·{" "}
+                    </>
+                  )}
+                  <Key>Esc</Key> Close
+                </p>
+                <span className="flex-1 pointer-fine:hidden" />
+                <button
+                  aria-pressed={false}
+                  className={secondaryButtonCompact}
+                  data-testid="going-history-button"
+                  onClick={() => setHistory(true)}
+                  type="button"
+                >
+                  History
+                </button>
+                <MoveButton
+                  move="Keep at the side"
+                  onMove={() => movePanel({ kind: "keep_at_side" }, login)}
+                />
+              </div>
             </>
           )}
         </div>

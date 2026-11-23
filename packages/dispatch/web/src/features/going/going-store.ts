@@ -256,14 +256,24 @@ export function conversationWorking(of: GoingState = state): boolean {
   return run !== undefined && shownState(run) === "working";
 }
 
+/** A conversation's title made from the words of its first question: those words with their
+ *  first letter a capital, as a title starts (design v3, states 2 and 11), however the person
+ *  typed them. The bar's header, History, the chip, the notice and Continue all name a
+ *  conversation by it; the question's own bubble keeps the words as typed. */
+export function titleWords(words: string): string {
+  const [first = ""] = words;
+  return first.toLocaleUpperCase() + words.slice(first.length);
+}
+
 /** The open conversation's title: its first question, or the words of the run whose start is out
- *  where that run starts a conversation of its own; empty where there is neither. */
+ *  where that run starts a conversation of its own, as a title (`titleWords`); empty where there
+ *  is neither. */
 export function conversationTitle(of: GoingState = state): string {
   if (of.starting !== undefined && !of.starting.follows) {
-    return of.starting.words;
+    return titleWords(of.starting.words);
   }
   const first = of.conversation?.[0];
-  return (first === undefined ? undefined : of.runs.get(first))?.record.words ?? "";
+  return titleWords((first === undefined ? undefined : of.runs.get(first))?.record.words ?? "");
 }
 
 /** Whether the open conversation's newest run ended done on an answer that asks the person a

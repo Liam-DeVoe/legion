@@ -248,6 +248,31 @@ function* paintBlockInSlices(
   }
 }
 
+/** Punctuation that ends the words before it: a full stop, a comma and their kin, a closing
+ *  bracket or quote. */
+const CLOSING_PUNCTUATION = /^[.,;:!?…)\]}"'”’]+/u;
+
+/**
+ * Keeps the punctuation the text writes right after a chip's link on the chip's line: the link and
+ * that punctuation go into one span that does not break. A chip is a box of its own
+ * (`ItemChip`), and a line may end after a box where it may not end after a word, so without this
+ * the full stop after a chip at the end of a line went on alone to the next one.
+ */
+function holdPunctuation(anchor: HTMLElement): void {
+  const after = anchor.nextSibling;
+  const closing = after instanceof Text ? CLOSING_PUNCTUATION.exec(after.data)?.[0] : undefined;
+  if (!(after instanceof Text) || closing === undefined) {
+    return;
+  }
+  // What follows the punctuation stays where it was; `after` keeps the punctuation alone.
+  after.splitText(closing.length);
+  const line = document.createElement("span");
+  line.className = "whitespace-nowrap";
+  line.setAttribute("data-chip-line", "");
+  anchor.before(line);
+  line.append(anchor, after);
+}
+
 /**
  * Renders Markdown text through Proof's own parser and schema, so every question, answer,
  * comment, reply, and message formats identically to the document editor. `block` (the
@@ -289,11 +314,12 @@ function* paintBlockInSlices(
  * The text those references are read from is `markdown`, unless the caller names another in
  * `referenceText`.
  *
- * With `chips`, as the command bar draws an answer (design v2, state 4), each link to an issue
+ * With `chips`, as the command bar draws an answer (design v3, state 4), each link to an issue
  * draws as the issue's chip (`ItemChip`): its key, a dot in its status's colour and its title. An
  * issue is its chip once, at the first link to it: a later link to the same issue keeps the words
  * it was written with, as a plain link, so the answer shows the issue's title once however often
- * its words name it. Every other reference keeps its `RefLink`.
+ * its words name it. Every other reference keeps its `RefLink`. The punctuation written right
+ * after a chip stays against it, on its line (`holdPunctuation`).
  */
 export function MarkdownBody({
   chips = false,
@@ -363,6 +389,7 @@ export function MarkdownBody({
       } else {
         chipped.add(reference.route.key);
         chips.push(reference);
+        holdPunctuation(reference.anchor);
       }
     }
     setChipAnchors(chips.length === 0 ? NO_CHIPS : chips);

@@ -133,17 +133,17 @@ test("the chip names the most urgent conversation in words, and how many more go
 
     await begin("count the moons");
     expect(screen.getByTestId("going-chip")).toHaveAttribute("data-state", "working");
-    expect(chipText()).toBe("Working · count the moons");
+    expect(chipText()).toBe("Working · Count the moons");
     expect(screen.queryByTestId("going-chip-more")).toBeNull();
 
     // Both work: the newest is named, and one more goes on.
     await begin("raise CORE-10");
-    expect(chipText()).toBe("Working · raise CORE-10");
+    expect(chipText()).toBe("Working · Raise CORE-10");
     expect(screen.getByTestId("going-chip-more")).toHaveTextContent("+1");
 
     // A failure comes before a run that works.
     runs.send("r-1", "end", ENDED_FAILED);
-    expect(chipText()).toBe("Failed · count the moons");
+    expect(chipText()).toBe("Failed · Count the moons");
     expect(screen.getByTestId("going-chip")).toHaveAttribute("data-state", "failed");
 
     // A plan that waits comes before both, named by its card's title once it is read.
@@ -171,10 +171,12 @@ test("the chip is a pill of its own, apart from the page: a background, a border
       expect(chip).toHaveClass(name);
     }
     expect(chip).toHaveClass("border", "rounded-full", "shadow-md");
-    // The shell holds the chip in a row of its own above the page (`app.tsx`), which is as tall
-    // as the chip and its gap. The chip keeps the height of its words rather than stretching to
-    // that row, where its background and its border would grow past its words.
-    expect(chip).toHaveClass("self-start");
+    // The shell floats the chip over the 24 px band at the top of the page (`app.tsx`), in a row
+    // of no height. The chip keeps the height of its words, 16 px lines and a 1 px pad, rather
+    // than stretching, and takes no 44 px floor (`data-run-chip`), so it stays inside that band.
+    expect(chip).toHaveClass("self-start", "leading-4");
+    expect(chip).toHaveAttribute("data-run-chip");
+    expect(screen.getByTestId("going-chip-open")).toHaveClass("py-px");
   } finally {
     runs.restore();
   }
@@ -195,14 +197,14 @@ test("Done shows a blue dot until it is seen, a stop reads Stopped, and the chip
       reason: "STOPPED: its person stopped it",
       state: "stopped",
     });
-    expect(chipText()).toBe("Done · count the moons");
+    expect(chipText()).toBe("Done · Count the moons");
     expect(screen.getByTestId("going-chip-unread")).toBeInTheDocument();
     expect(screen.getByTestId("going-chip-more")).toHaveTextContent("+1");
 
     // Seen in the bar, the answer is no longer named.
     act(() => openRun("r-1"));
     act(() => setPlace("closed"));
-    expect(chipText()).toBe("Stopped · watch the comet");
+    expect(chipText()).toBe("Stopped · Watch the comet");
     expect(screen.queryByTestId("going-chip-unread")).toBeNull();
     expect(screen.queryByTestId("going-chip-more")).toBeNull();
 
@@ -222,7 +224,7 @@ test("a run that ends while the bar is closed shows its notice for 6 s", async (
     await begin("count the moons");
     expect(screen.queryByTestId("going-notice")).toBeNull();
     runs.send("r-1", "end", ENDED_DONE);
-    expect(screen.getByTestId("going-notice")).toHaveTextContent("Done: count the moons · Open");
+    expect(screen.getByTestId("going-notice")).toHaveTextContent("Done: Count the moons · Open");
 
     await tick(5_900);
     expect(screen.getByTestId("going-notice")).toBeInTheDocument();
@@ -245,7 +247,7 @@ test("a failure and a plan that waits each show their notice, whose action opens
     renderChip();
     await begin("count the moons");
     runs.send("r-1", "end", ENDED_FAILED);
-    expect(screen.getByTestId("going-notice")).toHaveTextContent("Failed: count the moons · Open");
+    expect(screen.getByTestId("going-notice")).toHaveTextContent("Failed: Count the moons · Open");
     await user.click(screen.getByRole("button", { name: "Open" }));
     expect(screen.queryByTestId("going-notice")).toBeNull();
     expect(goingState().place).toBe("over");

@@ -10,13 +10,16 @@ import {
 
 import type { GoingRun } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
-import { PinButton } from "../../components/PinButton";
+import { PinIcon } from "../../components/PinButton";
 import {
   bgTransparent,
   borderDefault,
   card,
+  focusVisibleRing,
   focusWithinBorder,
   inputClasses,
+  primaryButtonBg,
+  primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonCompact,
   secondaryButtonHoverBorder,
@@ -146,7 +149,9 @@ export function LevelControl(): ReactNode {
         aria-controls={open ? menuId : undefined}
         aria-expanded={open}
         aria-haspopup="menu"
-        className={`min-h-11 rounded-lg px-2 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
+        // One width whatever the mode is named, so the box beside it never moves as the mode
+        // changes (design v3, state 12).
+        className={`inline-flex min-h-11 w-20 items-center justify-between rounded-lg px-2 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
         data-testid="going-level-button"
         onClick={() => (open ? setMenu(undefined) : openMenu())}
         // Down and Up open the menu as Enter and Space do.
@@ -173,7 +178,9 @@ export function LevelControl(): ReactNode {
           {LEVELS.map(({ label, level, use }) => (
             <button
               aria-checked={level === chosen}
-              className={`flex min-h-11 w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm sm:min-h-8 ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
+              // The row the focus is on is filled and ringed in the page's blue, never the
+              // browser's own black outline.
+              className={`flex min-h-11 w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm outline-none focus:bg-slate-100 focus-visible:ring-2 sm:min-h-8 dark:focus:bg-slate-800 ${focusVisibleRing} ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
               data-level={level}
               key={level}
               onClick={() => choose(level)}
@@ -213,13 +220,42 @@ function OverThePageIcon(): ReactNode {
   );
 }
 
+/** An icon button of the header: the move and Close, the same bordered square in the bar and in
+ *  the panel, as tall as History and New beside it. */
+const HEADER_ICON_BUTTON = `flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border sm:min-h-7 sm:min-w-7 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+
+/** The button that moves the conversation, as an icon with its words as its tooltip: over the
+ *  page a pin, "Keep at the side"; at the side the page with the bar over it, "Open over the
+ *  page". The header draws it, and so does the bar's foot before Enter (design v3, state 1). */
+export function MoveButton({
+  move,
+  onMove,
+}: {
+  readonly move: "Keep at the side" | "Open over the page";
+  readonly onMove: () => void;
+}): ReactNode {
+  return (
+    <button
+      aria-label={move}
+      className={HEADER_ICON_BUTTON}
+      data-testid="going-move"
+      onClick={onMove}
+      title={move}
+      type="button"
+    >
+      {move === "Open over the page" ? <OverThePageIcon /> : <PinIcon pinned={false} />}
+    </button>
+  );
+}
+
 /**
- * The header of the conversation, in the bar and in the panel (design v3, states 2 and 10): the
- * conversation's title, its first question on one line, then History, a new conversation, the
- * button that moves it, and Close. The move is an icon with its words as its tooltip, so the
- * title keeps the room: over the page a pin, "Keep at the side", and Close says its word; at the
- * side the page with the bar over it, "Open over the page", and Close is the panel's ×. Each
- * press is the surface's own.
+ * The header of the conversation, in the bar and in the panel (design v3, states 2 and 10), one
+ * set in both: the conversation's title, its first question on one line, then History, a new
+ * conversation, the button that moves it, and Close. The move and Close are icons with their
+ * words as their tooltips, so the title keeps the room: over the page a pin, "Keep at the side";
+ * at the side the page with the bar over it, "Open over the page"; and Close is × on both. While
+ * History shows (`history`), the header names it, "History", with a back arrow that leaves it,
+ * and History is pressed. Each press is the surface's own.
  */
 export function ConversationHeader({
   history,
@@ -238,26 +274,50 @@ export function ConversationHeader({
 }): ReactNode {
   const title = useGoingValue(conversationTitle);
   const open = useGoingValue((of) => of.conversation !== undefined || of.starting !== undefined);
-  const side = move === "Open over the page";
+  let named: ReactNode;
+  if (history) {
+    named = (
+      <>
+        <button
+          aria-label="Back"
+          className={HEADER_ICON_BUTTON}
+          data-testid="going-history-back"
+          onClick={onHistory}
+          title="Back"
+          type="button"
+        >
+          <span aria-hidden="true">‹</span>
+        </button>
+        <h2
+          className={`min-w-0 flex-1 truncate text-sm font-medium ${textPrimaryOnSurface}`}
+          data-testid="going-history-heading"
+        >
+          History
+        </h2>
+      </>
+    );
+  } else if (title === "") {
+    named = <span className="flex-1" />;
+  } else {
+    named = (
+      <h2
+        className={`min-w-0 flex-1 truncate text-sm font-medium ${textPrimaryOnSurface}`}
+        data-testid="going-title"
+        title={title}
+      >
+        {title}
+      </h2>
+    );
+  }
   return (
     <div
       className={`flex shrink-0 items-center gap-2 border-b px-3 py-1.5 ${borderDefault}`}
       data-testid="going-header"
     >
-      {title === "" ? (
-        <span className="flex-1" />
-      ) : (
-        <h2
-          className={`min-w-0 flex-1 truncate text-sm font-medium ${textPrimaryOnSurface}`}
-          data-testid="going-title"
-          title={title}
-        >
-          {title}
-        </h2>
-      )}
+      {named}
       <button
         aria-pressed={history}
-        className={secondaryButtonCompact}
+        className={`${secondaryButtonCompact} aria-pressed:border-sky-600 aria-pressed:bg-sky-50 dark:aria-pressed:border-sky-400 dark:aria-pressed:bg-sky-950`}
         data-testid="going-history-button"
         onClick={onHistory}
         type="button"
@@ -274,29 +334,16 @@ export function ConversationHeader({
           New
         </button>
       ) : null}
-      {side ? (
-        <button
-          aria-label={move}
-          className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg md:min-h-8 md:min-w-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-          data-testid="going-move"
-          onClick={onMove}
-          title={move}
-          type="button"
-        >
-          <OverThePageIcon />
-        </button>
-      ) : (
-        <PinButton label={move} onClick={onMove} pinned={false} />
-      )}
+      <MoveButton move={move} onMove={onMove} />
       <button
-        aria-label={side ? "Close" : undefined}
-        className={secondaryButtonCompact}
+        aria-label="Close"
+        className={HEADER_ICON_BUTTON}
         data-testid="going-close"
         onClick={onClose}
-        title={side ? "Close" : undefined}
+        title="Close"
         type="button"
       >
-        {side ? <span aria-hidden="true">×</span> : "Close"}
+        <span aria-hidden="true">×</span>
       </button>
     </div>
   );
@@ -367,11 +414,17 @@ export function boxInputStyle(placeholder: string): CSSProperties {
   return { minWidth: `calc(${[...placeholder].length}ch + 0.75rem)` };
 }
 
+/** The words a chip of a project says before its key, which a screen reader hears and the box
+ *  shows only in the chip's tooltip. */
+const PROJECT_WORDS = /^(the project )(\S+)$/u;
+
 /**
  * The conversation's box, in the bar and in the panel (design v3, states 1, 2 and 10): one frame
  * holding the context chip on its left (`chip`, cut where the chip ends, its whole words in
  * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button - so
- * the chip stands in the same place on every surface. Where the frame is narrow, the chip is cut
+ * the chip stands in the same place on every surface. A project's chip shows its key alone,
+ * "OPS", as the design draws a chip, and keeps "the project OPS" for a screen reader and its
+ * tooltip, so it stays whole beside Stop in the panel. Where the frame is narrow, the chip is cut
  * before the input's words are (`boxInputStyle`).
  */
 export function BoxFrame({
@@ -383,6 +436,7 @@ export function BoxFrame({
   readonly chip: string | undefined;
   readonly chipTitle: string | undefined;
 }): ReactNode {
+  const project = chip === undefined ? null : PROJECT_WORDS.exec(chip);
   return (
     <div
       className={`flex min-w-48 flex-1 items-center gap-1.5 rounded-lg border px-1.5 ${inputClasses(true)} ${focusWithinBorder}`}
@@ -394,7 +448,16 @@ export function BoxFrame({
           data-testid="going-box-chip"
           title={chipTitle}
         >
-          <span className="min-w-0 truncate">{chip}</span>
+          <span className="min-w-0 truncate">
+            {project === null ? (
+              chip
+            ) : (
+              <>
+                <span className="sr-only">{project[1]}</span>
+                {project[2]}
+              </>
+            )}
+          </span>
         </span>
       )}
       {children}
@@ -434,12 +497,15 @@ export function BoxRow({
         <LevelControl />
         {box}
         {working ? (
+          // Stop is the one thing to press while the run works, so it is a filled button with
+          // the stop square, not a quiet word beside the box.
           <button
-            className={secondaryButtonCompact}
+            className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-medium sm:min-h-9 ${primaryButtonBg} ${primaryButtonEnabledHoverBg}`}
             data-testid="going-stop"
             onClick={onStop}
             type="button"
           >
+            <span aria-hidden="true" className="size-2.5 rounded-sm bg-current" />
             Stop
           </button>
         ) : null}

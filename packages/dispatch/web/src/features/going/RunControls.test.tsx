@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { goingState } from "./going-store";
-import { BoxFrame, BoxRow } from "./RunControls";
+import { BoxFrame, BoxRow, ConversationHeader } from "./RunControls";
 
 // The mode control (design v3, state 12): a small text button at the left of the box that names
 // the mode the next run takes, and its menu of the three modes, each with one line on what it is
@@ -92,4 +92,72 @@ test("the keys move in the mode menu, and Escape closes it without closing the b
   expect(goingState().level).toBe("fast");
   expect(screen.queryByRole("menu")).toBeNull();
   expect(screen.getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus();
+});
+
+// The mode button keeps one width whatever the mode is called, so the box beside it never moves
+// when the mode changes (design v3, state 12), and the focused mode is filled and ringed in the
+// page's blue, never the browser's black outline.
+test("the mode button keeps one width, and the menu's focused mode wears the page's ring", async () => {
+  const user = userEvent.setup();
+  renderRow();
+  const button = screen.getByTestId("going-level-button");
+  expect(button.className.split(" ")).toContain("w-20");
+  await user.click(button);
+  for (const item of screen.getAllByRole("menuitemradio")) {
+    expect(item.className.split(" ")).toEqual(
+      expect.arrayContaining(["outline-none", "focus-visible:ring-2", "focus:bg-slate-100"])
+    );
+  }
+});
+
+// A project's chip shows its key alone, as the design draws a chip, so it stays whole beside
+// Stop in the panel; a screen reader still hears "the project OPS", and the tooltip says it.
+test("a project's chip shows its key, and says the project to a screen reader and on hover", () => {
+  render(
+    <BoxFrame chip="the project OPS" chipTitle="Acting on the project OPS">
+      <input aria-label="Ask the command bar" type="text" />
+    </BoxFrame>
+  );
+  const chip = screen.getByTestId("going-box-chip");
+  expect(chip.textContent).toBe("the project OPS");
+  expect(chip.querySelector(".sr-only")?.textContent).toBe("the project ");
+  expect(chip).toHaveAttribute("title", "Acting on the project OPS");
+});
+
+// The header is one set over the page and at the side (design v3, states 2 and 10): History,
+// the move as an icon with its words as its tooltip, and Close as ×, the same buttons in both.
+// While History shows, the header names it, with a back arrow, and History is pressed.
+test("the header is one set over the page and at the side, and names History while it shows", () => {
+  const header = (move: "Keep at the side" | "Open over the page", history: boolean) =>
+    render(
+      <ConversationHeader
+        history={history}
+        move={move}
+        onClose={() => {}}
+        onHistory={() => {}}
+        onMove={() => {}}
+        onNew={() => {}}
+      />
+    );
+  const over = header("Keep at the side", false);
+  const overClose = within(over.container).getByRole("button", { name: "Close" });
+  const overMove = within(over.container).getByRole("button", { name: "Keep at the side" });
+  const side = header("Open over the page", false);
+  const sideClose = within(side.container).getByRole("button", { name: "Close" });
+  const sideMove = within(side.container).getByRole("button", { name: "Open over the page" });
+  expect(overClose.className).toBe(sideClose.className);
+  expect(overClose.textContent).toBe("×");
+  expect(sideClose.textContent).toBe("×");
+  expect(overMove.className).toBe(sideMove.className);
+  expect(overMove).toHaveAttribute("title", "Keep at the side");
+
+  const listing = header("Keep at the side", true);
+  expect(within(listing.container).getByTestId("going-history-heading")).toHaveTextContent(
+    "History"
+  );
+  expect(within(listing.container).getByRole("button", { name: "Back" })).toBeInTheDocument();
+  expect(within(listing.container).getByTestId("going-history-button")).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
 });

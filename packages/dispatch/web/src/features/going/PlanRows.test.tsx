@@ -267,13 +267,23 @@ test("the priority menu and the label picker edit a value, the row says Edited, 
     await screen.findByTestId("going-plan-card-rows");
     expect(within(drawnRow(0)).queryByTestId("going-plan-edited")).toBeNull();
 
+    // Each line has one Edit, whatever its field; it swaps the value for the issue page's own
+    // control, here its priority menu.
+    expect(screen.queryByRole("combobox", { name: "Priority of DEMO-10" })).toBeNull();
+    await user.click(
+      within(fieldOf(drawnRow(0), "priority")).getByRole("button", { name: "Edit priority" })
+    );
     await user.selectOptions(screen.getByRole("combobox", { name: "Priority of DEMO-10" }), "1");
     const priority = fieldOf(drawnRow(0), "priority");
     expect(within(priority).getByTestId("going-plan-edited")).toHaveTextContent("Edited");
     expect(priority).toHaveTextContent(/^Priority: No priority → P1/u);
+    // The pick puts the value back in its words.
+    expect(screen.queryByRole("combobox", { name: "Priority of DEMO-10" })).toBeNull();
 
-    // A press on the new labels opens the issue page's label picker over them.
-    await user.click(within(fieldOf(drawnRow(0), "labels")).getByTestId("going-plan-next"));
+    // The labels' Edit opens the issue page's label picker over them.
+    await user.click(
+      within(fieldOf(drawnRow(0), "labels")).getByRole("button", { name: "Edit labels" })
+    );
     const search = await screen.findByRole("combobox", { name: "Search or create label" });
     await user.type(search, "urgent{Enter}");
     await user.keyboard("{Escape}");
@@ -385,8 +395,15 @@ test("a row that closes or removes something is marked in red, and a removed lab
     expect(drawnRow(0).querySelector('[data-mark="removed"]')?.textContent).toBe("removed a11y");
     expect(drawnRow(1)).toHaveAttribute("data-removes", "true");
     expect(within(drawnRow(1)).getByTestId("going-plan-removes")).toHaveTextContent(/^Closes$/u);
-    // The new status is the issue page's own status menu, set to the status the row writes.
-    expect(shownText(fieldOf(drawnRow(1), "status"))).toBe("Status: In progress →");
+    // The new status reads as its word, as a priority does, with one Edit that opens the issue
+    // page's own status menu, set to the status the row writes.
+    expect(within(fieldOf(drawnRow(1), "status")).getByTestId("going-plan-next")).toHaveTextContent(
+      /^Done$/u
+    );
+    expect(screen.queryByRole("combobox", { name: "Status of DEMO-2" })).toBeNull();
+    await userEvent
+      .setup()
+      .click(within(fieldOf(drawnRow(1), "status")).getByRole("button", { name: "Edit status" }));
     expect(screen.getByRole("combobox", { name: "Status of DEMO-2" })).toHaveValue("done");
     expect(drawnRow(2)).toHaveAttribute("data-removes", "true");
     expect(fieldOf(drawnRow(2), "claim")).toHaveTextContent(/^Claimed by: alice → Nobody$/u);
@@ -815,12 +832,19 @@ test("the status menu and the assignee picker edit a row's values, and Approve c
   try {
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
+    // Each line's one Edit opens the issue page's own control for its field.
+    await user.click(
+      within(fieldOf(drawnRow(0), "status")).getByRole("button", { name: "Edit status" })
+    );
     const status = screen.getByRole("combobox", { name: "Status of DEMO-5" });
     expect(status).toHaveValue("in_progress");
     await user.selectOptions(status, "testing");
     expect(
       within(fieldOf(drawnRow(0), "status")).getByTestId("going-plan-edited")
     ).toBeInTheDocument();
+    await user.click(
+      within(fieldOf(drawnRow(0), "assignee")).getByRole("button", { name: "Edit assignee" })
+    );
     const assignee = screen.getByRole("combobox", { name: "Assignee of DEMO-5" });
     expect(assignee).toHaveValue("alice");
     // The picker reads who has signed in once the person reaches for it, as on the issue page.

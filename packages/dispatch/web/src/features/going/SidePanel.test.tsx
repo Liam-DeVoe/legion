@@ -249,7 +249,8 @@ test("History, opened again after a run starts at the side, lists that run", asy
     await user.click(toggle);
 
     const shown = await screen.findByTestId("going-history");
-    expect(await within(shown).findByText(started.words)).toBeInTheDocument();
+    // History names it by its title: the question with a capital.
+    expect(await within(shown).findByText("What does the runbook say")).toBeInTheDocument();
   } finally {
     history.mockRestore();
     starts.restore();

@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { onFakeClock, tick } from "../../../__tests__/fake-clock";
-import { dangerText, textMutedOnSurface } from "../../../theme/classes";
+import { dangerText, textMutedOnSurface, textSecondaryOnSurface } from "../../../theme/classes";
 import type { RunStep } from "../run-frames";
 import { elapsedTimeWords, foldWords, StepSection, workedWords } from "./StepSection";
 
@@ -126,6 +126,59 @@ test("a running call's line is its present words with a shimmer, and the newest 
     await tick(2000);
     expect(timer.textContent).toBe("2 s");
   });
+});
+
+// A run that works with no call running - its model writes, or decides what to call next - reads
+// as working, not idle (design v3, state 3): its lines end with "Thinking…" and the run's timer,
+// which no step line then carries; the header over calls that all ended drops its "…".
+test("a working run with no call running ends with Thinking and the timer, not a timer on an ended line", async () => {
+  await onFakeClock(async () => {
+    render(
+      <StepSection
+        folded={false}
+        live
+        since={Date.now()}
+        steps={[
+          step(14, { header: "Reading the telescope's issues…" }),
+          step(15, { header: "Reading the telescope's issues…" }),
+        ]}
+        workedMs={undefined}
+      />
+    );
+    expect(screen.queryByTestId("going-step-timer")).toBeNull();
+    const thinking = screen.getByTestId("going-steps-thinking");
+    expect(thinking).toHaveTextContent("Thinking…");
+    const timer = within(thinking).getByTestId("going-thinking-timer");
+    expect(timer.textContent).toBe("0 s");
+    await tick(3000);
+    expect(timer.textContent).toBe("3 s");
+    expect(screen.getByTestId("going-step-words").textContent).toBe(
+      "Reading the telescope's issues"
+    );
+    // Each ended line reads darker than the header, at 13 px.
+    for (const line of screen.getAllByTestId("going-step")) {
+      expect(line.className).toContain("text-[13px]");
+      expect(line.className).toContain(textSecondaryOnSurface);
+    }
+  });
+});
+
+test("while a call runs, its header keeps the words the model wrote, and no Thinking line shows", () => {
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[
+        step(14, { header: "Reading…" }),
+        { ...running(15, "Reading DEMO-7"), header: "Reading…" },
+      ]}
+      workedMs={undefined}
+    />
+  );
+  expect(screen.getByTestId("going-step-words").textContent).toBe("Reading…");
+  expect(screen.queryByTestId("going-steps-thinking")).toBeNull();
+  expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
 });
 
 test("calls that run at once each have a line, and past three the rest fold into and 2 more…", () => {
@@ -343,7 +396,8 @@ test("a slip's line is grey with what the model tried, and a failure's line is r
     />
   );
   expect(labels()).toEqual(["Read DEMO-1", SLIP, "Could not read DEMO-12: you have no access"]);
-  const [, slipLine, failedLine] = screen.getAllByTestId("going-step");
+  const [endedLine, slipLine, failedLine] = screen.getAllByTestId("going-step");
+  expect(endedLine?.className).toContain(textSecondaryOnSurface);
   expect(slipLine?.className).toContain(textMutedOnSurface);
   expect(slipLine?.className).not.toContain(dangerText);
   expect(failedLine?.className).toContain(dangerText);

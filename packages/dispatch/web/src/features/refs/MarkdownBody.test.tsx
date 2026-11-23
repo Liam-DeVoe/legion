@@ -2110,6 +2110,43 @@ test("a body drawn with chips draws an issue's chip at its first link, and a lat
   }
 });
 
+// A chip is a box that never breaks (`ItemChip`), and a line may end after a box, so the full stop
+// after a chip went on alone to the next line in the side panel. The link and the punctuation
+// written right after it share one span that does not break, with nothing between them.
+test("a body drawn with chips keeps the punctuation after a chip against it, on its line", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="It needs a map, [DEMO-7](/issues/DEMO-7). Then [DEMO-7](/issues/DEMO-7) again."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    const line = chip.closest("[data-chip-line]");
+    if (line === null) throw new Error("the chip and its full stop share no line");
+    expect(line.className).toBe("whitespace-nowrap");
+    expect(line.textContent).toBe("DEMO-7DoneMap the lunar craters.");
+    expect(line.firstElementChild).toBe(chip.closest("a"));
+    // The words after the full stop stay outside it, and so does the later plain link.
+    expect(view.container.textContent).toBe(
+      "It needs a map, DEMO-7DoneMap the lunar craters. Then DEMO-7 again."
+    );
+    expect(view.container.querySelectorAll("[data-chip-line]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
 // A time the command bar's agent writes is a link to its instant under `dispatch-time:`: the
 // body draws a `<time>` of that instant showing the link's words, with the instant whole on
 // hover as every time the page draws in words has it, and no link; an address that names no
@@ -2138,9 +2175,10 @@ test("a time link draws as a time showing its words with the full date on hover,
   }
 });
 
-// A long question titles its link cut on a word, and the sentence the link ends draws one stop:
-// the link's "…", never "…." with the full stop the answer's own sentence adds after it.
-test("a link whose title is cut ends on a word, and the full stop after it is not drawn twice", async () => {
+// A long question titles its link cut to fit, and the sentence the link ends draws one stop: the
+// link's "…", never "…." with the full stop the answer's own sentence adds after it. The cut is
+// the one every page's link titles take, at 60 characters: the bar changes no other page.
+test("a link whose title is cut draws no second full stop after its …", async () => {
   await warmMarkdownRenderer();
   const question =
     "Does a reply in the side panel start a new turn, or is it the same turn as the last one?";
@@ -2191,12 +2229,12 @@ test("a link whose title is cut ends on a word, and the full stop after it is no
       route_status: null,
       route_status_reason: null,
     });
-    // Cut on the word "it", not inside "the".
+    // Cut at 60 characters, as every link title is cut.
     await waitFor(() =>
-      expect(link.textContent).toBe("Does a reply in the side panel start a new turn, or is it…")
+      expect(link.textContent).toBe("Does a reply in the side panel start a new turn, or is it th…")
     );
     expect(view.container.textContent).toBe(
-      "Asked in Does a reply in the side panel start a new turn, or is it… Pick one."
+      "Asked in Does a reply in the side panel start a new turn, or is it th… Pick one."
     );
   } finally {
     view.unmount();

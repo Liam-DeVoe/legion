@@ -179,16 +179,27 @@ function AnswerBody({
           </p>
         ) : null}
         {answer.text === "" ? null : (
-          <div
-            className={`line-clamp-3 ${stale ? textMutedOnSurface : textPrimaryOnSurface}`}
-            data-testid="going-answer-text"
-          >
-            <MarkdownBody
-              chips
-              markdown={answer.text}
-              referenceText={inText.join(" ")}
-              softBreaks="line"
-            />
+          // The answer carries the ✦ the line on top marks the agent's own words with, so it
+          // reads as the agent's answer and not as one more hit (design v3, state 1).
+          <div className="flex gap-2">
+            <span
+              aria-hidden="true"
+              className={`shrink-0 text-sm ${textMutedOnSurface}`}
+              data-testid="going-answer-mark"
+            >
+              ✦
+            </span>
+            <div
+              className={`line-clamp-3 min-w-0 flex-1 ${stale ? textMutedOnSurface : textPrimaryOnSurface}`}
+              data-testid="going-answer-text"
+            >
+              <MarkdownBody
+                chips
+                markdown={answer.text}
+                referenceText={inText.join(" ")}
+                softBreaks="line"
+              />
+            </div>
           </div>
         )}
         {answer.block === undefined ? null : <AnswerBlock block={answer.block} />}

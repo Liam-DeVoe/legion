@@ -165,7 +165,9 @@ test("each chip narrows the same list and reads back in the words the person cho
     await dialog.getByLabel("Author").press("Enter");
     await expect(options).toHaveCount(2);
 
-    await dialog.getByLabel("Updated since").fill(since.value);
+    // "Updated since" is a menu of days back and a day of the person's own.
+    await dialog.getByRole("button", { name: "Updated since" }).click();
+    await dialog.getByLabel("On a day").fill(since.value);
     await expect(options).toHaveCount(1);
     await expect(options.first()).toContainText("case is ready");
 

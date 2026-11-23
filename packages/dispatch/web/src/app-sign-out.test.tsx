@@ -522,7 +522,7 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
   try {
     await screen.findByText(wholeText("Signed in as alice"));
     await act(() => startRun("count the moons", { path: "/" }, "alice"));
-    expect(await screen.findByTestId("going-chip")).toHaveTextContent("Working · count the moons");
+    expect(await screen.findByTestId("going-chip")).toHaveTextContent("Working · Count the moons");
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await screen.findByRole("link", { name: "Sign in with Google" });

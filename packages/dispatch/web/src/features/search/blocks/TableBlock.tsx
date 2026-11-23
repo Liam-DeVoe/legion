@@ -11,8 +11,9 @@ import { ItemChip } from "../../refs/ItemChip";
 import { buildReferencePath } from "../../refs/routes";
 import { type BlockOf, columnText, columnWords } from "./block-cells";
 
-/** The cell classes every tabular block shares. */
-export const blockCellClassName = `border-b px-2 py-1 text-left align-top ${borderDefault}`;
+/** The cell classes every tabular block shares: middle-aligned, so a cell's words stand level with
+ *  the chip of an issue in the same row. */
+export const blockCellClassName = `border-b px-2 py-1.5 text-left align-middle ${borderDefault}`;
 export const blockHeadClassName = `${blockCellClassName} font-medium ${textSecondaryOnSurface}`;
 
 /** How many rows a table shows in an answer before "Show all" (design v2, state 5). */
@@ -23,13 +24,14 @@ export const TABLE_ROWS = 8;
 const ISSUE_KEY = /^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$/u;
 
 /**
- * A table (design v2, state 5): one column for each field the spec names, in its order, headed in
- * the issue page's words, and one row for each row the read returned, each value in Dispatch's
- * words (`columnText`). A row whose first column is an issue's key draws that cell as the issue's
- * chip, a link to it. The header stays on top while the rows scroll under it. With more rows than
- * `TABLE_ROWS` and no `whole`, the table shows the first of them and "Show all 42 ›", which calls
- * `onShowAll` - the conversation opens the table whole over the bar or the panel - or, with none
- * given, shows every row in place.
+ * A table (design v2, state 5): in a card as wide as the answer, as a chart's is, one column for
+ * each field the spec names, in its order, headed in the issue page's words, and one row for each
+ * row the read returned, each value in Dispatch's words (`columnText`), at the size of the chips
+ * beside them. A row whose first column is an issue's key draws that cell as the issue's chip, a
+ * link to it, and the column is headed "Issue", which is what it holds. The header stays on top
+ * while the rows scroll under it. With more rows than `TABLE_ROWS` and no `whole`, the table
+ * shows the first of them and "Show all 42 ›", which calls `onShowAll` - the conversation opens
+ * the table whole over the bar or the panel - or, with none given, shows every row in place.
  */
 export function TableBlock({
   block,
@@ -44,15 +46,22 @@ export function TableBlock({
   const columns = block.spec.columns;
   const all = whole || open || block.rows.length <= TABLE_ROWS;
   const rows = all ? block.rows : block.rows.slice(0, TABLE_ROWS);
+  const first = columns[0];
+  const itemColumn =
+    first !== undefined &&
+    block.rows.length > 0 &&
+    block.rows.every((row) => typeof row[first] === "string" && ISSUE_KEY.test(row[first]));
   return (
     <div className="space-y-1">
-      <div className={`overflow-auto ${whole ? "" : "max-h-80"}`}>
-        <table className="w-full text-xs" data-testid="going-block-table">
+      <div
+        className={`overflow-auto rounded-lg border ${borderDefault} ${whole ? "" : "max-h-80"}`}
+      >
+        <table className="w-full text-sm" data-testid="going-block-table">
           <thead className={`sticky top-0 ${surfaceBg}`}>
             <tr>
-              {columns.map((column) => (
+              {columns.map((column, at) => (
                 <th className={blockHeadClassName} key={column} scope="col">
-                  {columnWords(column)}
+                  {at === 0 && itemColumn ? "Issue" : columnWords(column)}
                 </th>
               ))}
             </tr>

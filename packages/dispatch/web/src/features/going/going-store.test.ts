@@ -16,6 +16,7 @@ import {
   setLevel,
   setPlace,
   startRun,
+  titleWords,
 } from "./going-store";
 
 // The bar's store (design v2, states 2 and 3 and the Keys table): Ctrl-K opens the bar on the
@@ -308,4 +309,13 @@ test("a run whose stream drops is reconnecting until the stream is answered agai
     start.mockRestore();
     stream.mockRestore();
   }
+});
+
+// A conversation's title is its first question with a capital, as a title starts (design v3,
+// states 2 and 11), however the person typed it; the question's own bubble keeps the words.
+test("a conversation's title is its first question with its first letter a capital", () => {
+  expect(titleWords("check the telescope work")).toBe("Check the telescope work");
+  expect(titleWords("Hand CORE-1 to Legion")).toBe("Hand CORE-1 to Legion");
+  expect(titleWords("ébauche du plan")).toBe("Ébauche du plan");
+  expect(titleWords("")).toBe("");
 });

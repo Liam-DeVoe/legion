@@ -93,10 +93,18 @@ test("a table shows 8 rows, its statuses in words and its issues as chips, then 
   const chip = screen.getAllByTestId("going-block-item")[0] as HTMLElement;
   expect(chip).toHaveAttribute("href", "/issues/DEMO-1");
   expect(within(chip).getByTestId("item-chip")).toHaveTextContent("DEMO-1");
-  // The header stays on top while the rows scroll under it.
-  expect(screen.getByTestId("going-block-table").querySelector("thead")?.className).toContain(
-    "sticky"
-  );
+  // The header stays on top while the rows scroll under it, and the column of issues is headed
+  // "Issue", what it holds, not the stored field "key".
+  const table = screen.getByTestId("going-block-table");
+  expect(table.querySelector("thead")?.className).toContain("sticky");
+  expect(
+    within(table)
+      .getAllByRole("columnheader")
+      .map((head) => head.textContent)
+  ).toEqual(["Issue", "Status"]);
+  // The table stands in a card, as a chart does, at the size of its chips.
+  expect(table.parentElement?.className).toContain("rounded-lg");
+  expect(table.className).toContain("text-sm");
   // With no conversation to open it over, Show all shows every row in place.
   const all = screen.getByTestId("going-block-show-all");
   expect(all).toHaveTextContent("Show all 10 ›");

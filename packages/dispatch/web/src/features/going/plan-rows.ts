@@ -606,9 +606,10 @@ function listed(parts: readonly string[]): string {
  * The plan card's title (design v3, state 6): a sentence made from its rows, "Change DEMO-10",
  * "File 2 issues and move 3", "Send 1 message". Each kind of change is one part, in the order the
  * rows first name it: new issues are filed; changes of an issue's fields change, move or close
- * their issues, an issue named by its key where the part names one; messages are sent; documents
- * changed; and the rest made. A part that counts the same thing as the one before it leaves out
- * its noun.
+ * their issues, an issue named by its key where the part names one; messages are sent; a
+ * suggested change to a document is suggested, as its row says ("Suggest a change to spec on
+ * DEMO-15"), and any other change of a document edits it; and the rest made. A part that counts
+ * the same thing as the one before it leaves out its noun.
  */
 export function planTitle(rows: readonly GoingPlanRow[]): string {
   const clauses = new Map<string, TitleClause>();
@@ -631,7 +632,11 @@ export function planTitle(rows: readonly GoingPlanRow[]): string {
         add("change", "issue", "issues", true, item);
         break;
       case "document":
-        add("edit", "document", "documents", false, "");
+        if (row.tool === "dispatch_suggest") {
+          add("suggest", "change to a document", "changes to documents", false, "");
+        } else {
+          add("edit", "document", "documents", false, "");
+        }
         break;
       case "message":
         add("send", "message", "messages", false, "");
@@ -693,16 +698,20 @@ export function undoneTitle(lines: readonly GoingUndoLine[]): string {
  * sentence its rows make (`planTitle`); while its rows run, "Applying 1 of 3…", counting the row
  * that runs now among the rows sent to run; once they ran, "Applied 3 changes · 16:42", the time
  * the last row ran (`appliedAt`) where the page knows it, and how many of them ran where some did
- * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; and
- * "Discarded" once the person discarded it.
+ * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; for
+ * a run undone before this page was opened, which holds no answer of that Undo, "Undone · 11:35
+ * AM", when Dispatch says it was undone (`undoneAt`); and "Discarded" once the person discarded
+ * it.
  */
 export function cardTitle(
   plan: GoingPlanAnswer,
   undone: readonly GoingUndoLine[] | undefined,
-  appliedAt: number | undefined
+  appliedAt: number | undefined,
+  undoneAt?: number
 ): string {
   const rows = plan.rows ?? [];
   if (undone !== undefined) return undoneTitle(undone);
+  if (undoneAt !== undefined) return `Undone · ${clockWords(undoneAt)}`;
   const sent = rows.filter((row) => SENT_STATES[row.state] === true);
   switch (plan.state) {
     case "waiting":
@@ -725,6 +734,28 @@ export function cardTitle(
       return appliedAt === undefined ? applied : `${applied} · ${clockWords(appliedAt)}`;
     }
   }
+}
+
+/**
+ * What a run did with its plan once the plan's rows ran, for the line its steps fold into (design
+ * v3, state 7): "applied 3 changes", counting the rows that ran as the card's title does, since
+ * that is the last thing the run did; undefined while the plan waits or runs, once it was
+ * discarded, and where no row ran, where "proposed a plan" stays what the run did.
+ */
+export function appliedWords(plan: GoingPlanAnswer): string | undefined {
+  if (plan.state !== "done") return undefined;
+  const done = (plan.rows ?? []).filter((row) => row.state === "done").length;
+  return done === 0 ? undefined : `applied ${counted(done, "change", "changes")}`;
+}
+
+/**
+ * How many changes of a plan Undo can take back: its rows that ran, but a message, which stays
+ * sent (R6). The card's Undo says so ("Undo 2 changes"), so a lone "Undo" under a sent message
+ * never reads as if it took the message back, and a plan of messages alone offers no Undo.
+ */
+export function undoableCount(plan: GoingPlanAnswer): number {
+  return (plan.rows ?? []).filter((row) => row.state === "done" && rowKind(row) !== "message")
+    .length;
 }
 
 /** How a row stands in its card (design v2, state 7): waiting for the person, sent and waiting

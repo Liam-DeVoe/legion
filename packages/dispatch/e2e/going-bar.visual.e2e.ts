@@ -171,9 +171,10 @@ const pageUnderTheBar: ReviewedRoute = {
 
 /** The short answer the fake writing model gives a pause in every row that types words. It links
  *  the telescope mount by the href the search's hit of it carries, so the answer panel draws the
- *  mount's key, which the server keeps as words, as the mount's chip. */
+ *  mount's key, which the server keeps as words, as the mount's chip. The words around the chip
+ *  say nothing its title says (design v3, state 4). */
 function shortAnswer(issues: BarSeed): ChatReply {
-  return prose(`The telescope's mount waits for its calibration, ${naming(issues.mount)}.`);
+  return prose(`One issue is open on it, ${naming(issues.mount)}.`);
 }
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it, as
@@ -303,10 +304,41 @@ const barRows: readonly BarRow[] = [
     // words are two of the mount's title, so the search, which matches every word, lists it, and
     // not the whole title, which would rank above the line on top. The short answer names the
     // mount by its key, which the panel draws as the mount's chip, in the text and nowhere else.
+    // First the person opens two issues and asks one question, which New leaves behind, so the
+    // empty box shows what the design draws there: "Continue: ‹title›" for the conversation from
+    // the last hour, then Recent, the items opened lately. The rows sign in with a login of their
+    // own, so this row makes that login's conversation and its recent items itself, as a person
+    // does, rather than a seed written for another login.
     reach: async (page, seed) => {
       const words = "telescope mount";
-      await script(seed, []);
+      const earlier = "what waits on the observatory dome";
+      await script(seed, [{ turns: [say("The dome waits for its motor.")], words: earlier }]);
+      for (const [key, title] of [
+        [seed.bar.eyepiece, "Polish the eyepiece"],
+        [seed.bar.dome, "Raise the observatory dome"],
+      ] as const) {
+        await page.goto(`/issues/${key}`);
+        // The title has come, so the item is recorded with its title, as Recent lists it.
+        await expect(page.getByText(title).first()).toBeVisible();
+      }
       await openTheBar(page, seed);
+      await askTheAgent(page, earlier);
+      await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
+        timeout: RUN_STEPS_MS,
+      });
+      await newConversation(page);
+      await expect(bar(page).locator("#search-option-continue")).toHaveText(
+        "Continue: What waits on the observatory dome"
+      );
+      await expect(bar(page).getByRole("group", { name: "Recent" }).getByRole("option")).toHaveText(
+        [/^\S+ Raise the observatory dome$/, /^\S+ Polish the eyepiece$/]
+      );
+      // The box is on top; History and the move are in the foot, and Close is Esc there alone.
+      await expect(bar(page).getByTestId("going-header")).toHaveCount(0);
+      await expect(
+        bar(page).getByTestId("search-foot").getByTestId("going-history-button")
+      ).toBeVisible();
+      await expect(bar(page).getByRole("button", { name: "Close" })).toHaveCount(0);
       await shoot(page, "01-empty");
       // "/" in the empty box opens the filters; the Filters button closes them.
       await searchBox(page).press("/");
@@ -351,8 +383,9 @@ const barRows: readonly BarRow[] = [
     // State 3. Scripts a run that looks for a tool, reads two issues in one model call under
     // the words it wrote beside them, searches, then streams without end: four finished lines -
     // the look in its own words, since one step past the newest three folds into no line of its
-    // own - the newest with the run's timer, and the run still working. Words sent while it works
-    // wait under it; the row drops them before it stops the run.
+    // own - then "Thinking…" with the run's timer, since no call runs while the model writes, and
+    // the run still working. Words sent while it works wait under it; the row drops them before
+    // it stops the run.
     reach: async (page, seed) => {
       const words = "check the telescope work";
       const reading: ChatTurn = {
@@ -389,11 +422,13 @@ const barRows: readonly BarRow[] = [
         /^Looked for a way to \S/
       );
       await expect(run.getByTestId("going-step-words")).toContainText("Reading the telescope");
-      // One timer, on the newest line; it is masked in the shot, so its words are read here.
-      await expect(run.getByTestId("going-step-timer")).toHaveCount(1);
-      await expect(run.getByTestId("going-step").last().getByTestId("going-step-timer")).toHaveText(
-        /^\d+ s$/
-      );
+      // No call runs while the model streams, so the run ends with "Thinking…" and its timer
+      // rather than a step line carrying it; the timer is masked in the shot, so it is read here.
+      await expect(run.getByTestId("going-step-timer")).toHaveCount(0);
+      await expect(run.getByTestId("going-steps-thinking")).toContainText("Thinking…");
+      await expect(
+        run.getByTestId("going-steps-thinking").getByTestId("going-thinking-timer")
+      ).toHaveText(/^\d+ s$/);
       await expect(run).toHaveAttribute("data-state", "working");
       await searchBox(page).fill("and the primary mirror too");
       await searchBox(page).press("Enter");
@@ -550,6 +585,7 @@ const barRows: readonly BarRow[] = [
                     parent: dome,
                     priority: 2,
                     project,
+                    spec: "The dome turns by a motor once it has one. The motor takes the place of the hand crank. The old shutter goes with it.",
                     title: "Fit a motor to the dome",
                   },
                   tool: "dispatch_issue",
@@ -708,11 +744,11 @@ const barRows: readonly BarRow[] = [
       const { mirror, mount } = seed.bar;
       await script(seed, [
         {
-          turns: [slow(read(mirror)), say(`The mirror waits for its grinding, ${naming(mirror)}.`)],
+          turns: [slow(read(mirror)), say(`It waits on one issue, ${naming(mirror)}.`)],
           words: asked,
         },
         {
-          turns: [slow(read(mount)), say(`The mount waits for its calibration, ${naming(mount)}.`)],
+          turns: [slow(read(mount)), say(`It waits on one issue, ${naming(mount)}.`)],
           words: followUp,
         },
       ]);
@@ -742,8 +778,9 @@ const barRows: readonly BarRow[] = [
     // The first is scripted to call a tool in each of Fast's six model calls, the first of them
     // slow, so it stops at its step limit; the second reads one issue in a slow turn and then
     // streams without end, and the row stops it with Escape; the third is answered 500 twice,
-    // the call and its one retry, so it fails. The steps of each run that stopped fold into one
-    // line, which counts what the bound's card counts.
+    // the call and its one retry, so it fails. The three end in one card with one next step, and
+    // the steps of each run that stopped fold into one line, open, which counts what the bound's
+    // card counts: what the run found so far shows above its card.
     reach: async (page, seed) => {
       const bounded = "read every telescope issue one by one";
       const stopped = "keep reading the telescope mount";
@@ -773,9 +810,9 @@ const barRows: readonly BarRow[] = [
       );
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAttribute(
         "aria-expanded",
-        "false"
+        "true"
       );
-      await expect(newestRun(page).getByTestId("going-step")).toHaveCount(0);
+      await expect(newestRun(page).getByTestId("going-step")).toHaveCount(6);
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
         "Stopped at Fast's step limit · read 6 items so far"
       );
@@ -792,8 +829,9 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
-        "Stopped · kept what it did"
+        "Stopped · kept what it did: read 1 item"
       );
+      await expect(newestRun(page).getByTestId("going-run-action")).toHaveText("Try again");
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
         /^Worked for \d+ s · read 1 item$/
       );
@@ -806,6 +844,7 @@ const barRows: readonly BarRow[] = [
       await expect(newestRun(page).getByTestId("going-run-state")).toContainText(
         "Dispatch could not reach the model."
       );
+      await expect(newestRun(page).getByTestId("going-run-action")).toHaveText("Try again");
       await shoot(page, "09-failed");
     },
     shows: "a stop at a bound, a Stop, and a failure",
@@ -839,7 +878,10 @@ const barRows: readonly BarRow[] = [
       await expect(
         sidePanel(page).getByRole("button", { name: "Open over the page" })
       ).toHaveAttribute("title", "Open over the page");
-      await expect(sidePanel(page).getByTestId("going-title")).toHaveText(words);
+      // The title is the question with a capital, as a title starts.
+      await expect(sidePanel(page).getByTestId("going-title")).toHaveText(
+        "What does the observatory dome need"
+      );
       await shoot(page, "10-side-panel");
     },
     shows: "the side panel",
@@ -868,16 +910,25 @@ const barRows: readonly BarRow[] = [
         "false",
         { timeout: RUN_STEPS_MS }
       );
+      // The page's title stands where it stood while the bar was open and no chip showed: the
+      // chip floats over the page and moves none of it (design v3, state 11).
+      const title = page.locator("#main-content h1").first();
+      const titleWithoutChip = await title.boundingBox();
       await bar(page).getByTestId("going-close").click();
       await expect(bar(page)).toHaveCount(0);
       const chip = page.getByTestId("going-chip");
       await expect(chip).toHaveAttribute("data-state", "working");
-      await expect(chip.getByTestId("going-chip-text")).toHaveText(`Working · ${working}`);
+      await expect(chip.getByTestId("going-chip-text")).toHaveText(
+        "Working · Keep watching the eyepiece"
+      );
+      expect(await title.boundingBox(), "the chip moved the page's title").toEqual(
+        titleWithoutChip
+      );
       await shoot(page, "11-chip");
-      // The chip sits clear of the page's title at every width (design v3, state 11): its row
-      // stands above the page, so the two never meet, from the wide layout down to a phone's.
+      // The chip sits clear of the page's title at every width (design v3, state 11): it floats
+      // in the band above the page's title, so the two never meet, from the wide layout down to
+      // a phone's.
       const shotSize = page.viewportSize();
-      const title = page.locator("#main-content h1").first();
       for (const width of [1440, 1024, 768, 390]) {
         await page.setViewportSize({ height: 900, width });
         await expect(chip).toBeVisible();
@@ -895,10 +946,18 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await bar(page).getByTestId("going-history-button").click();
+      // History is the one box on the screen, under a header that names it, its first row
+      // selected (design v3, state 11).
+      await expect(bar(page).getByTestId("going-history-heading")).toHaveText("History");
+      await expect(bar(page).getByRole("textbox", { name: "Ask the command bar" })).toBeHidden();
       const listed = bar(page).getByTestId("going-history-conversation");
       await expect(listed).toHaveCount(2);
       await expect(listed.first()).toHaveAttribute("data-state", "stopped_person");
       await expect(listed.last()).toHaveAttribute("data-state", "done");
+      await expect(listed.first().getByTestId("going-history-open")).toHaveAttribute(
+        "data-selected",
+        "true"
+      );
       await shoot(page, "11-history");
     },
     shows: "the chip, and History",

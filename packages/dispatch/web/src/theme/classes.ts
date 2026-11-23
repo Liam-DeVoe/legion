@@ -685,6 +685,11 @@ export function inputClasses(recessed: boolean): string {
  *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
 export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
 
+/** The secondary button that stands beside a `primaryButton` as its pair - Discard beside
+ *  Approve, Continue in Deep beside Continue - at the same height: its 1 px border and 7 px of
+ *  padding make the primary's 8 px, so the two read as one row of choices. */
+export const secondaryButtonPaired = `shrink-0 rounded-lg border px-3 py-[7px] text-sm font-medium whitespace-nowrap ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
+
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this
 // file, it does not vary with `prefers-color-scheme` — it is a fixed brand rail, the same

@@ -12,12 +12,14 @@ import type { GoingRun } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import {
   borderDefault,
+  borderStrong,
   dangerText,
   linkHoverText,
   linkText,
   pageQuietText,
   primaryButton,
   secondaryButtonCompact,
+  secondaryButtonPaired,
   surfaceBg,
   surfaceMutedBg,
   textMutedOnSurface,
@@ -27,7 +29,6 @@ import {
 import { timeWords } from "../refs/dispatch-time";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "../search/blocks/AnswerBlock";
-import { clockWords } from "../search/blocks/block-cells";
 import {
   asksPerson,
   dropQueued,
@@ -41,20 +42,22 @@ import {
   useGoingValue,
 } from "./going-store";
 import { PlanCard } from "./PlanRows";
+import { appliedWords } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
 import { type EndWords, endWords, type RunState, runEnded } from "./run-states";
 import { foldWords, RunTimer, StepSection } from "./step-section/StepSection";
 import { type PlanAnswering, usePlan } from "./usePlan";
 
 /** How a run that has not stopped or failed stands, in the person's words, for the line under its
- *  steps; a stop and a failure read as their end says (`endWords`). */
+ *  steps; a stop and a failure read as their end says (`endWords`), and a plan that waits as its
+ *  card does, with no line of its own. */
 const STATE_TEXT: Readonly<Record<RunState, string>> = {
   done: "Done",
   failed: "Failed",
   idle: "",
   stopped_bound: "Stopped",
   stopped_person: "Stopped",
-  waiting: "A plan waits for you",
+  waiting: "",
   working: "Working…",
 };
 
@@ -70,23 +73,38 @@ const PLAN_SENT: Readonly<Record<string, true>> = { approved: true, done: true, 
 
 /**
  * The live line under a question until its run's first step or answer comes (design v2, rule 4):
- * "Thinking…" and the time since the person asked, counted each second (`RunTimer`). A screen
- * reader hears "Thinking…" once.
+ * "Thinking…" and the time since the person asked, counted each second (`RunTimer`), at the size
+ * and the grey of the step lines that take its place, so a run that has only begun reads as
+ * working. A screen reader hears "Thinking…" once.
  */
 function Thinking({ since }: { readonly since: number }): ReactNode {
   return (
-    <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-thinking">
-      <span role="status">Thinking…</span> <RunTimer since={since} testId="going-thinking-timer" />
+    <p className={`text-[13px] ${textSecondaryOnSurface}`} data-testid="going-thinking">
+      <span role="status">Thinking…</span>{" "}
+      <RunTimer className={textMutedOnSurface} since={since} testId="going-thinking-timer" />
     </p>
   );
 }
 
-/** The person's words, as a filled grey bubble: a question of the conversation, or words that
- *  wait for the run to end. */
-function Words({ testId, words }: { readonly testId: string; readonly words: string }): ReactNode {
+/** The person's words, as a filled grey bubble: a question of the conversation; or, `queued`,
+ *  words that wait for the run to end, in a dashed outline with no fill, so they never read as
+ *  sent. */
+function Words({
+  queued = false,
+  testId,
+  words,
+}: {
+  readonly queued?: boolean;
+  readonly testId: string;
+  readonly words: string;
+}): ReactNode {
+  const look = queued
+    ? `border border-dashed ${borderStrong} ${textSecondaryOnSurface}`
+    : `${surfaceMutedBg} ${textPrimaryOnSurface}`;
   return (
     <p
-      className={`w-fit max-w-full rounded-lg px-3 py-2 text-sm break-words whitespace-pre-wrap ${surfaceMutedBg} ${textPrimaryOnSurface}`}
+      className={`w-fit max-w-full rounded-lg px-3 py-2 text-sm break-words whitespace-pre-wrap ${look}`}
+      data-queued={queued ? "true" : undefined}
       data-testid={testId}
     >
       {words}
@@ -199,14 +217,16 @@ function AnswerFoot({
 }
 
 /**
- * How a run that stopped or failed ended (design v2, state 9), in one sentence (`endWords`) and,
- * on the conversation's newest run (`actions`), its one action. A stop that offers Continue is a
- * grey card, a pause and not an error: a bound, "Stopped at Standard's time limit · read 14 items
- * so far", then Continue (↵, which Enter in the empty box also does) and, below Deep, "Continue
- * in Deep"; or the model's provider refusing part of what the run found, "…, Continue, or ask in
- * other words", with Continue alone. A Stop reads "Stopped · kept what it did". A failure is its
- * sentence and Try again, or "Start a new conversation" where this one grew too long; a Dispatch
- * with no answering model says so in the one sentence of state 13, and offers nothing.
+ * How a run that stopped or failed ended (design v2, state 9, rule 7), as one grey card whatever
+ * the end - a bound, a Stop or a failure look alike, a pause and not an alarm - under what the run
+ * found so far (its steps, opened above it): one sentence (`endWords`) and, on the conversation's
+ * newest run (`actions`), its one next step. A bound reads "Stopped at Standard's time limit ·
+ * read 14 items so far", then Continue (↵, which Enter in the empty box also does) and, below
+ * Deep, "Continue in Deep" at the same height; the model's provider refusing part of what the run
+ * found reads "…, Continue, or ask in other words", with Continue alone. A Stop reads "Stopped ·
+ * kept what it did: read 1 item", then Try again. A failure is its sentence and Try again, or
+ * "Start a new conversation" where this one grew too long. A Dispatch with no answering model
+ * says so in the one sentence of state 13, and offers nothing.
  */
 function RunEnd({
   actions,
@@ -230,69 +250,61 @@ function RunEnd({
       </p>
     );
   }
-  if (words.action === "continue") {
-    return (
-      <div
-        className={`space-y-2 rounded-lg border p-3 ${borderDefault} ${surfaceMutedBg}`}
-        data-testid="going-run-bound"
-      >
-        <p
-          className={`text-sm ${textSecondaryOnSurface}`}
-          data-testid="going-run-state"
-          role="status"
-        >
-          {words.text}
-        </p>
-        {actions ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className={primaryButton}
-              data-testid="going-run-continue"
-              onClick={() => onContinue()}
-              type="button"
-            >
-              Continue
-              <span aria-hidden="true" className="ml-2 font-normal">
-                ↵
-              </span>
-            </button>
-            {words.continueInDeep ? (
-              <button
-                className={secondaryButtonCompact}
-                data-testid="going-run-continue-deep"
-                onClick={() => onContinue("deep")}
-                type="button"
-              >
-                Continue in Deep
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    );
-  }
   const action = words.action;
-  return (
-    <p
-      className={`text-xs ${action === undefined ? textSecondaryOnSurface : dangerText}`}
-      data-testid="going-run-state"
-      role="status"
-    >
-      {words.text}
-      {actions && action !== undefined ? (
-        <>
-          {" "}
+  let next: ReactNode = null;
+  if (actions && action === "continue") {
+    next = (
+      <>
+        <button
+          className={primaryButton}
+          data-testid="going-run-continue"
+          onClick={() => onContinue()}
+          type="button"
+        >
+          Continue
+          <span aria-hidden="true" className="ml-2 font-normal">
+            ↵
+          </span>
+        </button>
+        {words.continueInDeep ? (
           <button
-            className={`underline ${linkText} ${linkHoverText}`}
-            data-testid="going-run-action"
-            onClick={action === "new" ? newConversation : onRetry}
+            className={secondaryButtonPaired}
+            data-testid="going-run-continue-deep"
+            onClick={() => onContinue("deep")}
             type="button"
           >
-            {action === "new" ? "Start a new conversation" : "Try again"}
+            Continue in Deep
           </button>
-        </>
-      ) : null}
-    </p>
+        ) : null}
+      </>
+    );
+  } else if (actions && action !== undefined) {
+    next = (
+      <button
+        className={primaryButton}
+        data-testid="going-run-action"
+        onClick={action === "new" ? newConversation : onRetry}
+        type="button"
+      >
+        {action === "new" ? "Start a new conversation" : "Try again"}
+      </button>
+    );
+  }
+  return (
+    <div
+      className={`space-y-2 rounded-lg border p-3 ${borderDefault} ${surfaceMutedBg}`}
+      data-action={action}
+      data-testid={action === "continue" ? "going-run-bound" : "going-run-end"}
+    >
+      <p
+        className={`text-sm ${textSecondaryOnSurface}`}
+        data-testid="going-run-state"
+        role="status"
+      >
+        {words.text}
+      </p>
+      {next === null ? null : <div className="flex flex-wrap items-center gap-2">{next}</div>}
+    </div>
   );
 }
 
@@ -309,9 +321,12 @@ interface WholeBlock {
  *  failure, "Nothing changed" in place of "Done" on a run of the line Do that proposed no plan,
  *  and Undo of a run with no plan that changed something. Its steps' fold line, its answer and
  *  its plan's card come in that order, as the answer (state 4) then the applied plan (state 7)
- *  do, and once its Undo answered, "Undone at 16:42" under its answer. `asks` is whether its
- *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
- *  tables whole over the bar or the panel. */
+ *  do. Once its plan's rows ran, its fold line says so ("applied 3 changes") in place of
+ *  "proposed a plan", which is no longer the last thing it did. Once its changes were undone, its
+ *  answer, which speaks of them, turns grey and the line under it reads "Undone": the card says
+ *  what was taken back. A run that stopped or failed shows what it found so far, its steps
+ *  opened, above how it ended. `asks` is whether its answer asks the person a question and waits
+ *  for their answer; `onShowAll` opens one of its tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -350,6 +365,7 @@ function RunTurn({
     run.record.level,
     foldWords(steps)
   );
+  const undone = undoneAt !== undefined;
   return (
     <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
       <Words testId="going-run-words" words={run.record.words} />
@@ -358,9 +374,12 @@ function RunTurn({
         // The steps fold into one line once the run no longer works (design v3, rule 3) - its
         // answer or its plan came, or it stopped or failed, whose end then counts what that line
         // counts (state 9) - and stay folded while the rows of its approved plan run, which the
-        // plan's card shows as its rows' ticks (state 7).
+        // plan's card shows as its rows' ticks (state 7). The line of a run that stopped or
+        // failed starts open: its steps are what it found so far (state 9).
         folded={PLAN_SENT[run.frames.plan?.state ?? ""] === true || !working}
         live={working}
+        opened={ended !== undefined}
+        planWords={plan.plan === undefined ? undefined : appliedWords(plan.plan)}
         since={run.since}
         steps={steps}
         workedMs={workedMs(run)}
@@ -379,19 +398,12 @@ function RunTurn({
         // of a loose list's line - is its chip, which marks the line as a bullet would: a list
         // of chips draws no bullet beside each (design v3, state 4).
         <div
-          className={`text-sm ${textPrimaryOnSurface} [&_li:has(>a:first-child>[data-testid=item-chip])]:list-none [&_li:has(>p:first-child>a:first-child>[data-testid=item-chip])]:list-none`}
+          className={`text-sm ${undone ? textMutedOnSurface : textPrimaryOnSurface} [&_li:has(>a:first-child>[data-testid=item-chip])]:list-none [&_li:has(>p:first-child>a:first-child>[data-testid=item-chip])]:list-none`}
           data-testid="going-run-answer"
+          data-undone={undone ? "true" : undefined}
         >
           <MarkdownBody chips markdown={answer} referenceText="" softBreaks="line" />
         </div>
-      )}
-      {undoneAt === undefined ? null : (
-        // Undo takes the run's changes back and leaves its answer as it was written, so a line
-        // under the answer says when the changes it speaks of were taken back (design v3,
-        // state 7).
-        <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-run-undone">
-          Undone at {clockWords(undoneAt)}
-        </p>
       )}
       {run.frames.withheld > 0 ? (
         <p className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-run-withheld">
@@ -413,13 +425,21 @@ function RunTurn({
         answering={plan}
         appliedAt={earliest(run.endedAt, run.record)}
         folded={!newest}
-        undone={undoneBefore}
+        undoneAt={undoneBefore ? undoneAt : undefined}
       />
       {state === "done" && answer !== undefined ? (
         <AnswerFoot
           answer={answer}
           onRetry={() => onRetry(run.record.words)}
-          status={asks ? "Waits for your answer" : changedNothing(run) ? NOTHING_CHANGED : "Done"}
+          status={
+            undone
+              ? "Undone"
+              : asks
+                ? "Waits for your answer"
+                : changedNothing(run)
+                  ? NOTHING_CHANGED
+                  : "Done"
+          }
         />
       ) : ended !== undefined ? (
         <RunEnd
@@ -428,8 +448,9 @@ function RunTurn({
           onRetry={() => onRetry(run.record.words)}
           words={ended}
         />
-      ) : // While the run works, "Thinking…" or its steps' lines with the run's timer say so.
-      waitsForSteps || (working && steps.length > 0) ? null : (
+      ) : // While the run works, "Thinking…" or its steps' lines with the run's timer say so, and
+      // a plan that waits says so by its card.
+      waitsForSteps || (working && steps.length > 0) || STATE_TEXT[state] === "" ? null : (
         <p
           className={`text-xs ${textSecondaryOnSurface}`}
           data-testid="going-run-state"
@@ -464,12 +485,12 @@ function StartingTurn({ starting }: { readonly starting: StartingRun }): ReactNo
   );
 }
 
-/** The words the person sent while the run worked (design v2, state 3): a grey bubble at the
+/** The words the person sent while the run worked (design v2, state 3): a dashed bubble at the
  *  foot of the conversation, "Sends when this run ends", and × to drop them. */
 function QueuedTurn({ queued }: { readonly queued: QueuedWords }): ReactNode {
   return (
     <div className="mt-4 space-y-1" data-testid="going-queued">
-      <Words testId="going-queued-words" words={queued.words} />
+      <Words queued testId="going-queued-words" words={queued.words} />
       <p className={`flex items-center gap-1 text-xs ${textMutedOnSurface}`}>
         Sends when this run ends
         <button
@@ -491,10 +512,12 @@ function QueuedTurn({ queued }: { readonly queued: QueuedWords }): ReactNode {
  * The scroll of the conversation (design v2, state 8): it follows new output - `output` counts
  * what came - while the person is at its foot. Once they scroll up it stays where they are, and
  * `behind` turns true at the next output, for the "↓ New reply" pill; `follow` takes them back to
- * the foot and follows again.
+ * the foot and follows again. `cut` says whether anything is scrolled out of view above, where
+ * the conversation fades out under its header rather than show a bubble cut in half.
  */
 function useFollow(output: number): {
   readonly behind: boolean;
+  readonly cut: boolean;
   readonly follow: () => void;
   readonly onScroll: () => void;
   readonly scroller: RefObject<HTMLDivElement | null>;
@@ -502,18 +525,21 @@ function useFollow(output: number): {
   const scroller = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [behind, setBehind] = useState(false);
+  const [cut, setCut] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each new output is the reason to follow it
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element === null) return;
     if (following.current) {
       element.scrollTop = element.scrollHeight;
+      setCut(element.scrollTop > 0);
     } else {
       setBehind(true);
     }
   }, [output]);
   return {
     behind,
+    cut,
     follow: () => {
       following.current = true;
       setBehind(false);
@@ -525,6 +551,7 @@ function useFollow(output: number): {
       if (element === null) return;
       const atFoot = element.scrollHeight - element.scrollTop - element.clientHeight <= FOOT_SLACK;
       following.current = atFoot;
+      setCut(element.scrollTop > 0);
       if (atFoot) setBehind(false);
     },
     scroller,
@@ -627,7 +654,10 @@ export function ConversationView({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col" ref={view}>
       <div
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+        // What is scrolled out of view above fades out over the top 24 px rather than stop at a
+        // hard line under the header, where a bubble read as cut in half (design v3, state 6).
+        className={`min-h-0 flex-1 overflow-y-auto px-3 py-3 ${scroll.cut ? "[mask-image:linear-gradient(to_bottom,transparent,#000_24px)]" : ""}`}
+        data-cut={scroll.cut ? "true" : undefined}
         data-testid="going-conversation-view"
         onScroll={scroll.onScroll}
         ref={scroll.scroller}

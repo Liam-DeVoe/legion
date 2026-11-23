@@ -140,9 +140,10 @@ test("History groups the conversations Today, Yesterday and This week, each row 
         row.querySelector("time")?.getAttribute("datetime"),
       ])
     ).toEqual([
-      ["c-3", "split CORE-1 in two", "Done", conversations[0]?.newest_at],
-      ["c-2", "close the stale duplicates", "Needs you", conversations[1]?.newest_at],
-      ["c-1", "file the telescope's mirror as a new issue", "Done", conversations[2]?.newest_at],
+      // Each title is the first question with a capital, as a title starts.
+      ["c-3", "Split CORE-1 in two", "Done", conversations[0]?.newest_at],
+      ["c-2", "Close the stale duplicates", "Needs you", conversations[1]?.newest_at],
+      ["c-1", "File the telescope's mirror as a new issue", "Done", conversations[2]?.newest_at],
     ]);
     // The split's newest run touched CORE-1 and CORE-3, and the filing filed CORE-46: each row
     // holds its run's Undo. The plan that waits changed nothing yet.
@@ -317,7 +318,7 @@ test("typing filters History by every question of a conversation, and the arrows
 
     // A later question of a conversation finds it too.
     await user.keyboard("move core-3");
-    expect(titles()).toEqual(["split CORE-1 in two"]);
+    expect(titles()).toEqual(["Split CORE-1 in two"]);
     await user.clear(filter);
     await user.keyboard("comet");
     expect(titles()).toEqual([]);
@@ -325,14 +326,18 @@ test("typing filters History by every question of a conversation, and the arrows
     await user.clear(filter);
     expect(titles()).toHaveLength(3);
 
-    // Down moves the focus through the rows, and Up from the first goes back to the box.
+    // While the focus is in the box, the first row is drawn selected, as Enter there opens it.
     const rows = screen.getAllByTestId("going-history-open");
+    expect(rows.map((row) => row.getAttribute("data-selected"))).toEqual(["true", null, null]);
+    // Down moves the focus through the rows, and Up from the first goes back to the box.
     await user.keyboard("{ArrowDown}");
     expect(rows[0]).toHaveFocus();
+    expect(rows[0]).not.toHaveAttribute("data-selected");
     await user.keyboard("{ArrowDown}");
     expect(rows[1]).toHaveFocus();
     await user.keyboard("{ArrowUp}{ArrowUp}");
     expect(filter).toHaveFocus();
+    expect(rows[0]).toHaveAttribute("data-selected", "true");
 
     // Typing on a row goes on in the box.
     await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
@@ -340,7 +345,7 @@ test("typing filters History by every question of a conversation, and the arrows
     await user.keyboard("tel");
     expect(filter).toHaveFocus();
     expect(filter).toHaveValue("tel");
-    expect(titles()).toEqual(["file the telescope's mirror as a new issue"]);
+    expect(titles()).toEqual(["File the telescope's mirror as a new issue"]);
 
     // Enter in the box opens the first row; Enter on a row opens that row.
     await user.keyboard("{Enter}");
