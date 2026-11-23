@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -395,9 +396,12 @@ const planner: Subscriber = {
   topics: [],
 };
 
-/** Opens the header's subscriber list and presses Planner's Unsubscribe and the dialog's
- *  Confirm, the Confirm on the held clock when `held`. */
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
+/** Opens the header's subscriber list, in Details, and presses Planner's Unsubscribe and the
+ *  dialog's Confirm, the Confirm on the held clock when `held`. */
 async function unsubscribePlanner(user: UserEvent, held: boolean) {
+  await openIssueDetails(user);
   await user.click(await screen.findByRole("button", { name: /^Subscribers: 1/ }));
   const subscribed = screen.getByRole("region", { name: "Subscribed agents" });
   await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));

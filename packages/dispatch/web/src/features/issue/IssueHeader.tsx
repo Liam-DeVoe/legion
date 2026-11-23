@@ -839,7 +839,9 @@ export function IssueHeader({
             ) : null}
             {issue.claim === null ? null : (
               // The claim and its Release stay on one line: the chip's holder ellipsizes first.
-              <span className="flex min-w-0 max-w-full items-center gap-2">
+              // It asks 16 rem of the line, not its whole name's width, so it stays beside whose
+              // turn it is wherever 16 rem is left, and grows into the rest of the line.
+              <span className="flex min-w-0 max-w-full grow basis-64 items-center gap-2">
                 <ClaimChip claim={issue.claim} liveness={issue} />
                 <button
                   aria-label={`Release the claim on ${issue.key}`}
@@ -876,6 +878,9 @@ export function IssueHeader({
           </>
         }
         leading={
+          // The labels keep their own width while Close and Details fit beside them, and take the
+          // whole line, wrapping inside it, when they do not; Close and Details then take the
+          // next line, at its right end.
           <div className="min-w-0 max-w-full" data-testid="issue-labels-group">
             <IssueLabels
               disabled={isClosed}

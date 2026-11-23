@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -12,6 +12,7 @@ import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -352,8 +353,12 @@ function renderIssuePage(
   return { ...view, runtime, syncOpenedDocuments };
 }
 
+// Details is the reader's to open, and stays open for them: each row starts with it closed.
+afterEach(() => window.localStorage.removeItem(ALICE_DETAILS_KEY));
+
 async function openSubscribedAgents(count: number) {
   const user = userEvent.setup();
+  await openIssueDetails(user);
   const toggle = await screen.findByRole("button", { name: `Subscribers: ${count}` });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
@@ -362,11 +367,13 @@ async function openSubscribedAgents(count: number) {
 }
 
 async function expectCreator(label: string): Promise<HTMLElement> {
-  const rail = await screen.findByTestId("issue-metadata-rail");
+  const details = await openIssueDetails(userEvent.setup());
   // `AgentName` draws the name; the span around it carries the whole label as its `title`.
-  const creator = await within(rail).findByTitle(label);
+  const creator = await within(details).findByTitle(label);
   expect(creator.textContent).toBe(label);
-  expect(creator.parentElement?.textContent).toBe(`Opened by:${label}`);
+  expect(within(details).getByTestId("issue-details-opened-by").textContent).toBe(
+    `Opened by${label}`
+  );
   return creator;
 }
 
@@ -444,12 +451,9 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 });
 
 test("IssuePage's header warns when nobody holds the route, and adds nothing when it is live", async () => {
-  // The warning sits in the wrapping state row, not the metadata rail, which clips at every width.
-  const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
-  };
+  // The warning sits in the header's Attention group, which wraps with the state row, never in
+  // Details, which a reader may keep closed.
+  const stateRow = async () => screen.findByTestId("issue-state-actions");
 
   const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
   const unheldView = renderIssuePage();
@@ -522,11 +526,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
 // is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
 test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
-  const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
-  };
+  const stateRow = async () => screen.findByTestId("issue-state-actions");
 
   const stalled = stubIssuePage({
     ...issue,
@@ -846,6 +846,7 @@ test("IssuePage says the agent list is refilling and counts no subscribers from 
     expect(
       screen.queryByText("Subscribed agents unavailable — Envoy listener unreachable.")
     ).not.toBeInTheDocument();
+    await openIssueDetails(userEvent.setup());
     expect(screen.getByRole("button", { name: "Subscribers" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Subscribers: / })).not.toBeInTheDocument();
   } finally {
@@ -1054,6 +1055,8 @@ for (const fixture of [
     const view = renderIssuePage();
 
     try {
+      // The issue's pull requests are a row of Details.
+      await openIssueDetails(userEvent.setup());
       await screen.findByText("Merge native Dispatch");
       expect(screen.getByText("merged")).toBeDefined();
       expect(await screen.findByText(`checks: ${fixture.checks}`)).toBeDefined();
@@ -1090,6 +1093,7 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
   const view = renderIssuePage("/issues/CORE-1", undefined, undefined, queryClient);
 
   try {
+    await openIssueDetails(userEvent.setup());
     // Only once the check-runs query has failed does the assertion mean anything: while it is
     // still pending the pre-fix code showed the title too.
     await waitFor(() =>
@@ -1126,6 +1130,7 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
   const view = renderIssuePage();
 
   try {
+    await openIssueDetails(userEvent.setup());
     await screen.findByText("Issue remains an issue");
     expect(screen.getByText("open")).toBeDefined();
     expect(githubRest).toHaveBeenCalledWith("repos/owner/repository/issues/9");
@@ -1446,6 +1451,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     );
 
     try {
+      await openIssueDetails(user);
       await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
       expect(
         await screen.findByText(
@@ -1460,6 +1466,9 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
       await user.click(screen.getByRole("link", { name: "Go to CORE-2" }));
 
       await screen.findByRole("heading", { level: 1, name: "Second issue" });
+      // No reader is signed in here, so nothing keeps Details open across the remount; it is
+      // opened again, as such a reader would.
+      await openIssueDetails(user);
       // The route field marks itself dirty on edit and, absent a remount,
       // skips resyncing to the newly loaded issue's own route — leaking
       // CORE-1's unsaved draft onto CORE-2's page instead of showing CORE-2's
@@ -2093,7 +2102,10 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
-    expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
+    // Close is the header's action, at the end of its last line.
+    expect(
+      within(screen.getByTestId("issue-actions")).getByRole("button", { name: "Close issue" })
+    ).not.toBeNull();
   } finally {
     view.unmount();
     restore();
