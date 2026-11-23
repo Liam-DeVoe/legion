@@ -20,8 +20,8 @@ import (
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
 // be given again, and an issue that started its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
-// upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
-// plan only after its rerun, since a version for its done or left task is refused TASK_DONE
+// upload that names none (envoy's PRECONDITION_REQUIRED), and a child out of the workflow takes a
+// new plan only after its rerun, since a version for its done or left task is refused TASK_DONE
 // (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is held by its terms:
 // a term alone where the term is the rule (a code, an operation, a role), and otherwise the terms
 // of the clause that states the rule, in their order. Both architect compositions share that
@@ -97,10 +97,15 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
+				// A task-stopped notice reaches the stopped issue's own architect, and the daemon
+				// sets back an architect's status write on its own issue (record.OwnsUnder), so
+				// that architect sends the end of that work to the architect above it rather than
+				// writing a status the daemon sets back for it to write again.
+				{"own issue's task stopped", "architect above it", "`envoy_publish`", "sets back"},
 				// A new version of plan.md names the token of the text it replaces.
 				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
-				// A parked or done child takes a new plan after its rerun: stop, then give it.
-				{"parked or done child", "only after `rerun_child`", "`TASK_DONE`"},
+				// A child out of the workflow takes a new plan after its rerun: stop, then give it.
+				{"child out of the workflow", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
 			} {
 				if !clauseHolds(composed, terms...) {
@@ -132,6 +137,55 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 	if retired := "Verify tester and reviewer cycles completed"; strings.Contains(text, retired) {
 		t.Errorf("the composed merger prompt still says %q", retired)
+	}
+}
+
+// A merge of the base forward reaches the merge only once the reviewer approved the new head, and
+// only where the merger's task has a reviewer step: a task with none stands on no review, so the
+// daemon asks no reviewer (workflow's mergeForwardLanded) and the merger goes on at the new head.
+// One composed prompt serves the merger of a task with a reviewer step and of one with none, so
+// each block of it - a paragraph, or an item of a list - that has the reviewer read the merge or
+// approve the new head names the reviewer step it holds for, and the prompt tells the merger of a
+// task with none to go on at the new head. This shows the text is loaded, never that a merger
+// follows it.
+func TestTheMergerWaitsForTheApprovalOfAMergeOnlyOnATaskWithAReviewerStep(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	composed := composedText(t, composer, claim.RoleMerger, false)
+	var blocks []string
+	for _, paragraph := range strings.Split(composed, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if item := strings.TrimLeft(line, " "); block != "" && (strings.HasPrefix(item, "- ") || len(item) > 2 && item[0] >= '1' && item[0] <= '9' && strings.HasPrefix(item[1:], ". ")) {
+				blocks, block = append(blocks, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		blocks = append(blocks, foldWhitespace(block))
+	}
+	approving := 0
+	for _, block := range blocks {
+		if !strings.Contains(block, "approve the new head") && !strings.Contains(block, "reviewer's approval of it") &&
+			!strings.Contains(block, "reads the merge's resolution") {
+			continue
+		}
+		approving++
+		if !strings.Contains(block, "reviewer step") {
+			t.Errorf("the composed merger prompt has the reviewer read the merge or approve the new head with no reviewer step named: %q", block)
+		}
+	}
+	if approving == 0 {
+		t.Fatal("no block of the composed merger prompt has the reviewer approve the new head: the needles match nothing")
+	}
+	for _, phrase := range []string{
+		"Where it has none, no approval holds the new head",
+		"where it has none, go on at the new head",
+	} {
+		if !strings.Contains(foldWhitespace(composed), phrase) {
+			t.Errorf("the composed merger prompt omits %q", phrase)
+		}
 	}
 }
 
@@ -181,21 +235,21 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 }
 
 // A catch-up that names an issue waiting in `accepting` leaves the root architect its acceptance.
-// The daemon part states what to do, in two sentences: sign off or send back, and the head a
-// parent's sign-off needs; the role part points to it rather than saying it again, so the composed
-// root prompt holds the parent's head rule once. This shows the text is loaded, never that an
-// architect follows it.
+// The daemon part states what to do, in one sentence: sign off a parent only after its last round,
+// on the head a parent's sign-off needs, or send it back; the role part points to it rather than
+// saying it again, so the composed root prompt holds the parent's head rule once. This shows the
+// text is loaded, never that an architect follows it.
 func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` a parent only after its last round, on a head that the step before your acceptance passed and at which its checks pass (`skill://legion-architect/references/acceptance.md`, \"The last round\"), or send it back with `request_backward_move`."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+	if n := strings.Count(text, "on a head that the step before your acceptance passed and at which its checks pass"); n != 1 {
 		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
@@ -291,7 +345,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
+		"the phase of an earlier step of the task: `planning` where the task has a planner step, `implementing`, or `testing` where the task has a tester step",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
 		"goes back to the implementer, or to the earlier step its completion names",
 	}
