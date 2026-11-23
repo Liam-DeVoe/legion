@@ -136,7 +136,10 @@ func TestACaseOutsideR13IsCountedApart(t *testing.T) {
 
 	other := answered("model-b")
 	score(other)
-	report := render([]going.Record{m.record, other.record}, going.Choose([]going.Record{m.record, other.record}), "a test run")
+	report, err := render([]going.Record{m.record, other.record}, going.Choose([]going.Record{m.record, other.record}), "a test run")
+	if err != nil {
+		t.Fatal(err)
+	}
 	line := `- "board drag", labelled none (added after the spec named its cases): model-a chose dispatch_issue_update in 1 of 2, gave no answer in 1 of 2; model-b chose dispatch_issue_update in 1 of 2, gave no answer in 1 of 2.`
 	if !strings.Contains(report, "2 of the cases R13 names per model") || !strings.Contains(report, "| model-a |  | 100.0% (4 of 4) |") || !strings.Contains(report, line) {
 		t.Errorf("the report reads\n%s\nwant R13's 2 cases, model-a right on 4 of 4, and the line %s", report, line)
@@ -250,7 +253,10 @@ func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 			if choice.Outcome != tc.outcome || choice.Model != tc.named {
 				t.Errorf("Choose comes to %q, naming %q; want %q, naming %q", choice.Outcome, choice.Model, tc.outcome, tc.named)
 			}
-			printed := says(tc.records, choice)
+			printed, err := says(tc.records, choice)
+			if err != nil {
+				t.Fatal(err)
+			}
 			line, _, _ := strings.Cut(printed, "\n")
 			if named := namedIn(line); named != choice.Model || (named != "") != (choice.Outcome == going.Named) {
 				t.Errorf("the line %q names %q, where Choose comes to %q, naming %q", line, named, choice.Outcome, choice.Model)
@@ -267,8 +273,8 @@ func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 				}
 				rest = after
 			}
-			if again := says(reranked(tc.records), choice); again != printed {
-				t.Errorf("beside records that rank otherwise, says prints\n%s\nwant\n%s", again, printed)
+			if again, err := says(reranked(tc.records), choice); err != nil || again != printed {
+				t.Errorf("beside records that rank otherwise, says prints\n%s (%v)\nwant\n%s", again, err, printed)
 			}
 		})
 	}
@@ -296,6 +302,50 @@ func TestARecordOfOtherCasesIsRefused(t *testing.T) {
 			}
 			if _, err := readRecords(path); err == nil || !strings.Contains(err.Error(), "model-b") {
 				t.Errorf("readRecords reads %v, want a refusal naming model-b", err)
+			}
+		})
+	}
+}
+
+// A record whose entry is chosen by a way R7 does not know - the "person" of an earlier record,
+// or any other word - is refused, naming the entry and the word, rather than read as a tie-break
+// or the rule's choice and written back as a choice nobody made.
+func TestARecordOfAnUnknownChosenByIsRefused(t *testing.T) {
+	for _, by := range []string{"person", "noise"} {
+		t.Run(by, func(t *testing.T) {
+			tied := []going.Record{floored("model-a", 101), floored("model-b", 101)}
+			tied[1].Chosen, tied[1].ChosenBy, tied[1].ChosenReason = true, by, "the cheaper model"
+			raw, err := going.EncodeRecords(tied)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "decision_models.json")
+			if err := os.WriteFile(path, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readRecords(path); err == nil || !strings.Contains(err.Error(), "model-b") || !strings.Contains(err.Error(), by) {
+				t.Errorf("readRecords reads %v, want a refusal naming model-b and %q", err, by)
+			}
+		})
+	}
+}
+
+// The choice line has a case for each outcome of R7's rule and each way a model is named, and
+// refuses an outcome or a way it does not know rather than print it as one it does; the rule's
+// own choice of the same records prints.
+func TestTheChoiceLineRefusesWhatItDoesNotKnow(t *testing.T) {
+	records := []going.Record{floored("model-a", 101), floored("model-b", 100)}
+	named := going.Choose(records)
+	if line, err := says(records, named); err != nil || namedIn(line) != "model-a" {
+		t.Fatalf("the rule's own choice prints %q (%v), want model-a named", line, err)
+	}
+	for name, choice := range map[string]going.Choice{
+		"a way of naming nobody knows": {Outcome: going.Named, Model: "model-a", By: "person", Ranked: named.Ranked, Of: named.Of, Level: named.Level},
+		"an outcome nobody knows":      {Outcome: "made_up", Ranked: named.Ranked, Of: named.Of},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if line, err := says(records, choice); err == nil {
+				t.Errorf("says prints %q, want a refusal", line)
 			}
 		})
 	}

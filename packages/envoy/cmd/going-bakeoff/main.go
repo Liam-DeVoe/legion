@@ -439,8 +439,10 @@ func loadAnswers(path string, cases []testCase) ([]*measured, error) {
 
 // readRecords is the record a run wrote, its entries measured on the same cases, as many naming
 // their action and as many not, the same number of times, each entry holding one count of right
-// choices for each repeat. Right choices out of other cases or other repeats compare nothing, so
-// a record whose entries differ in any of those is refused.
+// choices for each repeat, and each saying it was chosen by a way R7 knows or by none. Right
+// choices out of other cases or other repeats compare nothing, so a record whose entries differ in
+// any of those is refused, and so is one whose chosen_by is neither right_choices nor tie_break:
+// read as either, it would be written back as a choice nobody made.
 func readRecords(path string) ([]going.Record, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -462,6 +464,9 @@ func readRecords(path string) ([]going.Record, error) {
 		case r.Cases != first.Cases || r.NamedCases != first.NamedCases || r.OtherCases != first.OtherCases:
 			return nil, fmt.Errorf("the record %s holds %s measured on %d cases, %d naming their action and %d not, against %d, %d and %d for %s, so its entries are not one run's",
 				path, r.Model, r.Cases, r.NamedCases, r.OtherCases, first.Cases, first.NamedCases, first.OtherCases, first.Model)
+		case r.ChosenBy != "" && r.ChosenBy != going.ChosenByRightChoices && r.ChosenBy != going.ChosenByTieBreak:
+			return nil, fmt.Errorf("the record %s holds %s chosen by %q, which is neither %s nor %s",
+				path, r.Model, r.ChosenBy, going.ChosenByRightChoices, going.ChosenByTieBreak)
 		}
 	}
 	return records, nil
@@ -485,7 +490,11 @@ func conclude(w io.Writer, records []going.Record, source string, tie tieBreak, 
 			refused = fmt.Errorf("the record's tie-break, %s, is refused: %w", kept.Model, refused)
 		}
 	}
-	fmt.Fprint(w, render(records, choice, source))
+	report, err := render(records, choice, source)
+	if err != nil {
+		return fmt.Errorf("%w; no record is written", err)
+	}
+	fmt.Fprint(w, report)
 	switch {
 	case refused != nil:
 		return fmt.Errorf("%w; no record is written", refused)
@@ -832,8 +841,8 @@ func paired(a, b *measured) going.PairedTest {
 }
 
 // render is the markdown table of the run over the cases R13 names, a line for each case outside
-// them, and what R7's rule names on it.
-func render(records []going.Record, choice going.Choice, source string) string {
+// them, and what R7's rule names on it, or says' refusal of a choice it does not know.
+func render(records []going.Record, choice going.Choice, source string) (string, error) {
 	var b strings.Builder
 	first := records[0]
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
@@ -911,8 +920,12 @@ func render(records []going.Record, choice going.Choice, source string) string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(says(records, choice))
-	return b.String()
+	said, err := says(records, choice)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(said)
+	return b.String(), nil
 }
 
 // outsideLines is a line for each case outside R13's set, with what each model chose for it over
@@ -956,20 +969,23 @@ func choseText(c going.OutsideCase) string {
 // tie-break's where the rule names none, with the right choices the rule ranked the candidates by
 // (choice.Ranked), or why no model is named; and beside a named model its paired tests against
 // the other models that meet the floors. It ranks nothing again: of records it reads only how
-// many models were measured and the named model's paired tests.
-func says(records []going.Record, choice going.Choice) string {
-	if choice.Outcome != going.Named {
-		s := fmt.Sprintf("**Choice:** none: %s.", choice.Why)
-		if choice.Outcome == going.FullTie {
-			s += " Name it with `--tie-break <model> --tie-chooser <who> --tie-reason <why>`."
-		}
-		return s + "\n"
+// many models were measured and the named model's paired tests. Each outcome and each way a model
+// is named has its own case, and it refuses an outcome or a way it does not know rather than
+// print one as another.
+func says(records []going.Record, choice going.Choice) (string, error) {
+	switch choice.Outcome {
+	case going.NoCandidate:
+		return fmt.Sprintf("**Choice:** none: %s.\n", choice.Why), nil
+	case going.FullTie:
+		return fmt.Sprintf("**Choice:** none: %s. Name it with `--tie-break <model> --tie-chooser <who> --tie-reason <why>`.\n", choice.Why), nil
+	case going.Named:
+	default:
+		return "", fmt.Errorf("R7's rule came to %q, an outcome this tool does not know", choice.Outcome)
 	}
-	most := choice.Ranked[0].Right
 	var b strings.Builder
 	switch choice.By {
 	case going.ChosenByRightChoices:
-		fmt.Fprintf(&b, "**Choice:** `%s`, by the most right choices pooled over every repeat: %d of %d", choice.Model, most, choice.Of)
+		fmt.Fprintf(&b, "**Choice:** `%s`, by the most right choices pooled over every repeat: %d of %d", choice.Model, choice.Ranked[0].Right, choice.Of)
 		var others []string
 		for _, c := range choice.Ranked {
 			if c.Model != choice.Model {
@@ -984,8 +1000,10 @@ func says(records []going.Record, choice going.Choice) string {
 		default:
 			b.WriteString(". It is the one model that meets R7's floors.")
 		}
-	default:
+	case going.ChosenByTieBreak:
 		fmt.Fprintf(&b, "**Choice:** `%s`, named by a tie-break of the %s: %s. The reason recorded: %s", choice.Model, choice.Chooser, choice.Why, choice.Reason)
+	default:
+		return "", fmt.Errorf("%s is named by %q, which is neither %s nor %s", choice.Model, choice.By, going.ChosenByRightChoices, going.ChosenByTieBreak)
 	}
 	b.WriteString("\n")
 	var chosen *going.Record
@@ -995,7 +1013,7 @@ func says(records []going.Record, choice going.Choice) string {
 		}
 	}
 	if chosen == nil || len(choice.Ranked) == 1 {
-		return b.String()
+		return b.String(), nil
 	}
 	fmt.Fprintf(&b, "\nBeside the choice, the paired test of `%s` against each other model that meets the floors. It says how far a lead in right choices can be trusted, and it names no model.\n\n", chosen.Model)
 	for _, c := range choice.Ranked {
@@ -1008,7 +1026,7 @@ func says(records []going.Record, choice going.Choice) string {
 			fmt.Fprintf(&b, "- against `%s`: none recorded\n", c.Model)
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func share(rate float64, n int) string {
