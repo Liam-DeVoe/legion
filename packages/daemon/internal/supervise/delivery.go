@@ -854,12 +854,18 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return m.confirm(ctx)
 		}
 	}
-	// Every role of an issue works one jj workspace, so a task that adopts its working copy adopts
-	// it for all of them: an adoption run while another role is in a turn moves that role's worker
-	// onto a fresh commit mid-write, and the work it goes on to do lands authored by this role —
-	// a review App's adoption took the implementer's next commit that way (dispatch://INFRA-714).
-	// The task waits for that turn instead. Nothing is written and nothing moves: the delivery is
-	// left exactly as it was, and the hold is decided again, from the claims as they stand then,
+	// Every role that works one working copy works one jj workspace — the issue's own, which
+	// every role of an issue with no plan rows and of the task that holds the issue's branch
+	// works, or the working copy of a task's own branch (Delivery.Branch) — so a task that adopts
+	// a working copy adopts it for every role working there: an adoption run while another role
+	// is in a turn there moves that role's worker onto a fresh commit mid-write, and the work it
+	// goes on to do lands authored by this role — a review App's adoption took the implementer's
+	// next commit that way (dispatch://INFRA-714). The task waits for that turn instead. A turn in
+	// another task's working copy writes nothing in this one, so it holds nothing: the reviewer of
+	// one task is sent its task while the implementer works the step of another. A turn of no
+	// known working copy (ClaimView.Copy) — a message, an operator's task, the agent's own turn —
+	// may work any of them, and holds them all. Nothing is written and nothing moves: the delivery
+	// is left exactly as it was, and the hold is decided again, from the claims as they stand then,
 	// at the next trigger — the turn's end elsewhere on the issue, which the daemon posts here
 	// (IssueTurnEnded), the sweep's observation, the shim's hello, this claim's own ready. That is
 	// what keeps the task from being stranded by a turn that never ends: a claim whose process
@@ -879,9 +885,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
 	if m.adopts(*p) {
-		if other, inTurn := m.issueInTurn(); inTurn {
+		if other, inTurn := m.issueInTurn(p.Branch); inTurn {
 			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
-				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
+				"delivery", p.ID, "issue", m.claim.Issue, "branch", p.Branch, "inTurn", other)
 			return nil
 		}
 	}
@@ -1288,17 +1294,18 @@ func (m *Machine) adopts(d Delivery) bool {
 }
 
 // issueInTurn names another claim of this claim's issue whose agent is in a turn now, or whose
-// prompt is on its way to one, when there is such a claim. The answer is the state those claims'
-// machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end
-// clears, and the send in flight those machines publish beside it) rather than a second record of
+// prompt is on its way to one, in the working copy of branch (Delivery.Branch) or in none known,
+// when there is such a claim. The answer is the state those claims' machines keep
+// (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end clears, and the send
+// in flight and the working copy those machines publish beside it) rather than a second record of
 // who is in a turn kept beside them: the machines' own state is the only account that moves with
 // everything that ends a turn — the agent's own end of it, a process found dead, a suspension, a
 // close — where a record of turn times would have to be told of each of those again.
-func (m *Machine) issueInTurn() (claim.Token, bool) {
+func (m *Machine) issueInTurn(branch string) (claim.Token, bool) {
 	if m.deps.IssueInTurn == nil || m.claim.Issue == "" {
 		return "", false
 	}
-	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token, branch)
 }
 
 // adopt hands the working copy the role's App identity before the phase task d reaches the agent,

@@ -37,8 +37,9 @@ const (
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
 	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
-	// other tasks once the pull request of the task that merges has merged, and that of a task a
-	// later version of the plan removed (TaskPullRequestsClose).
+	// other tasks once the pull request of the task that merges has merged, that of a task a later
+	// version of the plan removed, and those of an earlier run at the first step of a run started
+	// again (TaskPullRequestsClose).
 	OutboxKindTaskPullRequestsClose OutboxKind = "task_pull_requests_close"
 	OutboxKindCheckWake             OutboxKind = "check_wake"
 	OutboxKindCheckLook             OutboxKind = "check_look"
@@ -1599,11 +1600,14 @@ func (TaskBranch) OutboxKind() OutboxKind { return OutboxKindTaskBranch }
 // TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of tasks of
 // the row's issue, with Comment on each before its close: GitHub leaves the pull request of a task
 // that does not merge open once the work it holds merged in the pull request of the task that
-// merges, and leaves the pull request of a task a later version of the plan removed open too. A
-// pull request GitHub shows closed already is done, so a row that runs again closes nothing more.
+// merges, and leaves the pull request of a task a later version of the plan removed open too; and
+// the first step of a run that is not carried closes each open pull request of an earlier run that
+// no task of its plan holds (the workflow's closeEarlierPullRequests). A pull request GitHub shows
+// closed already is done, so a row that runs again closes nothing more.
 type TaskPullRequestsClose struct {
-	// Generation is the issue generation the pull requests were recorded at. A row of an earlier
-	// generation finishes without acting.
+	// Generation is the issue generation that queued the row: the one the pull requests were
+	// recorded at, or the run started again that closes those of an earlier run. A row of a
+	// generation the issue has left finishes without acting.
 	Generation uint64 `json:"generation"`
 	// Numbers is the number of each pull request the row closes, in the order it closes them.
 	Numbers []int `json:"numbers"`
