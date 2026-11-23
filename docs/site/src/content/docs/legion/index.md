@@ -20,8 +20,8 @@ an issue runs in that issue's one pod.
 
 When the issue's steps have passed (in the default steps, the change is tested, reviewed, approved
 and accepted by the architect), the merger merges the pull request itself, at the head it read,
-under the repository's own branch protection, and the merge closes the issue. An issue whose steps
-opened no pull request closes when its retro ends, with no merge. After a merge the tester drives
+under the repository's own branch protection, and the merge closes the issue. An issue with no pull
+request closes when its retro ends, with no merge. After a merge the tester drives
 the merged change in production, once your deploy carries it, and records what it saw on the pull
 request, unless your project's `production_check` is `off`. Every step leaves a record you can
 read: the spec, the questions and each phase's handoff in Dispatch, and the code and the reviews on
@@ -35,7 +35,7 @@ flowchart LR
   admission --> architect["Architect<br/>writes the spec"]
   architect --> gate{"You approve<br/>the spec"}
   gate --> planner
-  subgraph pods["Phase workers, one Kubernetes pod each"]
+  subgraph pods["Phase workers, in the issue's one pod"]
     planner --> implementer
     implementer --> tester
     tester --> reviewer

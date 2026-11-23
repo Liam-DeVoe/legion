@@ -148,7 +148,7 @@ the implement App and at the head it read, which it names as the head GitHub mus
 writes the squash commit's message itself — the pull request's title and number, and an empty
 body — so GitHub's own default, which joins every commit message of the branch, never puts
 Legion's internal trailers on your default branch. On a base with a merge queue it enqueues the
-pull request instead. An issue whose steps opened no pull request has no merge: it moves to `done`
+pull request instead. An issue with no pull request has no merge: it moves to `done`
 when its retro ends.
 
 The repository's branch protection and code-owner rules decide when it lands: a review

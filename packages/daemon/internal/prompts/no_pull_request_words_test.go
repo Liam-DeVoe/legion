@@ -1,6 +1,8 @@
 package prompts
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -102,4 +104,56 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 			t.Errorf("%s still says %q", retired.part, retired.words)
 		}
 	}
+}
+
+// repoFile is one file of the checkout by its path from the repository's root, which is four
+// levels above this package.
+func repoFile(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
+}
+
+// saysAndRetires holds each text, read by read, to the words it must say and the words it must no
+// longer say, over a body whose whitespace is folded.
+func saysAndRetires(t *testing.T, read func(*testing.T, string) string, says, retired [][2]string) {
+	t.Helper()
+	for _, pin := range says {
+		if !strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+			t.Errorf("%s does not say %q", pin[0], pin[1])
+		}
+	}
+	for _, pin := range retired {
+		if strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+			t.Errorf("%s still says %q", pin[0], pin[1])
+		}
+	}
+}
+
+// The guides say what the daemon does: an issue with no pull request closes at its retro's end
+// (workflow's table, noPullRequest), the fresh agent's refused pass is taken when sent again
+// (handoff leaves it unspent), an approval ends a round once GitHub reports the head mergeable
+// (review.go reviewRound), and an issue's agents share one pod.
+func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t *testing.T) {
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/site/src/content/docs/legion/concepts.md", "another agent's refused pass is taken when it sends it again once they have left."},
+		{"docs/site/src/content/docs/legion/concepts.md", "as one comment on the issue where a point qualifies"},
+		{"docs/site/src/content/docs/legion/concepts.md", "ends the round whatever the CI verdict at that commit, once GitHub reports that head one the issue may advance on"},
+		{"docs/site/src/content/docs/legion/concepts.md", "an issue with no pull request, such as one whose only step is `tester`, is done when its retro ends"},
+		{"docs/site/src/content/docs/legion/index.md", "An issue with no pull request closes when its retro ends, with no merge."},
+		{"docs/site/src/content/docs/legion/index.md", "Phase workers, in the issue's one pod"},
+		{"docs/site/src/content/docs/legion/using-legion.md", "An issue with no pull request has no merge: it moves to `done` when its retro ends."},
+		{"docs/site/src/content/docs/index.mdx", "and set the branch rules each merge must meet."},
+		{"README.md", "An issue with no pull request is Done when its retro ends"},
+	}, [][2]string{
+		{"docs/site/src/content/docs/legion/concepts.md", "applies by itself once they have left"},
+		{"docs/site/src/content/docs/legion/concepts.md", "whatever CI says at that commit"},
+		{"docs/site/src/content/docs/legion/index.md", "one Kubernetes pod each"},
+		{"docs/site/src/content/docs/index.mdx", "and merge the result"},
+		{"README.md", "An issue whose steps open no pull request"},
+		{"docs/site/src/content/docs/legion/using-legion.md", "An issue whose steps opened no pull request"},
+	})
 }
