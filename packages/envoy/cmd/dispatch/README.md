@@ -5026,9 +5026,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - The caller is the request's own credential, resolved as every row of the API's table resolves one (`api.githubGate`): a person's cookie or trusted header, a personal token, or a token the secrets broker issued.
     It must hold the OAuth scope `person`, so the proxy reads only for a person, at their browser or through a token acting as them; the browser holds every scope.
-    A credential that holds no scope is `403 OAUTH_SCOPE_REQUIRED` naming `person`, with the scope gate's `WWW-Authenticate` challenge: the deployment's shared agent token, a service account's token, a broker token an operator's entry scoped to one project, a broker token that names no person, and a restricted member's broker token (`api.brokerTokenActor`).
+    A credential that holds no scope is `403 OAUTH_SCOPE_REQUIRED` naming `person`, with the scope gate's `WWW-Authenticate` challenge: the deployment's shared agent token, a service account's token, a broker token an operator's entry scoped to one project, and a broker token that names no person.
     A read-only token is `403 READ_ONLY_TOKEN`, and a request with no credential `401 NO_IDENTITY`.
-    A restricted member's token of any kind is `403 RESTRICTED_MEMBER`, whatever scopes it holds: a personal token of theirs (which their browser's mint gives `person` and `approve`) and any broker token acting for them (`model.Viewer.Restricted`, the test every write of the API reads for a restricted member), so an outside person's agents read nothing through the proxy.
+    A restricted member's token of any kind is `403 RESTRICTED_MEMBER`, whatever scopes it was given, before its scopes are read: a personal token of theirs and any broker token acting for them (`model.Viewer.Restricted`, the test every write of the API reads for a restricted member), so an outside person's agents read nothing through the proxy.
+    Such a token holds no scope in any case: their browser's mint gives none, and one given `person` or `approve` before that rule acts with none (`api.personalTokenActor`, `api.brokerTokenActor`).
     A restricted member's browser session is held to the repository gate below, as every person's is.
     Each refusal comes before the method and the path are read, and GitHub is asked nothing.
 

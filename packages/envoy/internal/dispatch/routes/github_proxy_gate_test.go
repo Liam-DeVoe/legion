@@ -472,23 +472,27 @@ func proxyPath(repository, shape string) string {
 //
 // Every other credential is refused before GitHub is asked anything, reading acme/pub, which alice
 // reads: no credential 401 NO_IDENTITY; 403 OAUTH_SCOPE_REQUIRED naming person for alice's token
-// holding no scope, the shared agent token, a pod's service-account token, a token an operator's
-// entry mapped to PUB, bob's personal token holding no scope and bob's broker token acting as him
-// (brokerTokenActor gives a restricted member's none); and 403 READ_ONLY_TOKEN for a read-only
-// token.
+// holding no scope, the shared agent token, a pod's service-account token and a token an operator's
+// entry mapped to PUB; 403 RESTRICTED_MEMBER for bob's personal token holding no scope and listing
+// PRIV and for his broker token acting as him listing PRIV, the shapes R16 gives a restricted
+// member's tokens; and 403 READ_ONLY_TOKEN for a read-only token.
 //
 // bob, a restricted member PRIV's list names, in two subtests. At his browser he is held to the
 // repository rule (R2): he reads acme/priv, which PRIV's issues name, from GitHub, and acme/pub, of
 // a project his list does not name, answers what acme/uninstalled answers, GitHub asked nothing. A
-// token he mints at his browser (201, person and approve, the mint's default today) is 403
-// RESTRICTED_MEMBER on acme/priv, GitHub asked nothing: a restricted member's token reads nothing
-// through the proxy, whatever scopes it holds (R9's exception, R16).
+// token he mints at his browser holds no scope and lists PRIV alone (201, R16), and a token of his
+// stored holding person and approve and listing PRIV, as a mint before that rule gave one, acts
+// with none (personalTokenActor). Each is 403 RESTRICTED_MEMBER on acme/priv, GitHub asked
+// nothing: a restricted member's token reads nothing through the proxy, whatever scopes it was
+// given (R9's exception, R16).
 //
-// Five controls, each run on its own: drop the gate's scope check, and the shared token reads
+// Six controls, each run on its own: drop the gate's scope check, and the shared token reads
 // acme/pub; hand the proxy a gate that hides nothing, and alice's token reads acme/priv; read the
 // cookie alone, as the proxy did before, and alice's tokens are 401 NO_IDENTITY; refuse a
 // restricted member at the browser too, and bob's browser is 403 on acme/priv; admit a restricted
-// member's token, and bob's minted token reads acme/priv from GitHub.
+// member's token, or check the scope before the member, and each of bob's tokens is 403
+// OAUTH_SCOPE_REQUIRED, the scope check's answer; give a restricted member's mint the caller's own
+// scopes again (tokenScopes), and bob's mint holds person and approve.
 func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) {
 	rig := newCredentialRig(t)
 	const alice, bob, carol = "alice@example.com", "bob@example.com", "carol@example.com"
@@ -552,8 +556,10 @@ func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) 
 		{"a read-only token", rig.brokerToken(ciphertoken.Introspection{
 			Service: "example-reader", ProjectScope: ciphertoken.ProjectScopeNone, Scope: ciphertoken.ScopeRead,
 		}), http.StatusForbidden, "READ_ONLY_TOKEN", ""},
-		{"bob's personal token holding no scope", rig.personalToken(t, bob, nil, nil), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
-		{"bob's broker token acting as him", rig.brokerToken(personScoped(bob)), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"bob's personal token holding no scope and listing PRIV", rig.personalToken(t, bob, nil, []string{"PRIV"}), http.StatusForbidden, "RESTRICTED_MEMBER", ""},
+		{"bob's broker token acting as him listing PRIV", rig.brokerToken(ciphertoken.Introspection{
+			Person: bob, ProjectScope: ciphertoken.ProjectScopePerson, Projects: []string{"PRIV"}, Scope: "dispatch.write",
+		}), http.StatusForbidden, "RESTRICTED_MEMBER", ""},
 	} {
 		got := rig.read(t, refused.who, proxyPath("acme/pub", "pulls/1"), "acme/pub")
 		if got.status != refused.status || got.code != refused.code || got.challenge != refused.challenge || got.asked != 0 {
@@ -582,18 +588,26 @@ func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) 
 		minted := httptest.NewRecorder()
 		rig.handler.ServeHTTP(minted, mint)
 		var token struct {
-			Token  string   `json:"token"`
-			Scopes []string `json:"scopes"`
+			Token    string   `json:"token"`
+			Scopes   []string `json:"scopes"`
+			Projects []string `json:"projects"`
 		}
 		if err := json.Unmarshal(minted.Body.Bytes(), &token); err != nil || minted.Code != http.StatusCreated || token.Token == "" ||
-			!slices.Contains(token.Scopes, "person") {
-			t.Fatalf("bob's mint at his browser answered %d %s, want 201 and a token holding person: the row below would prove nothing",
+			token.Scopes == nil || len(token.Scopes) != 0 || !slices.Equal(token.Projects, []string{"PRIV"}) {
+			t.Fatalf("bob's mint at his browser answered %d %s, want 201 and a token holding no scope ([]) and listing [PRIV], R16's mint",
 				minted.Code, minted.Body.String())
 		}
-		got := rig.read(t, bearer(token.Token), proxyPath("acme/priv", "pulls/1"), "acme/priv")
-		if got.status != http.StatusForbidden || got.code != "RESTRICTED_MEMBER" || got.challenge != "" || got.asked != 0 {
-			t.Errorf("bob's personal token minted at his browser, holding %v, reads acme/priv as %+v, want 403 RESTRICTED_MEMBER with GitHub asked nothing",
-				token.Scopes, got)
+		for _, held := range []struct {
+			name string
+			who  credential
+		}{
+			{"bob's personal token minted at his browser", bearer(token.Token)},
+			{"bob's personal token stored holding person and approve and listing PRIV", rig.personalToken(t, bob, []string{"person", "approve"}, []string{"PRIV"})},
+		} {
+			got := rig.read(t, held.who, proxyPath("acme/priv", "pulls/1"), "acme/priv")
+			if got.status != http.StatusForbidden || got.code != "RESTRICTED_MEMBER" || got.challenge != "" || got.asked != 0 {
+				t.Errorf("%s reads acme/priv as %+v, want 403 RESTRICTED_MEMBER with GitHub asked nothing", held.name, got)
+			}
 		}
 	})
 }

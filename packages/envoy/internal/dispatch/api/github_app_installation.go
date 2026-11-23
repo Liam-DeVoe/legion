@@ -132,22 +132,25 @@ type RepositoryGate func(repository string) (hidden, held bool, err error)
 // holds each read to. The caller is the request's own credential, resolved as every row of the
 // table resolves one (optionalActor): a person's cookie or trusted header, a personal token, or a
 // token the secrets broker issued. A caller that does not resolve is refused as every gate refuses
-// one (writeAuthenticationError); a read-only token is 403 READ_ONLY_TOKEN, as every row the read
-// list does not name answers it (refuseReadOnlyToken); and a credential that does not hold the
-// person scope is 403 OAUTH_SCOPE_REQUIRED naming it, as gateRouteScopes answers: the deployment's
-// shared token, a service account's, a token an operator's entry mapped to one project, a
-// machine's that names no person and a restricted member's broker token hold none.
+// one (writeAuthenticationError), and a read-only token is 403 READ_ONLY_TOKEN, as every row the
+// read list does not name answers it (refuseReadOnlyToken).
 //
 // Then the caller's viewer is resolved (access.Resolve, its credential's list applied), and a token
-// of a restricted member, of any kind, is 403 RESTRICTED_MEMBER, whatever scopes it holds: a
-// restricted member's tokens hold no scope (R16), but their browser's personal-token mint gives
-// person and approve today, and the refusal does not rest on that mint. The test is the one every
-// write of the API reads for a restricted member (model.Viewer.Restricted, withinProjectScope,
-// refuseRepoOfRestrictedMember), so an outside person's agents read nothing through the proxy
-// (R9's exception). A restricted member's browser session is held to the repository rule, as before
-// (R2): it reads a repository an issue of a project whose list names them resolves to, and every
-// other one answers as one the App is not installed on. Each refusal comes before the method and
-// the path are read, and GitHub is asked nothing.
+// of a restricted member, of any kind, is 403 RESTRICTED_MEMBER, whatever scopes its row or the
+// broker names. A restricted member's tokens hold no scope (R16): their browser's mint gives none,
+// and personalTokenActor and brokerTokenActor drop any a token was given before that rule. The
+// refusal comes before the scope check, so it says why such a token reads nothing rather than
+// which scope it lacks. The test is the one every write of the API reads for a restricted member
+// (model.Viewer.Restricted, withinProjectScope, refuseRepoOfRestrictedMember), so an outside
+// person's agents read nothing through the proxy (R9's exception). A restricted member's browser
+// session is held to the repository rule, as before (R2): it reads a repository an issue of a
+// project whose list names them resolves to, and every other one answers as one the App is not
+// installed on.
+//
+// Last, a credential that does not hold the person scope is 403 OAUTH_SCOPE_REQUIRED naming it, as
+// gateRouteScopes answers: the deployment's shared token, a service account's, a token an
+// operator's entry mapped to one project and a machine's that names no person hold none. Each
+// refusal comes before the method and the path are read, and GitHub is asked nothing.
 //
 // The gate is the App-installation route's (repositoriesHidden) for that viewer: hidden is whether
 // it fails refs.RepositoryClause, and held is its private flag, the one the clause's R9 arm reads.
@@ -164,23 +167,26 @@ func (s *server) githubGate(w http.ResponseWriter, r *http.Request) (RepositoryG
 		writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, s.readOnlyRefusal)
 		return nil, false
 	}
+	stored := s.deps.Store != nil && s.deps.Store.Pool != nil
+	var viewer model.Viewer
+	if stored {
+		if viewer, err = access.Resolve(r.Context(), s.deps.Store.Pool, actor); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("resolve what the GitHub proxy's caller sees: %w", err))
+			return nil, false
+		}
+		if viewer.Restricted && !human {
+			writeError(w, codeRestrictedMember, http.StatusForbidden,
+				"a restricted member's token reads nothing through the GitHub proxy, whatever scopes it holds")
+			return nil, false
+		}
+	}
 	if !actor.Credential.Holds(model.ScopePerson) {
 		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which the GitHub proxy requires", model.ScopePerson))
 		return nil, false
 	}
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+	if !stored {
 		return func(string) (bool, bool, error) { return true, true, nil }, true
-	}
-	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
-	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("resolve what the GitHub proxy's caller sees: %w", err))
-		return nil, false
-	}
-	if viewer.Restricted && !human {
-		writeError(w, codeRestrictedMember, http.StatusForbidden,
-			"a restricted member's token reads nothing through the GitHub proxy, whatever scopes it holds")
-		return nil, false
 	}
 	reader := actor.Reader()
 	reader.Viewer = &viewer

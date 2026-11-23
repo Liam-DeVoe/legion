@@ -869,11 +869,11 @@ type Background struct {
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
 	// GitHubGate is the GitHub proxy's caller check and repository gate (githubGate): it resolves
-	// the request's own credential, writes the refusal of one that holds no person scope or is a
-	// read-only token, and otherwise answers the gate the proxy holds each read to, the one the
-	// App-installation route applies (repositoriesHidden). routes' apiGithubRest asks it before
-	// githubapi.ProxyREST reads anything: githubapi imports this package, so the proxy is served
-	// there and its gate comes from here.
+	// the request's own credential, writes the refusal of a read-only token, a restricted
+	// member's token and one that holds no person scope, and otherwise answers the gate the proxy
+	// holds each read to, the one the App-installation route applies (repositoriesHidden). routes'
+	// apiGithubRest asks it before githubapi.ProxyREST reads anything: githubapi imports this
+	// package, so the proxy is served there and its gate comes from here.
 	GitHubGate func(w http.ResponseWriter, r *http.Request) (RepositoryGate, bool)
 }
 
