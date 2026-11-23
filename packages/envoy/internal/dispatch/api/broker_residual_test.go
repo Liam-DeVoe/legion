@@ -106,9 +106,9 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // service's and the shared records fail; drop the approver comparison alone, and alice's row fails;
 // drop the service clause alone, and the row of the service's login naming erin fails; drop the
 // kind clause alone, and the row of her own secret's request fails; give a restricted member's
-// personal token its row's scopes at its use (personalTokenActor), and the row fails naming the
-// scopes her personal token holds; drop the refusal of a decision that carries no code, and the
-// code-less rows fail.
+// mint the caller's own scopes (tokenScopes answering callerScopes for them), and the row fails
+// naming the scopes her personal token holds; drop the refusal of a decision that carries no code,
+// and the code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
