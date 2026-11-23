@@ -4,18 +4,17 @@ body: |-
     request per poll, with the same interval and `Retry-After` rules as `dispatch login --device`.
     It polls 5 s further apart, from then on, after each `slow_down` at whatever status, and after
     each poll the broker did not answer or answered 408, 429 or 5xx, as RFC 8628 has it, or
-    answered with a 2xx that holds no token and names no error, and it waits out such an answer's
-    `Retry-After`, in seconds or as a date, where it asks longer, though never past the code's
-    lifetime. It starts at the broker's interval held to 1 to 60 s, and polls a code for an hour
-    at most, one that names no lifetime included. A login whose code lapses after such polls is
-    still `expired`, and `login-status` now carries `login_reason`, which says the broker was
-    unreachable or busy for the last ones and how many; `agent-secrets machine login` and
-    `machine login-status` print it.
-    Before, the helper polled again at the same interval after an outage, ignored `Retry-After`,
-    and lost a `slow_down`'s 5 s after any other answer; it polled at the broker's interval, an
-    hour or a day included, and a code that names no lifetime until someone decided
-    it. `agent-secrets login` now holds the sign-in issuer's interval and lifetime to the same
-    bounds, where it took a positive interval and any lifetime as sent.
+    answered with a 2xx that holds no token and names no error. It waits out the `Retry-After` of a
+    408, 429 or 5xx, in seconds or as a date, where it asks longer, though never past the code's
+    lifetime. It starts at the broker's interval, 1 s at least and 5 s where the broker names none,
+    and polls a code for an hour at most, one that names no lifetime included; the code's end is
+    kept on the monotonic clock, so a step of the system clock does not move it. A login whose code
+    lapses after such polls is still `expired`, and `login-status` now carries `login_reason`,
+    which says the broker was unreachable or busy for the last ones and how many;
+    `agent-secrets machine login` and `machine login-status` print it. Before, the helper polled
+    again at the same interval after an outage, ignored `Retry-After`, and lost a `slow_down`'s
+    5 s after any other answer, and it polled a code that names no lifetime until someone decided
+    it.
     `agent-secrets <NAME> --wait` now keeps waiting through a status poll the broker, or a front
     door before it, answers 408, 500, 501 or 505 and above, as it did through a 429, 502, 503 or
     504. Before, such an answer ended the wait with exit 1 as a refusal the same poll would get
