@@ -2202,7 +2202,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return "", err
 	}
 	if from == phase.Reviewing {
-		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
 		if err != nil {
 			return "", err
 		}
@@ -2336,7 +2336,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
+	row, err := e.phaseRow(ctx, tx, *issue, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2412,7 +2412,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
+	report, err := e.phaseRow(ctx, tx, *issue, accepted)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2548,7 +2548,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
-	if err := e.clearHandoff(ctx, tx, issue.Key, starting); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -2984,32 +2984,25 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return targets, nil
 }
 
-// phaseRow is role's phases row of issue where its task stands (Walk.phaseRowOf), and the zero row
+// phaseRow is role's phases row of issue where its task stands (Walk.rowRead), and the zero row
 // stamped with the issue, the role and the step it stands at where the record holds none: every
 // caller that writes the row back writes the row of that role's step, and a caller that only reads
 // it reads the zero value of each field. A role that stands at two steps of the task has a row for
-// each, so the walk decides which: the role's step where the task stands, else its latest place
-// before it, else its first place after it (record.PhaseRowAt). An issue the record does not hold
-// walks no plan, and reads the role's one row.
-func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.PhaseRow, error) {
-	rows, err := e.store.Phases(ctx, tx, issue)
+// each, so the walk decides which: the role's step where the task stands, else its place nearest
+// it (record.PhaseRowAt). An issue with no plan rows reads the role's one row. issue is the record
+// as the caller read it in tx, so the row is read with one read of the rows and one of the walk.
+func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	w := todaysWalk()
-	var standsIn phase.Phase
-	stored, err := e.store.Issue(ctx, tx, issue)
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	if stored != nil {
-		if w, err = e.walk(ctx, tx, *stored); err != nil {
-			return record.PhaseRow{}, err
-		}
-		standsIn = record.StandsAt(*stored)
-	}
-	row := w.phaseRowOf(rows, role, standsIn)
-	row.Issue, row.Role = issue, role
+	task, at := w.rowRead(record.StandsAt(issue))
+	row := record.PhaseRowAt(rows, role, task, at, w.Steps)
+	row.Issue, row.Role = issue.Key, role
 	return row, nil
 }
 

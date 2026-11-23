@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
-		reviewer, err := engine.phaseRow(ctx, tx, key, claim.RoleReviewer)
+		reviewer, err := engine.phaseRow(ctx, tx, *issue, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}
@@ -117,8 +118,14 @@ func roleRowOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, rol
 	t.Helper()
 	var row record.PhaseRow
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		row, err = engine.phaseRow(ctx, tx, key, role)
+		issue, err := engine.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return fmt.Errorf("the store holds no %s", key)
+		}
+		row, err = engine.phaseRow(ctx, tx, *issue, role)
 		return err
 	})
 

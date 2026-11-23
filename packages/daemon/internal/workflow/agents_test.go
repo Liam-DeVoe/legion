@@ -234,7 +234,7 @@ func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := engine.phaseRow(ctx, tx, root.Key, claim.RoleReviewer)
+		row, err := engine.phaseRow(ctx, tx, root, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}
@@ -292,7 +292,7 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			row, err := engine.phaseRow(ctx, tx, root.Key, claim.RoleImplementer)
+			row, err := engine.phaseRow(ctx, tx, root, claim.RoleImplementer)
 			if err != nil {
 				return err
 			}

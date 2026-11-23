@@ -149,33 +149,27 @@ func (w Walk) placeIn(p phase.Phase) (record.TaskPlace, bool) {
 	return w.Place, true
 }
 
-// phaseRowOf is role's row of rows where w's task stands (record.PhaseRowAt): w's place, or, for a
-// stored task at no act whose issue stands in standsIn, the first place of standsIn on its line
-// (PlaceOf), as placeIn reads it. A walk with no plan rows has one row for each role
-// (record.PhaseRowOf).
-func (w Walk) phaseRowOf(rows []record.PhaseRow, role claim.Role, standsIn phase.Phase) record.PhaseRow {
+// rowRead is the task and the place of w a role's row is read at (record.PhaseRowAt): w's task
+// and place, or, for a stored task at no act whose issue stands in standsIn, the first place of
+// standsIn on its line (PlaceOf), as placeIn reads it. A walk with no plan rows reads no task, so
+// each role reads its one row (record.PhaseRowOf).
+func (w Walk) rowRead(standsIn phase.Phase) (string, record.TaskPlace) {
 	if !w.Stored {
-		return record.PhaseRowOf(rows, role)
+		return "", record.TaskPlace{}
 	}
-	at := w.Place
-	if at.Kind == "" {
-		at, _ = w.PlaceOf(standsIn)
+	if w.Place.Kind == "" {
+		at, _ := w.PlaceOf(standsIn)
+		return w.Task, at
 	}
-	return record.PhaseRowAt(rows, role, w.Task, at, w.Steps)
+	return w.Task, w.Place
 }
 
 // completionRow is the row of rows of the run role's completion serving entry reports
-// (record.CompletionRow), read where w's task stands as phaseRowOf reads it: where role works that
-// place (works), its row there; otherwise the row of the entry it serves, else role's row now.
+// (record.CompletionRow), read where w's task stands (rowRead): where role works that place
+// (works), its row there; otherwise the row of the entry it serves, else role's row now.
 func (w Walk) completionRow(rows []record.PhaseRow, role claim.Role, entry int64, works bool, standsIn phase.Phase) record.PhaseRow {
-	if !w.Stored {
-		return record.CompletionRow(rows, role, entry, works, "", record.TaskPlace{}, nil)
-	}
-	at := w.Place
-	if at.Kind == "" {
-		at, _ = w.PlaceOf(standsIn)
-	}
-	return record.CompletionRow(rows, role, entry, works, w.Task, at, w.Steps)
+	task, at := w.rowRead(standsIn)
+	return record.CompletionRow(rows, role, entry, works, task, at, w.Steps)
 }
 
 // runPlace is the place on w of the run row holds, a run of reported: the retro and the merge at
