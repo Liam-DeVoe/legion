@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -320,6 +321,9 @@ func openAdmin(raw string, end time.Time, bounded bool) error {
 	if err != nil {
 		return fmt.Errorf("parse admin database URL: %w", err)
 	}
+	// The name each admin connection gives the server, this binary's alone, so a row can hold
+	// this pool's logins and no other client's (TestALaterAdminConnectionEndsByTheConnectEnd).
+	config.ConnConfig.RuntimeParams["application_name"] = adminApplicationName()
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
 	// machine the packages testing against one server at once would exceed its connection limit.
 	config.MaxConns = 4
@@ -335,6 +339,12 @@ func openAdmin(raw string, end time.Time, bounded bool) error {
 	}
 	shared.admin = admin
 	return nil
+}
+
+// adminApplicationName is the application_name of this test binary's admin connections:
+// "storetest admin" and the binary's pid, which no other process on the machine holds.
+func adminApplicationName() string {
+	return "storetest admin " + strconv.Itoa(os.Getpid())
 }
 
 func databaseURL(server url.URL, database string) string {
