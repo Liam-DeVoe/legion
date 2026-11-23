@@ -255,11 +255,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
-		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
-		// and role): the round's decision is read from it, and so is what the round waits on from
-		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
+		// Each role's row now (record.PhaseRowOf), the row whose entry was raised last: a role that
+		// stands at two steps of a task has a row for each, and its worker is served from the row of
+		// the step it works now or worked last, the row the admission pass weighs it against. The
+		// reviewer's row now is the round's: its decision is read from it, and so is what the round
+		// waits on from GitHub (mergeWaitView). The zero row is an issue whose reviewer has never
+		// had one.
 		var reviewer record.PhaseRow
 		for _, item := range phases {
+			if now := record.PhaseRowOf(phases, item.Role); now.StepTask != item.StepTask || now.StepPlace != item.StepPlace {
+				continue
+			}
 			if item.Role == claim.RoleReviewer {
 				reviewer = item
 			}

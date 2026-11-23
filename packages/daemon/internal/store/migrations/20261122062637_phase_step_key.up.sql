@@ -27,10 +27,18 @@
 -- version row. The key is owed to the release before, whose writes need it; the delete is owed to
 -- that key, which two rows of one role would refuse; and the deleted version row is owed to the
 -- roll forward, which then runs this file again. What the delete costs is the report of each
--- earlier step of a role that stands at two steps of a running task: after the rollback, the task
--- of a later step of such a task names the report of that role's latest step alone. A rollback
--- past 20261117034837_issue_plans, which drops step_task and step_place and this key with them,
--- runs this way back first.
+-- earlier step of a role that stands at two steps of a task: after the rollback, the task of a
+-- later step of such a task names the report of that role's latest step alone. So roll back past
+-- this release only once each task whose plan in force names a role at two steps is done or
+-- stopped (docs/kubernetes.md, "Rolling back the release that keys a phases row by its step",
+-- gives the read of plan_steps that finds them): the release before refuses such a plan, gives
+-- each step the agent of the first place that runs as its phase, so `implementer:a reviewer:b
+-- implementer:b`'s step 3 would go to key a's agent, and serves no move back to a phase that runs
+-- at two earlier places, so the tester's move back in `implementer:a reviewer implementer:a tester`
+-- would be refused. A rollback past 20261117034837_issue_plans, which drops step_task and
+-- step_place and this key with them, runs this way back first, and so does a rollback past the
+-- release that records each step, whose way back reads one row of each role (step_run_witness,
+-- 20261117004117_step_starts).
 --
 -- begin;
 -- delete from phases p using phases q where p.issue = q.issue and p.role = q.role and (p.entry, p.step_task, p.step_place) < (q.entry, q.step_task, q.step_place);

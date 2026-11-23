@@ -1128,7 +1128,8 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // Nothing else on the delivery would answer this: the id is rotated by a prompt retry, and the
 // task text is the workflow's prose. The phase is typed data, persisted with the delivery, and no
-// path rewrites it; the role is the claim's, fixed for its life.
+// path rewrites it; the role is the claim's as the machine holds it now, which only the start of a
+// step of another role changes, once the claim runs nothing (supervise.Machine.Rerole).
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose

@@ -35,7 +35,7 @@ import (
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
 // what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// other worker, on the Envoy topic of its claim (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //

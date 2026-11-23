@@ -66,7 +66,7 @@ func seedStepsPlanDefining(t *testing.T, pool *pgxpool.Pool, key string, generat
 			AgentKey: key, Type: roles[role].Type})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		if err := record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+		if err := record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 			return err
 		}
 		return record.NewStore().PutPlanRoles(t.Context(), tx, key, generation, 2, definedRows)

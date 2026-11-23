@@ -1682,11 +1682,16 @@ const (
 )
 
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
-// claim of the group that records a process, in the claims' own order and without repeats, with
-// the reading that says what those reasons are worth (podReading).
+// claim of the group that records a process, in the claims' own order and without repeats, then
+// the slots the issue's plan names (runtime.PlanSlotsDrift), asked once for the group's pod
+// through its first claim that records a process, with the reading that says what those reasons
+// are worth (podReading). The plan is read from the store once for each issue at each sweep, not
+// once for each claim.
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
-// that something drifted, and a round must neither open nor end on one.
+// that something drifted, and a round must neither open nor end on one. A plan that cannot be read
+// is not such an error: it costs this sweep the slots reason alone, and the pod's other reasons
+// and whether it is there still decide, so a short outage of the store holds no round.
 //
 // The pod the claims record not being there is the one error of its own (runtime.ErrPodGone),
 // and it reads podGone, which is a statement rather than a failure: nothing more can be read of
@@ -1696,11 +1701,23 @@ const (
 // not there. The caller is what logs it, because the caller is what decides it.
 func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) ([]string, podReading) {
 	var reasons []string
+	add := func(drift []string) {
+		for _, reason := range drift {
+			if !slices.Contains(reasons, reason) {
+				reasons = append(reasons, reason)
+			}
+		}
+	}
+	var first *runtime.Known
 	for _, c := range group {
 		if c.Locator == nil {
 			continue
 		}
-		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
+		known := runtime.Known{Claim: c.Token, Locator: c.Locator}
+		if first == nil {
+			first = &known
+		}
+		drift, err := s.runtime.PodDrift(ctx, known)
 		if errors.Is(err, runtime.ErrPodGone) {
 			return nil, podGone
 		}
@@ -1710,10 +1727,15 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 			return nil, podUnread
 		}
-		for _, reason := range drift {
-			if !slices.Contains(reasons, reason) {
-				reasons = append(reasons, reason)
-			}
+		add(drift)
+	}
+	if slots, ok := s.runtime.(runtime.PlanSlotsDrift); ok && first != nil {
+		switch drift, err := slots.PodSlotsDrift(ctx, *first); {
+		case err == nil:
+			add(drift)
+		case ctx.Err() == nil:
+			s.log.Warn("supervise: read whether this issue's pod lacks a slot of its plan; this sweep decides on the pod's other reasons, and the next reads the plan again",
+				"issue", issue, "claim", first.Claim, "error", err)
 		}
 	}
 	return reasons, podRead

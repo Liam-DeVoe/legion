@@ -191,12 +191,15 @@ checks.
 The table is the line of the **default steps**. Any architect of a tree, the root's or a
 sub-architect's, can give any issue of that tree a **plan** that picks which steps it runs. In this
 section, the issue's owner is the architect that gives it its plan. The plan holds one task. Its
-steps name roles of this table, roles of the deployment and roles the plan defines itself. The plan
-defines each of its roles in a `plan_role` block such as
+steps name roles of this table, roles of the deployment and roles the plan defines itself, in the
+order the owner chooses. The plan defines each of its roles in a `plan_role` block such as
 `:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
-The steps hold `implementer`, with the tester, the reviewer and `acceptance:owner`, the architect's
-own acceptance in `accepting`, after it. The owner writes
-the plan as the issue's `plan.md` document, with one `plan_task` block such as
+The steps hold `implementer`, and each `tester`, `reviewer` and `acceptance:owner` step, the last
+the architect's own acceptance in `accepting`, stands after an `implementer` step, whose pull
+request it reads. A role may stand at two steps, of one agent or of two:
+`implementer reviewer implementer` runs step 3 in a second agent of the role implementer,
+`implementer-2`, in a session of its own. The owner writes the plan as the issue's `plan.md`
+document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its

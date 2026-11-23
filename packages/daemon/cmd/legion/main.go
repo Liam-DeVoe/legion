@@ -226,7 +226,11 @@ func pluginsLine(cfg config.Config) string {
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
-// since such a key is ignored and never refused.
+// since such a key is ignored and never refused. Then one line per warning boot logs of what the
+// file configures that a later release refuses (daemon.CheckStart): under kubernetes, an operator
+// pod volume named as the slot volume of an agent an issue's plan can name beside its role's own,
+// such as `state-implementer-2` (sandbox.PodVolumeWarnings), which this release takes, so the
+// exit stays 0 there too.
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
@@ -274,8 +278,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		applyLinkedPlugins(&cfg)
 	}
 	paneNatsUser, daemonNatsUser := "", ""
+	var warnings []string
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		paneNatsUser, daemonNatsUser, warnings, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		printRefusal(stderr, "legion config check", err)
@@ -289,7 +294,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
-	for _, warning := range cfg.Warnings {
+	for _, warning := range append(slices.Clone(cfg.Warnings), warnings...) {
 		fmt.Fprintln(stdout, warning)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
@@ -1289,9 +1294,11 @@ var strandedPhrases = map[api.StrandedMove]string{
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
-// and each by issue and role under the move that brings it back (api.StrandedClaim.Move, which the
-// boot's log line groups by too). A suspended phase worker's move is the troubleshooting page's "A
-// tree does not move after a restart" for its suspendedBy, which `legion claims list --json` shows;
+// and each by its name (api.StrandedClaim.Name: its issue and role, and its token beside them for
+// the claim of an agent named for another role) under the move that brings it back
+// (api.StrandedClaim.Move, which the boot's log line groups by too). A suspended phase worker's
+// move is the troubleshooting page's "A tree does not move after a restart" for its suspendedBy,
+// which `legion claims list --json` shows;
 // a released one is a pod whose wake was taken and whose replacement never took a turn, which is
 // the daemon's own log of that wake to read, not a suspension to lift.
 func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) string {

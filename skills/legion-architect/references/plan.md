@@ -22,6 +22,13 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A change of `serves` alone changes no task.
 
 - Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
+  To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`: Legion runs the steps of one key in one claim and one session, whatever role each step is on.
+  A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
+  A role may stand at two steps, of one agent where both steps carry one key, or of two.
+  Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
+  `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`, in a claim and a session of its own.
+  Under `runtime: kubernetes` that agent runs in a slot of the issue pod that carries its name, and where the pod was built without that slot, step 3 waits until the pod's update round or its release replaces the pod.
+  A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
 

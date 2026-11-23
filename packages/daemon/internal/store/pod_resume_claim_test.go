@@ -114,3 +114,86 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 		t.Errorf("the clock of a resume that names no claim = %s, want %s", got, at.Add(10*time.Minute))
 	}
 }
+
+// A claim has one open resume, its own, so two claims of one role each take a wake: the agent of
+// key a, `…-implementer`, on the tester's step, and the tester's own claim of an earlier version
+// of the plan, both released. While key a's resume is open, a wake of the tester's own claim — a
+// message to its session, a pause's owed launch of it — still takes a resume of its own; a second
+// wake of key a's agent takes none. A resume the release before wrote names no claim and is each
+// claim of its role's, so while one is open no claim of its role takes a wake, as before.
+func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := claim.NewToken("legion", rootIssue, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	take := func(token claim.Token) bool {
+		t.Helper()
+		taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, claim.RoleTester, pods.WakeAgentMessage, at, 0)
+		if err != nil {
+			t.Fatalf("take the wake of %s: %v", token, err)
+		}
+		return taken
+	}
+	if !take(keyed) {
+		t.Fatalf("the wake of key a's agent on the tester's step was refused, want it taken")
+	}
+	if !take(own) {
+		t.Fatalf("the wake of the tester's own claim was refused while key a's resume is open, want a resume of its own")
+	}
+	if take(keyed) {
+		t.Fatalf("a second wake of key a's agent was taken, want it refused: its own resume is open")
+	}
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil || !found {
+		t.Fatalf("the tester's own claim's open resume = %t, %v; want the one its wake took", found, err)
+	}
+
+	if _, err := st.Pool().Exec(ctx, `update pod_resumes set closed_at = now() where issue = $1`, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
+		values (0, 'legion', $1, 'tester', $2, now())`, rootIssue, pods.WakeChecks); err != nil {
+		t.Fatalf("seed a resume the release before wrote: %v", err)
+	}
+	if take(keyed) || take(own) {
+		t.Fatalf("a wake of a claim of the tester was taken while a resume naming no claim of that role is open, want it refused")
+	}
+}
+
+// The agent of a key takes the role of each step it works, so its role can change between its
+// wake and its first turn. Its resume is its own whatever role the claim holds now: key a's agent,
+// woken as the implementer, re-roled to the tester's step before its first turn, still finds,
+// stamps and closes the resume its wake took.
+func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	keyed, err := claim.NewToken("legion", rootIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, keyed, claim.RoleImplementer, pods.WakeAgentMessage, at, 0); err != nil || !taken {
+		t.Fatalf("take key a's wake as the implementer = %t, %v; want it taken", taken, err)
+	}
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, keyed); err != nil || !found {
+		t.Fatalf("key a's open resume, read as the tester = %t, %v; want the one its wake took", found, err)
+	}
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(time.Minute)); err != nil || !set {
+		t.Fatalf("key a's let-out as the tester = %t, %v; want its resume found", set, err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, claim.RoleTester, keyed, at)
+		if err == nil && !closed {
+			t.Errorf("a close of key a's resume as the tester closed nothing, want the one its wake took")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

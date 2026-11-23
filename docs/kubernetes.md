@@ -1724,7 +1724,7 @@ A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effec
 Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended` and waits for its pod to disappear, which takes the disk that pod owns.
 Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
-Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
+Sandbox and the role Secrets it owned` — the Secret of each slot of its pod goes with it by owner reference.
 Where the Sandbox owns a kept volume, the foreground delete deletes that volume too ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
@@ -1749,7 +1749,7 @@ The orphan sweep still keeps a Sandbox whose home is another tree (`Store.IssueS
 a child whose hand-over is pending, or one carried into a tree of its own that it is in or can still be admitted into), which is how a carried child's Sandbox survives a sweep between its launch and its old tree's cleanup.
 Agent Sandbox v1.0.3 creates each Sandbox's PVC with that Sandbox as its controller owner and `blockOwnerDeletion: true`;
 foreground deletion keeps the owner visible until Kubernetes garbage collection deletes every blocking dependent
-— an issue Sandbox's six role Secrets, and the claim a controller's or a cache's Sandbox owns.
+— an issue Sandbox's slot Secrets, one for each slot of its pod, and the claim a controller's or a cache's Sandbox owns.
 The restricted daemon has no PVC API verb, so a Sandbox's absence after its foreground delete is the API's confirmation that what it owned is gone; it does not read or delete a PVC.
 An issue's ephemeral disk is not among those dependents: it is its pod's own, and it goes when the delete takes the pod.
 A kept volume is among them: its claim is the issue Sandbox's, so the delete waits until the garbage collector deletes it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -2470,6 +2470,8 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 The tables `step_starts` and `step_starts_rollback` and the function `step_run_witness` (`20261117004117_step_starts`) stay in place: an earlier release names none of them in a statement, so that release boots with them and their rows there.
 `step_starts` holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
 An earlier release starts and ends steps and counts none of them, so the rollback keeps in `step_starts_rollback` what the roll forward needs to tell the runs this release counted from the ones it did not: for each issue with a row in `step_starts`, its tree, its witness (`step_run_witness`) and the moment of the rollback.
+Where the rollback also goes past the release that keys a phases row by its step, run that release's way back first ([Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step)), the natural order of a rollback, which undoes the newest migration first: the witness reads one phases row of each role, and while that key stands, a role at two steps of a task has two, on which the `insert` below fails with `more than one row returned by a subquery used as an expression` (SQLSTATE 21000) and keeps no witness.
+So a wrong order fails loudly and keeps nothing; run that way back, then this block again.
 Run this with every daemon of the database stopped, before the earlier image is pinned, and before the block of any older release below, which can drop the phase entries the witness reads:
 
 ```sql
@@ -2565,6 +2567,7 @@ A rollback that also goes past `20261117201743_plan_roles.up.sql` runs that migr
 The release that names each step's agent adds one more column to `plan_steps`, `agent`, in `20261117213545_plan_step_agent.up.sql`, so a rollback past this release runs that migration's way back first, the one its header gives: it drops the column and deletes its version row, which would otherwise stand after `plan_steps` is gone, so that the roll-forward creates `plan_steps` again and then adds the column to it.
 That way back also takes the key `claim` off each queued `supervise`, `issue_bundle`, `update_ask`, `hook_prompt`, `merge_forward` and `controller_notice` row, where that release names the claim a row acts on; an earlier release decodes an outbox payload strictly and knows no such key, so without it each such row fails its decode at every attempt until the roll forward.
 The release that keys a phases row by its step makes `step_task` and `step_place` part of the primary key of `phases` in `20261122062637_phase_step_key.up.sql`, and dropping either column drops that key, so a rollback past this release runs that migration's way back before this block, the one its header gives: it keeps the row of each role with the highest entry, writes the key `(issue, role)` again and deletes its version row.
+The release that records the agent of a claim's session adds `claims.session_agent` in `20261122120917_claim_session_agent.up.sql`, newer than both of those, so a rollback past this release runs that migration's way back first of all, newest first ([Rolling back the release that records the agent of a claim's session](#rolling-back-the-release-that-records-the-agent-of-a-claims-session)).
 Run the block once for each project, and a later run drops nothing again and deletes that project's rows.
 
 ```sql
@@ -2611,6 +2614,33 @@ With no such row left, it writes the five checks again as the earlier release wr
 Run it with every project's daemon on that database stopped, before the earlier image is pinned: the checks are the database's, and so are the rows they read.
 The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
 
+#### Rolling back the release that records the agent of a claim's session
+
+This release's migration `20261122120917_claim_session_agent.up.sql` adds one column to `claims`, `session_agent`: the agent whose session the claim holds, `key:<key>` for the agent of a key and `step:<place>:<task>` for the agent of a step with no key.
+A later version of a plan can give the name a stopped task's agent ran under to a new agent, and the column is what says which of the two the claim's session is, so the new agent starts in a session of its own and an agent that comes back to its own step resumes its own.
+This release also writes the key `agent` on each `supervise` start of a step's agent, the agent of that step.
+An earlier release names each column of `claims` it reads and writes, so the column stands unread, but it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such key, so a start left queued with it fails its decode at every attempt, and so does every read of its role's runs.
+
+**Roll back only once each issue whose plan names a second agent of one role is done or stopped.**
+This release runs a second agent of one role, an agent such as `implementer-2`, in a slot of the issue's pod that has the agent's name, with a claim and a session of its own.
+The release before has no slot rule and no session rule for such an agent: it gives the agent no slot of its own in the pod, and it keeps no record of which agent a claim's session belongs to.
+Each row this read returns is a step of such an agent, in a task that is not done and not stopped; run each such task to done, or stop it, before you stop the daemons:
+
+```sql
+select s.issue, s.generation, s.task, s.position, s.role, s.agent
+from plan_steps s
+join issues i on i.key = s.issue and i.generation = s.generation
+join plan_tasks t on t.issue = s.issue and t.generation = s.generation and t.task = s.task
+where i.phase <> 'done' and t.state not in ('done', 'stopped', 'left')
+  and s.agent <> '' and s.agent <> s.role;
+```
+
+At the rollback, with this release's daemon stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it takes the key `agent` off each queued `supervise` row and leaves every other key, drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default.
+Run it first of all, and then the way back of each older migration, newest first: before [Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step) and every section it names.
+What the way back costs is the record of each claim's agent and each stripped start's agent: the earlier release resumes the session a claim holds for whichever step's agent it starts next, and after the roll-forward each claim records no agent, so its next start of a step's agent resumes the session it holds and records that agent.
+So a claim whose session was another agent's at the rollback, a step of a new agent that had not started yet, is resumed for the new agent once.
+Before a rollback, let each issue whose plan a later version changed reach its next step's start, or stop it.
+
 #### Rolling back the release that keys a phases row by its step
 
 This release's migration `20261122062637_phase_step_key.up.sql` makes the primary key of `phases` `(issue, role, step_task, step_place)`, so a role that stands at two steps of a task keeps a row for the run of each step, and an issue with no plan rows keeps one row for each role, as before.
@@ -2622,10 +2652,27 @@ Several projects' daemons can share one database, and this guide already moves t
 Within that one change, a project's daemon of the earlier release can still run for the seconds before its `Recreate` stops it while another project's daemon has migrated the database.
 In that window its transaction that writes a phases row fails and leaves the record as it was: the outbox row that made it is tried again on its backoff, the route that made it answers 500 `FACT_APPLY_FAILED` and its agent sends it again, and an event it took from the message stream is refused back to the stream (a nak with a delay), which delivers it again, so nothing is lost and its issues move again once its new pod runs.
 
+**Roll back only once each issue whose plan names a role at two steps is done or stopped.**
+The earlier release refuses a plan that names a role at two steps of a task, and it runs an issue whose plan in force already names one in two wrong ways.
+Its start of a step gives the step the agent of the first place that runs as the step's phase, so in `implementer:a reviewer:b implementer:b` step 3 goes to key a's agent, not key b's.
+It serves no move back to a phase that runs at two earlier places, so in `implementer:a reviewer implementer:a tester` the tester's move back to implementing is refused.
+And the way back below keeps one row of each such role, the one with the highest entry, so the task of that role's later step names the report of its latest step alone.
+Each row this read returns is a task, not done and not stopped, whose plan in force names a role at two steps; run each such task to done, or stop it, before you stop the daemons:
+
+```sql
+select s.issue, s.generation, s.task, s.role, count(*) as steps
+from plan_steps s
+join issues i on i.key = s.issue and i.generation = s.generation
+join plan_tasks t on t.issue = s.issue and t.generation = s.generation and t.task = s.task
+where i.phase <> 'done' and t.state not in ('done', 'stopped', 'left')
+group by s.issue, s.generation, s.task, s.role
+having count(*) > 1;
+```
+
 At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it deletes each phases row of a role but the one with the highest entry, writes the key `(issue, role)` again and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again.
 The key is owed to the earlier release, whose every write of a phases row needs it.
-What the delete costs is the report of each earlier step of a role that stands at two steps of a running task: after the rollback, the task of a later step names the report of that role's latest step alone.
-A rollback past `20261117034837_issue_plans` runs this way back first, since that release's way back drops `step_task` and `step_place`, and this key with them.
+What the delete costs is the report of each earlier step of a role that stands at two steps of a task: after the rollback, the task of a later step names the report of that role's latest step alone, which the read above leaves to no running task.
+A rollback past `20261117034837_issue_plans` runs this way back first, since that release's way back drops `step_task` and `step_place`, and this key with them; so does a rollback past the release that records each step, whose block reads one phases row of each role ([Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step)).
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -3319,7 +3366,10 @@ At a later generation of the issue, the same version is a new registration, judg
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261121183336_pod_resume_claim adds `pod_resumes.claim`, the claim each wake brought back, at its default, the empty string, which reads as each claim of the resume's role, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward adds the column again at its default.
-20261122062637_phase_step_key makes the primary key of `phases` `(issue, role, step_task, step_place)`, so a role that stands at two steps of a task keeps a row for each, and touches none of the six, so the block holds over it; the earlier release's upsert of a phases row names the conflict target `(issue, role)`, which no unique index answers under the new key, so every write of a phases row by a daemon of a release before it fails until the way back its header gives runs, which keeps the row of each role with the highest entry, writes the key `(issue, role)` again and deletes its version row, so every project's daemon on the database moves past it together, in either direction.
+20261122062637_phase_step_key makes the primary key of `phases` `(issue, role, step_task, step_place)`, so a role that stands at two steps of a task keeps a row for each, and touches none of the six, so the block holds over it; the earlier release's upsert of a phases row names the conflict target `(issue, role)`, which no unique index answers under the new key, so every write of a phases row by a daemon of a release before it fails until the way back its header gives runs, which keeps the row of each role with the highest entry, writes the key `(issue, role)` again and deletes its version row, so every project's daemon on the database moves past it together, in either direction, and a rollback past it waits until each task whose plan in force names a role at two steps is done or stopped ([Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step)).
+20261122072945_pod_wake_backstop_claim adds `pod_wake_backstops.claim`, the claim each backstop wakes, at its default, the empty string, which reads as each claim of the backstop's role, keeps the one open backstop of a role for the rows that name no claim and holds one open backstop per claim for the rest, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which keeps the newest open backstop of each role, puts the one open backstop per role back over every row, drops the column and deletes its version row, so that the roll-forward adds the column again at its default.
+20261122074350_one_open_resume_per_claim keeps the one open resume of a role for the resumes that name no claim and holds one open resume per claim for the rest, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives first, before 20261121183336's, which closes all but the newest open resume of each role, puts the one open resume per role back over every row and deletes its version row, so that the roll-forward runs it again.
+20261122120917_claim_session_agent adds `claims.session_agent` at its default, the empty string, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives first ([Rolling back the release that records the agent of a claim's session](#rolling-back-the-release-that-records-the-agent-of-a-claims-session)), which takes the key `agent` off each queued `supervise` row, drops the column and deletes its version row, so that the roll-forward adds the column again at its default.
 20261123060645_merge_forward_own adds the key `own` to each `pull_requests.merge_forward` ask the earlier release recorded in implementing, the mark that the ask was made at the task's implementation step, and touches none of the six, so the block holds over it; the earlier release reads that column leniently and ignores the key, and a rollback past it runs the way back its header gives, which deletes its version row alone, so that the roll-forward marks again each ask recorded in implementing in between.
 20261123092755_claim_launched_definition adds `claims.launched_definition`, the definition of a plan's role that the process a claim records was launched with, at the empty string on every row, and touches none of the six, so the block holds over it; the earlier release names no such column and leaves it as it stands, and a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward reads every claim as launched with no plan's definition and relaunches a plan role's agent it finds running at that role's next step.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
@@ -3853,6 +3903,21 @@ Legion holds no model route.
 `pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
+
+A volume of `pod` may not take the name of a volume Legion gives a slot of a role that exists now: `launcher-<role>`, `private-<role>`, `state-<role>`, `gh-<role>` or `agent-secrets-key-<role>`, where `<role>` is one of Legion's six roles, `controller` or a role the deployment defines in `roles`.
+The daemon refuses such a name at boot, and `legion config check` refuses it too: `runtime.kubernetes.pod.volumes[<i>].name gh-implementer is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+An issue's plan can run a second agent of one role in a slot of the agent's own name, and that slot's volumes take names of the same form: the agent is named `<role>-<n>`, from `implementer-2` on, the role cut so that the name holds at most 32 bytes.
+A volume of `pod` named so, `launcher-`, `private-`, `state-`, `gh-` or `agent-secrets-key-` and then `<role>-<n>` for a role that exists now, such as `state-implementer-2`, collides with that slot's volume wherever a plan names that agent; Kubernetes refuses a pod with two volumes of one name, so that issue's pod cannot start.
+This release takes such a name, because a configuration saved before plans gave agents slots of their own can hold one.
+The daemon logs a warning for each such volume at boot, and `legion config check` prints the same warning after its OK line and still exits 0:
+
+```text
+runtime.kubernetes.pod.volumes[0].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume
+```
+
+A later release refuses such a name at boot, as it refuses a name of a role's slot now.
+A name no agent can take collides with no slot and gets no warning: `gh-cache` where no role is `cache`, or `state-implementer-1`, since an agent's number starts at 2.
+Rename each volume that the warning names before that release: give it a name of another form in `volumes`, and in each `volume_mounts` entry whose `volume` names it.
 
 A `secret` or `config_map` volume may set `default_mode`, the mode of every file it projects, in octal digits after a leading `0` or `0o`, from 0 to 0777:
 `secret: {name: <Secret>, items: [{key: <key>, path: key}], default_mode: 0440}`.
@@ -6630,7 +6695,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 - **an update round replaces the pod**, once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound (below).
   A live pod whose configuration has merely drifted is never replaced where it is found, because that would end every role's turn in it and delete the disk with everything unpushed on it;
 
-- **the issue is stopped**: its close as `done`, or a move to `backlog`, `icebox` or `triage`, runs the durable suspend effect, which sets the Sandbox `Suspended`, waits its pod out and deletes the Sandbox with the six role Secrets it owns (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed
+- **the issue is stopped**: its close as `done`, or a move to `backlog`, `icebox` or `triage`, runs the durable suspend effect, which sets the Sandbox `Suspended`, waits its pod out and deletes the Sandbox with the Secret it owns of each slot of its pod (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed
   issue's Sandbox and the role Secrets it owned`.
   The pod's disk went with the pod before the Sandbox did;
 
@@ -6848,7 +6913,7 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
 - A launch that replaces the pod, a launch that fails after it set the Sandbox `Running`, and the end of an update round (`ReplacePod`).
 
 - An idle release, and the release of a pod that no claim owns ([Idle release](#idle-release)).
-  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes the seven Secrets that the Sandbox owns: the provisioning Secret and the six role Secrets.
+  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes the Secrets that the Sandbox owns: the provisioning Secret and the Secret of each slot of its pod, every slot its stored template binds, which are each role of the issue and each agent of its plan whose name no role has, such as `implementer-2`.
   The Sandbox stays with the same uid, and the next launch writes each Secret again.
   After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
   A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
@@ -7028,8 +7093,8 @@ The daemon releases a pod for a second reason: no claim of the issue is live at 
 A claim is live while it is not `failed`, not `retired` and not `suspended`, so an issue whose claims have all stopped holds a pod in which no role can take a turn
 — a root whose architect failed after three launch failures, for example, which holds its 3 CPU and 19 GiB until the issue closes.
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
-This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
-Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the Secret it owns of each slot of its pod.
+Where the Sandbox owns a kept volume, it deletes the pod and the Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 It saves no git bundle and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
 The daemon cannot save that work: it reads a workspace only over a role process, and a pod with no live claim runs none.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
@@ -7069,8 +7134,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   For a session that neither the listener's registry nor that store holds, Dispatch publishes the message on the session's agent subject itself.
   A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
 
-- the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the seven Secrets it owns, the provisioning Secret and the six role Secrets ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+- the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the Secret it owns of each slot of its pod are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the Secrets it owns, the provisioning Secret and the Secret of each slot of its pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.

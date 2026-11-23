@@ -1081,6 +1081,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	rows, err := e.store.Phases(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
@@ -1096,7 +1100,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// this transaction read, before anything is written, and its refusal is left unspent, as the
 	// route's writes nothing, so the same report applies once it is the work of the entry that
 	// stands.
-	if refusal := intake.EntryFence(*issue, fact.Role, fact.Entry, row.Entry, row.EntryMovedBack, fact.Commit, pr, nil); refusal != nil {
+	if refusal := intake.EntryFence(*issue, fact.Role, fact.Entry, row.Entry, row.EntryMovedBack, record.OtherStepsEntry(rows, row), fact.Commit, pr,
+		nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
@@ -1458,8 +1463,9 @@ func runeOffset(s string, n int) int {
 
 // deathFirstLine is the part of a death the worker-died's reason carries: its first line — the
 // verdict and the start of the runtime's account — without the header of a log tail that ends
-// it. The sandbox runtime ends that line with "; last lines of <role>:" and writes the tail of
-// the role's log and of the container's on the lines after it, among them lines a role wrote:
+// it. The sandbox runtime ends that line with "; last lines of <slot>:", the slot of the claim's
+// agent, and writes the tail of that slot's log and of the container's on the lines after it,
+// among them lines an agent wrote:
 // carried whole, each of those became a line of the architect's notice. The whole account stays
 // on the claim (supervise.Claim.LastDeathCause), where an operator reads it, and in the `death`
 // of the failure record a notice carries when the fact names a cause (noticeFailure). The line
@@ -2549,20 +2555,22 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
-	// session until its issue closes (leave), and its phase entry ends here, not its process. The
-	// workspace passes to the next role at the completion this move records, which the worker reports
-	// once its handoff is committed and pushed, so the next role's start may run while that worker's
-	// turn is still finishing (the issue's lifecycle lane runs its supervise rows one at a time,
-	// oldest due first, and a start waits for no turn to end). From then on
-	// the finished role answers questions read-only: a completion it reports is refused, since it no
-	// longer works the issue's phase (handoff), and a task queued for a phase the issue has left is
-	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -
-	// retro back to implementing on the implementer's own backward move - hands the running worker
-	// the new phase's task once its turn is over, as any start of a working claim does. A move no
-	// completion records - the review App's decision on a round the reviewer had not completed -
-	// starts the next role the same way: that role keeps its turn, its jobs, its process and its
-	// session, and the start waits for none of them.
+	// No transition stops a worker: the claim whose phase this ends keeps its process, its role and
+	// its session until its issue closes (leave), or until its agent's next step is of another
+	// role, which the start of that step waits for its turn to end to give it (the outbox's
+	// prepareClaimForStep), and its phase entry ends here, not its process. The workspace passes
+	// to the next role at the completion this move records, which the worker reports once its
+	// handoff is committed and pushed, so the next role's start may run while that worker's turn
+	// is still finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest
+	// due first, and the start of a claim on the role it holds waits for no turn to end). From then
+	// on the finished role answers questions read-only: a completion it reports is refused, since it
+	// no longer works the issue's phase (handoff), and a task queued for a phase the issue has left
+	// is dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one
+	// role - retro back to implementing on the implementer's own backward move - hands the running
+	// worker the new phase's task once its turn is over, as any start of a working claim does. A
+	// move no completion records - the review App's decision on a round the reviewer had not
+	// completed - starts the next role the same way: that role keeps its turn, its jobs, its process
+	// and its session, and the start waits for none of them.
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits

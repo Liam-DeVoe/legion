@@ -18,26 +18,61 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// An operator's pod volume may not take the form of a volume Legion gives a slot, `<launcher,
-// private, state, gh or agent-secrets-key>-<name>` for any name of the agent grammar: an issue's
-// plan can name an agent whose name no role has, `implementer-2`, and that agent's slot volumes
-// would collide with such a volume at its pod's build, which no check at the daemon's boot could
-// see by the plan, since no plan is known then. A name of another form stays the operator's.
-func TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume(t *testing.T) {
-	legion := append(slices.Clone(claim.Roles), claim.RoleController)
-	check := func(name string) error {
-		pod := Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
-		return CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+// An operator's pod volume may not take the name of a volume Legion gives the slot of a role that
+// exists now: one of Legion's six, the controller's, or a role the deployment defines. A name of
+// the form of a slot's volume, `<launcher, private, state, gh or agent-secrets-key>-<agent>`, where
+// the agent is a name an issue's plan can give beside its role's own, such as `implementer-2`,
+// collides with the slot of that agent wherever a plan names it, which no check at the daemon's
+// boot can see, since no plan is known then. A plan names an agent `<role>-<n>`, from 2, the role
+// cut so the name holds at most 32 bytes (claim.NumberedAgentName), for a role that exists now. A
+// configuration saved before such agents had slots may hold such a name, so this release takes it
+// with a warning that names the volume and the form and says a later release refuses it
+// (PodVolumeWarnings). A name no agent can take, such as `gh-cache`, stays the operator's, with no
+// warning.
+func TestAnOperatorVolumeOfASlotsFormIsTakenAndOneOfARolesSlotRefused(t *testing.T) {
+	// long is a role the deployment defines, of the grammar's full 32 bytes: its numbered agents
+	// take the role cut to fit.
+	long := strings.Repeat("r", 32)
+	roles := append(slices.Clone(claim.Roles), claim.Role(long), claim.RoleController)
+	podOf := func(name string) Pod {
+		return Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	}
-	for _, name := range []string{"state-implementer-2", "launcher-security-reviewer", "private-a", "gh-implementer-3", "agent-secrets-key-checker"} {
-		want := "runtime.kubernetes.pod.volumes[0].name " + name + " has the form of a volume Legion gives each slot of a pod"
-		if err := check(name); err == nil || !strings.HasPrefix(err.Error(), want) {
-			t.Errorf("CheckPod of an operator volume %s = %v, want a refusal beginning %q", name, err, want)
+	check := func(name string) error {
+		return CheckPod(podOf(name), roles, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+	}
+	for _, name := range []string{"launcher-implementer", "private-tester", "state-controller", "gh-architect", "agent-secrets-key-merger", "state-" + long} {
+		want := "runtime.kubernetes.pod.volumes[0].name " + name + " is a volume Legion puts in every pod"
+		if err := check(name); err == nil || err.Error() != want {
+			t.Errorf("CheckPod of an operator volume %s = %v, want %q", name, err, want)
 		}
 	}
-	for _, name := range []string{"operator-extra", "state", "statefile", "state-2", "gh-", "launchers-a"} {
+	for name, slot := range map[string][2]string{
+		"state-implementer-2": {"state", "implementer-2"}, "private-tester-10": {"private", "tester-10"},
+		"agent-secrets-key-merger-3": {"agent-secrets-key", "merger-3"},
+		"gh-" + long[:30] + "-2":     {"gh", long[:30] + "-2"}, "launcher-" + long[:29] + "-10": {"launcher", long[:29] + "-10"},
+	} {
 		if err := check(name); err != nil {
-			t.Errorf("CheckPod of an operator volume %s = %v, want it taken: it has no slot's form", name, err)
+			t.Errorf("CheckPod of an operator volume %s = %v, want it taken: it collides with no slot of a role", name, err)
+		}
+		want := []string{"runtime.kubernetes.pod.volumes[0].name " + name + " has the form " + slot[0] + "-<slot> of a volume Legion gives each slot of a pod, and collides with the " +
+			slot[0] + " volume of the slot of an agent named " + slot[1] + " wherever an issue's plan names one; a later release refuses this name, so rename the volume"}
+		if got := PodVolumeWarnings(podOf(name), roles); !slices.Equal(got, want) {
+			t.Errorf("PodVolumeWarnings of an operator volume %s = %q, want %q", name, got, want)
+		}
+	}
+	for _, name := range []string{
+		"gh-cache", "private-a", "launcher-security-reviewer", "agent-secrets-key-checker", "state-cache-2",
+		"state-implementer-1", "state-implementer-02", "state-controller-2", "gh-" + long[:31] + "-2",
+		"operator-extra", "state", "statefile", "state-2", "gh-", "launchers-a", "launcher-implementer",
+	} {
+		if got := PodVolumeWarnings(podOf(name), roles); len(got) != 0 {
+			t.Errorf("PodVolumeWarnings of an operator volume %s = %q, want none: no agent of a plan takes its name, or CheckPod refuses it", name, got)
+		}
+		if name == "launcher-implementer" {
+			continue
+		}
+		if err := check(name); err != nil {
+			t.Errorf("CheckPod of an operator volume %s = %v, want it taken: it collides with no slot of a role", name, err)
 		}
 	}
 }
@@ -161,7 +196,7 @@ func TestTheLauncherCredentialOfAPlanSlotIsForgottenWithItsSandbox(t *testing.T)
 	for sandbox, secret := range held {
 		r.cacheLauncherCredential(sandbox, secret)
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	if _, kept, _ := r.launcherAuth.lookup(held[s].Name, s.UID); kept {
 		t.Errorf("the implementer-2 launcher credential is still held after its Sandbox %s was forgotten", name)
 	}

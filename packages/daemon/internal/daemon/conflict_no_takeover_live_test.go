@@ -495,7 +495,8 @@ func (r *conflictNoTakeoverLive) awaitLogged(message, issue string, bound time.D
 	return lines[0]
 }
 
-// roleTopic is the Envoy role topic of role's claim on issue, as the daemon spells it.
+// roleTopic is the Envoy role topic of role's own claim on issue, the claim of the agent named for
+// role, as the daemon spells it: in this proof each step's worker is that claim.
 func (r *conflictNoTakeoverLive) roleTopic(issue string, role claim.Role) string {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue, role)

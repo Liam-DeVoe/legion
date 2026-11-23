@@ -61,9 +61,11 @@ type roleForReader struct {
 // it), or answers RoleFor's role for every phase but step to the readers this list holds
 // (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or never reads admitted at all because a check before it refuses
-// that phase, which is what each named test holds it to. The owner walk reads no role: where it
-// starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// the retry of a named claim), or reads the roles of the retro and the merge alone, the places that
+// stand after every step, and gives a task at no act, as at admitted, its role's first place
+// (record.RolePlace), or never reads admitted at all because a check before it refuses that phase,
+// which is what each named test holds it to. The owner walk reads no role: where it starts is its
+// caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -84,6 +86,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	// The retro's role and the merge's, each compared with the role whose place it reads; a task at
+	// no act reads the role's first place.
+	{file: "internal/record/record.go", fn: "RolePlace"}: {calls: 2, tests: []string{
+		"TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands", "TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{

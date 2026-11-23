@@ -392,10 +392,13 @@ Each item below names a script, then what it proves.
 
 - `agents.sh`
 
-  one key of an owner's plan is one agent in one session across roles, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two issues whose owners give their plans:
+  one key of an owner's plan is one agent in one session across roles, one role at two steps of a task is one agent in one session, and a second agent of one role is an agent in a session of its own, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues whose owners give their plans:
   `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
   `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
-  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own.
+  the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own;
+  `implementer:a reviewer implementer:a` runs steps 1 and 3 in one agent and one session, through a failed review that returns the task to step 1, and step 3's task names the reports of steps 1 and 2;
+  its control, `implementer:a reviewer implementer`, runs step 3 and the retro in `…-implementer-2`, the second agent of the role implementer, launched once in a session of its own;
+  and `implementer reviewer implementer` runs step 3 in `…-implementer-2` the same way.
   No GitHub, no cluster
 
 - `plan-roles.sh`
@@ -950,7 +953,7 @@ the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in t
 the shared clone's helper is `!legion git-credential` with `credential.useHttpPath`;
 a `task` subagent of that pane does the same with no bash command of the parent's first, since it inherits the same directory, and `gh auth status` names account `x-access-token`;
 nothing of the pane's redeems a grant for GitHub, no pane carries a grant file, and no agent runs `legion` from bash, so there is no `idle-pr-read` checkpoint, which proved a per-read grant mint (LEGION-262) that no longer exists.
-`notices-reach-architects-alone` reads every phase-worker session in the isolated profile (a session's role is its newest Envoy role claim) and fails on any workflow notice delivered to one:
+`notices-reach-architects-alone` reads every phase-worker session in the isolated profile (a session's role is the last part of its newest Envoy role claim, the name of its agent, which is the role that agent is named for, since no plan of this run keys a step) and fails on any workflow notice delivered to one:
 every notice kind is for an architect — the issue's own, or the one above it the daemon routes it to — on that architect's role topic, and the run's `pr-blocked`, the reviewer's `phase-finished` at its approval (the architect's acceptance cue) and `worker-died` are each checked in their architect's session where they are written.
 The end of the issue is the new order's (LEGION-781).
 `final-review-cycle` first sends the architect a `sign_off` while the issue still sits in `reviewing` (the tester's completion started the reviewer, which waits for the proof's instruction), the acceptance's negative control:
@@ -1228,7 +1231,7 @@ It proves `worker_backends` under the Kubernetes runtime:
 the rig of [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) on the cluster of [`stage4a-sandbox-runtime.sh`](#stage4a-sandbox-runtimesh).
 A real Go daemon on the devbox, whose `legion.yaml` carries `worker_backends: {implementer: claude}` and `runtime: kubernetes`, drives one scratch Dispatch issue;
 a real Oh My Pi architect and planner take it to implementing in the issue's pod, and the implementer then runs in that pod's one `roles` container, in namespaces of its own (`legion launcher role-init`), as `legion claude-bridge -- claude -p
-…` — the Claude Code its pod's start script installed at launch from the image's pin (the image carries the pin, `/opt/legion/claude-code`, and no Claude Code), the image's `@sjawhar/claude-envoy` as its MCP server and Legion plugin, its `mcp.json` written by the launcher into the generation's private directory, and its `CLAUDE_CONFIG_DIR` at `/legion/scratch/state/implementer/claude`, the role's own state home on the pod's own disk, which dies with the pod (`docs/kubernetes.md`, "The disk dies with its pod").
+…` — the Claude Code its pod's start script installed at launch from the image's pin (the image carries the pin, `/opt/legion/claude-code`, and no Claude Code), the image's `@sjawhar/claude-envoy` as its MCP server and Legion plugin, its `mcp.json` written by the launcher into the generation's private directory, and its `CLAUDE_CONFIG_DIR` at `/legion/scratch/state/implementer/claude`, the state home of the implementer's slot, its claim's agent's, on the pod's own disk, which dies with the pod (`docs/kubernetes.md`, "The disk dies with its pod").
 Every pod of the run keeps its sessions in a scratch session database of the run's own (`session_store: postgres`):
 the architect's and planner's Oh My Pi sessions are only there, and the implementer's launcher saves its transcript there as a row keyed by the file's absolute path and restores it from there in a replacement pod (`docs/kubernetes.md`, "Where a Claude Code session lives across pods").
 It is the first rig to run `runtime: kubernetes`, so what the tmux proof reads from `/proc` and a pane's own files this one reads with `kubectl exec` and `kubectl get` against that pod, and the session table with `psql` in the session database's container;
@@ -1859,8 +1862,8 @@ Each item below names a check, then what it does and what it requires.
 - `pod-baseline`
 
   the stub agent the root's shim started (read from `/proc/<pid>/environ`) has `PI_CONFIG_FILES` = the operator's overlays alone, exactly as the pod carries them, since Legion writes no overlay of its own;
-  `PI_CONFIG_DIR=.omp`, `OMP_SESSION_STORAGE=sql` with `OMP_SESSION_SQL_DSN_FILE` naming the session database's URL file (no pod keeps a session on its disk, which dies with it), `XDG_STATE_HOME=/legion/scratch/state/architect` (the root claim's role:
-  the state home is the one directory of the issue's scratch a role has to itself, so Oh My Pi's browser broker lock, an abstract unix socket named from a path under the state root, is one name per container of the pod rather than one across it), `TMPDIR=/legion/scratch/tmp` (the issue's own temporary directory, the one every role of the pod is told:
+  `PI_CONFIG_DIR=.omp`, `OMP_SESSION_STORAGE=sql` with `OMP_SESSION_SQL_DSN_FILE` naming the session database's URL file (no pod keeps a session on its disk, which dies with it), `XDG_STATE_HOME=/legion/scratch/state/architect` (the root claim's slot, named for its agent, the architect:
+  the state home is the one directory of the issue's scratch a slot has to itself, so Oh My Pi's browser broker lock, an abstract unix socket named from a path under the state root, is one name per container of the pod rather than one across it), `TMPDIR=/legion/scratch/tmp` (the issue's own temporary directory, the one every role of the pod is told:
   the runtime names it, so an agent falling back to the image's `/tmp` is the regression this value catches), and the operator's other variables;
   neither `OTEL_SDK_DISABLED` nor `PI_AUTO_QA` (no baseline sets them);
   `/legion/scratch/state/architect/omp/profiles/legion` is a directory in the root's container (the shim makes it before Oh My Pi starts;
@@ -2117,7 +2120,7 @@ Each item below names a check, then what it does and what it requires.
 
   the whole of the change on an issue of its own:
   its role runs, its session is in the table, and `SuspendIssue` closes it as the daemon's durable close effect does
-  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the six role Secrets it owned.
+  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the Secrets it owned.
   Nothing of the issue is left: `get sandbox` is `NotFound` and `get pvc <pod>-issue` answers none.
   The resume that follows is a launch from nothing:
   a new Sandbox, a new pod, and that pod's own disk under the same name with a new uid and the new pod as its owner, the agent carrying on from the table with `LEGION_WORKSPACE_RECREATED=true` and a marker holding its resumed incarnation alone
@@ -2616,7 +2619,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   while tree 1 keeps running: the proof human sets child 1 `done`, and its Sandbox and pod are gone (`kubectl get sandboxes,pods -l legion.dev/issue=<child 1>` lists nothing) and so is the disk that pod owned, the daemon logged `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` for it exactly once and no lost volume, every claim of child 1, its own architect's among them, is `retired` with its session kept for a reopen, and the root's Sandbox stays Running, its pod's own disk Bound and its pod the same uid.
   The proof human then sets child 2 `backlog`, and within 600 s it has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<child 2>` lists nothing, and `<pod>-issue` answers none):
-  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
+  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
   Each of these waits reads the disk inside it, since a pod's own claim is reaped a moment after the pod object goes.
   The two slots those children held are freed with them, and tree 3, waiting since `issue-independence`, takes one: a child's slot going to a root is the cap counting issues
 
@@ -5117,7 +5120,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/agents.sh     # → "agents e2e: PASS in <n>s", exit 0
 ```
 
-The live proof that one key of an owner's plan is one agent in one session across roles, run before the change merges.
+The live proof that one key of an owner's plan is one agent in one session across roles, that one role at two steps of a task is one agent in one session, and that a second agent of one role is an agent in a session of its own, run before the change merges.
 It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
@@ -5133,10 +5136,10 @@ before them the script refuses a host with no `bun` or no `node_modules`, and ex
 | `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 Nothing of the key's path is stood in for.
-The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates two issues, each in progress with the `legion` label and a spec.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`OS<6 hex>`), maps `acme/widgets` to it, and creates five issues, each in progress with the `legion` label and a spec.
 It seeds each issue in the daemon's store at `admitted` with no design gate, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
-Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`), a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
-The issue then walks as the package's whole-daemon test of a key walks it (`walkOneKey`, `internal/daemon/agents_test.go`):
+Each issue's architect writes its plan on the issue and gives it to Legion (`POST /legion/v1/plans/register`); for each plan Legion takes, a person approves the spec, and the architect registers it as the gate (`POST /legion/v1/gates/register`).
+That issue then walks as the package's whole-daemon tests walk it (`walkOneKey`, `walkRoleTwice` and `walkSecondAgent`, `internal/daemon/agents_test.go`):
 each role over the daemon's worker stream and its own routes, and each relaunch of a claim on another role met by its pane registering again in the session its claim recorded (`relaunchedAs`), as the plugin does.
 The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts steps --issue <KEY>`), run as a person's own shell runs it, with the personal token Dispatch minted for the person who set the project up.
 
@@ -5144,6 +5147,9 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 | :--- | :--- | :--- |
 | `one-key-two-roles` | the plan `implementer:a tester:a reviewer`; the implementer's completion; the tester's step, a relaunch of `…-implementer` with the role tester that resumes its session file, its task naming `Step 1 (implementer:a) reported:`; a person's approving review; the retro, a relaunch of `…-implementer` with its first role; GitHub's merge | the step records of steps 1 and 2 naming the agent `…-implementer` and one session, and step 3 `…-reviewer` in a session of its own; `dispatch steps --issue <KEY>` printing those same agents |
 | `control-no-key-on-step-2` | the plan `implementer:a tester reviewer`, walked the same way, with `…-implementer` launched once | step 2's record naming `…-tester` in a session of its own, and `dispatch steps` printing it |
+| `role-two-times` | the plan `implementer:a reviewer implementer:a`; the implementer's completion; the reviewer's report and a person's review requesting changes; the implementer's task of step 1 again, in its session; the reviewer's report and a person's approving review; step 3's task, in the same session, naming `Step 1 (implementer:a) reported:` and `Step 2 (reviewer) reported:`; the retro; GitHub's merge, with `…-implementer` launched once | the step records of each run of steps 1 and 3 naming `…-implementer` and one session, and of step 2 `…-reviewer` in another; `dispatch steps --issue <KEY>` printing those same agents |
+| `control-no-key-on-step-3` | the plan `implementer:a reviewer implementer`; the implementer's completion; the reviewer's report and a person's approving review; step 3's task, in `…-implementer-2`, the second agent of the role implementer, launched once and resuming no session, naming `Step 1 (implementer:a) reported:` and `Step 2 (reviewer) reported:`; the retro, in that second agent; GitHub's merge, with `…-implementer` launched once | the step records of steps 1 to 3 naming `…-implementer`, `…-reviewer` and `…-implementer-2`, each in a session of its own; `dispatch steps --issue <KEY>` printing those same agents |
+| `second-agent` | the plan `implementer reviewer implementer`, walked the same way | the same reads, step 3 naming `…-implementer-2` in a session of its own |
 
 What the proof stands in for lies outside the key:
 the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
@@ -5335,7 +5341,7 @@ Three issues are seeded in `testing` on open pull requests whose heads are commi
 The reviewer's review is the review App's own, published on the `ENVOY_NOTIFICATIONS` stream as Envoy relays GitHub's webhook before the reviewer completes, as the reviewer posts it, its Legion footer naming the pull request's head, a session and the entry of its round.
 The driver reads that entry from the task the daemon delivered the reviewer's shim, as an agent reads its task: the number of its last sentence, ` Review entry: <n>.`, which is the entry the reviewer's phases row stands at.
 A footer that names another head, or none, is set aside and decides nothing.
-A footer that names a session other than the one the claims record holds for the claim the daemon starts the reviewer under is set aside too, in the first round as in every later one, though the reviewer's phases row names no claim before its first completion.
+A footer that names a session other than the one the claims record holds for the claim the daemon starts the reviewer under is set aside too, in the first round as in every later one: that claim is the one the reviewer's entry writes on its phases row, the claim of the agent on the reviewer's step (`internal/workflow/review.go`, `reviewersClaim`).
 Only the reviewer's own review decides the round, and only such a review whose footer names the entry the reviewer's phases row stands at makes the daemon keep the head as the commit the reviewer read.
 A footer that names no entry, or another entry, still decides the round and keeps no commit; no time is compared.
 Each check first holds that the task it reads is the reviewing task of its round:
@@ -5350,8 +5356,8 @@ it says `Phase: reviewing.` and names the tester's handoff of that round by its 
 
 The proof's own control: with the commit's sentence taken out of `Sentences` in `internal/reviewround/reviewround.go`, `round-1-names-no-commit` fails, its task ending with its entry and naming no ` Last reviewed commit: none.`, since a first round's task carries that sentence too.
 With the write of `phases.reviewed_head` taken out of `internal/workflow/review.go` and the step before it left out, `control-no-record-no-commit` fails before its clear, the column reading empty where it should hold the first head.
-With `internal/workflow/review.go` judging who decides a round by the session of the claim the reviewer's phases row names, `round-2-names-the-commit-of-round-1` fails first, timing out while it waits for the issue in `implementing`: that row names no claim before the reviewer's first completion, so no session is found, and the reviewer's own `REQUEST_CHANGES` waits and decides nothing (`workflow: a review of the review App waits` in the daemon's log).
-It fails the same way with the write of `phases.reviewed_head` reading the row's claim too, since that review never reaches the write.
+Who decides a round has its control in `internal/workflow`, not in this run: `TestAKeyedAgentOnTheReviewersStepDecidesTheRoundByTheSessionOfItsOwnClaim` (`internal/workflow/review_test.go`) seeds a plan that keys the reviewer's step to the tester's agent, and with `internal/workflow/review.go` judging a round by the session of the reviewer role's own token in place of the claim on the reviewer's step (`reviewersClaim`), both of its cases fail: the keyed agent's own `REQUEST_CHANGES` leaves the issue in `reviewing`, and one from the session of the reviewer role's own token moves it to `implementing`.
+This run cannot hold that control: its plan keys no step, so the claim on the reviewer's step is the reviewer role's own token, and the entry writes that claim on the reviewer's phases row before the round's first review, so every read of the reviewer's claim names the one claim and the same session.
 With `internal/workflow/review.go` comparing the review's submission time with the moment the reviewer's row took its entry (`fact.SubmittedAt.After(reviewer.EntryRaisedAt)`) in place of the two cases that compare the footer's entry with the row's, `round-2-names-the-commit-of-round-1` fails, its task naming test version 2 and no commit:
 GitHub's submission time is to the second, so the review the driver publishes in the second its round's entry was raised reads as submitted before that entry (in the measured run, `submitted_at=…12:28:03.000Z`, `entry_raised_at=…12:28:03.467Z` in the daemon's log), and the review decides the round and records no commit.
 Five tests of `internal/workflow` fail with it as well: `TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit`, `TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGivesIt`, `TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry`, `TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry` and `TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit`.

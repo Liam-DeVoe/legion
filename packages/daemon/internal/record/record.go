@@ -681,12 +681,13 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it by one and
-	// write the three fields below beside it, in their own transaction (workflow's start,
-	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
-	// two numbers a completion is held to: the issue's generation is the same for every entry of
-	// one run, where the entry is new at each one, which is what tells one testing phase from the
-	// testing phase after a move back (api/handoff.go). A start that hands
+	// tree brings back, and a root architect's start of work it was not on raise it, to the higher
+	// of the row's own entry plus one and one above the highest entry of each row of the issue that
+	// names the step's claim, and write the three fields below beside it, in their own transaction
+	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
+	// finer of the two numbers a completion is held to: the issue's generation is the same for
+	// every entry of one run, where the entry is new at each one, which is what tells one testing
+	// phase from the testing phase after a move back (api/handoff.go). A start that hands
 	// the role no work it was not already on leaves it where it stands — the send of this entry's
 	// own work to a claim behind it, the held phase's retry, and every start of no entry
 	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
@@ -2108,11 +2109,16 @@ type Store interface {
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// verdict and summary, and the step each of its phases rows ran, a step of the last
+	// generation's plan. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	// ClearTreeGeneration drops them for every issue of tree, the re-admission of its root, which
+	// raises the generation of the root alone: every other member keeps its generation, its plan
+	// and its task's place, so the phases rows of a member keep the steps they ran, each naming
+	// the claim of its step's agent (WorkerClaim).
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
@@ -2161,8 +2167,9 @@ type Store interface {
 	// agents from.
 	PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error)
 	// IssueClaims is every stored claim of issue in project (the claims' project token), in any
-	// state, with its stored role, ordered by token: what a walk over every claim of an issue
-	// reads, so each row it writes names one stored claim.
+	// state, with its stored role and the agent of its session, ordered by token: what a walk over
+	// every claim of an issue reads, so each row it writes names one stored claim, and what keeps a
+	// key's name for it once no row names the key (KeySessionsOf, NameAgents).
 	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
@@ -2505,9 +2512,10 @@ type RoleRunKey struct {
 	Generation uint64
 }
 
-// RoleRun is what the store holds of one role's run of an issue generation: the role's supervise
-// rows for the generation still queued, oldest first (finishing deletes a row, so each is one the
-// outbox has not run), and this daemon's claim on the role, nil when it has none.
+// RoleRun is what the store holds of one claim's run of a role of an issue generation: the role's
+// supervise rows for the generation still queued that reach that claim, each a row that names its
+// token or names no claim, oldest first (finishing deletes a row, so each is one the outbox has
+// not run), and this daemon's claim of that token, nil when it has none.
 type RoleRun struct {
 	Queued []QueuedSupervise
 	Claim  *RoleClaim
@@ -2782,6 +2790,46 @@ func RaisedLater(at time.Time, entry int64, thanAt time.Time, than int64) bool {
 	return entry > than
 }
 
+// OtherStepsEntry is the highest entry a row of row's role holds other than row, the row of
+// another step of that role, and 0 where the role has no other row: a role at one step, and every
+// role of an issue with no plan rows. A step's start raises its entry above every row of its role
+// (workflow's enter), so an entry at or below this one is of another step's run, or of an earlier
+// run of row's own step that the task has since left for another step of the role. The entry fence
+// of a completion reads it (intake.EntryFence), so the same head is never taken as the same work
+// across two steps that ask for different work.
+func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
+	var entry int64
+	for _, other := range rows {
+		if other.Role == row.Role && (other.StepTask != row.StepTask || other.StepPlace != row.StepPlace) && other.Entry > entry {
+			entry = other.Entry
+		}
+	}
+	return entry
+}
+
+// StartLeft says whether a start of role's phase entry entry, for the claim token, is of work the
+// role has left, read from an issue's phases rows, and answers the entry of the row it weighed the
+// start against: the role's row now (PhaseRowOf), the row of the step the task stands at, or stood
+// at last. A role's entries rise together, each step's above every row of its role (workflow's
+// enter), so the row now holds the role's highest entry and a start of another step of the role,
+// or of an earlier run of this one, is below it. A start is of that row's step only when it is for
+// the claim that row names: two claims of one role keep a row each, one for each of their steps,
+// so a start of another claim than the row now names is of another step, whatever its number
+// reads. A phase worker's start names the claim it was queued for (SuperviseRequest.Claim), so the
+// outbox asks this before it runs one, for that claim, and again under the claim's lock before the
+// start suspends or re-roles it. A start that names no claim (token ""), one the release before
+// wrote, acts on the claim of the row now, and a row of no step (an issue with no plan rows keeps
+// one for each role, and a new generation's clear leaves one) or one that names no claim is the
+// role's one row, whose claim is the role's (WorkerClaim), so each of them is weighed against the
+// row's entry alone.
+func StartLeft(rows []PhaseRow, role claim.Role, token claim.Token, entry int64) (int64, bool) {
+	now := PhaseRowOf(rows, role)
+	if token != "" && now.StepTask != "" && now.Claim != "" && now.Claim != token {
+		return now.Entry, true
+	}
+	return now.Entry, entry < now.Entry
+}
+
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
@@ -2805,7 +2853,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	if task == "" {
 		return PhaseRowOf(rows, role)
 	}
-	place := rolePlace(role, at, steps)
+	place := RolePlace(role, at, steps)
 	var noStep *PhaseRow
 	for i, row := range rows {
 		switch {
@@ -2822,10 +2870,11 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	return PhaseRow{Role: role, StepTask: task, StepPlace: place}
 }
 
-// rolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
+// RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
 // task whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task
-// gives no place.
-func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
+// gives no place. It is also the place a completion's key names where the role stands at two
+// steps (StandsTwice; api's completion route).
+func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
 	// then the merge.
 	type stand struct{ rank, place int }
@@ -2863,17 +2912,37 @@ func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	return chosen.place
 }
 
+// StandsTwice says whether steps name role at two places or more: a role that stands at two steps
+// of one task, whose runs keep a row each.
+func StandsTwice(role claim.Role, steps []PlanStep) bool {
+	places := 0
+	for _, step := range steps {
+		if claim.Role(step.Role) == role {
+			places++
+		}
+	}
+	return places >= 2
+}
+
 // WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
 // the claim role's row names (PhaseRow.Claim) while that row runs a step of the issue's plan
 // (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
 // claim is the one it started on an earlier step of another role, so a role's own token does not
 // name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
-// plan rows, a row a new generation cleared (ClearGeneration clears StepTask and keeps Claim), a
-// row no entry was raised on, and a row the release before wrote. project is the project's token,
-// as claim.NewToken takes it, and a role that is no role of Legion yields its refusal.
+// plan rows, a row the issue's own new generation cleared (ClearGeneration, and ClearTreeGeneration
+// for the root it re-admits, clear StepTask and keep Claim), a row no entry was raised on, and a row
+// the release before wrote. project is the project's token, as claim.NewToken takes it, and a role
+// that is no role of Legion yields its refusal.
 //
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
-// names a role reaches the agent that works that role's step when the row runs.
+// names a role reaches the agent that works that role's step when the row runs. It is one rule with
+// the start of that step, which names the claim the step's entry writes on the row (workflow's
+// stepReach), because a row of no step stands only where the agent of the place its issue stands
+// at is the role's own: an issue a new generation put back at admitted, a run of the release
+// before, whose plans name no key, and an issue with no plan rows. The clear of a tree leaves the
+// steps of every member whose generation it keeps (Store.ClearTreeGeneration), so no row loses its
+// step while its issue stands at a step of a keyed agent, and the start of a step and every reader
+// of its worker name one agent.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
 	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
 		return row.Claim, nil
@@ -2956,11 +3025,12 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
 // both (plan.Supported), and work queued for either reads the same here: the entry the work is of
-// tells the two apart, which the outbox's fence on a start (the entry of the role's row now,
-// PhaseRowOf) and the claim's given entry compare beside this. Away from step the phase alone is
-// compared: one role works several phases (the implementer implementing and retro), and a phase
-// names its one role. It is the one definition of that question, which the four judges of queued
-// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
+// and the claim it is for tell the two apart, which the outbox's fence on a start (the role's row
+// now, its claim and its entry, StartLeft) and the claim's given entry compare beside this. Away
+// from step the phase alone is compared: one role works several phases (the implementer
+// implementing and retro), and a phase names its one role. It is the one definition of that
+// question, which the four judges of queued work ask, each on its own read: the outbox before it
+// runs a start (daemon's supervise), the
 // admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).

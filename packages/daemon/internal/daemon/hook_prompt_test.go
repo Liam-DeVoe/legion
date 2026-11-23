@@ -27,8 +27,10 @@ var firedHook = record.HookPrompt{Hook: "back-to-implementing", Role: claim.Role
 
 // A hook prompt is the deployment's own words for the round a move back opened, and the role the
 // hook named is who they were written for: the row publishes its own message — the daemon's facts
-// of the firing and then the hook's words — to that role's Envoy topic, under the row's own key and
-// with keep, so the listener keeps it for a role no live session holds, and the row ends there.
+// of the firing and then the hook's words — to the Envoy topic of the claim the row names, or, for
+// a row like this one that names none, of the worker on that role's step, here the role's own
+// claim, under the row's own key and with keep, so the listener keeps it for a claim no live
+// session holds, and the row ends there.
 func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	ctx := context.Background()
 	publisher := &outboxPublisher{}

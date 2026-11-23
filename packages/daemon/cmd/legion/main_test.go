@@ -1558,6 +1558,37 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 	}
 }
 
+// `legion config check` prints, right after its OK line, the warning boot logs of an operator pod
+// volume named as the slot volume of an agent an issue's plan can name beside its role's own, and
+// exits 0, since this release takes the volume; a volume no agent of a plan can collide with is
+// taken with no warning, and a volume named as the slot volume of a role is refused, exit 1.
+func TestConfigCheckWarnsOfAnOperatorVolumeOfASlotsForm(t *testing.T) {
+	legionState(t)
+	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
+	pluginsGap := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
+	pod := func(name string) string {
+		return "    pod:\n      volumes:\n        - {name: " + name + ", config_map: {name: legion-operator-cache}}\n"
+	}
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("state-implementer-2"))}, &out, &errb)
+	warning := "runtime.kubernetes.pod.volumes[0].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume\n"
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("a volume of an agent's slot: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+	out.Reset()
+	errb.Reset()
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("gh-cache"))}, &out, &errb)
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("a volume no agent can collide with: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+	out.Reset()
+	errb.Reset()
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("gh-implementer"))}, &out, &errb)
+	if want := "legion config check: runtime.kubernetes.pod.volumes[0].name gh-implementer is a volume Legion puts in every pod\n"; code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("a volume of a role's slot: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // A decision may name only a capability the daemon measures from the deployment: anything else is
 // refused as an unknown key naming the four, and a blank reason records nothing, so it is refused
 // too — each with exit 1 and no Config OK.
@@ -2467,13 +2498,22 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 				workflowStart + " LEGION-210 reviewer\n",
 		},
 		// Two claims of one role on one issue: each takes the move its own suspender calls for,
-		// read by its token, and neither takes the other's.
+		// read by its token, and neither takes the other's. The role's own claim is named by its
+		// issue and role, and key a's agent, named for another role, by its token beside them.
 		{
 			name: "two claims of one role on one issue", bearer: true,
 			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
 				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
 			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
-				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester\n",
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
+		},
+		// Without a bearer both read as suspended workers, one move, and the two are named apart.
+		{
+			name: "two claims of one role on one issue in one move",
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) " +
+				"LEGION-212 tester, LEGION-212 tester (claim legion-legion-legion-212-implementer)\n",
 		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it

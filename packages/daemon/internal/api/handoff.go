@@ -231,9 +231,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// A role the deployment or the issue's plan defines reports its step as a tester does: with the
 	// verdict pass or fail and the commit it read, and with no handoff record (the phase step ends
-	// with none). The rules read the role, never the settings or the plan: a role outside Legion's
-	// six is a role of the deployment or of the issue's plan, and the claim's token was derived for
-	// it.
+	// with none). The rules read the role the grant's claim holds, never the settings or the plan: a
+	// role outside Legion's six is a role of the deployment or of the issue's plan, whichever agent's
+	// claim, named for that role or keyed and on a step of it, holds it.
 	deploymentRole := !claim.IsBuiltin(grant.Role)
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger || deploymentRole) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
@@ -333,7 +333,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads.
-	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, req.Commit, position.pullRequest, c.Pending); refusal != nil {
+	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, position.otherStepsEntry, req.Commit, position.pullRequest,
+		c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -412,6 +413,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
 	// upgrade keeps its key.
 	//
+	// Where the task names the role at two places, the key ends with the place of the step the
+	// completion is of (`:p<place>`, completionPosition.place): the role's two steps run in one
+	// pass, so the completion of the second can report what the first did, one commit or one
+	// record and one verdict, and must still be a fact of its own, which the workflow judges. A
+	// role at one place keeps the key it had.
+	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
@@ -425,6 +432,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		counted = position.task + ":" + counted
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	if position.place > 0 {
+		eventID += fmt.Sprintf(":p%d", position.place)
+	}
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo

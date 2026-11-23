@@ -112,26 +112,57 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 }
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
-// one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
-// one key name one agent; for the retro, the agent of the task's step that does its implementation
-// work there (implementationPlace), which runs it. It is "" for the merge, for a walk with no plan
-// rows, for a step of the key owner, whose claim is no name on the issue, and for a place the task
-// does not hold: there the role stands for the agent (Engine.stepToken).
+// one place the workflow names a step's agent: the agent of the step stepOfWork picks, so the steps
+// of one key name one agent and the retro names the agent that runs it. It is "" for the merge, for
+// a walk with no plan rows, for a step of the key owner, whose claim is no name on the issue, and
+// for a place the task does not hold: there the role stands for the agent (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
-	if !w.Stored {
+	if at := w.stepOfWork(place); at > 0 {
+		return w.Steps[at-1].AgentName()
+	}
+	return ""
+}
+
+// agentIDAt is the identity of the agent that does the work of place on w (plan.Agent.ID), the
+// agent AgentAt names, of the same step (stepOfWork): the agent of its key or of its own task and
+// place. It is "" where AgentAt is: for the merge, for a walk with no plan rows, for a step of the
+// key owner and for a place the task does not hold. A start of the work of place names it
+// (record.SuperviseRequest.Agent), and the claim it reaches starts in a new session where its
+// session is another agent's (supervise.Claim.SessionAgent).
+func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
+	at := w.stepOfWork(place)
+	if at == 0 {
 		return ""
+	}
+	step := w.Steps[at-1]
+	agent := plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
+	if agent.Owner() {
+		return ""
+	}
+	return agent.ID()
+}
+
+// stepOfWork is the place, from 1, of the step whose agent does the work of place on w: the step
+// itself, and for the retro the task's last step of the type implementation (implementationPlace),
+// which runs it. It is 0 for the merge, for a walk with no plan rows and for a place the task does
+// not hold. It is the one rule of which agent works a place: AgentAt names that agent, whose claim
+// the start of the place's work runs on (Engine.stepToken), and agentIDAt gives the identity the
+// start names, so the two are always one agent.
+func (w Walk) stepOfWork(place record.TaskPlace) int {
+	if !w.Stored {
+		return 0
 	}
 	switch place.Kind {
 	case record.PlaceStep:
 		if place.Position >= 1 && place.Position <= len(w.Steps) {
-			return w.Steps[place.Position-1].AgentName()
+			return place.Position
 		}
 	case record.PlaceRetro:
 		if step, ok := w.implementationPlace(place); ok {
-			return w.Steps[step.Position-1].AgentName()
+			return step.Position
 		}
 	}
-	return ""
+	return 0
 }
 
 // implementationPlace is the place of the step whose agent does the implementation work of w's

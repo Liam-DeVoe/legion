@@ -275,10 +275,12 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleTester,
+			Claim: keyedToken(t, "LEGION-209", "tester"), Generation: 1, Phase: phase.Testing,
 			Task: "Continue mid-phase child. Issue: LEGION-209. Phase: testing. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true, NeedsSlot: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-211", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Retro,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-211", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleImplementer,
+			Claim: keyedToken(t, "LEGION-211", "implementer"), Generation: 1, Phase: phase.Retro,
 			Task: "Continue retro child. Issue: LEGION-211. Phase: retro. Working copy: branch legion/LEGION-211. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-212", payload: record.IssueBranch{Generation: 1}},
 	})
@@ -312,7 +314,8 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger,
+			Claim: keyedToken(t, "LEGION-209", "merger"), Generation: 1, Phase: phase.Merging,
 			Task: "Continue merging child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -360,7 +363,8 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2,
 			Task: architectStart(t, pool, admission, root.Key, ""), Entry: 1}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
+		{kind: record.OutboxKindSupervise, issue: "LEGION-209", payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleMerger,
+			Claim: keyedToken(t, "LEGION-209", "merger"), Generation: 1, Phase: phase.Merging,
 			Task: "Continue awaiting child. Issue: LEGION-209. Phase: merging. Working copy: branch legion/LEGION-209. Resume the existing phase work.", Entry: 1, ResumeTask: true}},
 	})
 	inTx(t, pool, func(tx pgx.Tx) {

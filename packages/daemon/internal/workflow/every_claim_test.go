@@ -44,8 +44,9 @@ func everyClaimRows(t *testing.T, pool *pgxpool.Pool, issue string) []everyClaim
 
 // seedRoleClaims stores, for each issue of keys as the record holds it, an idle claim of each role
 // of Legion, in its tree, as the supervisor stores the claim of each role it ran there: what a walk
-// over every claim of an issue reads (record.Store.IssueClaims), which writes no row for a claim
-// the issue does not hold.
+// over every claim of an issue reads (record.Store.IssueClaims), which writes a row naming a claim
+// only for a claim the issue holds, and a row by the role alone for a role whose worker claim is
+// none of those (claimTargets).
 func seedRoleClaims(t *testing.T, pool *pgxpool.Pool, keys ...string) {
 	t.Helper()
 	for _, key := range keys {

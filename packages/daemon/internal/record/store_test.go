@@ -1066,8 +1066,8 @@ func TestTwoStepsOfOneRoleKeepTwoRows(t *testing.T) {
 // A new generation clears the step each row ran, so the rows of one role's steps would share one
 // key: the clear folds them first, keeping the row whose entry is the highest, which is the number
 // the claim's next entry rises from, and then clears it as before. The other rows are the last
-// generation's steps, whose reports go with the generation. A tree's new generation folds each
-// member's rows the same way.
+// generation's steps, whose reports go with the generation. A tree's new generation folds its
+// root's rows the same way: the re-admission raises the generation of the root alone.
 func TestANewGenerationFoldsTheRowsOfARole(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -1112,6 +1112,73 @@ func TestANewGenerationFoldsTheRowsOfARole(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// A tree's new generation raises its root's generation alone, so a member keeps its generation,
+// its plan and its task's place, and the clear leaves its rows on the steps they ran: in
+// `implementer:a reviewer:b implementer:b` held at step 3, the implementer keeps step 1's row of
+// key a and step 3's of key b, each at its entry and naming its claim, so the claim of the role's
+// worker is still step 3's agent, key b (WorkerClaim), the claim a retry of the step names. Only
+// the reports go, with the rest of the generation. The root beside it folds and clears as before.
+// Before, the clear folded the member's rows into step 3's and cleared its step, so the role's
+// worker read as the implementer's own token, key a's, while the step was key b's.
+func TestATreesNewGenerationKeepsTheStepsOfAMemberWhoseGenerationStands(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-296")
+	member := issueFixture("LEGION-297")
+	member.Tree = root.Key
+	const keyA, keyB claim.Token = "legion-legion-legion-297-implementer", "legion-legion-legion-297-reviewer"
+	stepRows := func(issue string, a, b claim.Token) []PhaseRow {
+		return []PhaseRow{
+			{Issue: issue, Role: claim.RoleImplementer, Claim: a, StepTask: "a", StepPlace: 1, HandoffRecord: "implement-1", Entry: 1},
+			{Issue: issue, Role: claim.RoleReviewer, Claim: b, StepTask: "a", StepPlace: 2, HandoffRecord: "review-1", Entry: 2},
+			{Issue: issue, Role: claim.RoleImplementer, Claim: b, StepTask: "a", StepPlace: 3, HandoffRecord: "implement-2", Entry: 3},
+		}
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, records.PutIssue(ctx, tx, member))
+		for _, row := range append(stepRows(root.Key, "root-a", "root-b"), stepRows(member.Key, keyA, keyB)...) {
+			must(t, records.PutPhase(ctx, tx, row))
+		}
+		must(t, records.ClearTreeGeneration(ctx, tx, root.Tree, time.Now().UTC()))
+	})
+	type step struct {
+		role   claim.Role
+		claim  claim.Token
+		task   string
+		place  int
+		entry  int64
+		report string
+	}
+	stepsOf := func(issue string) ([]step, []PhaseRow) {
+		var rows []PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			rows, err = records.Phases(ctx, tx, issue)
+			must(t, err)
+		})
+		var got []step
+		for _, row := range rows {
+			got = append(got, step{row.Role, row.Claim, row.StepTask, row.StepPlace, row.Entry, row.HandoffRecord})
+		}
+		return got, rows
+	}
+	got, rows := stepsOf(member.Key)
+	want := []step{{claim.RoleImplementer, keyA, "a", 1, 1, ""}, {claim.RoleImplementer, keyB, "a", 3, 3, ""}, {claim.RoleReviewer, keyB, "a", 2, 2, ""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the member's rows after its tree's new generation = %+v, want %+v: each step's row kept, its report gone", got, want)
+	}
+	if worker, err := WorkerClaim("legion", member.Key, claim.RoleImplementer, rows); err != nil || worker != keyB {
+		t.Fatalf("the member's implementer after its tree's new generation is %q, %v; want step 3's agent, key b %q", worker, err, keyB)
+	}
+	got, _ = stepsOf(root.Key)
+	want = []step{{claim.RoleImplementer, "root-b", "", 0, 3, ""}, {claim.RoleReviewer, "root-b", "", 0, 2, ""}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the root's rows after its new generation = %+v, want %+v: one row of each role at its highest entry, on no step", got, want)
 	}
 }
 

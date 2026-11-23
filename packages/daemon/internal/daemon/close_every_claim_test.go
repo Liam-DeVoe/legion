@@ -25,7 +25,9 @@ import (
 // storeSupervisedClaims writes the claims row of each claim of tokens as its machine holds it, for
 // a supervisor whose own store keeps its claims in memory (outboxClaimStore): the daemon's store
 // holds a row for every claim it supervises, and a walk over every claim of an issue reads those
-// rows (record.Store.IssueClaims), writing no row for a claim it does not find there.
+// rows (record.Store.IssueClaims), writing a row that names a claim only for a claim it finds
+// there, and a row by the role alone for each role whose worker claim is none of those
+// (workflow's claimTargets).
 func storeSupervisedClaims(t *testing.T, pool *store.Pool, sup *supervisor, tokens ...claim.Token) {
 	t.Helper()
 	for _, token := range tokens {

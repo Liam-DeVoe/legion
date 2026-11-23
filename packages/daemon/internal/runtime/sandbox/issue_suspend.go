@@ -8,7 +8,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -22,12 +21,12 @@ var (
 // starts, stops and stored roles) and the mode change with physical starts: a later re-admission
 // starts only after this patch, and makes a Sandbox of its own rather than resuming this one. No
 // database transaction spans a Kubernetes call. Once the pod is gone the Sandbox is deleted
-// (deleteStoredSandbox), with the six role Secrets it owns — each holding a launcher token and a
-// rendered `gh` credential bundle — so a close leaves the issue nothing. An ephemeral disk was the
-// pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim, and the
-// foreground delete takes it with the Sandbox: a close deletes a kept volume too. The issue's next
-// launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
-// Sandbox is another issue's and is never touched.
+// (deleteStoredSandbox), with the Secret it owns of each slot of its pod — each holding a launcher
+// token and a rendered `gh` credential bundle — so a close leaves the issue nothing. An ephemeral
+// disk was the pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim,
+// and the foreground delete takes it with the Sandbox: a close deletes a kept volume too. The
+// issue's next launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox).
+// The parent's Sandbox is another issue's and is never touched.
 func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
 	return r.endIssuePod(ctx, issue, tree, authorize, false)
 }
@@ -37,13 +36,14 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // the pod as SuspendIssue does, under the same launch turn and after the same authorize. Then a
 // Sandbox that owns the issue's kept volume (ownsKeptVolume) is kept, Suspended, with its uid and
 // the claim of its volume, for the issue's next pod, which mounts that claim (issuePod.disk). The
-// seven Secrets the Sandbox owns are deleted: the provisioning Secret and the six role Secrets,
-// each of which holds a token that no pod reads any more. The next launch writes each of them
-// again before its pod starts (provision, writeLauncherSecrets). Once every delete has succeeded,
-// the release records on the Sandbox that it deleted them (secretsReleasedAnnotation), in a patch
-// of its own. A release that stops before that patch leaves no record, and the next release
-// deletes the Secrets again, each one already gone counted as deleted, and then records it. Every
-// other Sandbox holds nothing the next pod can use, and is deleted as SuspendIssue deletes it.
+// Secrets the Sandbox owns are deleted: the provisioning Secret and the Secret of each slot its pod
+// held (podSlots), each of which holds a token that no pod reads any more. The next launch writes
+// each of them again before its pod starts (provision, writeLauncherSecrets). Once every delete
+// has succeeded, the release records on the Sandbox that it deleted them
+// (secretsReleasedAnnotation), in a patch of its own. A release that stops before that patch
+// leaves no record, and the next release deletes the Secrets again, each one already gone counted
+// as deleted, and then records it. Every other Sandbox holds nothing the next pod can use, and is
+// deleted as SuspendIssue deletes it.
 //
 // The pod may show that an init container failed on the kept volume for a cause local to it
 // (volumeFault, localInitFailure). The release then writes the reset mark (volumeResetAnnotation)
@@ -113,7 +113,7 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		return err
 	}
 	if keep && ownsKeptVolume(s) {
-		if err := r.deleteIssueSecrets(ctx, name); err != nil {
+		if err := r.deleteIssueSecrets(ctx, s); err != nil {
 			return fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
 		// The record goes on only after every delete has succeeded, so it is never on a Sandbox
@@ -137,12 +137,15 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	return nil
 }
 
-// deleteIssueSecrets deletes the seven Secrets that the issue Sandbox name owns, the provisioning
-// Secret (secretName) and the role Secret of each of the issue's six roles (roleSecretName), each
-// one already gone counted as deleted, and then forgets what is held of the role Secrets
-// (forgetLauncherCredentials). Its caller holds the pod's launch turn, so no launch writes one of
-// them in between. It is the delete a writeSecret already sends, so it needs no new permission.
-func (r *Runtime) deleteIssueSecrets(ctx context.Context, name string) error {
+// deleteIssueSecrets deletes the Secrets that the issue Sandbox s owns, the provisioning Secret
+// (secretName) and the Secret of each slot of its pod (roleSecretName over podSlots: each role the
+// runtime had when the pod was built, a role of the deployment among them, and each agent of the
+// issue's plan whose name no role has, as the stored template binds them), each one already gone
+// counted as deleted, and then forgets what is held of the slot Secrets
+// (launcherCredentials.forgetSandbox). Its caller holds the pod's launch turn, so no launch writes
+// one of them, or another template, in between. It is the delete a writeSecret already sends, so it
+// needs no new permission.
+func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	remove := func(secret string) error {
 		if err := secrets.Delete(ctx, secret, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
@@ -150,14 +153,14 @@ func (r *Runtime) deleteIssueSecrets(ctx context.Context, name string) error {
 		}
 		return nil
 	}
-	if err := remove(secretName(name)); err != nil {
+	if err := remove(secretName(s.Name)); err != nil {
 		return err
 	}
-	for _, role := range claim.Roles {
-		if err := remove(roleSecretName(name, role)); err != nil {
+	for _, slot := range r.podSlots(s, issuePod{}) {
+		if err := remove(roleSecretName(s.Name, slot)); err != nil {
 			return err
 		}
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(s.Name)
 	return nil
 }

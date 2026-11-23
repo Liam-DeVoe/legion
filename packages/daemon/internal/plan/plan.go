@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -66,6 +67,31 @@ func AgentOf(task string, place int, s Step) Agent {
 
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
+
+// AgentID is an agent in one string, the identity a start names it by and a claim records the
+// agent of its session by: `key:<key>` for the agent of a key, and `step:<place>:<task>` for the
+// agent of a step with no key, its place first, so no task id can make two agents one string. Two
+// agents are one exactly when their AgentIDs are equal. "" names no agent. It is not the agent's
+// name (claim.Agent), which is the last part of its claim's token and which two agents of an issue
+// can hold in turn.
+type AgentID string
+
+// ID is the identity of a (AgentID). A claim records the ID of the agent whose session it holds
+// (supervise.Claim.SessionAgent), and every start of a step names its step's
+// (record.SuperviseRequest.Agent), so the claim starts in a new session exactly where the two differ.
+func (a Agent) ID() AgentID {
+	if a.Key != "" {
+		return AgentID("key:" + a.Key)
+	}
+	return AgentID("step:" + strconv.Itoa(a.Place) + ":" + a.Task)
+}
+
+// Key is the key of the agent id names, and false for the agent of a step with no key and for "",
+// which names no agent.
+func (id AgentID) Key() (string, bool) {
+	key, ok := strings.CutPrefix(string(id), "key:")
+	return key, ok && key != ""
+}
 
 // StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored

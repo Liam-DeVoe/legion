@@ -1,7 +1,7 @@
 // Package daemon runs one legion: it opens the store its configuration names, brings the schema
-// forward, records the boot, supervises every role claim — the worker stream the shims dial, the
-// runtime their processes run under, one machine per claim — serves the API, and stops in the
-// order the durable record needs.
+// forward, records the boot, supervises every claim, one agent of an issue or the controller —
+// the worker stream the shims dial, the runtime their processes run under, one machine per claim —
+// serves the API, and stops in the order the durable record needs.
 package daemon
 
 import (
