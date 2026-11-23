@@ -79,6 +79,7 @@ export async function tabTo(
   // and the line after the loop reads the focus again and fails with its holder.
   for (let pressed = 0; pressed < limit && !(await holdsFocus(target)); pressed += 1) {
     await page.keyboard.press("Tab");
+    // The press has moved the focus before it resolves, so this one read is the stop it reached.
     if (atStop !== undefined && !(await holdsFocus(target))) await atStop();
   }
   expect(
