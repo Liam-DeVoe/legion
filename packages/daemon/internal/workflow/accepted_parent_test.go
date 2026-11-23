@@ -36,8 +36,8 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent's head proves its children's merged work, so accepting it first would
-// send a head to the merge queue that does not carry that work.
+// of them leaves. Where the parent has a pull request, its head proves its children's merged work,
+// so accepting it first would send a head to the merge queue that does not carry that work.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -198,9 +198,10 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 
 // The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
 // as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
-// no reviewer step has no reviewed head, and an issue stands in merging once its task's last step
-// passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
-// the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
+// no reviewer step has no reviewed head, and an issue stands in its retro or its merge once its
+// task's last step passed, whatever that step is (record.Accepted). The ancestor walks today's
+// line in one case and the plan `implementer tester`, which has no reviewer step, in the other;
+// the text is one.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
 		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
