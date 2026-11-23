@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -32,15 +33,17 @@ const (
 	headOutside = "outside"
 )
 
-// The lines the writer logs, besides each write's own legion_verdict_write: once per pull request
-// whose head is another project's issue branch, where no verdict stands, once while the App is in
-// token mode, each time a merge-state read goes on after waiting its bound on its issue's write,
-// and each write that fails, naming what repairs it.
+// The lines the writer logs, besides each write's own legion_verdict_write: once where it is built
+// on an App id that is no number, once per pull request whose head is another project's issue
+// branch, where no verdict stands, once while the App is in token mode, each time a merge-state
+// read goes on after waiting its bound on its issue's write, and each write that fails, naming
+// what repairs it.
 const (
-	otherProjectsHead  = "verdict: the head is another project's issue branch, of whose steps this daemon holds none, so no verdict stands there"
-	verdictTokenMode   = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
-	verdictReadWentOn  = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
-	verdictWriteFailed = "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes writes it again"
+	verdictAppIDNotANumber = "verdict: github_apps.implement.app_id is no number, so the writer of legion-verdict tells no check run as the App's, its own among them; set it to the App's id"
+	otherProjectsHead      = "verdict: the head is another project's issue branch, of whose steps this daemon holds none, so no verdict stands there"
+	verdictTokenMode       = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
+	verdictReadWentOn      = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
+	verdictWriteFailed     = "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes writes it again"
 )
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -102,10 +105,11 @@ type verdictTarget struct {
 }
 
 // newVerdictWriter is the writer of entries, appID being the one App's id as the configuration
-// spells it.
-func newVerdictWriter(entries []config.VerdictRepository, appID string) *verdictWriter {
+// spells it. An id that is no number is logged on log, once, here (verdictAppIDNotANumber).
+func newVerdictWriter(entries []config.VerdictRepository, appID string, log *slog.Logger) *verdictWriter {
 	id, err := strconv.ParseInt(appID, 10, 64)
 	if err != nil {
+		log.Error(verdictAppIDNotANumber, "setting", "github_apps.implement.app_id", "app_id", appID, "error", err)
 		id = 0
 	}
 	return &verdictWriter{entries: entries, appID: id, bound: issueRead, pending: map[string]int{}, ended: make(chan struct{}),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -400,7 +401,7 @@ func TestLegionVerdictSweepWritesAHeldVerdictAFailedWriteLeftUnwritten(t *testin
 // so a write behind the sweep's would hold them for the writer's whole bound. The sweep's writes
 // then go on in the order they were queued, and a fact queued while they run goes before the rest.
 func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
-	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
 	for n := 1; n <= 50; n++ {
 		writer.add(verdictTarget{repository: widgets, number: 100 + n, head: fmt.Sprintf("swept-%d", n), overForeign: true})
 	}

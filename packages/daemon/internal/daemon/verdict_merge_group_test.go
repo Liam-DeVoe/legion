@@ -225,7 +225,7 @@ func TestLegionVerdictAQueuedMergeGroupWriteDecidesThePullRequestAtItsHead(t *te
 		}
 	})
 	t.Run("a repository no entry names", func(t *testing.T) {
-		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
+		writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
 		w := &workflowRuntime{verdicts: writer, repositories: servedAcme(), log: slog.New(slog.DiscardHandler)}
 		w.queueMergeGroupWrite(ghrepo.MustParse("acme/gadgets"), 86, "group-86", false)
 		if !writer.idle() {

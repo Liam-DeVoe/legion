@@ -412,7 +412,7 @@ func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.Verdict
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),
 		tokens: botLeases{tokens}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, appLogin: verdictAppLogin,
 		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, mergeStateRetry: readRigWait,
-		verdicts: newVerdictWriter(entries, verdictAppID),
+		verdicts: newVerdictWriter(entries, verdictAppID, log),
 	}
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, AppLogin: verdictAppLogin,
 		ReadMergeState: w.queueMergeState, WriteVerdict: func(issue, repo string, number int, head string) {
@@ -1323,6 +1323,32 @@ func TestLegionVerdictTellsTheAppsRunsByItsID(t *testing.T) {
 	}
 }
 
+// R19: the writer tells the one App's runs by the id github_apps.implement.app_id names, and an id
+// that is no number tells no run as the App's. The writer says so where it is built, once, as an
+// ERROR that names the setting and the value it holds; a number says nothing.
+func TestLegionVerdictAnAppIDThatIsNoNumberIsLoggedWhereTheWriterIsBuilt(t *testing.T) {
+	for _, tc := range []struct {
+		appID  string
+		id     int64
+		errors int
+	}{
+		{appID: verdictAppID, id: verdictAppNumber},
+		{appID: "legion-app", errors: 1},
+	} {
+		t.Run(tc.appID, func(t *testing.T) {
+			logs := &syncBuffer{}
+			writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, tc.appID, slog.New(slog.NewJSONHandler(logs, nil)))
+			named := slices.DeleteFunc(loggedLines(t, logs.String(), "github_apps.implement.app_id"), func(line map[string]any) bool {
+				return line["level"] != "ERROR" || line["app_id"] != tc.appID
+			})
+			if writer.appID != tc.id || len(named) != tc.errors {
+				t.Fatalf("the writer of app_id %q holds id %d and logged %v; want id %d and %d ERROR lines naming the setting and its value",
+					tc.appID, writer.appID, named, tc.id, tc.errors)
+			}
+		})
+	}
+}
+
 // R19, C56: the writer tells the one App's bot's commit statuses by the bot user's id, which C56
 // reads as each status's creator.id and which a rename of the App leaves as it is, while the bot's
 // login changes (R16). Here the newest legion-verdict status is another account's that now holds
@@ -1410,7 +1436,7 @@ func TestLegionVerdictTellsNoStatusAsTheBotsWhereTheLeaseNamesNoBotUserID(t *tes
 // issue's reads until the write ends (verdictWriter.await), so a read asked for on the same commit
 // as the write is made after it.
 func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T) {
-	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
 	w := &workflowRuntime{verdicts: writer, log: slog.New(slog.DiscardHandler)}
 	w.queueVerdictWrite("CAPTURE-1", "acme/widgets", 86, "code")
 	read := make(chan error, 1)
@@ -1453,7 +1479,7 @@ func TestLegionVerdictHoldsTheIssuesMergeStateReadUntilItsWriteEnds(t *testing.T
 // writer's bound, one issueRead): a write held up by a slow GitHub or a long queue holds the
 // issue's reads no longer than that, and the read then goes on and says so once.
 func TestLegionVerdictAMergeStateReadWaitsOnItsWriteForOneBoundAtMost(t *testing.T) {
-	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID)
+	writer := newVerdictWriter([]config.VerdictRepository{widgetsEntry}, verdictAppID, slog.New(slog.DiscardHandler))
 	writer.bound = 50 * time.Millisecond
 	logs := &syncBuffer{}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
@@ -1477,7 +1503,7 @@ func TestLegionVerdictAMergeStateReadWaitsOnItsWriteForOneBoundAtMost(t *testing
 func TestLegionVerdictQueuesNoWriteOnARepositoryItsEntriesDoNotName(t *testing.T) {
 	served := newRepositories("CAPTURE", transferredCapture)
 	served.fill(ghrepo.MustParse("cybermonklabs/widgets"))
-	writer := newVerdictWriter([]config.VerdictRepository{{Repository: ghrepo.MustParse("cybermonklabs/widgets")}}, verdictAppID)
+	writer := newVerdictWriter([]config.VerdictRepository{{Repository: ghrepo.MustParse("cybermonklabs/widgets")}}, verdictAppID, slog.New(slog.DiscardHandler))
 	w := &workflowRuntime{verdicts: writer, repositories: served, log: slog.New(slog.DiscardHandler)}
 	w.queueVerdictWrite("CAPTURE-1", "acme/gadgets", 86, "code")
 	if !writer.idle() {
@@ -1778,7 +1804,7 @@ func canceledContext() context.Context {
 func TestLegionVerdictRepositoriesAreHeard(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),
-		verdicts: newVerdictWriter([]config.VerdictRepository{widgetsEntry, {Repository: ghrepo.MustParse("acme/Verdict-Scratch")}}, verdictAppID)}
+		verdicts: newVerdictWriter([]config.VerdictRepository{widgetsEntry, {Repository: ghrepo.MustParse("acme/Verdict-Scratch")}}, verdictAppID, slog.New(slog.DiscardHandler))}
 	heard, err := w.heardAtBoot(context.Background())
 	if err != nil {
 		t.Fatal(err)
