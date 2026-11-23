@@ -5,10 +5,10 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 
 # Legion retro
 
-Retro runs after the task's last step, between that step and the merger's merge.
+Retro, between the task's last step and the merger's merge, reads the evidence, records what the work taught for the skill librarian, rates the plan, and leaves the head as it found it.
 The architect's acceptance precedes it only where the task names `acceptance:owner`.
 
-**Done when:** each of these holds before you complete:
+**Done when:** before you complete:
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only` lists nothing.
 - Each body line you added or changed that says work was done names work this pull request did.
@@ -27,7 +27,7 @@ Run every step, even on a mechanical change.
 - **Change nothing in the workspace.**
 - **Outside the workspace, write only** step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
 - **Set no GitHub or Dispatch label:** Legion keeps phase state in the daemon.
-- **Record what the work taught as a `dispatch comment` for the skill librarian.** No role writes to `docs/solutions/`.
+- **Write nothing to `docs/solutions/`:** no role does.
 
 ## When retro stops
 
@@ -49,8 +49,7 @@ Run every step, even on a mechanical change.
    | The check | Do |
    | --- | --- |
    | A `ci_check` run that has not concluded, or one GitHub could not be read for | It is neither a pass nor a fail yet: never wait for, watch or poll it. Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on. When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in |
-   | A `ci_check` name that no run answers (`absent`) | Send it to the architect as a finding, since the check's words are wrong |
-   | A check whose `run` is a whole test suite | The same |
+   | A `ci_check` name that no run answers (`absent`), and a check whose `run` is a whole test suite | Send it to the architect as a finding, since the check's words are wrong |
    | A `ci_check` check whose derived result is a fail | It is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it. Name it in your retro message and complete |
    | Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite | `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result; name the check's block id in the reason |
 
@@ -59,8 +58,7 @@ Run every step, even on a mechanical change.
      For a thread that needs a fix, `request_backward_move` with `to: implementing`, the thread's URL in its `reason`.
 2. **Get a second reading.**
    - **First, list in your session** the constraints the issue did not state, choices between two working options, abandoned approaches and reusable code.
-   - **Then run `task(agent="oracle")`** with the issue, the pull request body and the diff, asking for reusable learnings.
-     Wait for its answer with `wait`.
+   - **Then run `task(agent="oracle")`** with the issue, the pull request body and the diff, asking for reusable learnings, and `wait` for its answer.
    - **Drop a point that cites no file, symbol, quoted text or commit of this pull request.**
 3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`, which says what a point must carry for the skill librarian to use it.
    - **When no point qualifies, write no comment.** Say so in step 5's message.
