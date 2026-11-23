@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -37,7 +40,13 @@ import (
 // room resident, while task A holds none.
 func newQueryProcesses(t *testing.T) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, lostEditDocument)
+	return newQueryProcessesOn(t, nil)
+}
+
+// newQueryProcessesOn is newQueryProcesses with task A on clockA (newSeededProcessPairOn).
+func newQueryProcessesOn(t *testing.T, clockA clock.Clock) processPair {
+	t.Helper()
+	pair := newSeededProcessPairOn(t, lostEditDocument, clockA)
 	pair.runRoomSync(t)
 	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
 		t.Fatalf("load task B's room: %v", err)
@@ -276,11 +285,15 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 
 // A member that never answers - an older build, or a process that has just died - costs a query
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
-// connection's name, which is all membership reads, and listens to nothing.
+// connection's name, which is all membership reads, and listens to nothing. Task A's waits run on
+// a fake clock (Deps.Clock), so the row reads the wait each query arms rather than how long a
+// loaded machine took to run it: each arms exactly roomQueryWait from its own start, returns task
+// B's answer once the clock passes that, and logs that it waited that long.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
-	pair := newQueryProcesses(t)
+	clk := clocktest.New(time.Now())
+	pair := newQueryProcessesOn(t, clk)
 	// Production's wait, which this test holds: no deadline, so each query waits roomQueryWait from
-	// its own start. The pair's queries end at the test binary's deadline less roomWaitMargin
+	// its own start. The pair's queries end at the test binary's deadline less twice roomWaitMargin
 	// (newSeededProcessPair).
 	pair.taskA.roomQueries.deadline = time.Time{}
 	silent := uuid.NewString()
@@ -291,23 +304,58 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	logs := captureWarnings(t)
 
+	type asked struct {
+		answers []roomAnswer
+		asked   bool
+		err     error
+	}
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {
-		started := time.Now()
-		answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, kind)
-		waited := time.Since(started)
-		if err != nil || !asked {
-			t.Fatalf("%s: asked %t, %v; want the members asked", kind, asked, err)
+		// The fake stands still until the row moves it, so this is the moment the query starts at.
+		start := clk.Now()
+		returned := make(chan asked, 1)
+		// The query runs on t's context, so one this row leaves waiting when it fails ends with it.
+		go func() {
+			answers, ok, err := pair.taskA.roomQueries.ask(t.Context(), pair.database.Pool, pair.artifactID, kind)
+			returned <- asked{answers: answers, asked: ok, err: err}
+		}()
+		reading := testwait.Until(t, "task A's "+kind+" query to arm its wait with task B's answer in and only the silent member's to come", func() (string, bool) {
+			armed, waiting := clk.Armed(), waitingOn(pair.taskA)
+			return fmt.Sprintf("armed %v, waiting on %v", armed, waiting), len(armed) == 1 && slices.Equal(waiting, []string{silent})
+		})
+		if due, got := start.Add(roomQueryWait), clk.Armed(); len(got) != 1 || !got[0].Equal(due) {
+			t.Fatalf("%s with a member that never answers: %s; want its one wait armed for %v, the %v wait from its start and no more", kind, reading, due, roomQueryWait)
 		}
-		if waited < roomQueryWait || waited > roomQueryWait+300*time.Millisecond {
-			t.Fatalf("%s took %v with a member that never answers, want the %v wait and no more", kind, waited, roomQueryWait)
+		clk.Advance(roomQueryWait)
+		got := testwait.Receive(t, "task A's "+kind+" query to return once its wait had passed", returned)
+		if got.err != nil || !got.asked {
+			t.Fatalf("%s: asked %t, %v; want the members asked", kind, got.asked, got.err)
 		}
-		if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() {
-			t.Fatalf("%s answers = %+v, want task B's alone", kind, answers)
+		if len(got.answers) != 1 || got.answers[0].process != pair.taskB.ProcessID() {
+			t.Fatalf("%s answers = %+v, want task B's alone", kind, got.answers)
 		}
 	}
-	if warned := logs.Lines("did not answer a document room query"); strings.Count(warned, silent) != 3 {
+	warned := logs.Lines("did not answer a document room query")
+	if strings.Count(warned, silent) != 3 {
 		t.Fatalf("task A logged %q; want a WARN naming the silent member for each of its three queries", warned)
 	}
+	if waited := "waited=" + roomQueryWait.String(); strings.Count(warned, waited) != 3 {
+		t.Fatalf("task A logged %q; want each of its three WARNs to say %s on its clock", warned, waited)
+	}
+}
+
+// waitingOn is the members service's one pending room query still waits on, sorted: nil while it
+// has no query pending, or more than one.
+func waitingOn(service *Service) []string {
+	r := service.roomQueries
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pending) != 1 {
+		return nil
+	}
+	for _, pending := range r.pending {
+		return slices.Sorted(maps.Keys(pending.waiting))
+	}
+	return nil
 }
 
 // A flush is never sent while the asker holds the document's advisory lock, which every other

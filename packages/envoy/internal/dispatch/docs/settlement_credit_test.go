@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -793,12 +794,20 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 // rolling deploy's overlap.
 func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
+	return newTestServiceInstanceOn(t, database, nil)
+}
+
+// newTestServiceInstanceOn is newTestServiceInstance on clk, the service's clock (Deps.Clock), for
+// a test that moves the timers that clock arms itself; nil is the real clock.
+func newTestServiceInstanceOn(t *testing.T, database *store.Store, clk clock.Clock) (*Service, *httptest.Server) {
+	t.Helper()
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
+		Clock:     clk,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {

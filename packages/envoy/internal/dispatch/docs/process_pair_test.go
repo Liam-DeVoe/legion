@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -48,26 +49,37 @@ func newProcessPair(t *testing.T) processPair {
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
 // leaves task A holding no room of its own: where the room-query tests start. Each process's
-// queries wait for the other's answers until the test binary's deadline less roomWaitMargin,
-// testwait's margin (testwait.Remaining, read here on the test's goroutine), not production's
+// queries wait for the other's answers until the test binary's deadline less twice
+// roomWaitMargin (testwait.Remaining, read here on the test's goroutine), not production's
 // roomQueryWait from each query's own start: what the tests over the pair check is what an answer
 // holds and what a write does with it, and on a loaded machine an answer can take longer than
 // that latency budget to cross Postgres twice, which failed
 // TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at all (dispatch://INFRA-3904).
 // The bound is a moment (roomQueries.deadline), so a query a row asks late, with no answer coming,
-// still gives up the margin before go test's alarm and its row fails by name; a span read here
-// would run that late query past the alarm. Under -timeout 0 the moment is one no wait reaches.
-// TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself. Both processes keep an
-// idle room past the run: no test over the pair tests the idle sweep, and a room that a slow
-// machine leaves idle for ygo's minute must not be closed under a row that writes to it. ygo's
-// sweep reads the timeout on every pass, so it is set before the first room loads.
+// still ends before go test's alarm and its row fails by name; a span read here would run that
+// late query past the alarm. It is a margin before testwait's own waits give up (testwait.Receive,
+// roomWaitMargin before the deadline), so a call that asked the query has returned when such a
+// wait reads it, and the row's cleanups keep their margin. Under -timeout 0 the moment is one no
+// wait reaches. TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself. Both
+// processes keep an idle room past the run: no test over the pair tests the idle sweep, and a room
+// that a slow machine leaves idle for ygo's minute must not be closed under a row that writes to
+// it. ygo's sweep reads the timeout on every pass, so it is set before the first room loads.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
+	t.Helper()
+	return newSeededProcessPairOn(t, markdown, nil)
+}
+
+// newSeededProcessPairOn is newSeededProcessPair with task A on clockA, its service's clock
+// (Deps.Clock), for a row that moves the timers task A arms on it; nil is the real clock. The
+// deadline the pair sets task A's queries is a reading of the real clock, so a row on a fake that
+// leaves it set has those waits end once the fake reaches that moment.
+func newSeededProcessPairOn(t *testing.T, markdown string, clockA clock.Clock) processPair {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	taskA, serverA := newTestServiceInstance(t, database)
+	taskA, serverA := newTestServiceInstanceOn(t, database, clockA)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
-	answerBy := time.Now().Add(testwait.Remaining(t, roomWaitMargin))
+	answerBy := time.Now().Add(testwait.Remaining(t, 2*roomWaitMargin))
 	taskA.roomQueries.deadline, taskB.roomQueries.deadline = answerBy, answerBy
 	taskA.srv.RoomIdleTimeout, taskB.srv.RoomIdleTimeout = time.Hour, time.Hour
 	serverB := newTestServer(t, taskB)
