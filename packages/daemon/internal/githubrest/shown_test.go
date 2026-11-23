@@ -47,6 +47,12 @@ func TestAMemberOfGitHubsAnswerPrintsOnlyInItsShape(t *testing.T) {
 		{"a token form as an App's bot account", ShownLogin(echoed[:30] + "[bot]"), NotALogin},
 		{"a fine-grained token's form within 39 characters", ShownLogin("github_pat_0123456789abcdef"), NotALogin},
 		{"the probe for a login", ShownLogin(oauth2calltest.Words), NotALogin},
+		{"a branch", ShownBranch("release/v7.1"), "release/v7.1"},
+		{"a branch holding URL syntax", ShownBranch("release#stable"), "release#stable"},
+		{"an echoed token for a branch", ShownBranch(echoed), NotABranch},
+		{"a branch name git refuses", ShownBranch("release..stable"), NotABranch},
+		{"a branch with a control character", ShownBranch("main\x1b[31m"), NotABranch},
+		{"the probe for a branch", ShownBranch(oauth2calltest.Words), NotABranch},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s: printed %q, want %q", c.name, c.got, c.want)

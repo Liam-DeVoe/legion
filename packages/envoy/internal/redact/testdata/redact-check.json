@@ -6555,6 +6555,55 @@
       "production": "ghbranch alreadyExists: a ref GitHub has decided on its message as it came (oauth2call.GitHubRefusal)"
     },
     {
+      "id": "ghbranch-answer-words-base-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/refused",
+      "production": "ghbranch Create: a refused read of the base, the default branch GitHub's answer named, names the read only by the base in a branch's shape (githubrest.ShownBranch), never by the path it asked",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "\"/git/ref/heads/\"+RefPath(base), \"/git/ref/heads/\"+shown,",
+        "replacement": "\"/git/ref/heads/\"+RefPath(base), \"\","
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-no-commit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/no-commit",
+      "production": "ghbranch Create: the base, the default branch GitHub's answer named, in Create's refusals only in a branch's shape (githubrest.ShownBranch), never as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-no-commit",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "shown := githubrest.ShownBranch(base)",
+        "replacement": "shown := base"
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/unanswered",
+      "production": "ghbranch Create: a read of the base that got no answer names the read by the shown base (url.Error.URL), never by the URL it asked, which holds the base as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/ghbranch.Create",
+      "capture": "ghbranch.answer-words/base-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/ghbranch/ghbranch.go",
+        "preimage": "\"/git/ref/heads/\"+RefPath(base), \"/git/ref/heads/\"+shown,",
+        "replacement": "\"/git/ref/heads/\"+RefPath(base), \"\","
+      }
+    },
+    {
+      "id": "ghbranch-answer-words-base-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/ghbranch",
+      "test": "TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase/control",
+      "production": "ghbranch Create: a base in a branch's shape still prints as it came"
+    },
+    {
       "id": "cipher-decided-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",

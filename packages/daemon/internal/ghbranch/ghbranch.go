@@ -22,7 +22,9 @@ import (
 // itself and never release). A branch GitHub already has is left where it is, and Create reports
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
-// answer (a *githubrest.Answer, its status and body).
+// answer (a *githubrest.Answer, its status and body). The base is the repository's default branch
+// as GitHub's answer named it (Read), which the daemon records, so the error and the read's own
+// name print it only in a branch's shape (githubrest.ShownBranch); the read asks for it as it came.
 //
 // The ref name passes this repository's own private-name rules before anything is sent
 // (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
@@ -44,12 +46,13 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), "", &read); err != nil {
-		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
+	shown := githubrest.ShownBranch(base)
+	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), "/git/ref/heads/"+shown, &read); err != nil {
+		return fmt.Errorf("read refs/heads/%s of %s: %w", shown, repo, err)
 	}
 	head := read.Object.SHA
 	if head == "" {
-		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
+		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", shown, repo)
 	}
 
 	err := github.Post(ctx, "/git/refs", "", map[string]string{"ref": ref, "sha": head}, nil)
