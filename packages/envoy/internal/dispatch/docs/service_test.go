@@ -3412,11 +3412,12 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
 // list is gone, settlement clears invalid and the block carries its decided wording again. Its
-// decided state is its ask's, on its node and its row, and no attribute
-// of the block holds it.
+// decided state is its ask's, on its node and its row, and its block's opener keeps of it only
+// what a version keeps on a fleet of one build (keptAskState): the state, who answered and when.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
-	answerIndexedAsk(t, service, artifactID, "ask-lists")
+	answerAskOnItsNode(t, service, blockAskOn(t, service, artifactID, "ask-lists").ID,
+		model.AskAnswer{User: "alice", Selected: []string{"Ship"}, At: time.Now().UTC()})
 	settleCurrentGeneration(t, service, artifactID)
 	assertAnsweredShipAsk := func(stage string) {
 		t.Helper()
@@ -3466,8 +3467,8 @@ func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	if block.question != "Should we ship?" || !slices.Equal(block.options, want) {
 		t.Fatalf("repaired decided ask = question=%q options=%#v, want the decided wording", block.question, block.options)
 	}
-	if state, held := ask.Attrs["state"]; held {
-		t.Fatalf("repaired decided ask holds state %v in the document, want none: its ask's row holds it", state)
+	if ask.Attrs["state"] != "answered" || ask.Attrs["answered_by"] != "alice" || ask.Attrs["answered_at"] == nil || ask.Attrs["selected"] != nil || ask.Attrs["answer"] != nil {
+		t.Fatalf("repaired decided ask holds %v in the document, want the state, the answerer and the time a version keeps, and no answer's words", ask.Attrs)
 	}
 }
 

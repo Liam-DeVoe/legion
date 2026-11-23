@@ -1346,6 +1346,68 @@ func TestTheRestoreWritesBackTheBytesOfTheAskBlockAPersonApproved(t *testing.T) 
 	}
 }
 
+// The restore weighs a restored ask block's `shaped` pointers as the person approved them, and
+// leaves out of its comparison only what the step's own write did to them (restoredShape). An
+// answered ask a person approved with no pointer, which an agent then gave a `shaped` pointer and
+// later removed from the spec in a version no person wrote, comes back holding that pointer, which
+// the approved block did not hold: the restore supersedes the approval and reports it with the
+// ask. Where the block held the pointer when the person approved it, and where the step's own
+// write alone gives the block its pointer - the link of the decisions section that restates its
+// ask - the approval carries.
+func TestTheRestoreSupersedesAnApprovalOverAShapedPointerAnAgentGaveTheBlock(t *testing.T) {
+	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
+	const pointer = "dispatch://DOC-1/spec#b-r1"
+	tied := ` shaped="` + pointer + `"`
+	block := func(shaped string) string {
+		return ":::ask{#q-tie urgency=\"med\" multiple=\"false\"" + shaped + "}\nWhich store holds the corpus?\n:::\n"
+	}
+	for _, test := range []struct {
+		name string
+		// approved and given are the block's pointer as the person approved it and as an agent
+		// left it before it removed the block; restated is whether the decisions document holds a
+		// section that restates the ask and links r1, which the conversion writes into its block.
+		approved, given string
+		restated        bool
+		approval        string
+	}{
+		{"a pointer an agent gave the block after the approval", "", tied, false, "superseded"},
+		{"a pointer the block held when the person approved it", tied, tied, false, "carried"},
+		{"a pointer the step's own write gives the block from the section that restates its ask", "", "", true, "carried"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := newRestoreIssue(t, head+block(test.approved))
+			ask := issue.answer(issue.spec, "q-tie", "The database we run.")
+			approved := issue.approveLatest(issue.spec)
+			if test.given != test.approved {
+				issue.replace(issue.spec, head+block(test.given))
+			}
+			issue.replace(issue.spec, head)
+			if test.restated {
+				issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n"+
+					"## The store holds the corpus\n\nThe database we run holds every word of it. This shapes "+pointer+". "+
+					"Decided in dispatch://DOC-1/ask/"+ask+".\n")
+			}
+
+			result := issue.run(test.restated)
+			if len(result.Restored) != 1 || result.SpecApproval != test.approval {
+				t.Fatalf("the restore did %+v, want the ask restored and the approval of version %d %s", result, approved, test.approval)
+			}
+			if opener := openerOf(issue.latest(issue.spec), "q-tie"); !strings.Contains(opener, tied) {
+				t.Fatalf("the restored block of q-tie opens %q, want it holding%s", opener, tied)
+			}
+			if test.approval == "superseded" {
+				reported := false
+				for _, superseded := range result.Superseded {
+					reported = reported || superseded.Approval.ApprovedVersion == approved && slices.Contains(superseded.Asks, "dispatch://DOC-1/ask/"+ask)
+				}
+				if !reported {
+					t.Errorf("the restore reported %+v, want the approval of version %d superseded with the ask %s", result.Superseded, approved, ask)
+				}
+			}
+		})
+	}
+}
+
 // An ask block moved out of a standing decisions document keeps its `shaped` ties (R6: "its
 // `shaped` tuples stay intact"): the block of q-a, which shaped the spec's r1 and the decisions
 // document's q-b, moves into the spec with q-b, and holds a pointer to r1 and one to q-b where q-b

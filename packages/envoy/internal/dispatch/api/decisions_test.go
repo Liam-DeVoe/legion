@@ -382,9 +382,11 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an
 // issue with no decisions document and no decision answers them with a null document and no
 // decisions. The two asks are written in two versions, so one is older than the other: two that one
-// settlement writes share their created_at and the order between them is their ids'.
+// settlement writes share their created_at and the order between them is their ids'. An open ask
+// whose row names the spec but a block the spec's current blocks do not hold is none of them: a
+// reopen restores such a row with no block to write, which a later settlement retracts.
 func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::ask{#decide_first}\nWhich store?\n:::\n\nA paragraph.\n")
 	view, _ := waitForOpenQuestions(t, handler, issue.Key, 1)
@@ -405,6 +407,13 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	// reading of the markdown.
 	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
 		"open_questions.0.question", "open_questions.0.question_tree")
+
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set block_id = 'decide_gone' where issue_key = $1 and block_id = 'decide_second'`, issue.Key); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("point the second ask's row at a block the spec does not hold: %v", err)
+	}
+	if _, questions := waitForOpenQuestions(t, handler, issue.Key, 1); fmt.Sprint(questions) != "[Which store?]" {
+		t.Fatalf("open_questions = %v once the second ask's block is none the spec holds, want the first ask alone", questions)
+	}
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a

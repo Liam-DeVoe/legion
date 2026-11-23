@@ -196,6 +196,8 @@ type StoreReport struct {
 	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
+	//
+	// kept for one release: decisions-documents-fn
 	Decisions *DecisionsCensus
 	// VersionRenders is the census of the versions version_renders holds (VersionRenderCensus),
 	// set by the census command from docs' renderer, nil where no caller read it. A version whose
@@ -1695,6 +1697,7 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		// kept for one release: decisions-documents-fn
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)
 		}

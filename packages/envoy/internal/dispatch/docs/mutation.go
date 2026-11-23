@@ -354,6 +354,11 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 	if startErr != nil && !errors.Is(startErr, ErrDocOutsideSchema) {
 		return startErr
 	}
+	// No operation of the transaction has changed the fork yet: it is the document as the read
+	// found it (liveWrite.readTree).
+	if write.readTree == nil && startErr == nil && len(write.updates) == 0 {
+		write.readTree = before.Node()
+	}
 	// beforeKnown says beforeMarkdown is known without rendering the fork, and knownPath is the
 	// count of the path it was had by, bumped when it is first needed.
 	var beforeMarkdown string
@@ -805,6 +810,9 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// its layout, which a warm operation hands the room's update observer with it
 	// (replicaRendering), so taking it costs the observer no render either.
 	var written renderedTree
+	// roomRead is the tree the write read, the room's browser edits no settlement has versioned
+	// among it, nil for a repair, whose tree has no readable blocks.
+	var roomRead *pmdoc.Node
 	err = s.applyLiveWritten(ctx, artifactID, actor, &written, func(doc liveDoc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.documentFragment()
 		valid, err := startTree(start, doc)
@@ -879,6 +887,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 					return err
 				}
 			}
+			roomRead = current
 		}
 		var offsets []pmdoc.BlockOffset
 		var layout *pmdoc.Layout
@@ -994,6 +1003,21 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// markdown back as one the fragment took.
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		return "", wrapUnlessTooLarge(err, "replace live document")
+	}
+	// A person's deletion of an answered ask's block in the browser that no settlement has
+	// versioned is in the tree this write read already, so the drop above does not see it, and the
+	// upload's version lists the uploader alone and clears the room's pending authors, which name
+	// that person: it is held as that person's removal before the version is written, as the
+	// settlement this version stands in for holds it (holdRoomRemovals).
+	if roomRead != nil {
+		tx, _ := txFromContext(ctx)
+		authors, err := pendingRoomAuthors(ctx, tx, artifactID, joinedLiveWrite(ctx, artifactID))
+		if err == nil {
+			err = holdRoomRemovals(ctx, tx, artifactID, roomRead, authors)
+		}
+		if err != nil {
+			return "", err
+		}
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
@@ -1130,7 +1154,7 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // blocks instead (refuseBatchDroppedAskBlocks), which the gate of that route, droppedAskBlocks,
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
 // settlement retracts the open ask of a block that leaves the document there, and records the
-// person's removal of an answered one (holdSettledRemovals).
+// person's removal of an answered one (holdRoomRemovals).
 //
 // holder is whose asks it reads (documentAsksOf, roomAsksOf), and by who writes it (dropperOf). A
 // write that is not a person's own is refused for an answered ask too, whose block the block index
@@ -1880,6 +1904,13 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if !open && !isOwnerVerified(ctx) {
 		return VersionResult{}, ErrIssueClosed
 	}
+	// A person's deletion of an answered ask's block in the browser that no settlement has
+	// versioned is in the room this version takes: it is held as the removal of the person among
+	// the room's authors, as the settlement this version stands in for holds it, against the room
+	// as the transaction read it before its own operations (holdRoomRemovals, roomReadTree).
+	if err := holdRoomRemovals(ctx, tx, artifactID, roomReadTree(ctx, artifactID, rendered.tree), capture.roomAuthors()); err != nil {
+		return VersionResult{}, err
+	}
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors:          actorSlice(capture.authors),
 		capture:          &capture,
@@ -2316,9 +2347,11 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // block the document no longer holds as an ask, are written nothing, and so is a block whose
 // document is retired (RetireDocument), read under the document owner's lock
 // (retiredUnderOwnerLock): the answer, resolution or decline is taken, and the retired document,
-// which takes no new text, gets none.
+// which takes no new text, gets none. It serves the roll window's write and the form a version
+// keeps (root-deletes.txt lists it under stored-ask-state), so it goes with the last of those.
 //
 // kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
@@ -2427,6 +2460,10 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	}
 	rendered, capture, err := s.captureLiveTextAndAuthors(ctx, artifactID, &actor)
 	if err != nil {
+		return VersionResult{}, err
+	}
+	// The room's removals no settlement holds yet, as SnapshotVersion holds them (holdRoomRemovals).
+	if err := holdRoomRemovals(ctx, tx, artifactID, roomReadTree(ctx, artifactID, rendered.tree), capture.roomAuthors()); err != nil {
 		return VersionResult{}, err
 	}
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
