@@ -123,11 +123,13 @@
  * - `report` (no model call) prints each case's passes per arm and stage, and for a dropped case
  *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
- *   by each judge control, by `model-not-served`, by `unreadable-directory` and by
- *   `listing-misses`; the control case, and each dropped case it replaced; the skill's verdict and
- *   its reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), with how
- *   many of its screened cases have a listing that could not be measured and how many rest on the
- *   assumption that their session had Dispatch; the rule's
+ *   by the judge controls (and by each control), by `model-not-served`, `unreadable-directory`,
+ *   `listing-misses`, `injection-unrebuildable` (by kind), `path-form` (by arm) and
+ *   `reads-past-last-round`; the control case, and each dropped case it replaced; the skill's
+ *   verdict and its reason (score.ts; `keeps` is printed "no loss detected by the registered
+ *   rule"), with how many of its screened cases have a listing that could not be measured, how
+ *   many installed names their recorded listing gave them (`fromRecorded`), and how many rest on
+ *   the assumption that their session had Dispatch; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
  *   estimated false-loss rate at the cases run (`falseLossChance`),
  *   the spend, the peak memory, how many captures' system-prompt digests differ from their
@@ -315,6 +317,7 @@ import {
   replayInterleaved,
 } from "./replay";
 import {
+  type CaseDrop,
   type CaseFacts,
   type CaseScore,
   FLAG_GAP,
@@ -820,7 +823,7 @@ const CaptureNote = z.strictObject({
  *  its own, and every arm's runs of a round in one seeded order. A stage result that does not
  *  record it was made before, when an arm's runs shared its capture's one id and went as one
  *  batch, so its runs are no runs of this procedure. */
-const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
+export const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
 
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
@@ -1154,6 +1157,28 @@ function readResults(b: Behaviour): Map<string, CaseResult> {
   return results;
 }
 
+/** `result` as the score reads it (`scored`): each run of each stage, earlier confirms included,
+ *  with no reply and no reads, which the score does not read, so that the results kept for the
+ *  score hold no reply's content. */
+function forScore(result: CaseResult): CaseResult {
+  const slim = (stage: StageResult): StageResult => ({
+    ...stage,
+    runs: stage.runs.map((run) => ({ ...run, reply: null, skillReads: null })),
+  });
+  const { screen, confirm, control } = result.stages;
+  return {
+    ...result,
+    stages: {
+      ...(screen === undefined ? {} : { screen: slim(screen) }),
+      ...(confirm === undefined ? {} : { confirm: slim(confirm) }),
+      ...(control === undefined ? {} : { control: slim(control) }),
+    },
+    ...(result.earlierConfirms === undefined
+      ? {}
+      : { earlierConfirms: result.earlierConfirms.map(slim) }),
+  };
+}
+
 /** Writes `result` whole, its time counted in `phases` when given. Returns its file. */
 function writeResult(b: Behaviour, result: CaseResult, phases?: Phases): string {
   const started = performance.now();
@@ -1195,8 +1220,10 @@ function confirmStages(result: CaseResult): StageResult[] {
   return [...(result.earlierConfirms ?? []), ...(latest === undefined ? [] : [latest])];
 }
 
-/** The texts of `stage` as score.ts's MadeConfirm holds them: the two digests in one string. */
-const textsOf = (stage: StageResult) => `${stage.texts.old} ${stage.texts.new}`;
+/** The texts of `stage` (or of a runner's `texts`) as score.ts's MadeConfirm holds them: the two
+ *  digests in one string. */
+const textsOf = (stage: { readonly texts: { readonly old: string; readonly new: string } }) =>
+  `${stage.texts.old} ${stage.texts.new}`;
 
 /** The drop at screen of case `c` for each block of its skill its arms cannot each rebuild
  *  (arms.ts's `injectionFaults`), or undefined when it holds none: its reason names each fault's
@@ -1228,24 +1255,27 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   return found === undefined ? undefined : `${PATH_FORM}: ${found.arm}: ${found.fault}`;
 }
 
+/** The drop score.ts reads of case `c`, whose result is `result` (undefined when it has none):
+ *  the drop its result records (`dropStage`), else its listing measure's (score.ts's
+ *  `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at screen; or
+ *  undefined when it has none. */
+function caseDrop(c: Case, result: CaseResult | undefined): CaseDrop | undefined {
+  if (result !== undefined && result.dropped !== null) {
+    return { stage: dropStage(result), reason: result.dropped };
+  }
+  const listing = listingStanding(c.evidence);
+  if (listing.state === "dropped") return { stage: "screen", reason: listing.reason };
+  const injection = injectionDrop(c);
+  return injection === undefined ? undefined : { stage: "screen", reason: injection.reason };
+}
+
 /** What score.ts reads of `b`'s cases beside their run records (CaseFacts): the drop of each case
- *  that has one, the drop its result records (`dropStage`), else its listing measure's
- *  (score.ts's `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at
- *  screen; and each case's confirms with the runner and texts of each. */
+ *  that has one (`caseDrop`), and each case's confirms with the runner and texts of each. */
 function caseFacts(b: Behaviour, results: ReadonlyMap<string, CaseResult>): Map<string, CaseFacts> {
   const facts = new Map<string, CaseFacts>();
   for (const c of b.cases) {
     const result = results.get(c.id);
-    const listing = listingStanding(c.evidence);
-    const injection = injectionDrop(c);
-    const drop =
-      result !== undefined && result.dropped !== null
-        ? { stage: dropStage(result), reason: result.dropped }
-        : listing.state === "dropped"
-          ? { stage: "screen" as const, reason: listing.reason }
-          : injection !== undefined
-            ? { stage: "screen" as const, reason: injection.reason }
-            : undefined;
+    const drop = caseDrop(c, result);
     const confirms: MadeConfirm[] = (result === undefined ? [] : confirmStages(result)).map(
       (stage) => ({
         runner: stage.runner ?? null,
@@ -1736,10 +1766,11 @@ async function screenCommand(r: Runner): Promise<void> {
     `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, new text ${r.texts.new}`
   );
   // Each case's result, read once here and kept as each case ends (only this process writes
-  // <out>/cases/), for the score that says when screening stops.
-  const results = readResults(r);
+  // <out>/cases/), for the score that says when screening stops: as the score reads it
+  // (`forScore`), so no case's replies are held while the screen runs.
+  const results = new Map([...readResults(r)].map(([id, result]) => [id, forScore(result)]));
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
-    results.set(result.caseId, await finishCase(r, result, "screen", phases));
+    results.set(result.caseId, forScore(await finishCase(r, result, "screen", phases)));
   };
   for (const c of r.cases) {
     const phases = newPhases();
@@ -1823,7 +1854,7 @@ function againRefusal(
   if (latest === undefined || latest.state === "running") {
     return `--again ${id}: case ${id} has no finished confirm yet: run behaviour confirm without --again first`;
   }
-  const texts = `${r.texts.old} ${r.texts.new}`;
+  const texts = textsOf(r);
   const losses = confirmStages(result).flatMap((stage) => {
     if (stage.runner !== r.runner || textsOf(stage) !== texts) return [];
     const outcome = stageOutcome(stage.runs, id, "confirm");
@@ -1963,7 +1994,7 @@ function armCounts(counts: readonly { arm: ArmName; count: number }[]): string {
 /** Why a case whose `stage` is unscreened is dropped, from the stage's `runs`: each arm that lacks
  *  its judged runs after its extra runs, with how many of its runs read skill files past the last
  *  answered round, when it has one or more such runs; then every arm's count of them. Undefined
- *  when no arm that lacks its runs has one: the stage is then unscreened, as before. */
+ *  when no arm that lacks its runs has one: the stage then stays unscreened. */
 function readsPastDrop(runs: readonly Run[], stage: Stage): string | undefined {
   const past = readsPast(runs, stage);
   const short = past.flatMap(({ arm, count }) => {
@@ -2154,10 +2185,11 @@ function dispatchAnswers(results: ReadonlyMap<string, CaseResult>): Map<string, 
   return answers;
 }
 
-/** The end of a verdict's line: how many of the skill's screened cases have a listing measure
- *  that says their listing could not be measured (score.ts's `listingStanding`), and how many of
- *  them carry the Envoy plugin's block on the assumption that their session had Dispatch
- *  (`dispatchAnswers`), so a reader sees both rests of the verdict at once. */
+/** The end of a verdict's line: how many of the skill's screened cases have a listing that could
+ *  not be measured (score.ts's `listingStanding`: no listing measure, one it cannot read, or one
+ *  that says so), how many installed names their recorded listing gave them (`fromRecorded`), and
+ *  how many carry the Envoy plugin's block on the assumption that their session had Dispatch
+ *  (`dispatchAnswers`), so a reader sees each rest of the verdict at once. */
 function listingWords(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -2166,18 +2198,17 @@ function listingWords(
   const screened = score.cases.filter(
     (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
   );
-  const unmeasured = screened.filter((each) => {
-    const c = b.cases.find((candidate) => candidate.id === each.caseId);
-    return listingStanding(c?.evidence).state === "not measurable";
-  }).length;
+  const evidence = screened.map(
+    (each) => b.cases.find((candidate) => candidate.id === each.caseId)?.evidence
+  );
+  const unmeasured = evidence.filter(
+    (each) => listingStanding(each).state === "not measurable"
+  ).length;
   const answers = dispatchAnswers(results);
   const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
   // A case whose profile took names from its recorded listing (build.ts's POOL_AT_START_RULE):
   // its listing measure cannot see a miss of them.
-  const taken = screened.filter(
-    (each) =>
-      fromRecordedIn(b.cases.find((candidate) => candidate.id === each.caseId)?.evidence).length > 0
-  ).length;
+  const taken = evidence.filter((each) => fromRecordedIn(each).length > 0).length;
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
@@ -2188,10 +2219,11 @@ const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--co
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
  *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
- *  how many screened cases' listings could not be measured (`listingWords`). A run any of whose
- *  confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT and no
- *  verdict. With `--reading-models`, a skill too few of whose reading sessions are on served
- *  models (`servedScreeningRefusal`) gets none. */
+ *  how many screened cases' listings could not be measured, took names from their recorded
+ *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). A run
+ *  any of whose confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT
+ *  and no verdict. With `--reading-models`, a skill too few of whose reading sessions are on
+ *  served models (`servedScreeningRefusal`) gets none. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -2306,10 +2338,11 @@ function reportCommand(b: Behaviour): void {
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read skill files: an arm that keeps the agent reading acts differently.
   const pastByStage = Stage.options.map((stage) => {
-    const runs = [...results.values()].flatMap((result) => [
-      ...(result.stages[stage]?.runs ?? []),
-      ...(stage === "confirm" ? (result.earlierConfirms ?? []).flatMap((each) => each.runs) : []),
-    ]);
+    const runs = [...results.values()].flatMap((result) => {
+      const stages: (StageResult | undefined)[] =
+        stage === "confirm" ? confirmStages(result) : [result.stages[stage]];
+      return stages.flatMap((each) => each?.runs ?? []);
+    });
     return `${stage} ${armCounts(readsPast(runs, stage))}`;
   });
   lines.push(
@@ -2629,6 +2662,16 @@ const LOAD_USAGE = [
   "  claude: [--claude <binary>]",
 ].join("\n");
 
+/** The whole number of 1 or more `--<name>` gives as `value`, or `fallback` when it is not given.
+ *  Throws a refusal naming the option on any other value. */
+function wholeOption(name: string, value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Refused(`--${name} ${value} is not a whole number of 1 or more`);
+  }
+  return Number(value);
+}
+
 /** `skill-cuts load`: the load test of load.ts. */
 async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> {
   const values = parse(
@@ -2675,13 +2718,8 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
   }
   const omp =
     host.data === "omp" && values.models !== undefined ? requiredOmp(values.omp) : undefined;
-  if (values.runs !== undefined && !/^[1-9][0-9]*$/.test(values.runs)) {
-    throw new Refused(`--runs ${values.runs} is not a whole number of 1 or more`);
-  }
-  const hintDraw = values["hint-draw"];
-  if (hintDraw !== undefined && !/^[1-9][0-9]*$/.test(hintDraw)) {
-    throw new Refused(`--hint-draw ${hintDraw} is not a whole number of 1 or more`);
-  }
+  const runs = wholeOption("runs", values.runs, LOAD_RUNS);
+  const hintDraw = wholeOption("hint-draw", values["hint-draw"], 1);
   if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Refused(`--skill ${given.skill} is not a directory`);
   }
@@ -2715,7 +2753,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ...(values.name === undefined ? {} : { name: values.name }),
     tasksFile: given.tasks,
     ...(values.profile === undefined ? {} : { profileFile: values.profile }),
-    runs: values.runs === undefined ? LOAD_RUNS : Number(values.runs),
+    runs,
     out: given.out,
     model: values.model ?? LOAD_MODEL,
     thinking: thinking.data,
@@ -2727,7 +2765,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ...(omp === undefined ? {} : { omp }),
     ...(values.models === undefined ? {} : { models: values.models }),
     ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
-    hintDraw: hintDraw === undefined ? 1 : Number(hintDraw),
+    hintDraw,
     configFiles: values["omp-config"] ?? [],
     claude: values.claude ?? "claude",
     requestLog: log,

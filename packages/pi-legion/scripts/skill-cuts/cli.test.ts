@@ -27,6 +27,7 @@ import {
   noVerdict,
   ompBinary,
   runnerDigest,
+  SENDS,
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
@@ -52,6 +53,7 @@ import {
   type RunRecord,
   SCREEN_RUNS,
   STAGE_RUNS,
+  type Stage,
   scoreSkill,
 } from "./score";
 import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
@@ -751,8 +753,40 @@ function result(out: string, id: string): CaseResult {
   return CaseResult.parse(JSON.parse(readFileSync(caseResultFile(out, id), "utf8")));
 }
 
+/** What a capture of case `caseId` of `s` reads before any Oh My Pi run, made up: an Oh My Pi in
+ *  `ompDir` that answers --version (the context is built before it runs any capture), a
+ *  models.yml, and the session's head saved already, so no store is read. */
+function standInContext(
+  s: Scenario,
+  caseId: string,
+  ompDir: string
+): { omp: string; models: string } {
+  const omp = path.join(ompDir, "omp");
+  writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+  const models = path.join(s.dir, "models.yml");
+  writeFileSync(models, "providers: {}\n");
+  const hash = pathHash(`/sessions/${caseId}.jsonl`);
+  mkdirSync(path.join(s.out, "sessions"), { recursive: true });
+  writeFileSync(
+    path.join(s.out, "sessions", `store_a-${hash}.json`),
+    JSON.stringify({
+      store: "store_a",
+      pathHash: hash,
+      held: false,
+      cwd: null,
+      start: null,
+      firstUser: null,
+      reminders: [],
+      bytes: 0,
+      badLines: 0,
+      readAt: "2026-11-22T00:00:00.000Z",
+    })
+  );
+  return { omp, models };
+}
+
 /** The passes of each arm in a stage of `r`. */
-function passes(r: CaseResult, stage: "screen" | "confirm" | "control"): Record<string, number> {
+function passes(r: CaseResult, stage: Stage): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const run of r.stages[stage]?.runs ?? []) {
     counts[run.arm] = (counts[run.arm] ?? 0) + (run.verdict === "pass" ? 1 : 0);
@@ -1308,9 +1342,8 @@ describe("behaviour", () => {
     );
   }, 300_000);
 
-  // Catches: a case whose context holds a directory no read can give ending the whole screen, and
-  // read again by every run started again (each time from the whole repository's tarball, before
-  // 2026-11-22).
+  // Catches: a case whose context holds a directory no read can give ending the whole screen,
+  // read again by every run started again, or read from the whole repository's tarball.
   test("a case whose context needs a directory GitHub cuts short even read alone is dropped as unreadable-directory, with no tarball read; a run started again reads nothing for it, and report counts it", async () => {
     const s = scenario("unreadable", LOSS_SKILL(), [{ id: "c04" }]);
     answer = behaviourStandIn;
@@ -1321,29 +1354,7 @@ describe("behaviour", () => {
     const log = path.join(s.dir, "gh-calls.jsonl");
     mkdirSync(bin, { recursive: true });
     writeGhStandIn(path.join(bin, "gh"), log, truncatedSkillsTree(commit));
-    // An Oh My Pi that answers --version: the context is built before it runs any capture.
-    const omp = path.join(bin, "omp");
-    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
-    const models = path.join(s.dir, "models.yml");
-    writeFileSync(models, "providers: {}\n");
-    // The session's head saved already, so no store is read.
-    const hash = pathHash("/sessions/c04.jsonl");
-    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
-    writeFileSync(
-      path.join(s.out, "sessions", `store_a-${hash}.json`),
-      JSON.stringify({
-        store: "store_a",
-        pathHash: hash,
-        held: false,
-        cwd: null,
-        start: null,
-        firstUser: null,
-        reminders: [],
-        bytes: 0,
-        badLines: 0,
-        readAt: "2026-11-22T00:00:00.000Z",
-      })
-    );
+    const { omp, models } = standInContext(s, "c04", bin);
     const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
     const args = behaviour(
       "screen",
@@ -1647,8 +1658,6 @@ describe("behaviour", () => {
   });
 });
 
-/** cli.ts's SENDS: how a stage's runs were sent, as each stage result records it. */
-const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
 /** A made-up drop of a case whose context needs a directory no read gives. */
 const UNREADABLE =
   "unreadable-directory: acme/skills at 0123456789abcdef: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time";
@@ -1665,7 +1674,7 @@ const NO_READS_PAST = `0 ${READS_PAST_LAST_ROUND}`;
 function plantedStage(
   s: Scenario,
   caseId: string,
-  stage: "screen" | "confirm" | "control",
+  stage: Stage,
   passes: Record<string, number>,
   runner?: string
 ): Record<string, unknown> {
@@ -1748,7 +1757,7 @@ function plantSix(s: Scenario, ids: readonly string[], control: string): void {
  *  `kind`, its recorded listing holding `recorded` names, of which the rebuilt one misses
  *  `missing`. */
 function listingEvidence(
-  kind: "session listing" | "subagent listing" | "not measurable",
+  kind: ListingMeasure["kind"],
   recorded: number | null,
   missing: string[]
 ): { item: string; source: string }[] {
@@ -2352,7 +2361,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect(reported.stdout).toContain(
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}), `
     );
-    // The other stages read the file too, and refuse it no more.
+    // The other stages read the file too, and do not refuse it.
     const confirm = await cli(behaviour("confirm", s));
     expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
@@ -2396,29 +2405,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       "packages/agents-pack/agents/reviewer.md":
         "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
     });
-    // An Oh My Pi that answers --version: the context is built before it runs any capture.
-    const omp = path.join(s.dir, "omp");
-    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
-    const models = path.join(s.dir, "models.yml");
-    writeFileSync(models, "providers: {}\n");
-    // The session's head saved already, so no store is read.
-    const hash = pathHash("/sessions/c-autoload.jsonl");
-    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
-    writeFileSync(
-      path.join(s.out, "sessions", `store_a-${hash}.json`),
-      JSON.stringify({
-        store: "store_a",
-        pathHash: hash,
-        held: false,
-        cwd: null,
-        start: null,
-        firstUser: null,
-        reminders: [],
-        bytes: 0,
-        badLines: 0,
-        readAt: "2026-11-22T00:00:00.000Z",
-      })
-    );
+    const { omp, models } = standInContext(s, "c-autoload", s.dir);
     answer = behaviourStandIn;
     const ran = await cli(
       behaviour(
@@ -2448,8 +2435,8 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
 });
 
 // build-cases may run before the cut has a text (no --new), so a case whose file read by path the
-// new text holds in a form the arms do not rebuild reaches the screen; before, buildArm's throw
-// failed the whole command on it.
+// new text holds in a form the arms do not rebuild reaches the screen, which drops it before any
+// arm is built.
 describe("behaviour: a case whose new text holds a file it reads by path in a form the arms do not rebuild", () => {
   // Catches: a screen that fails the command on such a case, or that spends calls on it.
   test("is dropped at screen as path-form before any model call, listed and counted by arm, and the rest of the file runs", async () => {
@@ -2626,8 +2613,9 @@ describe("behaviour: a replay's reads of skill files", () => {
   }, 120_000);
 
   // Catches: a reply that still only reads skill files after the last answered round judged as
-  // the step, which fails in every arm for a read alone.
-  test("a run whose replies only read skill files through every answered round gets no verdict and is run again, and its case's line counts such runs by arm", async () => {
+  // the step, which fails in every arm for a read alone; and a report that hides an arm that keeps
+  // the agent reading skill files.
+  test("a run whose replies only read skill files through every answered round gets no verdict and is run again, and its case's line and report count such runs by arm", async () => {
     const s = scenario("reads-past", LOSS_SKILL(), [{ id: "c04" }]);
     recordCaptures(s, ["old", "new", "none"]);
     let left = 2;
@@ -2658,16 +2646,8 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(ran.stdout).toContain(
       `(2 runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: ${pastByArm(runs)})`
     );
-  }, 120_000);
 
-  // Catches: a report that hides an arm that keeps the agent reading skill files.
-  test("report gives, per stage and arm, how many runs read skill files past the last answered round", async () => {
-    const s = scenario("reads-past-report", LOSS_SKILL(), [{ id: "c04" }]);
-    recordCaptures(s, ["old", "new", "none"]);
-    let left = 3;
-    answer = readingStandIn(() => left-- > 0);
-    expect((await cli(behaviour("screen", s))).code).toBe(0);
-    const runs = result(s.out, "c04").stages.screen?.runs ?? [];
+    // The report gives them per stage and arm.
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
@@ -2677,7 +2657,7 @@ describe("behaviour: a replay's reads of skill files", () => {
       pastByArm(runs)
         .match(/\d+/g)
         ?.reduce((sum, n) => sum + Number(n), 0)
-    ).toBe(3);
+    ).toBe(2);
   }, 120_000);
 
   // Catches: a case whose arm keeps the agent reading past the last answered round left

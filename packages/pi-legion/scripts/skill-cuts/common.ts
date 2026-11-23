@@ -185,6 +185,9 @@ export interface RetryIo {
   err(line: string): void;
 }
 
+/** How a retry's line names a gh call whose caller gives it no name of its own. */
+const A_GH_CALL = "a gh call";
+
 /**
  * The one rule by which the runner sends a gh call again (copies.ts's reads, build.ts's
  * `GithubReads`, context.ts's `ghSource`), with its count of the calls it sent again. A call whose
@@ -215,25 +218,25 @@ export class GhRetries {
   /** Whether a call that failed with `stderr`, sent again `retried` times so far, is sent again:
    *  when `stderr` names a transient failure, and not one of BATCH_TOO_LARGE for a batch its caller
    *  `splits`, and fewer than 4 retries were made, this counts the retry by its reason, says so on
-   *  standard error and sleeps the next wait of TRANSIENT_WAITS_MS. A caller that holds a read slot
-   *  calls it outside the slot, so the wait holds none. */
+   *  standard error (naming the call as `read` does, A_GH_CALL when absent) and sleeps the next
+   *  wait of TRANSIENT_WAITS_MS. A caller that holds a read slot calls it outside the slot, so the
+   *  wait holds none. */
   async waitToRetry(
     stderr: string,
     retried: number,
-    splits = false,
-    read = "a gh call"
+    options: { readonly splits?: boolean; readonly read?: string } = {}
   ): Promise<boolean> {
     const reason = transientReason(stderr);
     const wait = TRANSIENT_WAITS_MS[retried];
     if (
       reason === undefined ||
       wait === undefined ||
-      (splits && Object.hasOwn(BATCH_TOO_LARGE, reason))
+      (options.splits === true && Object.hasOwn(BATCH_TOO_LARGE, reason))
     )
       return false;
     this.counts.set(reason, (this.counts.get(reason) ?? 0) + 1);
     this.say(
-      `${read} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
+      `${options.read ?? A_GH_CALL} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
     );
     await this.io.sleep(wait);
     return true;
@@ -252,7 +255,7 @@ export class GhRetries {
     options: {
       readonly splits?: boolean;
       readonly rateWait?: (stderr: string, refused: number) => Promise<number>;
-      /** What the call is, in the line said on each retry (`a gh call` when absent). */
+      /** What the call is, in the line said on each retry (A_GH_CALL when absent). */
       readonly read?: string;
     } = {}
   ): Promise<Sent<T>> {
@@ -271,11 +274,11 @@ export class GhRetries {
         const wait = await options.rateWait(result.stderr, limited);
         // A rate wait can be 15 minutes: it says itself, so it is never taken for a hang.
         this.say(
-          `${options.read ?? "a gh call"} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
+          `${options.read ?? A_GH_CALL} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
         );
         await this.io.sleep(wait);
         limited++;
-      } else if (await this.waitToRetry(result.stderr, transient, options.splits, options.read)) {
+      } else if (await this.waitToRetry(result.stderr, transient, options)) {
         transient++;
       } else if (errors.length === 1) return result;
       else return { ...result, stderr: `${triesError(errors)}\n`, lastStderr: result.stderr };
@@ -322,7 +325,7 @@ export class Limiter {
 }
 
 /** The environment variable that bounds the gh processes the runner has at once. */
-export const GH_CONCURRENCY_ENV = "SKILL_CUTS_GH_CONCURRENCY";
+const GH_CONCURRENCY_ENV = "SKILL_CUTS_GH_CONCURRENCY";
 /** The gh processes the runner has at once when GH_CONCURRENCY_ENV is unset: a pod's gh is a
  *  wrapper of about 145 MiB a call (a binary and a leak check), so the bound keeps the runner's
  *  processes near 600 MiB however many reads one profile starts. */
@@ -355,8 +358,10 @@ export interface TimeLimit {
 
 /** Ends `child` (SIGTERM) once `ms` pass, if `ms` is given; each `touch()` starts the `ms` again.
  *  `timedOut()` says whether the limit ended it, so a child a signal from elsewhere ended is not
- *  reported as out of time. Every limited child of the runner uses it: copies.ts's gh calls, the
- *  store reads of build.ts and capture.ts, and context.ts's commands. */
+ *  reported as out of time. Every limited child whose output the runner reads through pipes uses
+ *  it: copies.ts's gh calls, the store reads of build.ts and capture.ts, and context.ts's
+ *  commands. The Oh My Pi run (capture.ts) and the Claude Code run (load.ts), which write their
+ *  output to files, keep their own timer, which ends them with SIGKILL. */
 export function timeLimit(child: { kill(): void }, ms: number | undefined): TimeLimit {
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -414,7 +419,7 @@ export async function textOf(
 export const STORE_QUIET_MS = 1_200_000;
 
 /** GitHub's refusal for its secondary rate limit, which has no reset to wait for (`rateLimitWait`). */
-export const SECONDARY_LIMITED = /secondary rate limit/i;
+const SECONDARY_LIMITED = /secondary rate limit/i;
 /** The first wait after a refusal for the secondary rate limit, doubled at each refusal after. */
 export const SECONDARY_WAIT_MS = 60_000;
 

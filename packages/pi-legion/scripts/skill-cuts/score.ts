@@ -274,7 +274,8 @@ export function isFalseLoss(passes: Passes<"control">): boolean {
 }
 
 /** The informative cases of `cases` in the control rule's order: the one whose old text passes
- *  most more often than no skill first, a tie going to the lower id in string order. */
+ *  most more often than no skill first, a tie going to the lower id in string order. A skill's
+ *  control case is the first of them that was not dropped (scoreSkill). */
 export function controlOrder(
   cases: readonly { caseId: string; passes: Passes<"screen"> }[]
 ): string[] {
@@ -284,14 +285,6 @@ export function controlOrder(
     )
     .sort((a, b) => b.gap - a.gap || (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0))
     .map((each) => each.caseId);
-}
-
-/** The id of a skill's control case: the first of its informative screened cases in the control
- *  rule's order (controlOrder). Undefined when no case is informative. */
-export function controlCase(
-  cases: readonly { caseId: string; passes: Passes<"screen"> }[]
-): string | undefined {
-  return controlOrder(cases)[0];
 }
 
 /** A skill that gets no verdict, and why. */
@@ -324,9 +317,11 @@ export function skillVerdict(counts: {
   return { verdict: counts.losses > 0 ? "loss" : "keeps" };
 }
 
-/** A case dropped at `stage` (cli.ts writes why: a judge control failed, the gateway serves its
- *  model no more, a directory of its context could not be read, or its listing misses too many
- *  names), and why. */
+/** A case dropped at `stage`, and why. cli.ts writes why: a judge control failed, the gateway
+ *  serves its model no more, a directory of its context could not be read, its listing misses
+ *  too many names, a block of its skill its arms cannot each rebuild, a file it reads by path an
+ *  arm's text holds in a form the arms do not rebuild, or an arm's runs read skill files past the
+ *  last answered round. */
 export interface CaseDrop {
   readonly stage: Stage;
   readonly reason: string;
@@ -433,11 +428,10 @@ export function scoreSkill(
       : []
   );
   const informative = cases.filter((c) => c.informative).length;
-  const drops = new Map(cases.map((c) => [c.caseId, c.drop]));
   const replacedControls: string[] = [];
   let chosen: string | undefined;
   for (const caseId of controlOrder(screenedCases)) {
-    if (drops.get(caseId) === undefined) {
+    if (facts.get(caseId)?.drop === undefined) {
       chosen = caseId;
       break;
     }
@@ -446,7 +440,7 @@ export function scoreSkill(
   const noControl =
     chosen === undefined && replacedControls.length > 0
       ? `no informative case is left to be the control case: each is dropped (${replacedControls
-          .map((caseId) => `${caseId} at ${drops.get(caseId)?.stage}`)
+          .map((caseId) => `${caseId} at ${facts.get(caseId)?.drop?.stage}`)
           .join(", ")})`
       : undefined;
   const control = chosen === undefined ? undefined : stageOutcome(records, chosen, "control");
@@ -459,7 +453,8 @@ export function scoreSkill(
     noControl,
     control,
   };
-  const waiting = (outcome: { state: string } | undefined) => outcome?.state === "running";
+  const waiting = (outcome: { state: StageState | ConfirmScore["state"] } | undefined) =>
+    outcome?.state === "running";
   if (cases.some((c) => c.drop?.stage !== "screen" && waiting(c.screen)))
     return { ...score, outcome: undefined };
   if (informative >= MIN_INFORMATIVE_CASES && noControl !== undefined)

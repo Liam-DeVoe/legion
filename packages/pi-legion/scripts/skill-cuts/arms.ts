@@ -50,9 +50,9 @@
  * it writes it.
  *
  * `skillFile(arm, file)` answers one new `skill://` read the same way, at the arm's
- * `installedDir`, and `pathFile(arm, target)` one new read by path, at the path read; replay.ts
- * answers a reply's reads with them. cases.ts's `skillReadFile(arm.skill, target)` and
- * `pathReadFile(arm, target)` say which file a read reads.
+ * `installedDir`, and `pathFile(arm, target)` one new read by path, its hashline line naming the
+ * file under `PathCopy.shownDir`; replay.ts answers a reply's reads with them. cases.ts's
+ * `skillReadFile(arm.skill, target)` and `pathReadFile(arm, target)` say which file a read reads.
  *
  * `otherSkillRead(arm, copies, target)` answers one new read of a file of another skill, the
  * same text in every arm. A skill the profile lists is read from its installed copy (`copies`,
@@ -61,11 +61,11 @@
  * read under a `[Skill file: <path>]` line whose directory is the one the case's own reads of
  * that skill show (`arm.skillDirs`), else the directory beside the case's skill's installed
  * directory; a whole read by path (a path that ends `/<name>/SKILL.md`, or holds
- * `skills/<name>/<file>`, as count.sql and build.ts find a skill's read by path) in Oh My Pi's
- * form of a read by path, its rows as the session shows them (`arm.pathRows`). A `skill://` read
- * of a skill the profile does not list gets Oh My Pi's unknown-skill result, the text of
- * `skill-protocol.ts`'s resolver in the pinned binary: `Unknown skill: <name>`, then `Available:`
- * and the names the session installs joined by `, ` (`none` for no name).
+ * `skills/<name>/references/<file>`, as count.sql and build.ts find a skill's read by path) in Oh
+ * My Pi's form of a read by path, its rows as the session shows them (`arm.pathRows`). A
+ * `skill://` read of a skill the profile does not list gets Oh My Pi's unknown-skill result, the
+ * text of `skill-protocol.ts`'s resolver in the pinned binary: `Unknown skill: <name>`, then
+ * `Available:` and the names the session installs joined by `, ` (`none` for no name).
  *
  * A skill can reach a session other than by its listing line and its reads, and each arm puts its
  * own text there too (`Injection`, `arm.injections`):
@@ -122,11 +122,13 @@ import {
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
 import {
+  AT_COMMAND,
   readTargets,
   type SessionMessage,
   skillFileHeader,
   skillHeaderPath,
   stripSkillHeader,
+  withoutBodies,
 } from "../skill-scenarios/transcript";
 import {
   type Case,
@@ -156,7 +158,7 @@ export const PLUGIN_INJECTED = { skill: "dispatch-first", plugin: ENVOY_PLUGIN }
 
 /** The custom message type of a skill's text Oh My Pi puts into a session
  *  (SKILL_PROMPT_MESSAGE_TYPE, packages/tui/src/chat/messages.ts line 21 at the pin). */
-export const SKILL_PROMPT = "skill-prompt";
+const SKILL_PROMPT = "skill-prompt";
 
 /** A block of the case's skill that reaches its session beside the listing line and the reads,
  *  and where the arm's messages hold it (`at`; null for `none`, which holds none): one a plugin
@@ -352,18 +354,19 @@ const PROSE_FILE = /\.(md|markdown|mdx|mdc|mkd|mdown|txt)$/i;
 const CONFLICT_OPENER = /^<<<<<<<(?: |\r?$)/;
 
 /** The bytes of a file's lines a whole read of it shows, each cut line counted as shown, with a
- *  newline between two (read.ts lines 2663-2672 at the pin): 50 KB, less four bytes for each of
- *  the 300 lines when the rows show their numbers. */
+ *  newline between two (read.ts lines 2663-2672 at the pin, whose `Math.min` of its two bounds
+ *  is always this one at its defaults): 50 KB, less four bytes for each of the 300 lines when the
+ *  rows show their numbers. */
 function pageBytes(rows: PathRows): number {
   const numbers = rows === "plain" ? 0 : String(READ_LINES).length + 1;
-  return Math.min(Math.max(SPILL_BYTES, READ_LINES * 512), SPILL_BYTES - READ_LINES * numbers);
+  return SPILL_BYTES - READ_LINES * numbers;
 }
 
 /** Oh My Pi's snapshot tag of a file's text, the `<tag>` of a hashline line (`file_hash`,
  *  crates/pi-edit/src/store.rs lines 70-91 at the pin): xxHash32, seed 0, of the text with the
  *  spaces, tabs and carriage returns at the end of each line left out, its low 16 bits as four
  *  uppercase hex digits. Oh My Pi hashes the text with a leading byte order mark left out and
- *  each CRLF or CR as LF. */
+ *  each CRLF or CR as LF, which its caller does first (`pathAnswer`). */
 export function snapshotTag(text: string): string {
   const kept = text
     .split("\n")
@@ -526,9 +529,10 @@ function pathAnswer(
 
 /** The answer to a new read of `target` from the arm's files, when it is a whole read of a file
  *  of the cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`): Oh My
- *  Pi's result at the path read, its rows as the case's reads by path show them, or its not-found
- *  result. Undefined for any other read, a read of a directory of the copy, and a read of a file
- *  Oh My Pi shows in a form the arms do not rebuild (`pathFormFault`). */
+ *  Pi's result, its hashline line naming the file under the directory the case's reads of the
+ *  copy show (`PathCopy.shownDir`) and its rows as they show them, or its not-found result for
+ *  the path as read. Undefined for any other read, a read of a directory of the copy, and a read
+ *  of a file Oh My Pi shows in a form the arms do not rebuild (`pathFormFault`). */
 export function pathFile(arm: Arm, target: string): { text: string; isError: boolean } | undefined {
   const copy = arm.pathCopy;
   const file = pathReadFile(arm, target);
@@ -639,7 +643,7 @@ function skillDirsOf(c: Case, targets: ReadonlyMap<string, string>): Record<stri
 /** A skill of an arm's profile other than the case's, as the capture installed it (context.ts's
  *  `installedCopies`): the name the profile lists it under, and the directory of its installed
  *  copy, which a read of it is answered from, the same in every arm. */
-export interface SkillCopy {
+export interface InstalledCopy {
   readonly name: string;
   readonly dir: string;
 }
@@ -667,7 +671,7 @@ export interface OtherSkillRead {
  *  of it is answered as not found. */
 function sourceOf(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   skill: ProfileSkill
 ): { dir: string; from: "arm" | "copy" } {
   if (arm.skillDir !== undefined && testedCopy(arm.profileSkills, arm.skill)(skill)) {
@@ -711,7 +715,7 @@ function shownPath(
  *  so the longest listed name is tried first. */
 function otherSkillUrlRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   others: readonly ProfileSkill[],
   target: string
 ): OtherSkillRead | undefined {
@@ -741,7 +745,7 @@ function otherSkillUrlRead(
  *  answered: the session's read opened a file on its own disk, which the copy may not hold. */
 function otherSkillPathRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   others: readonly ProfileSkill[],
   target: string
 ): OtherSkillRead | undefined {
@@ -797,7 +801,7 @@ function otherSkillPathRead(
  *  the profile lists the skill and `copies` holds no copy of it (`sourceOf`). */
 export function otherSkillRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   target: string
 ): OtherSkillRead | undefined {
   if (skillReadFile(arm.skill, target) !== undefined) return undefined;
@@ -914,7 +918,7 @@ function compactSeparator(line: string): string {
       const trimmed = cell.trim();
       const left = trimmed.startsWith(":");
       const right = trimmed.endsWith(":");
-      return left && right ? ":---:" : left ? ":---" : right ? "---:" : "---";
+      return `${left ? ":" : ""}---${right ? ":" : ""}`;
     });
   return `|${cells.join("|")}|`;
 }
@@ -928,7 +932,7 @@ function compactSeparator(line: string): string {
  * row's cells less their padding (a separator row's each `---`, `:---`, `---:` or `:---:`); then
  * the text's last blank lines dropped.
  */
-export function formatPrompt(content: string): string {
+function formatPrompt(content: string): string {
   const lines = content.split("\n");
   const result: string[] = [];
   const dropBlanks = () => {
@@ -1066,22 +1070,10 @@ export function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
   );
 }
 
-/** Where a command starts in shell text, as skill-scenarios/score.ts's AT_COMMAND finds it: at a
- *  line's start, or after `;`, `&`, `|`, `(`, `$(` or a backquote, past any variable assignments,
- *  the words that open a command inside a compound one, and `command`, `exec` or `env`. */
-const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
-/** A `dispatch` command at a command's place, and its subcommand. */
+/** A `dispatch` command at a command's place (skill-scenarios/transcript.ts's AT_COMMAND), and
+ *  its subcommand. A `bash` call's command is read with its continued lines joined and its
+ *  here-document bodies, data for the command that opens each, left out (`withoutBodies`). */
 const DISPATCH_COMMAND = new RegExp(String.raw`${AT_COMMAND}dispatch[ \t]+([a-z][a-z-]*)`, "m");
-/** A here-document: the rest of the line that opens it, then its body up to the line that ends
- *  it (score.ts's HEREDOC). Its body is data for the command that opens it. */
-const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
-
-/** The subcommand of the first `dispatch` command `command` (a `bash` call's) runs, its continued
- *  lines joined and its here-document bodies left out, or undefined when it runs none. */
-function dispatchCommand(command: string): string | undefined {
-  const code = command.replace(/\\\r?\n/g, " ").replace(HEREDOC, "$1");
-  return DISPATCH_COMMAND.exec(code)?.[1];
-}
 
 /** What `message` shows of Dispatch, as the end of a sentence that starts "its message <index>",
  *  or undefined when it shows none: a user, custom or developer message whose text holds the
@@ -1111,7 +1103,10 @@ function dispatchShown(message: SessionMessage): string | undefined {
     if (name === "write" && field("path").startsWith("xd://dispatch_")) {
       return `writes the Dispatch tool device ${field("path")}`;
     }
-    const command = name === "bash" ? dispatchCommand(field("command")) : undefined;
+    const command =
+      name === "bash"
+        ? DISPATCH_COMMAND.exec(withoutBodies(field("command")).code)?.[1]
+        : undefined;
     if (command !== undefined) return `runs \`dispatch ${command}\` in a bash call`;
   }
   return undefined;

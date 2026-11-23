@@ -463,16 +463,22 @@ export interface ToolCall {
   readonly input: unknown;
 }
 
+/** Whether a block of a reply's content is a tool call: a Messages `tool_use` block, or a
+ *  Responses `function_call` item. */
+export function isToolCallBlock(block: ContentBlock): boolean {
+  return block.type === "tool_use" || block.type === "function_call";
+}
+
 /** The tool calls of a reply's content, in order. */
 export function toolCalls(content: readonly ContentBlock[]): ToolCall[] {
   return content.flatMap((block): ToolCall[] => {
+    if (!isToolCallBlock(block)) return [];
     const name = typeof block.name === "string" ? block.name : undefined;
     if (block.type === "tool_use") {
       return [
         { id: typeof block.id === "string" ? block.id : undefined, name, input: block.input },
       ];
     }
-    if (block.type !== "function_call") return [];
     let input: unknown;
     try {
       input = block.arguments === "" ? {} : JSON.parse(String(block.arguments));

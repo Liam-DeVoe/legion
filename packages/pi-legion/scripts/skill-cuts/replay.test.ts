@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { type Arm, type SkillCopy, snapshotTag } from "./arms";
+import { type Arm, type InstalledCopy, snapshotTag } from "./arms";
 import {
   bodyIdentity,
   type ContentBlock,
@@ -463,15 +463,7 @@ test("answers a reply's whole read by path of the cut's own copy by arm, and a r
     pathCopy,
   };
   const lacking: Arm = { ...armWith("new", { "SKILL.md": SKILL_MD }), pathCopy };
-  const none: Arm = {
-    name: "none",
-    skill: "alpha",
-    skillDir: undefined,
-    installedDir: INSTALLED,
-    messages: [],
-    profileSkills: PROFILE_SKILLS.filter((skill) => skill.name !== "alpha"),
-    pathCopy,
-  };
+  const none: Arm = { ...noneArm(), pathCopy };
   const call = { type: "tool_use", id: "toolu_path", name: "read" };
   const answers: [Arm, string, boolean][] = [
     // 0098 is Oh My Pi's tag of X_MD.
@@ -522,7 +514,7 @@ const BETA_MD =
 const BETA_INSTALLED = "/home/agent/.omp/agent/skills/beta";
 
 /** Beta's installed copy, a cache entry as context.ts's installedCopies names it. */
-function betaCopy(): SkillCopy[] {
+function betaCopy(): InstalledCopy[] {
   const dir = path.join(scratch, `beta-copy-${Math.random()}`);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "SKILL.md"), BETA_MD);
@@ -705,9 +697,10 @@ test("a read of a skill the profile does not list gets Oh My Pi's unknown-skill 
   }
 });
 
-// Catches: the case's skill's read after another skill's read answered other than before, or the
-// none arm's read of the case's skill judged, which fails that arm by construction.
-test("a read of another skill, then of the case's skill, then the act: two rounds, the case's skill answered as before, and in none with the unknown-skill result", async () => {
+// Catches: the case's skill's read after another skill's read answered other than a read of it in
+// a round of its own is, or the none arm's read of the case's skill judged, which fails that arm by
+// construction.
+test("a read of another skill, then of the case's skill, then the act: two rounds, the case's skill answered as in a round of its own, and in none with the unknown-skill result", async () => {
   const copies = betaCopy();
   const beta = readCall("toolu_beta", "skill://beta");
   const alpha = readCall("toolu_alpha", "skill://alpha/references/x.md");

@@ -139,10 +139,11 @@ skill's cases (`cases.ts`), one JSON object per line.
   case the control case took the place of; the skill's verdict and its reason (`keeps` prints as
   "no loss detected by the registered rule"; a run with a confirm made by `--confirm-flagged` gets
   the verdict line under `confirm` above in its place), ending with how many of the skill's
-  screened cases have a listing measure that could not be measured; the drops per judge control
-  and the drops counted as `model-not-served`, as `unreadable-directory`, as `listing-misses`, as
-  `injection-unrebuildable`, the last by kind (a case under each kind it holds), and as `path-form`,
-  by the arm whose text holds the file; the verdict line also counts the screened cases whose
+  screened cases have a listing that could not be measured (no listing measure, or one that says
+  so); the drops per judge control and the drops counted as `model-not-served`, as
+  `unreadable-directory`, as `listing-misses`, as `injection-unrebuildable`, the last by kind (a
+  case under each kind it holds), as `path-form`, by the arm whose text holds the file, and as
+  `reads-past-last-round`; the verdict line also counts the screened cases whose
   profile took names from their recorded listing (`fromRecorded`, below); an estimate of
   the procedure's false-loss
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
@@ -187,9 +188,12 @@ Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. A hint is th
 hint model once for each skill text its cache lacks, and every arm and case of that text lists the
 cached hint. A reply Oh My Pi does not keep (empty, more than one line, or over 160 characters)
 fails no capture. As in Oh My Pi, the skill is then listed under its cut-down description: the
-description itself when it has at most 100 characters, else it is cut at a sentence or a word end
-within 99 and followed by `…`. The runner asks no more for that text, because Oh My Pi asks that
-model no more either. The cache file and the capture record's `hints` say `kept: false`, give the
+description with each run of white space made one space and its ends trimmed, whole when it has
+at most 100 characters; else its first sentence, when that sentence ends within the first 99
+characters and has 40 or more; else those 99 characters cut before their last space when 40 or
+more come before it, or else whole, and followed by `…`. The runner asks no more for that text,
+because Oh My Pi asks that model no more either. The cache file and the capture record's `hints`
+say `kept: false`, give the
 reply, and say why. Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on,
 Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints run at the API's
 default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
@@ -378,9 +382,9 @@ row Oh My Pi stores when the hint run answers its hint request with the line its
 asked for a recorded line. `behaviour` passes no recorded line.
 
 `--hint-draw <n>` (a whole number, default 1) is the draw of every hint no recorded line gives.
-Draw 1 keeps the cache keys of before, so its cache stays valid; draw n > 1 asks the hint model
-again for each skill text and caches the hint apart. A draw's hint is the file
-`<cache-dir>/hints/<key>.json`, where `<key>` is the first 32 hex characters of the SHA-256 of
+Draw n > 1 asks the hint model again for each skill text and caches the hint apart. A draw's hint
+is the file `<cache-dir>/hints/<key>.json`, where `<key>` is the first 32 hex characters of the
+SHA-256 of
 the Oh My Pi version (`omp --version`'s output), the name and the description, each followed by
 a NUL byte, and for draw n > 1 also `draw <n>` and a NUL byte. The file is one JSON object:
 `{"omp", "name", "description", "ompKey", "hint", "model", "writtenAt", "kept", "draw"}`
@@ -480,19 +484,24 @@ keeps and every blob it read) and each finished code search is saved there the m
 under a temporary name renamed into place, so a run stopped at any moment and started again with
 the same arguments reads nothing twice; the hit files the searches find are read again. A truncated
 tree is walked a level at a time in GraphQL batches of up to 50 subtrees, at most 4 reads in flight
-for one repository and 8 in all. It prints one line per repository read (`copies: tree <n>/<total>
-<owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
-searches, so the log gives the rate.
+for one repository and 8 in all, of which at most 4 run a gh process at once (`ghLimiter`, below).
+It prints one line per listed repository read (`copies: tree <n>/<total> <owner/repo>: <entries>
+entries, <calls> tree reads, <seconds> s, cached|read`, or `failed (<gh's error>)`), one per
+pinned repository read (`copies: pinned <owner/repo> at <ref> (<what pins it>): …`), and one per
+25 searches, so the log gives the rate.
 
 Seven install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
 the list, read as Oh My Pi 18.18.6 reads it:
 
-- An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is set; `pi` counts only
-  when `omp` is absent): the skill directories its manifest's `skills` list declares, each inside
-  the package, else its `skills/`, each scanned as Oh My Pi scans a skill directory (an entry
-  holding no `SKILL.md` is read one level deeper, a skill with no description is left out, and a
-  declared directory lists no skill through a link that leads out of the package). It is
-  installed at `node_modules/<name>/`.
+- An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is truthy; its skills come
+  from `omp` when that field is there, else from `pi`): the skill directories its manifest's
+  `skills` list declares, each inside the package, else its `skills/`, each scanned as Oh My Pi
+  scans a skill directory (an entry holding no `SKILL.md` is read one level deeper, a skill with
+  no description is left out, and a declared directory lists no skill through a link that leads
+  out of the package), and the skills a prepack script stages for it. It is installed at
+  `node_modules/<name>/`, and, for a package the worker image carries (one a prepack script
+  stages skills for, or whose directory holds the Claude Code build script), also at
+  `/opt/legion/<its last name>/`.
 - A `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins `package.json`: the package
   at the root of that repository, at that ref, installed under the dependency's name, whatever
   the repository's owner.
@@ -500,7 +509,8 @@ the list, read as Oh My Pi 18.18.6 reads it:
   pool under `vendor/<name>/` feeds to Oh My Pi: the cloned repository at that ref, less each
   entry the installer's `find … -name … -exec rm` removes from the pool. A clone made as one entry
   of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name> <ref>`, a repository that
-  is one skill, its `SKILL.md` at its root) gives that repository's root skill under `<name>`.
+  is one skill, its `SKILL.md` at its root) gives that repository's root skill under `<name>`, or,
+  where its root holds no `SKILL.md`, each entry of its root that holds one.
 - A clone made by hand that the configuration's `clones` states (`{repo, dir, clone}`: the
   directory `dir` of the dev box's checkout of `repo` is a clone of `clone`, such as a private
   repository cloned into a dotfiles checkout). No installer the list reads makes it, so the
@@ -515,15 +525,16 @@ the list, read as Oh My Pi 18.18.6 reads it:
   (`omp plugin install <plugin>@<marketplace>`, or a helper given the marketplace's repository and
   `<plugin>@<marketplace>`): the marketplace's repository is read at its default branch, and the
   plugin's source at the commit its marketplace entry pins (`sha`, else `ref`). Oh My Pi lists
-  such a plugin's skills from its manifest's `skills` entries, else its `skills/`
+  such a plugin's skills from its `skills/` and from the `skills` entries of its marketplace entry
+  and of its own manifest
   (discovery/claude-plugins.ts, loadSkills, lines 226-275; an install of Oh My Pi's own is not
   Claude Code's registry, so no setting gates it: lines 44-53). A line's host is read from its
   words less its `<plugin>@<marketplace>` and `<owner>/<name>` words, so a marketplace named
   `claude-plugins-official` names no host.
 - A `gh skill install <repo> <skill> … --pin <ref>` of an installer script (each `$NAME` the
-  script sets read so): the repository's `skills/<skill>` at that ref, installed at
-  `~/.agents/skills/<skill>`, which Oh My Pi's agents provider lists (discovery/agents.ts, lines
-  123-127 and 158-170).
+  script sets read so): the repository's `skills/<skill>` at that ref (else its one copy of that
+  name), installed at `~/.agents/skills/<skill>`, which Oh My Pi's agents provider lists
+  (discovery/agents.ts, lines 123-127 and 158-170).
 - A Legion deployment's files: its role setup script (`legion/*setup.sh`) fetches a catalog
   repository (`repo=<owner>/<name>`, `omp plugin marketplace add`) and installs plugins of it
   (`omp plugin install`); its program (`legion/main.go`) names the plugins every role installs
@@ -549,13 +560,16 @@ and stages no longer, where the worker images and package releases of those comm
 skill. One GraphQL read of the script's history at the commit read gives each version that held in
 the window: the one in effect at `windowStart`, and each one a commit of the default branch made
 since. For each skill an older version staged for a package that the script read no longer stages
-for that package into that directory, the package's unit gets prefix rows at that path
-(`/opt/legion/<package>/dist/skills/<name>/` and `**/node_modules/<package>/dist/skills/<name>/`),
-each mapped to the copy of that name at `--at`. The rows name the package's unit, so `build-cases`
-and `build-tasks` resolve that unit at a session's commit as they resolve any. Under the script's
-line, `skill-copies.md` names each such path with the commits that staged it there (`from <commit>
-(<date>) until <commit> (<date>)`), and each path that no copy at `--at` holds (a skill renamed or
-removed since), which gets no row.
+for that package into that directory, the package's unit gets prefix rows at that path under each
+place the unit is installed (`**/node_modules/<package>/dist/skills/<name>/`, and
+`/opt/legion/<package>/dist/skills/<name>/` for a package the worker image carries), each mapped
+to the copy at the directory that version staged it from, as the tree at `--at` holds it. The rows
+name the package's unit, so `build-cases` and `build-tasks` resolve that unit at a session's
+commit as they resolve any. Under the script's line, `skill-copies.md` names each such path with
+the commits that staged it there (`from <commit> (<date>) until <commit> (<date>)`), and each
+path that gets no row, with why: the tree at `--at` holds no `SKILL.md` at the directory it was
+staged from (a skill renamed or removed since), or the package is no package unit of the trees
+read.
 
 ### `attribute`
 
@@ -756,8 +770,10 @@ installers pin (a repository the copies output no longer names is read at the pi
 default branch when the installer names none), and each unit its installers then install into
 Oh My Pi (plugin lists, skill pools, plugin installs, linked user skills) is installed. With no
 such repository, or several, the evidence says so and only the read units are installed. A skill
-whose name a pattern of that repository's Oh My Pi config `skills.ignoredSkills` matches is left
-out (Oh My Pi 18.18.6 loads no such skill: extensibility/skills.ts, lines 386-389 and 401-406). A
+that a pattern of that repository's Oh My Pi config `skills.ignoredSkills` matches, as a Bun.Glob,
+by its own name or by the `<namespace>/<name>` it would be listed under as a later copy of a name
+whose text differs, is left out (Oh My Pi 18.18.6 loads no such skill: extensibility/skills.ts,
+lines 386-389, 401-406, 437 and 544). A
 skill whose `SKILL.md` frontmatter sets `hide: true` or `disable-model-invocation: true` is
 installed, so `skill://` reads it, and the evidence marks it `not listed`: Oh My Pi loads it and
 leaves it out of the prompt's listing (extensibility/skills.ts, line 494; system-prompt.ts,
@@ -783,9 +799,10 @@ file's: `legion/Pulumi.prod.yaml`). A nested map's `image:` and the `daemonImage
 that line. The commit is the one that
 GitHub's build provenance of the image's digest names (`gh api
 repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first resolved
-dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
-image that a deployment builds on the Legion image in another registry), the comment lines right
-above its `image:` line decide, by the first of their words, in their order, that names a commit:
+dependency). For an image that names no digest, or whose digest has no provenance there (GitHub
+answers 404, as for an image that a deployment builds on the Legion image in another registry),
+the comment lines right above its `image:` line decide, by the first of their words, in their
+order, that names a commit:
 an image digest whose provenance names one (the base the image was built on), a commit of the
 repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a
 word of the form `<name>-v<version>` or `v<version>`, such as `legion-v15.2.0`, at the tag's last
@@ -852,10 +869,12 @@ A skill can reach a session other than by its listing line and a read, and each 
 session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every
 request of a session with Dispatch: a user message after the leading compaction summaries, built
 from the plugin's own `skills/dispatch-first/SKILL.md`, which it reads as it loads. No transcript
-keeps that block, and a capture runs with Dispatch off, so each arm but `none` puts the block, built
-from its own SKILL.md by the plugin's own function, where the plugin puts it; `none` puts none, and
-gets a hidden stand-in of the file (`hide: true`), so the plugin still loads and the listing names
-nothing more. Whether the session had Dispatch is taken from the case where the case says
+keeps that block, and a capture runs with Dispatch off, so for a case of dispatch-first whose
+profile installs the plugin each arm but `none` puts the block, built from its own SKILL.md by the
+plugin's own function, where the plugin puts it; `none` puts none, and gets a hidden stand-in of
+the file (`hide: true`), so the plugin still loads and the listing names nothing more. A case of
+any other skill gets no block. Whether the session had Dispatch is taken from the case where the
+case says
 (arms.ts's `dispatchOf`): a Legion role's session had it (its context is
 `legion:<project>:<role>`), and so did a subagent of one (its evidence item `subagent <agent>`
 names a `legion:<project>` store); so did a session one of whose messages holds the dispatch-first
@@ -878,9 +897,10 @@ as Oh My Pi renders it (the body, a blank line, `---`, a blank line and `Skill: 
 Oh My Pi's prompt format, which takes the padding out of a table's cells), and `none` leaves it
 out. A case that holds such a block in a form the runner cannot rebuild is dropped, never run, and
 the rest of the cases file runs (the architect, 2026-11-22): `behaviour screen` drops it before any
-model call, at screen, as `injection-unrebuildable: <kind>: <the fault>`, where the kind is
-`user-invoked` (a `/skill:` prompt the user typed), `other-shape` (a block with arguments or in
-another form) or `plugin-block-misplaced` (a dispatch-first block away from where the plugin puts
+model call, at screen, as `injection-unrebuildable: <kinds>: <the faults>` (each fault's kind,
+then each fault), where a kind is `user-invoked` (a `/skill:` prompt the user typed),
+`other-shape` (a block with arguments or in another form) or `plugin-block-misplaced` (a
+dispatch-first block away from where the plugin puts
 it); a subagent whose agent autoloads the skill but whose messages hold no block of it and open
 with no compaction summary is dropped the same way when its capture is made, as
 `autoload-no-block`, at the stage of that capture. `report` lists each such case as it lists every
@@ -1135,9 +1155,13 @@ The runner starts at most 4 gh processes at once, across all its GitHub reads (c
 about 145 MiB a call, and one profile can start a read for every repository at once. The
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
-Every child the runner starts and every download it makes has a limit. A gh call is ended after
-120 s (`GH_CALL_TIMEOUT_MS`, context.ts's API reads too; its tarball read after 15 minutes,
-`GH_TARBALL_TIMEOUT_MS`), and an ended call is sent again as a transient failure (`time limit`).
+Every gh call, store read, model call and download has a limit, and so does each Oh My Pi and
+Claude Code run (10 minutes, `RUN_TIMEOUT_MS`); the other commands the runner starts have none:
+`omp --version`, `claude --version`, `claude plugin marketplace add` and `claude plugin install`,
+the commands that build a context (`tar`, `bun install`, `bun run build` and `go test`, context.ts's
+`mustRun`), and `--after-case`. A gh call is ended after 120 s (`GH_CALL_TIMEOUT_MS`, context.ts's
+API reads too; its tarball read after 15 minutes, `GH_TARBALL_TIMEOUT_MS`), and an ended call is
+sent again as a transient failure (`time limit`).
 A store command is ended once it prints nothing for 20 minutes (`STORE_QUIET_MS`): the store's SQL
 ends itself after 15 minutes, and psql prints only after the query ends, so a pull that is still
 printing rows is never ended. A store read that is ended

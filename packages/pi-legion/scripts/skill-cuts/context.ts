@@ -107,7 +107,7 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { type Arm, legionStore, type SkillCopy } from "./arms";
+import { type Arm, type InstalledCopy, legionStore } from "./arms";
 import { type Case, listedName, type ProfileSkill, testedCopy } from "./cases";
 import {
   eachChunk,
@@ -301,7 +301,7 @@ export interface ContextRecord {
 export function installedCopies(
   record: Pick<ContextRecord, "skills">,
   cacheDir: string
-): SkillCopy[] {
+): InstalledCopy[] {
   return record.skills.flatMap(({ name, from }) =>
     typeof from === "string" ? [] : [{ name, dir: path.join(cacheDir, "skills", from.key) }]
   );

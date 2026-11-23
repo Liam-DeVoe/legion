@@ -242,9 +242,9 @@ import {
   type Arm,
   dispatchOf,
   type Injection,
+  type InstalledCopy,
   PLUGIN_INJECTED,
   pluginInjects,
-  type SkillCopy,
   withPluginBlock,
 } from "./arms";
 import {
@@ -1413,7 +1413,7 @@ interface Captured {
   readonly listed: string;
   readonly contextMs: number;
   readonly arm: Arm;
-  readonly copies: readonly SkillCopy[];
+  readonly copies: readonly InstalledCopy[];
 }
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
