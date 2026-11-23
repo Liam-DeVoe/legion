@@ -125,7 +125,7 @@ EXTRA_BROKER_PIDS=()
 kill_extra_brokers() {
 	local pid
 	for pid in "${EXTRA_BROKER_PIDS[@]+"${EXTRA_BROKER_PIDS[@]}"}"; do
-		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		if [ -n "$pid" ]; then
 			kill "$pid" 2>/dev/null || true
 			wait "$pid" 2>/dev/null || true
 		fi
@@ -141,7 +141,7 @@ cleanup() {
 	fi
 	# SIGTERM, never SIGKILL: dev-airlock.sh's own EXIT trap is what stops its processes and
 	# drops the two databases it made.
-	if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
+	if [ -n "$STACK_PID" ]; then
 		kill "$STACK_PID" 2>/dev/null || true
 		wait "$STACK_PID" 2>/dev/null || true
 	fi
@@ -274,12 +274,11 @@ logged_addr() { # <message> <log>
 }
 
 # front_backends points the stack's two fronts at the brokers the caller names, by writing the
-# backends files they reread, so every call the CLI makes - its requests signed for the front's own
-# URL - reaches that broker.
+# backends files they reread at each connection they accept, so every call the CLI makes - its
+# requests signed for the front's own URL - reaches that broker.
 front_backends() { # <api addr> <proxy addr>
 	printf '%s\n' "$1" >"$AIRLOCK_DIR/api-backends"
 	printf '%s\n' "$2" >"$AIRLOCK_DIR/proxy-backends"
-	sleep 2
 }
 
 front_backends_stack() { front_backends "${BROKER_API_ADDRS[0]}" "${BROKER_PROXY_ADDRS[0]}"; }
@@ -362,7 +361,7 @@ ca_post() { # <path> [body]
 }
 
 # policy_of is the ca stand's policy a profiles file gives: the names of its hosts.
-policy_of() { jq -c '{names: ([.profiles[].proxy.hosts[]? | sub("^\\*\\."; "")] | unique)}' "$1"; }
+policy_of() { jq -c -f "$SCRIPT_DIR/lib/ca-policy.jq" "$1"; }
 
 # --- One call through the proxy, verified at a moment ----------------------------------------
 
@@ -381,9 +380,8 @@ proxy=${HTTPS_PROXY#*://}
 proxy=${proxy%/}
 userinfo=${proxy%@*}
 export S_CLIENT_PROXY_PASSWORD=${userinfo#*:}
-# The release's own trust bundle holds every root the release carries; the call below trusts the
-# caller's root alone, so a chain to any other cannot verify.
-cp "${SSL_CERT_FILE:-/dev/null}" "$out/bundle.pem" 2>/dev/null || true
+# The call trusts the caller's root alone, not the release's trust bundle, so a chain to any
+# other root cannot verify.
 printf 'GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n' "$path" "$host" "$AIRLOCK_DEMO_TOKEN" |
 	openssl s_client -connect "$host:443" -servername "$host" -proxy "${proxy##*@}" \
 		-proxy_user "${userinfo%%:*}" -proxy_pass env:S_CLIENT_PROXY_PASSWORD \
@@ -458,8 +456,8 @@ check_k27() {
 		"the first call by curl succeeds and S gets the real value" "curl $curl_status, S's Authorization $(shape "$s_curl")"
 	assert "$([ "$CALL_STATUS" = 0 ] && [ "$CALL_HTTP" = 200 ] && [ "$CALL_CERTS" = 2 ] && [ "$CALL_SIGNER_SERIAL" = "$(serial_norm "$serial0")" ] && echo 0 || echo 1)" \
 		"the first call's leaf chains through the broker's intermediate to the test root" "$CALL_SUMMARY; the broker's intermediate is serial $serial0"
-	assert "$([ $((CALL_LEAF_END - CALL_LEAF_START)) -le $((25 * 3600)) ] && [ "$CALL_LEAF_END" -le "${end0:-0}" ] && echo 0 || echo 1)" \
-		"the first call's leaf lasts at most 25 hours and no later than its intermediate" "$(((CALL_LEAF_END - CALL_LEAF_START) / 60)) minutes"
+	assert "$([ "$CALL_CERTS" -ge 1 ] && [ "$CALL_LEAF_END" -gt 0 ] && [ $((CALL_LEAF_END - CALL_LEAF_START)) -le $((25 * 3600)) ] && [ "$CALL_LEAF_END" -le "${end0:-0}" ] && echo 0 || echo 1)" \
+		"the first call's leaf lasts at most 25 hours and no later than its intermediate" "$CALL_CERTS certificate(s), $(((CALL_LEAF_END - CALL_LEAF_START) / 60)) minutes"
 
 	# Step 2: 5 days and 1 minute after the intermediate's start.
 	local set_at renewal_seconds second serial1
@@ -551,9 +549,11 @@ check_k27() {
 	start_extra_broker early BROKER_PROFILES_FILE="$wider"
 	local early_pid="$EXTRA_PID" early_log="$EXTRA_LOG" early_api="$EXTRA_API_ADDR"
 	await_failed_requests "$early_log" 1 60 || true
-	local early_health
+	local early_health early_code early_failure
 	early_health="$(healthz "$early_api")"
-	observe "step 6: a broker rolled onto the wider file before the policy was applied: GET /healthz $early_health, its refusal: $(last_failure "$early_log" | cut -c1-220)"
+	early_code="$(jq -r '.code // ""' "$WORK_DIR/healthz.body" 2>/dev/null || true)"
+	early_failure="$(last_failure "$early_log")"
+	observe "step 6: a broker rolled onto the wider file before the policy was applied: GET /healthz $early_health $early_code, its refusal: $(cut -c1-220 <<<"$early_failure")"
 	stop_broker "$early_pid"
 	ca_post /policy "$(policy_of "$wider")" || true
 	start_extra_broker rolled BROKER_PROFILES_FILE="$wider"
@@ -565,8 +565,8 @@ check_k27() {
 	call new-host t.airlock.test /ok "$(clock_now)" "$root"
 	t_auth="$(last_authorization "$AIRLOCK_T_RECORDS")"
 	observe "step 6: the policy applied ($(policy_of "$wider")), then a broker rolled onto the wider file (pid $rolled_pid) logged $(intermediates "$rolled_log" | head -n1); the call to t.airlock.test: $CALL_SUMMARY; T recorded $(($(records_count "$AIRLOCK_T_RECORDS") - t_mark)) request(s), its Authorization $(shape "$t_auth") against the stored value's $(shape "Bearer $DEMO_VALUE")"
-	assert "$([ "$early_health" = 503 ] && echo 0 || echo 1)" \
-		"a broker rolled before the policy names the new host is not ready" "GET /healthz $early_health"
+	assert "$([ "$early_health" = 503 ] && [ "$early_code" = NO_INTERMEDIATE ] && grep -qF 't.airlock.test' <<<"$early_failure" && echo 0 || echo 1)" \
+		"a broker rolled before the policy names the new host is not ready, refused for that host" "GET /healthz $early_health $early_code"
 	assert "$([ "$CALL_STATUS" = 0 ] && [ "$CALL_HTTP" = 200 ] && [ "$t_auth" = "Bearer $DEMO_VALUE" ] && echo 0 || echo 1)" \
 		"after adding a host and applying the stand-in's policy first, the call to the new host succeeds after the roll" "$CALL_SUMMARY"
 	front_backends_stack
@@ -659,33 +659,30 @@ check_compat() {
 	local pool_api="$EXTRA_API_ADDR" pool_proxy="$EXTRA_PROXY_ADDR"
 	await_intermediates "$EXTRA_LOG" 1 60 || true
 
-	fingerprint() { openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2; }
-	local today_fp pool_fp
-	today_fp="$(fingerprint "$today_root")"
-	pool_fp="$(fingerprint "$pool_root")"
+	# A certificate's base64 body, one line: the same body is the same DER, so a bundle holds a
+	# root exactly when its own one-line text holds the root's.
+	body_of() { sed '/^-----/d' "$1" | tr -d '\r\n'; }
+	local today_body pool_body
+	today_body="$(body_of "$today_root")"
+	pool_body="$(body_of "$pool_root")"
 	# old_call runs the old client for one name through the brokers the fronts point at: it reads
-	# the bundle the client wrote, the fingerprint of each certificate in it, and curl's answer from
-	# S at the path given. Each step asks for a name no step before it asked for, so its grant, and
-	# the release the client writes its bundle from, are the broker's under test and no earlier one.
+	# whether the bundle the client wrote holds each root, and curl's answer from S at the path
+	# given. Each step asks for a name no step before it asked for, so its grant, and the release
+	# the client writes its bundle from, are the broker's under test and no earlier one.
 	old_call() { # <step> <NAME> <path>
-		local out="$WORK_DIR/old-$1"
+		local out="$WORK_DIR/old-$1" bundle
 		mkdir -p "$out"
 		# shellcheck disable=SC2016 # each variable is the command's, not this script's
 		"$old/agent-secrets" "$2" -- sh -c '
 			cp "$SSL_CERT_FILE" "$1/bundle.pem"
 			printf "Authorization: Bearer %s" "$(printenv "$2")" | curl -sS -o /dev/null -w "%{http_code}" -H @- "$AIRLOCK_S_URL$3" >"$1/status" 2>"$1/curl.err"' \
 			old-call "$out" "$2" "$3" >"$out/run.log" 2>&1 || true
-		awk -v dir="$out" '/-----BEGIN CERTIFICATE-----/ { n++; f = dir "/b" n ".pem" } f { print > f } /-----END CERTIFICATE-----/ { f = "" }' "$out/bundle.pem" 2>/dev/null || true
-		OLD_FPS=""
-		local f
-		for f in "$out"/b*.pem; do
-			[ -s "$f" ] && OLD_FPS="$OLD_FPS $(fingerprint "$f")"
-		done
+		bundle="$(tr -d '\r\n' <"$out/bundle.pem" 2>/dev/null || true)"
 		OLD_STATUS="$(cat "$out/status" 2>/dev/null || echo none)"
 		OLD_ERROR="$(head -c 200 "$out/curl.err" 2>/dev/null | tr '\n' ' ')"
 		OLD_HAS_TODAY=no OLD_HAS_POOL=no
-		case "$OLD_FPS" in *"$today_fp"*) OLD_HAS_TODAY=yes ;; esac
-		case "$OLD_FPS" in *"$pool_fp"*) OLD_HAS_POOL=yes ;; esac
+		if [[ -n "$today_body" && "$bundle" == *"$today_body"* ]]; then OLD_HAS_TODAY=yes; fi
+		if [[ -n "$pool_body" && "$bundle" == *"$pool_body"* ]]; then OLD_HAS_POOL=yes; fi
 	}
 
 	front_backends "$today_api" "$today_proxy"

@@ -1618,9 +1618,10 @@ A broker pod signs each bound host's leaf with a certificate authority of its ow
 deployment's settings name one of two ways (`packages/envoy/internal/cipher/proxy`, `ca.go` and
 `intermediate.go`):
 
-- **A pool of Google Certificate Authority Service** (`BROKER_PROXY_CA_POOL`). At its start each pod
-  makes an ECDSA P-256 key in its own memory, which is never written anywhere, and sends the pool a
-  certificate request for it (`projects.locations.caPools.certificates.create`) with its own Google
+- **A pool of Google Certificate Authority Service** (`BROKER_PROXY_CA_POOL`). For each certificate
+  request, at its start, at each renewal and at each retry, each pod makes a new ECDSA P-256 key in
+  its own memory, which is never written anywhere, and sends the pool a request for it
+  (`projects.locations.caPools.certificates.create`) with its own Google
   credential: an authority of path length 0, for 7 days, whose name constraints are the names of
   the profiles file's hosts, a `*.` pattern as its domain. The pool's issuance policy fixes what the
   answer may be, and the pod checks it too: the answer must certify its key, chain to a root, sign

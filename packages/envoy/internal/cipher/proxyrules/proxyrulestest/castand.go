@@ -28,9 +28,9 @@ import (
 	"time"
 )
 
-// CAMaxLifetime is the longest certificate the stand issues, the 7 days of the pool's
+// caMaxLifetime is the longest certificate the stand issues, the 7 days of the pool's
 // maximum_lifetime: a request for longer is cut to it, as the pool cuts one.
-const CAMaxLifetime = 7 * 24 * time.Hour
+const caMaxLifetime = 7 * 24 * time.Hour
 
 // caCertificatesPath is the one route of the service a broker calls:
 // POST /v1/projects/{project}/locations/{location}/caPools/{pool}/certificates.
@@ -42,9 +42,6 @@ var nameConstraintsOID = []int{2, 5, 29, 30}
 
 // CAOptions is what a CAStand issues under.
 type CAOptions struct {
-	// Root signs every certificate the stand issues, and nil is a root of the stand's own,
-	// read back from Root.
-	Root *Authority
 	// Names are the policy's permitted names, which every certificate carries as its name
 	// constraints whatever the request asked for, as a pool's baseline values overwrite a
 	// request's. None issues the names the request asked for.
@@ -66,14 +63,11 @@ type CAStand struct {
 	issued  []*x509.Certificate
 }
 
-// NewCAStand builds one.
+// NewCAStand builds one, with a test root of its own, which Root answers.
 func NewCAStand(o CAOptions) (*CAStand, error) {
-	root := o.Root
-	if root == nil {
-		var err error
-		if root, err = NewAuthority("proxy test root"); err != nil {
-			return nil, err
-		}
+	root, err := NewAuthority("proxy test root")
+	if err != nil {
+		return nil, err
 	}
 	now := o.Now
 	if now == nil {
@@ -178,7 +172,7 @@ func (c *CAStand) answerCertificate(w http.ResponseWriter, seen Request, pool st
 			return
 		}
 	}
-	cert, err := c.issue(csr, names, min(lifetime, CAMaxLifetime))
+	cert, err := c.issue(csr, names, min(lifetime, caMaxLifetime))
 	if err != nil {
 		writeCAError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
 		return

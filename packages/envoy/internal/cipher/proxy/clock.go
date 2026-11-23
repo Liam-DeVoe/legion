@@ -34,12 +34,18 @@ func (systemClock) Now() time.Time { return time.Now() }
 const systemSleepStep = time.Hour
 
 func (systemClock) SleepUntil(ctx context.Context, t time.Time) bool {
+	return sleepUntil(ctx, t, time.Now, systemSleepStep)
+}
+
+// sleepUntil waits until now reads t or later, in timers of step at most so now is read again
+// after each, and answers false when ctx ends first.
+func sleepUntil(ctx context.Context, t time.Time, now func() time.Time, step time.Duration) bool {
 	for {
-		wait := time.Until(t)
+		wait := t.Sub(now())
 		if wait <= 0 {
 			return ctx.Err() == nil
 		}
-		timer := time.NewTimer(min(wait, systemSleepStep))
+		timer := time.NewTimer(min(wait, step))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -101,17 +107,5 @@ func (c *OffsetFileClock) Now() time.Time {
 }
 
 func (c *OffsetFileClock) SleepUntil(ctx context.Context, t time.Time) bool {
-	for {
-		wait := t.Sub(c.Now())
-		if wait <= 0 {
-			return ctx.Err() == nil
-		}
-		timer := time.NewTimer(min(wait, offsetSleepStep))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false
-		case <-timer.C:
-		}
-	}
+	return sleepUntil(ctx, t, c.Now, offsetSleepStep)
 }

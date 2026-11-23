@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,16 +29,16 @@ import (
 const testProxyPool = "projects/example-project/locations/us-west1/caPools/proxy"
 
 // localProxyEnv is what a broker with a proxy is started with on the local stack, less the
-// authority: its database, a port of its own, a fake secret store, which makes it a local run,
-// and a profiles file binding one host.
-func localProxyEnv(t *testing.T) []string {
+// authority: the database at databaseURL, a port of its own, a fake secret store, which makes it
+// a local run, and a profiles file binding one host.
+func localProxyEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return []string{
-		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
@@ -79,7 +80,7 @@ func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
 	t.Cleanup(service.Close)
 	service.AnswerWith(stand.Answer)
 	stand.Fail(true)
-	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t),
+	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
 		"BROKER_PROXY_CA_POOL="+testProxyPool,
 		"BROKER_PROXY_TEST_CA_URL="+service.URL(),
 	)})
@@ -109,7 +110,7 @@ func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
 // that intermediate.
 func TestABrokerStartsOnAMountedIntermediateAndItsChain(t *testing.T) {
 	certFile, keyFile, intermediate := mountedIntermediate(t, []string{"api.deel.com"})
-	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t),
+	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
 		"BROKER_AIRLOCK_CA_CERT_FILE="+certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,
 	)})
@@ -117,33 +118,35 @@ func TestABrokerStartsOnAMountedIntermediateAndItsChain(t *testing.T) {
 	requireHealthy(t, broker.Addr)
 }
 
-// TestMainRefusesAMountedChainItCannotSignIn: an intermediate whose name constraints leave out
-// the bound host refuses the start, naming the host and the two settings.
-func TestMainRefusesAMountedChainItCannotSignIn(t *testing.T) {
-	certFile, keyFile, _ := mountedIntermediate(t, []string{"elsewhere.example"})
-	out := runRefusedBroker(t, buildBroker(t), append(localProxyEnv(t),
-		"BROKER_AIRLOCK_CA_CERT_FILE="+certFile,
-		"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,
-	)...)
-	for _, want := range []string{"BROKER_AIRLOCK_CA_CERT_FILE", "api.deel.com"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("the broker refused, but its output does not name %q: %s", want, out)
-		}
-	}
-}
-
-// TestMainRefusesAClockFileItCannotRead: the local stack's clock file is read at start, so one
-// that holds no duration refuses the start naming the setting rather than running on the
-// system's clock.
-func TestMainRefusesAClockFileItCannotRead(t *testing.T) {
-	certFile, keyFile, _ := mountedIntermediate(t, []string{"api.deel.com"})
-	out := runRefusedBroker(t, buildBroker(t), append(localProxyEnv(t),
-		"BROKER_AIRLOCK_CA_CERT_FILE="+certFile,
-		"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,
-		"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE="+writeTempFile(t, "clock-offset", []byte("two days\n")),
-	)...)
-	if !strings.Contains(out, "BROKER_PROXY_TEST_CLOCK_OFFSET_FILE") || !strings.Contains(out, "no duration") {
-		t.Fatalf("the broker refused, but its output does not name the clock file and its fault: %s", out)
+// TestMainRefusesAProxyChainItCannotStartOn: an intermediate whose name constraints leave out
+// the bound host, and a clock file that holds no duration, each refuse the start naming what is
+// wrong. The database is unreachable, so each refusal is made before the broker reaches it.
+func TestMainRefusesAProxyChainItCannotStartOn(t *testing.T) {
+	binary := buildBroker(t)
+	const unreachable = "postgres://nonexistent-host-this-test-must-never-reach/db"
+	elsewhereCert, elsewhereKey, _ := mountedIntermediate(t, []string{"elsewhere.example"})
+	boundCert, boundKey, _ := mountedIntermediate(t, []string{"api.deel.com"})
+	for _, row := range []struct {
+		name string
+		env  []string
+		want []string
+	}{
+		{"a mounted chain that signs nothing for the bound host", []string{
+			"BROKER_AIRLOCK_CA_CERT_FILE=" + elsewhereCert, "BROKER_AIRLOCK_CA_KEY_FILE=" + elsewhereKey,
+		}, []string{"BROKER_AIRLOCK_CA_CERT_FILE", "api.deel.com"}},
+		{"a clock file with no duration", []string{
+			"BROKER_AIRLOCK_CA_CERT_FILE=" + boundCert, "BROKER_AIRLOCK_CA_KEY_FILE=" + boundKey,
+			"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE=" + writeTempFile(t, "clock-offset", []byte("two days\n")),
+		}, []string{"BROKER_PROXY_TEST_CLOCK_OFFSET_FILE", "no duration"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			out := runRefusedBroker(t, binary, append(localProxyEnv(t, unreachable), row.env...)...)
+			for _, want := range row.want {
+				if !strings.Contains(out, want) {
+					t.Fatalf("the broker refused, but its output does not name %q: %s", want, out)
+				}
+			}
+		})
 	}
 }
 
@@ -151,8 +154,8 @@ func TestMainRefusesAClockFileItCannotRead(t *testing.T) {
 // cannot be read, holds nothing, holds a key - which would otherwise ride in every release - or a
 // certificate that is no authority is refused, naming the setting.
 func TestTheReleaseRootsFileHoldsRootsAlone(t *testing.T) {
-	first, second := testRootPEM(t, "today's authority", true), testRootPEM(t, "the new root", true)
-	roots, err := readProxyReleaseRoots(writeTempFile(t, "roots.pem", append(append([]byte{}, first...), second...)))
+	first, second := testAuthority(t, "today's authority"), testAuthority(t, "the new root")
+	roots, err := readProxyReleaseRoots(writeTempFile(t, "roots.pem", slices.Concat(first.CertificatePEM(), second.CertificatePEM())))
 	if err != nil || len(roots) != 2 || roots[0].Subject.CommonName != "today's authority" || roots[1].Subject.CommonName != "the new root" {
 		t.Fatalf("readProxyReleaseRoots of two roots = %d roots, %v; want both, in order", len(roots), err)
 	}
@@ -167,11 +170,15 @@ func TestTheReleaseRootsFileHoldsRootsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, leafPEM, err := first.Leaf([]string{"leaf.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, path := range map[string]string{
 		"a path that cannot be read":         filepath.Join(t.TempDir(), "absent.pem"),
 		"a file with no certificate":         writeTempFile(t, "empty.pem", []byte("no PEM here\n")),
-		"a key beside a root":                writeTempFile(t, "key.pem", append(append([]byte{}, first...), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)),
-		"a certificate that is no authority": writeTempFile(t, "leaf.pem", testRootPEM(t, "a leaf", false)),
+		"a key beside a root":                writeTempFile(t, "key.pem", slices.Concat(first.CertificatePEM(), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))),
+		"a certificate that is no authority": writeTempFile(t, "leaf.pem", leafPEM),
 	} {
 		if _, err := readProxyReleaseRoots(path); err == nil || !strings.Contains(err.Error(), "BROKER_PROXY_RELEASE_ROOTS_FILE") {
 			t.Errorf("%s: readProxyReleaseRoots = %v; want a refusal naming the setting", name, err)
@@ -179,23 +186,14 @@ func TestTheReleaseRootsFileHoldsRootsAlone(t *testing.T) {
 	}
 }
 
-// testRootPEM is one self-signed certificate, an authority when ca says so, as PEM.
-func testRootPEM(t *testing.T, name string, ca bool) []byte {
+// testAuthority is a self-signed test authority whose common name is name.
+func testAuthority(t *testing.T, name string) *proxyrulestest.Authority {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	authority, err := proxyrulestest.NewAuthority(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
-		BasicConstraintsValid: true, IsCA: ca, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return authority
 }
 
 // mountedIntermediate writes an intermediate of path length 0 for names, signed by a root of

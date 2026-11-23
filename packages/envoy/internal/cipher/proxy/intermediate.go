@@ -35,10 +35,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// IntermediateLifetime is the life a pod asks for its intermediate, Infisical Agent Proxy's
+// intermediateLifetime is the life a pod asks for its intermediate, Infisical Agent Proxy's
 // value: a key that leaks from a broker pod's memory signs for 7 days at most. The pool's policy
 // cuts a longer request to it, so this is the request agreeing with the policy and not the bound.
-const IntermediateLifetime = 7 * 24 * time.Hour
+const intermediateLifetime = 7 * 24 * time.Hour
 
 // IntermediateRenewBefore is how long before its intermediate ends a pod asks for the next: 2
 // days lets an outage of the service last a day and still leaves the pod a full day of leaves.
@@ -151,9 +151,6 @@ func (a *Authority) renew(ctx context.Context, pool Pool) error {
 	if public, ok := cert.PublicKey.(*ecdsa.PublicKey); !ok || !public.Equal(&key.PublicKey) {
 		return errors.New("the answer certifies another key than the request's")
 	}
-	if err := checkSigns(cert); err != nil {
-		return fmt.Errorf("the answer is %w", err)
-	}
 	s, root, err := chainOf(cert, key, chain)
 	if err != nil {
 		return fmt.Errorf("the answer is %w", err)
@@ -168,15 +165,12 @@ func (a *Authority) renew(ctx context.Context, pool Pool) error {
 // "*." pattern its domain, which permits each name under it (RFC 5280, section 4.2.1.10). Sorted
 // and each once, so one profiles file asks for one list.
 func requestedNames(hosts []string) []string {
-	var names []string
+	names := make([]string, 0, len(hosts))
 	for _, host := range hosts {
-		name := strings.TrimPrefix(host, "*.")
-		if !slices.Contains(names, name) {
-			names = append(names, name)
-		}
+		names = append(names, strings.TrimPrefix(host, "*."))
 	}
 	slices.Sort(names)
-	return names
+	return slices.Compact(names)
 }
 
 // intermediateCSR is key's CSR asking to be an authority of path length 0 that signs
@@ -209,9 +203,10 @@ func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 }
 
 // create is one projects.locations.caPools.certificates.create call for csr: a certificate id
-// of this request's own, which a pool of the Enterprise tier requires, and a request id, which
-// makes a retry of the same request answer the same certificate. It answers the certificate and
-// its chain, issuer first and root last.
+// of this request's own, which a pool of the Enterprise tier requires, and a request id of its
+// own. Each attempt is a new key, a new CSR and new ids (renew), so no two requests are the same
+// request and the request id deduplicates nothing. It answers the certificate and its chain,
+// issuer first and root last.
 func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x509.Certificate, error) {
 	endpoint := p.Endpoint
 	if endpoint == "" {
@@ -227,7 +222,7 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	}
 	body, err := json.Marshal(map[string]string{
 		"pemCsr":   string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr})),
-		"lifetime": strconv.FormatInt(int64(IntermediateLifetime/time.Second), 10) + "s",
+		"lifetime": strconv.FormatInt(int64(intermediateLifetime/time.Second), 10) + "s",
 	})
 	if err != nil {
 		return nil, nil, err

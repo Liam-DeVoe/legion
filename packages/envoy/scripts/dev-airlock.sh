@@ -569,7 +569,7 @@ EOF
 # domain, applied before any broker starts, as a deploy applies the pool's issuance policy before
 # it rolls the brokers. Each broker refuses an intermediate that would sign no trusted leaf for
 # one of its bound hosts. ---
-POLICY="$(jq -c '{names: ([.profiles[].proxy.hosts[]? | sub("^\\*\\."; "")] | unique)}' "$PROFILES_FILE")"
+POLICY="$(jq -c -f "$SCRIPT_DIR/lib/ca-policy.jq" "$PROFILES_FILE")"
 if ! curl -sSf -o /dev/null -X POST -H 'Content-Type: application/json' --data "$POLICY" "$CA_URL/policy"; then
   echo "dev-airlock: the ca stand at $CA_URL refused its policy $POLICY" >&2
   exit 1

@@ -252,9 +252,10 @@ other stack holds it (a container's network namespace does). `--keep-stack` leav
 and the run's work directory up.
 
 `proxy-chain-check.test.sh` proves, with no stack, the parts its verdicts rest on: its usage
-errors, `call`'s reading of an `openssl s_client` transcript of a chain made there (the
-client's exit, the HTTP status, the certificates presented, the leaf's dates and the signer's
-serial), the reading of a broker's `proxy intermediate` lines, the clock file, and a report
+errors, `call`'s reading of a transcript shaped like `openssl s_client -showcerts` output, holding
+a chain made there (the client's exit, the HTTP status, the certificates presented, the leaf's
+start and end and the signer's serial), the reading of a broker's `proxy intermediate` lines, the
+clock file, and a report
 that evaluated nothing saying UNKNOWN. CI runs it in the `envoy-go-checks` job.
 
 ## airlock-check.sh

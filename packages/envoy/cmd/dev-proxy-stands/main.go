@@ -611,19 +611,14 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		}
 		now = clock.Now
 	}
-	proxyRoot, err := proxyrulestest.NewAuthority("dev-proxy-stands test root")
-	if err != nil {
-		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
-		return 1
-	}
-	ca, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{Root: proxyRoot, Now: now})
+	ca, err := proxyrulestest.NewCAStand(proxyrulestest.CAOptions{Now: now})
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: the ca stand: %v\n", err)
 		return 1
 	}
 	services[standCA].AnswerWith(ca.Answer)
 	out.ProxyRootFile = filepath.Join(dir, "proxy-root.crt")
-	if err := os.WriteFile(out.ProxyRootFile, proxyRoot.CertificatePEM(), 0o644); err != nil {
+	if err := os.WriteFile(out.ProxyRootFile, ca.Root().CertificatePEM(), 0o644); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: write the proxy test root: %v\n", err)
 		return 1
 	}

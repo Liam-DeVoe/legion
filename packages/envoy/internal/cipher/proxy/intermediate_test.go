@@ -6,7 +6,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -18,13 +17,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -45,22 +44,8 @@ type poolRig struct {
 	pool      Pool
 }
 
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+// syncBuffer is the log every rig writes, read by message.
+type syncBuffer struct{ logtest.Buffer }
 
 // lines is every logged line whose message is message, each as its fields.
 func (b *syncBuffer) lines(message string) []map[string]any {
@@ -234,8 +219,7 @@ func TestAPoolAuthorityAsksForAnIntermediateAndSignsWithIt(t *testing.T) {
 
 // TestThePodRenewsWithTwoDaysLeft: the loop sleeps until 2 days before the intermediate's end;
 // at 5 days and 1 minute it has a new intermediate and signs every leaf under it; the new one
-// gets its own line. With the margin at 0 (the negative control) it sleeps until the end, so at
-// 5 days and 1 minute it still signs with the first.
+// gets its own line.
 func TestThePodRenewsWithTwoDaysLeft(t *testing.T) {
 	r := newPoolRig(t, []string{"s.airlock.test"}, []string{"s.airlock.test"})
 	r.run(t, IntermediateRenewBefore)
@@ -261,6 +245,8 @@ func TestThePodRenewsWithTwoDaysLeft(t *testing.T) {
 	}
 }
 
+// TestWithNoRenewalMarginThePodKeepsItsFirstIntermediate is the negative control: with the margin
+// at 0 the loop sleeps until the end, so at 5 days and 1 minute it still signs with the first.
 func TestWithNoRenewalMarginThePodKeepsItsFirstIntermediate(t *testing.T) {
 	r := newPoolRig(t, []string{"s.airlock.test"}, []string{"s.airlock.test"})
 	r.run(t, 0)

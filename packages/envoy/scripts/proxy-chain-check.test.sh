@@ -6,9 +6,9 @@
 #   (a) its arguments: a part it does not run, two parts and --old-client-ref with no ref each
 #       exit 2 and start nothing, and --help prints the usage;
 #   (b) call reads a call's answer as the check reads it - the client's exit, the HTTP status, how
-#       many certificates the broker presented, the leaf's dates, and the serial of the
-#       certificate that signed it - from a transcript openssl wrote for a chain made here, and a
-#       call whose client failed reads as failed;
+#       many certificates the broker presented, the leaf's start and end, and the serial of the
+#       certificate that signed it - from a transcript shaped like `openssl s_client -showcerts`
+#       output, holding a chain made here, and a call whose client failed reads as failed;
 #   (c) intermediates reads each "proxy intermediate" line of a broker's log, and nothing else;
 #   (d) set_clock_at writes the offset that makes clock_now read the moment asked for, through a
 #       file renamed over the clock file, and serial_norm reads openssl's serial as the broker's;
@@ -106,13 +106,14 @@ EOF
 chmod +x "$work/bin/agent-secrets" "$work/s-client.sh"
 # shellcheck disable=SC2034 # call reads it
 WORK_DIR="$work"
+leaf_start="$(date -d "$(openssl x509 -in "$work/leaf.pem" -noout -startdate | cut -d= -f2)" +%s)"
 leaf_end="$(date -d "$(openssl x509 -in "$work/leaf.pem" -noout -enddate | cut -d= -f2)" +%s)"
 PATH="$work/bin:$PATH" PROXY_CHAIN_TEST_TRANSCRIPT="$work/transcript.fixture" PROXY_CHAIN_TEST_STATUS=0 \
 	call good s.airlock.test /ok "$(date +%s)" "$work/root.pem"
 check "call reads the client's exit, the HTTP status and two certificates presented" \
 	test "$CALL_STATUS $CALL_HTTP $CALL_CERTS" = "0 200 2"
-check "call reads the leaf's subject and end from the first certificate" \
-	test "$CALL_LEAF_SUBJECT $CALL_LEAF_END" = "CN=s.airlock.test $leaf_end"
+check "call reads the leaf's subject, start and end from the first certificate" \
+	test "$CALL_LEAF_SUBJECT $CALL_LEAF_START $CALL_LEAF_END" = "CN=s.airlock.test $leaf_start $leaf_end"
 check "call reads the signer's serial as the broker logs it (ab12, from openssl's 00AB12)" \
 	test "$CALL_SIGNER_SERIAL" = ab12
 PATH="$work/bin:$PATH" PROXY_CHAIN_TEST_TRANSCRIPT=/dev/null PROXY_CHAIN_TEST_STATUS=1 \

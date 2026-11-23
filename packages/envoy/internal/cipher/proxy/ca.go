@@ -87,8 +87,11 @@ type Authority struct {
 	signer *signer
 	// root is the root of the first certificate's chain. Every later one must chain to it,
 	// since every release this process has made names it and a command trusts no other.
-	root   *x509.Certificate
-	leaves map[string]heldLeaf
+	root *x509.Certificate
+	// released is ReleaseRoots' answer, made again only when root is set: root and then each
+	// release root, as PEM.
+	released string
+	leaves   map[string]heldLeaf
 	// minted is the hosts of leaves in the order they were first signed, oldest first, which
 	// is the order the cap evicts in. A host signed again keeps the place it had: what the cap
 	// is about is how many hosts this map holds, and a renewal adds no host.
@@ -129,7 +132,7 @@ func newAuthority(o AuthorityOptions) *Authority {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Authority{clock: clock, releaseRoots: o.ReleaseRoots, hosts: o.Hosts, log: log, leaves: map[string]heldLeaf{}}
+	return &Authority{clock: clock, releaseRoots: o.ReleaseRoots, released: rootsPEM(nil, o.ReleaseRoots), hosts: o.Hosts, log: log, leaves: map[string]heldLeaf{}}
 }
 
 // NewAuthority is the mounted form: the PEM certificates of certFile, an authority and then each
@@ -152,9 +155,6 @@ func NewAuthority(certFile, keyFile string, o AuthorityOptions) (*Authority, err
 		if certs[i], err = x509.ParseCertificate(der); err != nil {
 			return nil, fmt.Errorf("proxy certificate authority %s: certificate %d: %w", certFile, i+1, err)
 		}
-	}
-	if err := checkSigns(certs[0]); err != nil {
-		return nil, fmt.Errorf("proxy certificate authority %s: %w", certFile, err)
 	}
 	key, ok := pair.PrivateKey.(crypto.Signer)
 	if !ok {
@@ -187,8 +187,12 @@ func checkSigns(cert *x509.Certificate) error {
 }
 
 // chainOf is cert's signer with key, and the root its chain ends at: cert itself when it is a
-// self-signed root, and otherwise the last of chain, which must be one.
+// self-signed root, and otherwise the last of chain, which must be one. A certificate checkSigns
+// refuses makes no signer.
 func chainOf(cert *x509.Certificate, key crypto.Signer, chain []*x509.Certificate) (*signer, *x509.Certificate, error) {
+	if err := checkSigns(cert); err != nil {
+		return nil, nil, err
+	}
 	if selfSigned(cert) {
 		if len(chain) > 0 {
 			return nil, nil, fmt.Errorf("a self-signed root followed by %d more certificate(s), which nothing it signs chains through", len(chain))
@@ -262,6 +266,7 @@ func (a *Authority) take(s *signer, root *x509.Certificate) error {
 	a.mu.Lock()
 	if a.root == nil {
 		a.root = root
+		a.released = rootsPEM(root, a.releaseRoots)
 	}
 	a.signer = s
 	a.mu.Unlock()
@@ -318,6 +323,14 @@ func (a *Authority) Certificate() *x509.Certificate {
 	return a.signer.cert
 }
 
+// ended says why s may no longer sign at now, and is nil while its life is not over.
+func (s *signer) ended(now time.Time) error {
+	if !now.Before(s.cert.NotAfter) {
+		return fmt.Errorf("the proxy's intermediate ended at %s and no new one has arrived", s.cert.NotAfter.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // Ready is nil while the authority holds a certificate whose life is not over, and says why not
 // otherwise: a pod with nothing to sign with fails every bound host's handshake, so its
 // readiness answer keeps traffic away from it, and a roll keeps the old pods until a new pod
@@ -329,10 +342,7 @@ func (a *Authority) Ready() error {
 	if s == nil {
 		return errNoIntermediate
 	}
-	if end := s.cert.NotAfter; !a.clock.Now().Before(end) {
-		return fmt.Errorf("the proxy's intermediate ended at %s and no new one has arrived", end.UTC().Format(time.RFC3339))
-	}
-	return nil
+	return s.ended(a.clock.Now())
 }
 
 // ReleaseRoots is the PEM every release hands a command to trust the proxy by: the root of the
@@ -347,11 +357,16 @@ func (a *Authority) ReleaseRoots() string {
 		return ""
 	}
 	a.mu.Lock()
-	root := a.root
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	return a.released
+}
+
+// rootsPEM is root and then each of extra, each once, as PEM blocks one after another; a nil
+// root is left out.
+func rootsPEM(root *x509.Certificate, extra []*x509.Certificate) string {
 	var out []byte
 	var held []*x509.Certificate
-	for _, c := range append([]*x509.Certificate{root}, a.releaseRoots...) {
+	for _, c := range append([]*x509.Certificate{root}, extra...) {
 		if c == nil || slices.ContainsFunc(held, c.Equal) {
 			continue
 		}
@@ -375,15 +390,16 @@ func (a *Authority) ReleaseRoots() string {
 // signed again under the new one, so every handshake after a renewal shows the new chain. Once
 // the certificate's own life is over there is nothing to sign with, and the handshake fails.
 func (a *Authority) leaf(host string) (*tls.Certificate, error) {
+	// Read before the lock every bound handshake shares: the local stack's clock reads a file.
+	now := a.clock.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.signer
 	if s == nil {
 		return nil, errNoIntermediate
 	}
-	now := a.clock.Now()
-	if !now.Before(s.cert.NotAfter) {
-		return nil, fmt.Errorf("the proxy's intermediate ended at %s and no new one has arrived", s.cert.NotAfter.UTC().Format(time.RFC3339))
+	if err := s.ended(now); err != nil {
+		return nil, err
 	}
 	held, kept := a.leaves[host]
 	if kept && held.by == s && (now.Add(leafRenewBefore).Before(held.notAfter) || !s.leafEnd(now).After(held.notAfter)) {

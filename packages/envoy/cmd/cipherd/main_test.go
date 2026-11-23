@@ -213,7 +213,7 @@ func airlockTestSettings() []struct {
 	with []string
 } {
 	margin := time.Duration(0)
-	pool := []string{"BROKER_PROXY_CA_POOL=projects/example-project/locations/us-west1/caPools/proxy"}
+	pool := []string{"BROKER_PROXY_CA_POOL=" + testProxyPool}
 	return []struct {
 		name string
 		cfg  func(*config.Config)
@@ -893,13 +893,8 @@ func (p *brokerProcess) AwaitExit(t *testing.T) error {
 // requireHealthy fails t unless GET /healthz at addr answers 200.
 func requireHealthy(t *testing.T, addr string) {
 	t.Helper()
-	resp, err := http.Get("http://" + addr + "/healthz")
-	if err != nil {
-		t.Fatalf("GET http://%s/healthz: %v", addr, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET http://%s/healthz: status %d, want 200", addr, resp.StatusCode)
+	if status, body := healthz(t, addr); status != http.StatusOK {
+		t.Fatalf("GET http://%s/healthz: status %d %s, want 200", addr, status, body)
 	}
 }
 

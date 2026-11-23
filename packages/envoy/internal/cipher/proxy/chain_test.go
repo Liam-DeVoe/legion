@@ -297,17 +297,6 @@ func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 	}
 }
 
-// newTestAuthorityOn is newTestAuthority signing by clock.
-func newTestAuthorityOn(t *testing.T, clock Clock) *Authority {
-	t.Helper()
-	certFile, keyFile := writeCAFiles(t)
-	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
-	if err != nil {
-		t.Fatalf("the test certificate authority: %v", err)
-	}
-	return authority
-}
-
 // steppedClock is a clock a row moves by hand, which a waiter on it notices at once: each set
 // wakes every SleepUntil, which looks at the clock again. It records each SleepUntil's target, so
 // a row reads when a loop meant to wake without waiting for it.

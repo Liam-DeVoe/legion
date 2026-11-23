@@ -149,7 +149,7 @@ func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 	if !slices.Equal(cert.PermittedDNSDomains, []string{"s.airlock.test"}) || !cert.PermittedDNSDomainsCritical {
 		t.Errorf("the certificate permits %v (critical %v); want the policy's one name, critical", cert.PermittedDNSDomains, cert.PermittedDNSDomainsCritical)
 	}
-	if !cert.NotBefore.Equal(now) || !cert.NotAfter.Equal(now.Add(CAMaxLifetime)) {
+	if !cert.NotBefore.Equal(now) || !cert.NotAfter.Equal(now.Add(caMaxLifetime)) {
 		t.Errorf("the certificate runs %v to %v; want the stand's clock and 7 days on", cert.NotBefore, cert.NotAfter)
 	}
 	if len(chain) != 1 || !chain[0].Equal(stand.Root().Certificate()) {

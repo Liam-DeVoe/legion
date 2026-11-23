@@ -623,10 +623,11 @@ start, and a check that writes another moves their certificates' days on without
 Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
 `DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
 loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
-one such stack runs at a time. `scripts/proxy-chain-check.sh` runs the chain's own checks on this
-stack: the renewal at 5 days, the leaf while the pool fails, readiness and a new host (`k27`), a
-mounted intermediate (`k21`), and a client of the release before the chain against a release of
-two roots (`compat`).
+one such stack runs at a time. `scripts/proxy-chain-check.sh` starts a stack of its own
+(`dev-airlock.sh --one-broker`), so stop this one first, and runs the chain's checks on it: the
+renewal at 5 days, the leaf while the pool fails, readiness and a new host (`k27`), a mounted
+intermediate (`k21`), and a client of the release before the chain against a release of two
+roots (`compat`).
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
