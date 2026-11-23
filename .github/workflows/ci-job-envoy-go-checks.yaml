@@ -1,18 +1,35 @@
 name: CI job envoy-go-checks
 
-# The steps of ci.yaml's `envoy-go-checks` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of ci.yaml's `envoy-go-checks` and `envoy-go-build` jobs, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# The two are the halves of what was one job, and each runs every one of its steps wherever it
+# runs. envoy-go-build holds envoy's Go build, vet, format, generated-code and migration checks
+# and the three package tests that need no database, which a pull request runs. envoy-go-checks
+# holds envoy's script tests, each a bash harness over fakes, and runs in the merge queue only:
+# ci.yaml's envoy_go_checks output carries the event term
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `envoy-go-checks` or `envoy-go-build`: the
+          job of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -22,10 +39,11 @@ on:
       migration-base:
         description: >-
           On a workflow_dispatch run, the commit main pointed at before the push the run tests
-          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base the
-          edited-migrations check compares the run's tree with. A dispatch on main must name it;
-          a dispatch on another branch that names none compares with the branch's merge base
-          with main.
+          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base
+          envoy-go-build's edited-migrations check compares the run's tree with. A dispatch on main
+          must name it; a dispatch on another branch that names none compares with the branch's
+          merge base with main. ci.yaml's envoy-go-build passes it, and envoy-go-checks reads it
+          nowhere.
         type: string
         required: false
         default: ''
@@ -41,6 +59,146 @@ env:
 
 jobs:
   envoy-go-checks:
+    if: inputs.job == 'envoy-go-checks'
+    # ubuntu-24.04, the runner these script tests ran on when they shared a job with the pack step,
+    # which needed it; that step is envoy-go-build's now.
+    runs-on: ubuntu-24.04
+    # The setup below (Bun, the workspace install, Go and the go-envoy restore) is the one these
+    # tests ran under in that job, kept whole so that no test loses a tool it reads. Their steps took
+    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22.
+    #
+    # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes main gives this job, the budget
+    # the one job it was split from was written with, plus its slowest retried step alone:
+    # setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s,
+    # install-helm's one `ci_tools_fetch` at 1708 s, the workspace install at 1050 s, and the step
+    # that runs a script outside .github/scripts/, the cluster test's 1423 s (render-nats.sh's one
+    # retried fetch, the helm install at 5 x 180 + 150 = 1050 s where the helm on PATH does not
+    # answer HELM's version, beside the 373 s that step measured). 1800 + 3416 = 5216 s -> 87 min.
+    # The gate reads no script outside .github/scripts/, so it does not price that step: its figure
+    # is a reader's, derived in .github/ci-notes/ci-job-envoy-go-checks.md, and
+    # dispatch://INFRA-2899 owns the reach that would make it the check's. The 3416 is the check's
+    # own, and rule 8's job-derivation clause refused this key until it carried it.
+    timeout-minutes: 87
+    env:
+      JOB_TIMEOUT_MINUTES: 87 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
+        run: bash scripts/dev-broker.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
+        run: bash scripts/dev-airlock.test.sh
+        working-directory: packages/envoy
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+        run: bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+        run: bash scripts/judge-check.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: bash scripts/project-secrets-check.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: bash scripts/callout-check.test.sh
+        working-directory: packages/envoy
+      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
+        run: bash scripts/dev-postgres.test.sh
+        working-directory: packages/envoy
+      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
+        run: bash scripts/restore-dispatch-dump.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: bash scripts/daemon-release-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
+        run: bash scripts/legacy-subjects-gate.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
+        run: bash scripts/legacy-subjects-purge.test.sh
+        working-directory: packages/envoy
+      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
+        run: bash loadtest/run-step.test.sh
+        working-directory: packages/envoy
+      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
+        run: bash loadtest/common.test.sh
+        working-directory: packages/envoy
+      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
+      # instead of building helm from its module, which downloads and compiles it first: the
+      # render took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in
+      # job 137388344183.
+      # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - uses: ./.github/actions/install-helm
+        timeout-minutes: 29
+      - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
+        # 373 + 1050 = 1423 s -> 24 min.
+        timeout-minutes: 24
+        run: bash loadtest/cluster/cluster.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: bash loadtest/vm/vm.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: bash loadtest/vm/sample.test.sh
+        working-directory: packages/envoy
+      # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
+      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
+        run: |
+          sudo locale-gen en_US.UTF-8
+          bash deploy/scripts/autodeploy_test.sh
+        working-directory: packages/envoy
+      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
+        run: bash deploy/scripts/up-dispatch_test.sh
+        working-directory: packages/envoy
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-checks
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  envoy-go-build:
+    if: inputs.job == 'envoy-go-build'
     # ubuntu-24.04, the runner release-envoy-listener.yaml builds the release's listener archives
     # on. The pack step below builds those archives as the release does, with no CGO_ENABLED, and
     # Go turns cgo on for a native build where gcc is present and off for a cross build: on this
@@ -55,23 +213,18 @@ jobs:
     # same listener build (.github/workflows/ci-caches.yaml fills it on a push to main). Without
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
+    # The steps of envoy-go-checks but its script tests took 5.9 min at the median, 6.8 at p90 and
+    # 9.6 at most over 695 successful pull-request runs of 2026-11-22; half again is 15.
     #
-    # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes the paragraph above derives and
-    # the budget this job was written with, plus its slowest retried step alone: setup-bun's two
-    # `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s, install-helm's one
-    # `ci_tools_fetch` at 1708 s, the Go module download and the workspace install at 1050 s
-    # each, and the two steps that run scripts outside .github/scripts/: the cluster test's
-    # 1423 s (render-nats.sh's one retried fetch, the helm install at 5 x 180 + 150 = 1050 s
-    # where the helm on PATH does not answer HELM's version, beside the 373 s that step measured)
-    # and the pack's 1087 s (go-third-party-notices.sh's install of go-licenses at that same
-    # 1050 s, beside the 37 s the pack measured). 1800 + 3416 = 5216 s -> 87 min. The gate reads
-    # no script outside .github/scripts/, so it prices neither of those two steps: their figures
-    # are a reader's, derived in .github/ci-notes/ci-job-envoy-go-checks.md, and
-    # dispatch://INFRA-2899 owns the reach that would make them the check's. The 3416 is the
-    # check's own, and rule 8's job-derivation clause refused this key until it carried it.
-    timeout-minutes: 87
+    # Budget (ci-budgets.md's Budgets note): those 15 minutes, 900 s, plus its slowest retried step
+    # alone: setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s, the
+    # spec-file action's 1097 s and the architecture-note action's 1063 s, the pack's 1087 s
+    # (go-third-party-notices.sh's install of go-licenses, which the gate does not price;
+    # .github/ci-notes/ci-job-envoy-go-checks.md derives it) and the Go module download and the
+    # workspace install at 1050 s each. 900 + 3416 = 4316 s -> 72 min.
+    timeout-minutes: 72
     env:
-      JOB_TIMEOUT_MINUTES: 87 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 72 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -237,81 +390,6 @@ jobs:
       - name: Test pmdoc's tables in a build without inlining
         run: go test -count=1 -gcflags=all=-l -run '^(TestTable.*|TestReadForDisplayMatchesItsFixtures)$' ./internal/dispatch/pmdoc/
         working-directory: packages/envoy
-      - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
-        run: bash scripts/dev-broker.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
-        run: bash scripts/dev-airlock.test.sh
-        working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
-        run: bash scripts/airlock-check.test.sh
-        working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
-        run: bash scripts/judge-check.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: bash scripts/dev-stack.test.sh
-        working-directory: packages/envoy
-      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
-        run: bash scripts/project-secrets-check.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
-        run: bash scripts/callout-check.test.sh
-        working-directory: packages/envoy
-      - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
-        run: bash scripts/dev-postgres.test.sh
-        working-directory: packages/envoy
-      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
-        run: bash scripts/restore-dispatch-dump.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: bash scripts/listener-deploy-probe.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-        run: bash scripts/daemon-release-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-gate.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
-        run: bash scripts/legacy-subjects-purge.test.sh
-        working-directory: packages/envoy
-      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
-        run: bash loadtest/run-step.test.sh
-        working-directory: packages/envoy
-      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
-        run: bash loadtest/common.test.sh
-        working-directory: packages/envoy
-      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
-      # instead of building helm from its module, which downloads and compiles it first: the
-      # render took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in
-      # job 137388344183.
-      # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 1708 s
-      # (ci-budgets.md's Budgets note) -> 29 min.
-      - uses: ./.github/actions/install-helm
-        timeout-minutes: 29
-      - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
-        # 373 + 1050 = 1423 s -> 24 min.
-        timeout-minutes: 24
-        run: bash loadtest/cluster/cluster.test.sh
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: bash loadtest/vm/vm.test.sh
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
-        run: bash loadtest/vm/sample.test.sh
-        working-directory: packages/envoy
-      # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
-      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
-        run: |
-          sudo locale-gen en_US.UTF-8
-          bash deploy/scripts/autodeploy_test.sh
-        working-directory: packages/envoy
-      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
-        run: bash deploy/scripts/up-dispatch_test.sh
-        working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
         working-directory: packages/envoy
@@ -402,6 +480,6 @@ jobs:
           STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
-          job: envoy-go-checks
+          job: envoy-go-build
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

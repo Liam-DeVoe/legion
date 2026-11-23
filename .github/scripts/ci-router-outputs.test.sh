@@ -7,10 +7,13 @@
 # (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
-# outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
-# saying yes in both. A read that finds none fails, since every case below would then pass over
-# nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
-# fails its case rather than leaving the set.
+# outputs whose expression reads the pull request's labels, every paths filter saying yes. A read
+# that finds none fails, since every case below would then pass over nothing. Each of them is on
+# in a merge group but download_retry, which no merge group runs
+# (.github/ci-notes/ci.md#the-two-jobs-that-prove-the-retries-and-why-neither-runs-in-a-merge-group),
+# so a pull request runs that one only under its label or full-ci. Two copies of ci.yaml, each
+# with one label literal broken, show that a broken term fails its case rather than leaving the
+# set.
 #
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
@@ -73,16 +76,16 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the nine gated outputs read the pull request's labels"
+echo "case: exactly the sixteen gated outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A tenth gated suite adds its name to this list.
-gated='dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_smoke'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 9)"
-check "and they are the nine" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. A seventeenth gated suite adds its name to this list.
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds download_retry envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 16)"
+check "and they are the sixteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
-echo "case: each of them is on for a merge group and for a push, where no label is read"
-check "a merge group leaves none off" \
-  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "")"
+echo "case: each of them but download_retry is on for a merge group, and each is on for a push, where no label is read"
+check "a merge group leaves none off but download_retry, which no merge group runs" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event merge_group | tr '\n' ' ')" "download_retry ")"
 check "a push leaves none off" \
   "$(is "$(not_value "$repo/.github/workflows/ci.yaml" true --event push | tr '\n' ' ')" "")"
 
@@ -146,8 +149,8 @@ echo "case: an output whose event term is broken stays in the set and fails the 
 broken=$(broken_copy "$work/no-event" envoy_go_race "github.event_name != 'pull_request'" "github.event_name == 'workflow_dispatch'")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "a merge group leaves exactly envoy_go_race off" \
-  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
+check "a merge group leaves exactly envoy_go_race off, beside download_retry, which no merge group runs" \
+  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race download_retry ")"
 
 echo "case: an output that reads the labels through the whole pull request is refused, never missed"
 broken=$(broken_copy "$work/whole-pr" envoy_smoke \

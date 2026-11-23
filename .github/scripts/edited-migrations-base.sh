@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # edited-migrations-base picks the base the edited-migrations check compares a run's tree with
-# (.github/workflows/ci-job-envoy-go-checks.yaml, the step "Check that no migration a database
-# may have run is edited without its replaces line"), fetches it into the checkout, and prints
-# its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
-# with git, so the base has to be fetched before the check runs.
+# (.github/workflows/ci-job-envoy-go-checks.yaml's envoy-go-build job, the step "Check that no
+# migration a database may have run is edited without its replaces line"), fetches it into the
+# checkout, and prints its sha. actions/checkout leaves the tree one commit deep, and the check
+# reads the base's files with git, so the base has to be fetched before the check runs.
 #
 # The base is the commit the run's tree lands onto:
 #   * any event but workflow_dispatch (a pull request, a merge group, a push): the first parent

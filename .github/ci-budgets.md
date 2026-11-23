@@ -59,12 +59,13 @@ So the download_retry_sites filter holds no bun_install and no go_workspace anch
 each of those is what an ordinary change touches, and a filter holding them would select a job of about two hours on every dependency bump.
 The job that proves a version is the one that builds with it.
 Both filters also name ci.yaml, because the lanes' own steps, bounds and budgets are reached from it:
-a change that touches ci.yaml at all selects both of them, and that pull request's run waits for the lane, about two hours of it, however small the edit.
-That cost is taken on purpose, so that a change to a bound or a budget is proved against the fault by the run that makes it.
-Neither lane runs in a merge group, whatever the change touches
+a change that touches ci.yaml at all selects both of them by paths.
+Since main's #5175 a pull request runs no slow suite without a label, and the lanes are one, 118.6 minutes at the 90th percentile of this pull request's own successful runs (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue):
+download_retry, the output the job's `if:` tests, is false on a pull request without the label `full-ci` or `lane:download_retry`, so a change to a bound or a budget is proved against the fault by the run that makes it only when that run carries one of those labels, about two hours of it, however small the edit.
+Neither lane runs in a merge group, whatever the change touches or the labels say
 — the `changes` job's three outputs for them are 'false' there.
 download-retry took 116.5 minutes at this branch's head, and a queue that waited for download-retry's two hours would hold every group behind it that long;
-the pull request's own run proves the machinery, on the same files the group merges.
+a labelled pull request's run, or a dispatched one, proves the machinery, on the same files the group merges, and it is the one held-back job whose result never comes from the queue.
 The event test is in those outputs rather than in the job's `if:` because an `if:` that declines a merge group leaves the job selected and skipped, and .github/scripts/ci-ok.sh fails a selected job whose result is not success, reading that skip as a disagreement between the filter and the `if:` the author must fix;
 it admits a skip only for a job `changes` did not select, which is what 'false' there makes this one.
 
@@ -116,8 +117,8 @@ a `go mod download`, bounded at 180 s per attempt too, is 1050 s;
 and the ci-ok report's `gh api` reads (.github/scripts/ci-ok-report.sh's jobs read and its read of the queue's tip) with the POST of the check run it ends in (.github/scripts/post-check-run.sh), bounded at 30 s each, are 900 s together, in every job that ends with that step.
 FOUR JOBS OF `ci.yaml` DO NOT: `changes`, which every other job waits on and which posts nothing;
 `pr-title` and `cancel-started`, which carry checks of their own; and `ci-ok` itself, which posts the aggregate check rather than reporting to it.
-The four jobs that call a workflow of their own
-— `docs`, `dispatch-browser`, `worker-image` and `browser-image` — carry no step of this file at all, so the term belongs to the jobs of the workflow each of them calls (review of dispatch://INFRA-1545 counted them at this head).
+The five jobs that call a workflow of their own
+— `docs`, `dispatch-browser`, `dispatch-browser-pr` (main's #5175, the second caller of dispatch-browser.yaml), `worker-image` and `browser-image` — carry no step of this file at all, so the term belongs to the jobs of the workflow each of them calls (review of dispatch://INFRA-1545 counted them at this head).
 
 A job's budget is rounded up to the whole minute too, and that rounding is what carries the step's margin:
 where the slowest step's arithmetic is not itself a whole number of minutes the job's round-up already covers the step's, and where it is
@@ -421,6 +422,7 @@ The last step's tally of what the proxy passed through is where every other host
 The budget, added up part by part from the slowest run the pi-legion job can have rather than copied from another job:
 the job's set-up with the NATS service started and the checkout (15 s), setup-bun (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the workspace install and contracts' build (14), the lint and the typecheck (16), the test step (300), the pack, the upload and the ci-ok report (4), the post steps with the containers stopped (5), and the seconds the job's own clock holds over the sum of its steps (5).
 That is 396 s, 6 m 36 s, the floor a ceiling here has to clear.
+Since main's #5175 the typecheck and the pack are pi-legion-build's, the other job of `.github/workflows/ci-job-pi-legion.yaml`, so this sum adds the job up as it was with them, a floor the job without them stays under, and it is still the first term of its key.
 The test step runs the package's files in one worker per CPU (`bun test --parallel`, package.json, main's #5096), so it lasts as long as its slowest worker, which runs legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and 137361573250 (2026-11-22), the 300 above being the slowest rounded up.
 Three runs are no worst case. Run one after another, the files took a median 774 s that day.
 Until #5096 the files ran one after another, and the test step was added up from its rows at their slowest over the four most recent runs of the whole suite, 708 s, for a sum of 804 s.

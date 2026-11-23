@@ -24,25 +24,26 @@ would reach nobody.
 Six Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 of its module files too, for the reason its job gives): go-notices (lint's notices step),
-go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
-envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
-go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
-and the binaries, multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which
-ci.yaml's dispatch-browser job calls: those three build the Dispatch server and the real
-broker's commands, whose packages the go-envoy entry's build of the listener and natsd alone
-does not hold), go-envoy-darwin-vet (envoy-go-checks' darwin vet, whose build cache is a
-directory of its own, the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-go, and
-the build job of release-envoy-infra.yaml).
+go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
+envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change,
+envoy-e2e-local and envoy-session-stall, and the embedder job of
+.github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, envoy-go-claim-model, which
+builds the API's test binary of that set, and the binaries, multiprocess and visual jobs of
+.github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
+dispatch-browser-pr jobs call: those three build the Dispatch server and the real broker's
+commands, whose packages the go-envoy entry's build of the listener and natsd alone does not
+hold), go-envoy-darwin-vet (envoy-go-build's darwin vet, whose build cache is a directory of its
+own, the GOCACHE of that step's env) and go-envoy-infra (envoy-infra-build and envoy-infra-go,
+and the build job of release-envoy-infra.yaml).
 The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 its objects. So each family is filled on every architecture one of its readers runs on, one
 matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
-plugin-pack, pi-legion, envoy-go-checks, envoy-go-claim-model, the browser lane and the release
-builds on the second), and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-go-checks
-runs. A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is
+plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model, the browser lane
+and the release builds on the second), and go-envoy-darwin-vet on ubuntu-24.04 alone, where
+envoy-go-build runs. A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is
 typecheck alone, so its arm64 leg runs typecheck's vet and leaves the test and race builds to
 the x86_64 leg.
 go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
@@ -101,10 +102,10 @@ Beside those six, the architecture-check job fills
 architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
 .github/actions/architecture-check, and the spec-check job fills
 spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
-envoy-go-checks runs both actions. Neither is a lookup step of this workflow: each action
+envoy-go-build runs both actions. Neither is a lookup step of this workflow: each action
 restores and saves its entry itself, keyed on the runner's architecture, on the Go version its
 own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum,
-so both jobs run on ubuntu-24.04, the runner envoy-go-checks runs on. On a miss it restores the
+so both jobs run on ubuntu-24.04, the runner envoy-go-build runs on. On a miss it restores the
 newest entry of that Go version (restore-keys). It saves only on a miss of the exact key in a
 push, schedule or workflow_dispatch run: a run of any other event (pull_request,
 pull_request_target, merge_group, issue_comment, workflow_run and the rest) may hold another

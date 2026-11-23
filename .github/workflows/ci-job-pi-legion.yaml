@@ -1,18 +1,36 @@
 name: CI job pi-legion
 
-# The steps of ci.yaml's `pi-legion` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of ci.yaml's `pi-legion` and `pi-legion-build` jobs, in a file of their own.
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
+# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
+# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
+# that is. The two share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, so a change to
+# these steps selects these two jobs alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# The two are the halves of what was one job, and each runs every one of its steps wherever it
+# runs. pi-legion-build typechecks the plugin and packs it as the release does, which a pull
+# request runs. pi-legion runs the plugin's test suite, a slow suite (the one job took 14.8
+# minutes at the 90th percentile of the pull-request runs of 2026-11-22): its `pi_legion` output
+# is held back on a pull request without the label full-ci or lane:pi_legion, so it runs in the
+# merge queue
+# (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+#
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `pi-legion` or `pi-legion-build`: the job
+          of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -31,12 +49,15 @@ env:
 
 jobs:
   pi-legion:
+    if: inputs.job == 'pi-legion'
     runs-on: ubuntu-24.04
     # The budget added up part by part, and where its ceiling came from: .github/ci-budgets.md,
-    # "The pi-legion job's ceiling". Its two terms, in the shape ci-budgets.md's Budgets note
-    # asks for: 396 s, the slowest run that section adds up since main's #5096 runs the test
-    # files in parallel, which is above its 374 s measured maximum, plus its slowest retried step
-    # alone - install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
+    # "The pi-legion job's ceiling", which adds the job up as it was when it also ran the
+    # typecheck and the pack that pi-legion-build runs now, so its 396 s is a floor this job,
+    # without them, stays under. Its two terms, in the shape ci-budgets.md's Budgets note asks
+    # for: 396 s, the slowest run that section adds up since main's #5096 runs the test files in
+    # parallel, which is above its 374 s measured maximum, plus its slowest retried step alone -
+    # install-jj's two `ci_tools_fetch` calls and its `mise install` of the jj release,
     # 3416 + 450 = 3866 s, above setup-bun's 3416 s, the ci-ok report's 2460 s and the workspace
     # install's 1050 s. 396 + 3866 = 4262 s -> 72 min. It carried 78 from 804 + 3866 until #5096
     # took the test step from 708 s to 300, 61 from 600 + 3012 until round 35 read the section's
@@ -111,14 +132,64 @@ jobs:
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts
-      - name: Typecheck pi-legion
-        run: bun run typecheck
-        working-directory: packages/pi-legion
       - name: Test pi-legion
         run: bun run test
         working-directory: packages/pi-legion
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its 2580 s: ci-budgets.md's Budgets note, "The ci-ok report".
+        timeout-minutes: 43
+        env:
+          STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: pi-legion
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  pi-legion-build:
+    if: inputs.job == 'pi-legion-build'
+    # arm64, as every job of ci.yaml that needs no x86_64 machine runs: what kept pi-legion on
+    # ubuntu-24.04 is the pinned Oh My Pi build, whose release ships linux-x64 alone, and this job
+    # installs none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+    # "Runners").
+    runs-on: ubuntu-24.04-arm
+    # The parts of pi-legion's budget above this job runs, at their slowest: the set-up and the
+    # checkout (15 s, with the NATS service it no longer starts), setup-bun (2), the workspace
+    # install and contracts' build (14), the typecheck (16), the pack, the upload and the ci-ok
+    # report (4), the post steps (5) and the job's own clock over its steps (5): 61 s, measured on
+    # ubuntu-24.04. Ten minutes is about ten times that, room for a slow runner and a cold Bun
+    # download, and it is this job's first term.
+    #
+    # Budget (ci-budgets.md's Budgets note): those ten minutes, 600 s, plus its slowest retried
+    # step alone — setup-bun's two `ci_tools_fetch` calls, 3416 s, above the ci-ok report's
+    # 2460 s and the workspace install's 1050 s. 600 + 3416 = 4016 s -> 67 min.
+    timeout-minutes: 67
+    env:
+      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1708 = 3416 s (ci-budgets.md's Budgets note) -> 57 min.
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 57
+      # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
+      - name: Build contracts for pi-legion
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Typecheck pi-legion
+        run: bun run typecheck
+        working-directory: packages/pi-legion
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
@@ -154,6 +225,6 @@ jobs:
           STEP_TIMEOUT_MINUTES: 43 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
         uses: ./.github/actions/ci-ok-report
         with:
-          job: pi-legion
+          job: pi-legion-build
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
