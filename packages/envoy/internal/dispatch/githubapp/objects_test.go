@@ -46,7 +46,7 @@ var listingCases = []listingCase{
 		read: func(client *Client) (ObjectPage, error) {
 			return client.CommitCheckSuites(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
 		},
-		scalars: []string{"id", "head_sha", "status", "conclusion", "updated_at"},
+		scalars: []string{"id", "head_sha", "status", "conclusion", "updated_at", "latest_check_runs_count"},
 		objects: map[string][]string{"app": {"id", "slug"}},
 		mapping: func(object map[string]any) any {
 			observation, ok := contracts.GithubCIObservation("check_suite", object, "acme", "web", "7")
@@ -90,14 +90,15 @@ var listedBodies = map[string]string{
 		`{"id":4006,"name":"architect","head_sha":"c0ffee","status":"completed","conclusion":"success",` +
 		`"app":{"id":"15368","slug":5}},` +
 		`null]}`,
-	"check suites": `{"total_count":6,"check_suites":[` +
+	"check suites": `{"total_count":7,"check_suites":[` +
 		`{"id":21,"node_id":"CS_1","head_branch":"feature","head_sha":"c0ffee","status":"completed","conclusion":"success",` +
 		`"url":"https://api.github.com/repos/acme/web/check-suites/21","before":"0000000","after":"c0ffee",` +
 		`"pull_requests":[{"number":7}],"app":{"id":15368,"slug":"github-actions","owner":{"login":"github"}},` +
 		`"created_at":"2026-11-17T05:00:00Z","updated_at":"2026-11-17T05:03:00Z","latest_check_runs_count":2,` +
 		`"head_commit":{"id":"c0ffee","message":"fix the build"}},` +
-		`{"id":22,"head_sha":"c0ffee","status":"queued","conclusion":null,"updated_at":null,"app":null},` +
-		`{"id":true,"head_sha":"c0ffee","status":"completed","conclusion":7,"updated_at":["2026"],"app":{"id":"15368"}},` +
+		`{"id":22,"head_sha":"c0ffee","status":"queued","conclusion":null,"updated_at":null,"app":null,"latest_check_runs_count":0},` +
+		`{"id":true,"head_sha":"c0ffee","status":"completed","conclusion":7,"updated_at":["2026"],"app":{"id":"15368"},"latest_check_runs_count":{"n":1}},` +
+		`{"id":24,"head_sha":"c0ffee","status":"in_progress","conclusion":null,"updated_at":"2026-11-17T05:04:00Z","latest_check_runs_count":3},` +
 		`{"id":23.5,"head_sha":"c0ffee","status":"completed","app":{"id":false,"slug":null}},` +
 		`{"head_sha":"c0ffee"},` +
 		`null]}`,

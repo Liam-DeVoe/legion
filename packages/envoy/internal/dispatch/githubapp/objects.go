@@ -172,24 +172,28 @@ func (r *listedRun) object() map[string]any {
 }
 
 // listedSuite is one check suite of GET /repos/{owner}/{repo}/commits/{sha}/check-suites, the
-// members contracts.GithubCIObservation reads of a suite: its id, head_sha, status, conclusion,
-// updated_at and app.id.
+// members its readers read: contracts.GithubCIObservation reads its id, head_sha, status,
+// conclusion, updated_at and app.id, and the CI reconcile's verify read (cireconcile's
+// runningSuite) its id, status and latest_check_runs_count, which tells a suite still running
+// with runs in it from one another App leaves queued with none.
 type listedSuite struct {
-	ID         scalar                  `json:"id"`
-	HeadSHA    scalar                  `json:"head_sha"`
-	Status     scalar                  `json:"status"`
-	Conclusion scalar                  `json:"conclusion"`
-	UpdatedAt  scalar                  `json:"updated_at"`
-	App        objectMember[listedApp] `json:"app"`
+	ID                   scalar                  `json:"id"`
+	HeadSHA              scalar                  `json:"head_sha"`
+	Status               scalar                  `json:"status"`
+	Conclusion           scalar                  `json:"conclusion"`
+	UpdatedAt            scalar                  `json:"updated_at"`
+	LatestCheckRunsCount scalar                  `json:"latest_check_runs_count"`
+	App                  objectMember[listedApp] `json:"app"`
 }
 
 func (s *listedSuite) object() map[string]any {
-	object := make(map[string]any, 6)
+	object := make(map[string]any, 7)
 	s.ID.put(object, "id")
 	s.HeadSHA.put(object, "head_sha")
 	s.Status.put(object, "status")
 	s.Conclusion.put(object, "conclusion")
 	s.UpdatedAt.put(object, "updated_at")
+	s.LatestCheckRunsCount.put(object, "latest_check_runs_count")
 	s.App.put(object, "app", (*listedApp).object)
 	return object
 }
