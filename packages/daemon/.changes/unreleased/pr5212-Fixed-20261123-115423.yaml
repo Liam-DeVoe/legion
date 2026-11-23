@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The daemon's token login waits the short schedule, 2 s doubling to 10 s, after the secrets
+    broker, or a proxy before it, answers 408 or 429, as it waits after a 5xx: such an answer is a
+    broker that could not take the login now, and its log line names the class
+    `broker-unavailable`. Before, it was a refusal on the long schedule, 30 s doubling to 5 min,
+    which every pod enrollment waited behind.
+time: 2026-11-23T11:54:23Z
+custom:
+    Issue: pr5212

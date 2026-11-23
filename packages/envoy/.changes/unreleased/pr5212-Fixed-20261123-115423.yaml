@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    `agent-secrets-helper`'s machine login polls 5 s further apart after each poll the broker did
+    not answer, or answered 408, 429 or 5xx, from then on, as RFC 8628 has a client poll less often
+    after a connection timeout. A login whose code lapses after such polls is still `expired`, and
+    `login-status` now carries `login_reason`, which says the broker was unreachable or busy for the
+    last ones and how many; `agent-secrets machine login` and `machine login-status` print it.
+    Before, the helper polled again at the same interval. `agent-secrets <NAME> --wait` now keeps
+    waiting through a status poll the broker, or a front door before it, answers 408, 500, 501 or
+    505 and above, as it did through a 429, 502, 503 or 504. Before, such an answer ended the wait
+    with exit 1 as a refusal the same poll would get again.
+time: 2026-11-23T11:54:23Z
+custom:
+    Issue: pr5212

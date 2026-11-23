@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    `dispatch login --device` now polls 5 s further apart after each poll the broker did not
+    answer, or answered 408, 429 or 5xx, from then on, as RFC 8628 has a client poll less often
+    after a connection timeout, and waits out such an answer's `Retry-After`, in seconds or as a
+    date, before the next poll where it asks longer than the interval, though never past the
+    code's lifetime. A code that lapses after such polls says the broker was unreachable or busy
+    for the last ones, and how many. Before, the poll asked again at the same interval, ignored the
+    broker's own `Retry-After: 30`, and said only that the code expired.
+time: 2026-11-23T11:54:23Z
+custom:
+    Issue: pr5212
