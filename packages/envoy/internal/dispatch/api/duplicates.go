@@ -182,6 +182,14 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // read; that guess halved the open issues each arm expects and moved the document arm to another
 // join order than the same statement without a viewer gets
 // (TestTheNearCopyGateDecidesItsViewerOncePerStatement).
+//
+// The gate sends it to be planned for its own arguments on every run (duplicateScoreArguments).
+// Its best plan turns on how many terms were picked and how rare they are, and a generic plan
+// sees neither: it plans unnest of a parameter array at 10 rows whatever the array holds. On a
+// synthetic project of 3,000 issues the generic plan Postgres settles on from a connection's
+// sixth run took about twice the plan made for the arguments (203 against 100 ms, PostgreSQL
+// 18.6, 2026-11-23), and planning it for its arguments took about 1 ms of those 100
+// (TestTheNearCopyScoreIsPlannedForItsArgumentsOnEveryRun).
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -436,7 +444,7 @@ func (s *server) readDuplicateCandidates(
 		return scanDuplicateCandidates(rows)
 	}
 	rows, err := tx.Query(ctx, duplicateScoreQuery,
-		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title, refs.VisibilityArg(who))
+		duplicateScoreArguments(project, lexemes, weights, ancestors, floor, title, who)...)
 	if err != nil {
 		return nil, err
 	}
@@ -481,6 +489,18 @@ func nearCopyScoreTerms(picked relatedTerms, keyLexemes map[string]bool) ([]stri
 		weights = append(weights, term.IDF)
 	}
 	return lexemes, weights
+}
+
+// duplicateScoreArguments is what duplicateScoreQuery is sent with, by the gate and by the replay
+// that times it: pgx.QueryExecModeDescribeExec, so that Postgres plans each run for its own
+// arguments rather than settling on a generic plan (duplicateScoreQuery says why), then $1 to $8.
+func duplicateScoreArguments(
+	project string, lexemes []string, weights []float64, ancestors []string, floor float64, title string, who model.Actor,
+) []any {
+	return []any{
+		pgx.QueryExecModeDescribeExec,
+		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title, refs.VisibilityArg(who),
+	}
 }
 
 // nearCopyBoundHit says whether the gate's read ended at its bound. The bound is on the context

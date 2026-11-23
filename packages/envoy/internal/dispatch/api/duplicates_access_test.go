@@ -63,7 +63,7 @@ func TestTheNearCopyStatementsNameNoIssueOfAProjectTheirViewerDoesNotSee(t *test
 	}{{
 		name: "the scoring statement", statement: duplicateScoreQuery, names: issue,
 		arguments: func(who model.Actor) []any {
-			return []any{seedPrivate, lexemes, weights, []string{}, 0.0, duplicateHeadlineOptions, title, refs.VisibilityArg(who)}
+			return duplicateScoreArguments(seedPrivate, lexemes, weights, []string{}, 0, title, who)
 		},
 	}, {
 		name: "the equal-lexemes statement", statement: duplicateEqualLexemesQuery, names: seed.issue[seedPrivate],
