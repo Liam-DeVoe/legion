@@ -696,10 +696,10 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 // of its own, an Envoy message's, when a person approves version 5, so the news task the reconcile
 // queues for it is composed while the gate stands open, and says opened; it holds no task, so the
 // task waits for that turn's end. A writer then saves version 6, which closes the gate again,
-// before the turn ends. The turn's end is when the task is sent, and the send renders it again
+// before the turn ends. The turn's end is when the task is offered, and the take renders it again
 // from the record: the sentence says the gate closed and names version 6, with its reviewer, and
 // says nothing of an opening that no longer stands. The approval of version 5 still stands below
-// version 6, so its item is still told, and the confirmation raises it.
+// version 6, so its item is still told, and the start of the take's turn raises it.
 func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedItSaysClosed(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
@@ -742,7 +742,7 @@ func TestANewsTaskComposedWhileTheGateStoodOpenAndSentAfterALaterVersionClosedIt
 	}
 	r.startTurn(reviewer)
 	if took, _ := r.toldOf(pathRoot, record.AudienceHolder).Took(record.DesignStepSpec); took != 5 {
-		t.Fatalf("the reviewer's holder took %d after the confirmation, want 5: the approval it told stands", took)
+		t.Fatalf("the reviewer's holder took %d after its take's turn started, want 5: the approval it told stands", took)
 	}
 }
 
