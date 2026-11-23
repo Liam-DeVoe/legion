@@ -23,6 +23,7 @@ import { api } from "../../api/client";
 import type { EvalKind } from "../../api/queries";
 import type {
   DeliveryLiveDelta,
+  EvalDetailResponse,
   EvalListItem,
   EvalListResponse,
   LegionSetting,
@@ -605,6 +606,68 @@ const stateRows: [string, () => Promise<void>][] = [
       expect(region("Target cards")).toHaveAttribute("data-state", "painted");
     },
   ],
+  [
+    "painted, an open panel | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new method (D11a)",
+    async () => {
+      const user = userEvent.setup();
+      const reads: PromiseWithResolvers<EvalDetailResponse>[] = [];
+      const getEval = spyOn(api, "getEval").mockImplementation(() => {
+        const read = Promise.withResolvers<EvalDetailResponse>();
+        reads.push(read);
+        return read.promise;
+      });
+      spies.push(getEval);
+      const method = (docText: string): EvalDetailResponse => ({
+        compare: COMPARE,
+        doc_text: docText,
+        freshness: { refresher_age_seconds: null, rows_updated_at: null },
+        items: [],
+        limit: 1,
+        offset: 0,
+        total: 1,
+        window: WINDOW,
+      });
+      const deploys = (version: number): EvalListItem => {
+        const item = charted(evalItem("deploy-frequency", "delivery"), "deploys", "deploys", {
+          deploys: 3,
+          per_day: 3,
+        });
+        return { ...item, definition: { ...item.definition, version } };
+      };
+      renderTab();
+      const socket = await openSocket();
+      const sub = await answerView(socket, "delivery", answer([deploys(1)]));
+      await user.click(
+        within(region("Deploys and lead time")).getByRole("button", { name: "Deploy frequency" })
+      );
+      const panel = screen.getByRole("dialog", { name: "deploy-frequency" });
+      await waitFor(() => expect(reads).toHaveLength(1));
+      act(() => reads[0]?.resolve(method("Deploys a day, as version 1 counts them.")));
+      await waitFor(() =>
+        expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
+          "Deploys a day, as version 1 counts them."
+        )
+      );
+
+      // A register write rewrote the method: the delivery view's delta carries version 2.
+      serve(socket, deltaFrame(sub, [deploys(2)]));
+      await waitFor(() => expect(reads).toHaveLength(2));
+      expect(
+        within(panel)
+          .getAllByRole("status")
+          .map((line) => line.textContent)
+      ).toContain("Reading the method…");
+      act(() => reads[1]?.resolve(method("Deploys a day, as version 2 counts them.")));
+      await waitFor(() =>
+        expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
+          "Deploys a day, as version 2 counts them."
+        )
+      );
+      // The open panel read it on the one view it had: no view was subscribed again.
+      expect(screen.getByRole("dialog", { name: "deploy-frequency" })).toBe(panel);
+      expect(heldViews(socket).filter((frame) => frame.sub === sub)).toHaveLength(1);
+    },
+  ],
 ];
 
 bunTest.each(stateRows)("%s", async (_row, run) => {
@@ -639,8 +702,8 @@ const laterRows: [string, string][] = [
     "T30",
   ],
   [
-    "painted, a declared eval or open panel | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new method, charts and answer (D11a)",
-    "T16 and T20",
+    "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",
+    "T20",
   ],
 ];
 

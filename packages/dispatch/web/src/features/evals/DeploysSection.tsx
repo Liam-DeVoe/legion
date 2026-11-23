@@ -248,7 +248,7 @@ function DeployChartBox({
           <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
         </>
       ) : (
-        <EvalChart model={model} renderer={chart.renderer} />
+        <EvalChart model={model} opensPanel={chart.slug} renderer={chart.renderer} />
       )}
       <Method item={item} project={project} />
     </article>

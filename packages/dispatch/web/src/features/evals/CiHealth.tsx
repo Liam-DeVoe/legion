@@ -216,7 +216,7 @@ function CiChart({
           <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
         </>
       ) : (
-        <EvalChart model={model} renderer={Timing} />
+        <EvalChart model={model} opensPanel={slug} renderer={Timing} />
       )}
     </article>
   );

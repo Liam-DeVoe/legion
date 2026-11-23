@@ -5,6 +5,7 @@ import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/quer
 import type { EvalListResponse } from "../../api/types";
 import { CiHealth } from "./CiHealth";
 import { DeploysSection } from "./DeploysSection";
+import { EvalPanelHost } from "./EvalPanel";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
@@ -109,7 +110,8 @@ function drawSection(
  * decides whether the Legion section and cards show; until that read answers they show, so their
  * view is opened with the others rather than after it. The merge timeline opens no view until the
  * reader opens it (spec R13); its brush sets the target cards' days and its Repository facet the
- * repository every number reads (decision 3).
+ * repository every number reads (decision 3). A card's or a chart's title opens the number's
+ * panel (plan D12).
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -129,27 +131,29 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   return (
     <div className="flex flex-col gap-6">
       <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
-      {sections.map((section) =>
-        section.id === "timeline" ? (
-          <TimelineSection
-            brush={state.brush}
-            key={section.id}
-            onBrush={(brush) => setState({ ...state, brush })}
-            project={project}
-            scope={scope}
-          />
-        ) : (
-          <EvalsSection
-            id={section.id}
-            key={section.id}
-            kinds={section.kinds}
-            scope={section.id === "cards" ? cardsScope : scope}
-            title={section.title}
-          >
-            {drawSection(section.id, project, scope, delivery, days)}
-          </EvalsSection>
-        )
-      )}
+      <EvalPanelHost kinds={kinds} scope={scope}>
+        {sections.map((section) =>
+          section.id === "timeline" ? (
+            <TimelineSection
+              brush={state.brush}
+              key={section.id}
+              onBrush={(brush) => setState({ ...state, brush })}
+              project={project}
+              scope={scope}
+            />
+          ) : (
+            <EvalsSection
+              id={section.id}
+              key={section.id}
+              kinds={section.kinds}
+              scope={section.id === "cards" ? cardsScope : scope}
+              title={section.title}
+            >
+              {drawSection(section.id, project, scope, delivery, days)}
+            </EvalsSection>
+          )
+        )}
+      </EvalPanelHost>
     </div>
   );
 }

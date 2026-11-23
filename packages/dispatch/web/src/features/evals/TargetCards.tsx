@@ -230,6 +230,7 @@ function TargetCard({
         <EvalChart
           beside={badge}
           model={model}
+          opensPanel={spec.slug}
           renderer={spec.chart === "spread" ? PerDaySpread : PerDayBars}
         />
       )}
