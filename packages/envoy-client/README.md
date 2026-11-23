@@ -1216,7 +1216,11 @@ again, whatever OAuth error they name, and only in another 4xx does a deciding e
 `access_denied`, which the broker answers 403, is the denial, `expired_token` and `invalid_grant`
 the expiry, and `authorization_pending` and `slow_down` poll again. It polls at the broker's
 interval, from 1 s and at most 60 s before any `slow_down`, and 5 s where it names none; each
-`slow_down` adds 5 s, at whatever status it comes, as RFC 8628 has it. It then writes no file. It
+`slow_down` adds 5 s, at whatever status it comes, and so does each poll the broker did not
+answer or answered 408, 429 or 5xx, once for a poll that is both, as RFC 8628 has it. Such an
+answer's `Retry-After`, in seconds or as a date, is waited before the next poll where it asks
+longer, though never past the code's lifetime, and a code that lapses after such polls says how
+many came in a row before it. It then writes no file. It
 exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
 the broker holds live, and says to revoke it in Machine logins on the page the code was typed
 into. Where it wrote a copy of the login whole,

@@ -265,6 +265,121 @@ test.each([429, 408])("a slow_down answered %i polls again 5 s further apart", a
   expect(waits).toEqual([1000, 6000]);
 });
 
+/** A sleep that waits for nothing and records each wait it was asked for. */
+function recordedWaits(): { waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  };
+}
+
+// RFC 8628 Section 3.5 has a client poll less often after a connection timeout: a poll the broker
+// did not answer, or answered with an outage, polls 5 s further apart from then on, as the Go
+// helper's `pollLogin` does. The pending row above is the control: `authorization_pending` keeps
+// the interval.
+test("each poll the broker did not answer or answered with an outage polls 5 s further apart", async () => {
+  const stub = broker({ polls: ["unavailable-503", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  // The first poll never reaches the broker; the second is answered 503; the third is approved.
+  let sent = 0;
+  const login = await finishDeviceLogin(started, {
+    path: loginPath(),
+    sleep,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      sent += 1;
+      if (sent === 1) throw new TypeError("fetch failed");
+      return await fetch(input, init);
+    }) as typeof fetch,
+  });
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 6000, 11000]);
+});
+
+test("a code that lapses after polls the broker did not answer names them", async () => {
+  for (const [polls, says] of [
+    [
+      ["pending", "unavailable-503", "busy-429"],
+      "; the broker was unreachable or busy for the last 2 polls;",
+    ],
+    [
+      ["pending", "pending", "empty-408"],
+      "; the broker was unreachable or busy for the last poll;",
+    ],
+    // Control: an answered poll since the outage, and the lapse names none.
+    [["unavailable-503", "busy-429", "pending"], null],
+  ] as const) {
+    const stub = broker({ polls });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    // The code's lifetime is this row's own, and passes during the wait before the third poll.
+    const expiresAt = new Date(started.expiresAt);
+    let waited = 0;
+    const refusal = await finishDeviceLogin(
+      { ...started, expiresAt },
+      {
+        path: loginPath(),
+        sleep: async () => {
+          waited += 1;
+          if (waited === 3) expiresAt.setTime(Date.now() - 1);
+        },
+      }
+    ).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(stub.polls, polls.join()).toHaveLength(3);
+    expect(refusal?.message, polls.join()).toContain(
+      `the code ${STAND_IN_USER_CODE} expired before ${PERSON} approved this machine`
+    );
+    expect(refusal?.message, polls.join()).toContain(DEVICE_LOGIN_COMMAND);
+    if (says === null) expect(refusal?.message, polls.join()).not.toContain("unreachable");
+    else expect(refusal?.message, polls.join()).toContain(says);
+  }
+});
+
+// An outage's `Retry-After` is waited before the next poll, as the broker's own 429 carries one
+// (`handlers_oauth.go`, `Retry-After: 30`), where it asks longer than the interval.
+test("a poll answered 429 with Retry-After: 30 waits 30 s before the next poll", async () => {
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "30" });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 30_000]);
+});
+
+test("a poll answered 429 with a Retry-After date waits until that date", async () => {
+  // A date in whole seconds, as an HTTP date names it.
+  const at = Math.ceil((Date.now() + 30_000) / 1000) * 1000;
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: new Date(at).toUTCString() });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  // The wait is read between the poll's start and its end, so no clock decides the row.
+  const began = Date.now();
+  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  const ended = Date.now();
+  expect(waits).toHaveLength(2);
+  expect(waits[0]).toBe(1000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(at - began);
+  expect(waits[1] ?? 0).toBeGreaterThanOrEqual(at - ended);
+});
+
+test("a Retry-After past the code's lifetime is waited only until the code lapses", async () => {
+  const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "86400" });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const { waits, sleep } = recordedWaits();
+  const began = Date.now();
+  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  const ended = Date.now();
+  expect(waits).toHaveLength(2);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(started.expiresAt.getTime() - began);
+  expect(waits[1] ?? 0).toBeGreaterThanOrEqual(started.expiresAt.getTime() - ended);
+});
+
 test("a poll the broker did not answer is polled again", async () => {
   const stub = broker();
   const path = loginPath();

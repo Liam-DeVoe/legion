@@ -108,6 +108,9 @@ export interface DeviceLoginBrokerOptions {
    *  broker_test.go): a broker, or a proxy before it, answering a 408, a 429 or a 5xx with a body
    *  that still names an OAuth error, or naming one at another refusal status. */
   readonly oauthErrorStatus?: number;
+  /** The `Retry-After` a `busy-429` answer carries, as the broker's own 429 does (`Retry-After:
+   *  30`), in seconds or as an HTTP date; none where unset. */
+  readonly retryAfter?: string;
 }
 
 /** The credential every device login of this stand-in holds. */
@@ -295,7 +298,11 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
                 headers: { "WWW-Authenticate": 'DPoP algs="ES256"' },
               });
             case "busy-429":
-              return new Response("too many requests", { status: 429 });
+              return new Response("too many requests", {
+                status: 429,
+                headers:
+                  options.retryAfter === undefined ? {} : { "Retry-After": options.retryAfter },
+              });
             case "empty-429":
               return new Response(null, { status: 429 });
             case "empty-408":

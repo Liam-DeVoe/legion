@@ -74,6 +74,7 @@ import {
   brokerRefusal,
   type DpopNonce,
   requestInit,
+  responseOf,
   sendWithProof,
   sleep,
   statusOf,
@@ -419,30 +420,52 @@ export interface KeptDeviceLogin extends DeviceLogin {
 }
 
 /**
+ * How long the answer behind `error` ({@link responseOf}) asks its client to wait before it asks
+ * again, in milliseconds: its `Retry-After` (RFC 9110 Section 10.2.3), a number of seconds or an
+ * HTTP date, the time until which is the wait. It is 0 where the answer names none, names a time
+ * already past, or names neither form, and where there was no answer.
+ */
+function retryAfterMs(error: unknown): number {
+  const value = responseOf(error)?.headers.get("retry-after")?.trim() ?? "";
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : 0;
+}
+
+/**
  * Polls the device code `started` answered until the person decides, and keeps the login an
  * approval issues at `path` ({@link saveDeviceLogin}, under {@link withDeviceLoginLock}), answering
  * it with the credential it replaced ({@link KeptDeviceLogin}), which is read under the same lock
  * as the save, so a login another `dispatch login` kept there while this one waited for its
  * approval is the one named. Each poll waits the interval first (RFC 8628 Section 3.5) and proves
- * the login's key, and each `slow_down`, at whatever status it comes ({@link slowsDown}), polls
- * five seconds further apart from then on, as RFC 8628 has it and as the Go helper's `pollLogin`
- * does through x/oauth2. Otherwise the status decides first, as `pollLogin` decides it
+ * the login's key. The status decides first, as the Go helper's `pollLogin` decides it
  * (`oauthrefusal.Refusal`): a poll the broker did not answer, or answered with an {@link outage}
  * (a 408, its 429, a 5xx), polls again whatever OAuth error it names, since no person decided and
  * a later poll may be answered. Only in any other 4xx does a deciding OAuth error count
  * ({@link refusalCode}): `authorization_pending` and `slow_down` poll again, `access_denied` is a
  * denial (the broker answers it 403), and `expired_token` or `invalid_grant` (a code the broker no
- * longer knows) is an expiry, as is the code's own lifetime passing. Any other answer of a 4xx,
- * with another OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate`
- * challenge), stops the poll at once, naming the status, rather than polling until the code
- * lapses and saying it expired. That is the one place
- * this poll and `pollLogin` differ: the helper polls on there until the code lapses, as it records
- * the login's state in the background, where a person waits on this poll. Each refusal names
- * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot be kept is
- * refused naming its credential, which the broker holds live, and where to revoke it, and a copy
- * of it written whole is kept beside the file ({@link KeptCopyError}), which the refusal names
- * whatever fails after it, letting go of the lock included. One kept whose lock is then not let
- * go is answered as kept: the machine uses that login, so it is not one to revoke.
+ * longer knows) is an expiry, as is the code's own lifetime passing, which names how many polls
+ * in a row before it the broker did not answer or answered with an outage. Each `slow_down`, at
+ * whatever status it comes ({@link slowsDown}), and each poll the broker did not answer or
+ * answered with an outage, polls five seconds further apart from then on, once for a poll that is
+ * both: RFC 8628 Section 3.5 grows the interval on a `slow_down` and slows the polling on a
+ * connection timeout, and `pollLogin` grows it the same way. An outage whose answer names a
+ * `Retry-After`, in seconds or as an HTTP date, is waited at least that long before the next
+ * poll, though never past the code's lifetime. Any other answer of a 4xx, with another OAuth
+ * error or without one (a proxy's HTML page, a bare `WWW-Authenticate` challenge), stops the poll
+ * at once, naming the status, rather than polling until the code lapses and saying it expired.
+ * That is where this poll and `pollLogin` differ by choice: the helper polls on there until the
+ * code lapses, as it records the login's state in the background, where a person waits on this
+ * poll. They differ where their libraries differ too: x/oauth2, under `pollLogin`, reads
+ * `authorization_pending` and `slow_down` at any status, so the helper keeps its interval on an
+ * outage naming `authorization_pending`; each call of it starts from the interval `pollLogin` last
+ * set, so a `slow_down` it met inside a call is not kept once the call returns; and `pollLogin`
+ * waits out no `Retry-After`. Each refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a
+ * file. An approved login that cannot be kept is refused naming its credential, which the broker
+ * holds live, and where to revoke it, and a copy of it written whole is kept beside the file
+ * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the
+ * lock included. One kept whose lock is then not let go is answered as kept: the machine uses that
+ * login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -458,13 +481,25 @@ export async function finishDeviceLogin(
     nonce: { value: "" },
   });
   const endpoint = started.brokerUrl + TOKEN_PATH;
-  const expired = new Error(
-    `the code ${started.userCode} expired before ${started.person} approved this machine; ask again with: ${DEVICE_LOGIN_COMMAND}`
-  );
+  // The code's lapse, naming the polls in a row just before it that the broker did not answer or
+  // answered with an outage: why nobody's approval reached this machine, where there were any.
+  const expired = (outages: number): Error => {
+    const unreached =
+      outages === 0
+        ? ""
+        : `; the broker was unreachable or busy for the last ${outages === 1 ? "poll" : `${outages} polls`}`;
+    return new Error(
+      `the code ${started.userCode} expired before ${started.person} approved this machine${unreached}; ask again with: ${DEVICE_LOGIN_COMMAND}`
+    );
+  };
   let interval = started.intervalSeconds;
+  // The polls in a row the broker did not answer or answered with an outage.
+  let outages = 0;
+  // The wait before the next poll: the interval, or an outage's longer `Retry-After`.
+  let waitMs = interval * 1000;
   while (true) {
-    if (Date.now() >= started.expiresAt.getTime()) throw expired;
-    await wait(interval * 1000);
+    if (Date.now() >= started.expiresAt.getTime()) throw expired(outages);
+    await wait(waitMs);
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_DEVICE_CODE, {
@@ -478,11 +513,12 @@ export async function finishDeviceLogin(
           `this machine's device login was denied, not approved as ${started.person}; ask again with: ${DEVICE_LOGIN_COMMAND}`
         );
       }
-      if (code === "expired_token" || code === "invalid_grant") throw expired;
-      if (slowsDown(error)) interval += 5;
+      if (code === "expired_token" || code === "invalid_grant") throw expired(0);
       const status = statusOf(error);
-      const pollAgain =
-        code === "authorization_pending" || code === "slow_down" || status === 0 || outage(status);
+      const unanswered = status === 0 || outage(status);
+      outages = unanswered ? outages + 1 : 0;
+      if (slowsDown(error) || unanswered) interval += 5;
+      const pollAgain = code === "authorization_pending" || code === "slow_down" || unanswered;
       if (!pollAgain) {
         const refusal = brokerRefusal(
           "poll the code of",
@@ -492,6 +528,8 @@ export async function finishDeviceLogin(
         );
         throw new Error(`${refusal.message}; ask again with: ${DEVICE_LOGIN_COMMAND}`);
       }
+      const asked = unanswered ? retryAfterMs(error) : 0;
+      waitMs = Math.max(interval * 1000, Math.min(asked, started.expiresAt.getTime() - Date.now()));
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
