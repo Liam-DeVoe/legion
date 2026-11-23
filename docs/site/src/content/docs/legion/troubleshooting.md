@@ -1435,8 +1435,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
-  implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): a review's request for
+  task's counted rounds reached three (`plan_tasks.rounds`; on an issue with no plan rows, the
+  implementer's phases row) ([what counts a round](/legion/legion/concepts/#review-signalling)): a
+  review's request for
   changes raises the count, and so does the fail of a step of the type review whose agent is not
   the owner, while a tester's fail, the fail of a step of another type and a move back raise none;
   a round counted while the head conflicts with its base is a conflict round, which the cap leaves
