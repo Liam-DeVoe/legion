@@ -156,7 +156,7 @@ func (r *ownerStepsRig) readPlan(artifact string) plannersPlan {
 			Orphaned   bool   `json:"orphaned"`
 		} `json:"anchor"`
 	}
-	r.person(http.MethodGet, "/api/v1/artifacts/"+artifact+"/comments", nil, http.StatusOK, &comments)
+	r.person(http.MethodGet, "/api/v1/issues/"+r.key+"/comments?artifact="+artifact, nil, http.StatusOK, &comments)
 	for _, comment := range comments {
 		if comment.Anchor != nil && comment.Anchor.ArtifactID == artifact {
 			read.comments = append(read.comments, comment.Body+" on "+strconv.Quote(comment.Anchor.Quote)+" orphaned "+strconv.FormatBool(comment.Anchor.Orphaned))
@@ -281,7 +281,7 @@ func TestTheOwnersDocumentLeavesThePlannersPlanAsItIs(t *testing.T) {
 	planner := r.worker(claim.RolePlanner)
 	holdsText(t, "planner", takeText(planner), defaultText, cOne)
 	plan := r.upload("plan.md", plannerTasks(r.key), "").id
-	r.person(http.MethodPost, "/api/v1/artifacts/"+plan+"/comments", map[string]any{
+	r.person(http.MethodPost, "/api/v1/issues/"+r.key+"/comments", map[string]any{
 		"body": "The writer needs the reader's format.", "anchor": map[string]any{"artifact": plan, "quote": "Build the writer."}}, http.StatusCreated, nil)
 	r.planReview(plan, *r.live(plan).Version)
 	approved := r.readPlan(plan)
