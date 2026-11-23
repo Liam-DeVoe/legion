@@ -58,7 +58,9 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	besides := 0
 	// A named token holds no OAuth scope, so the gate refuses it every row that needs one before
 	// any read, and the test hooks' rows are no production write: the scope's own read is walked on
-	// the rest.
+	// the rest. bob's token holds none either, a restricted member's token (R16), so it walks no
+	// row that needs one, nor a follower row, whose handler asks for the person scope before it
+	// reads a session other than the caller's own; bob at his browser walks those.
 	scoped := map[string]bool{}
 	for _, route := range walk.server.routes() {
 		scoped[route.Method+" "+route.Pattern] = len(route.OAuthScopes) > 0
@@ -69,17 +71,22 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 		sessionsOnly bool
 		// sees is the project whose objects the caller sees, "" for none walked beside a session.
 		sees string
+		// scopeless is a credential that holds no scope, other than the named token.
+		scopeless bool
 	}{
-		{callerAlice, walkSight{open: true}, false, seedPublic},
-		{callerAlicePrivToken, walkSight{open: true, held: true}, false, seedPublic},
-		{callerAlicePubToken, walkSight{open: true, held: true}, false, seedPublic},
-		{callerAliceNamedToken, walkSight{open: true, held: true, named: true}, false, ""},
-		{callerBob, walkSight{}, true, seedPrivate},
-		{callerBobPrivToken, walkSight{held: true}, true, seedPrivate},
+		{callerAlice, walkSight{open: true}, false, seedPublic, false},
+		{callerAlicePrivToken, walkSight{open: true, held: true}, false, seedPublic, false},
+		{callerAlicePubToken, walkSight{open: true, held: true}, false, seedPublic, false},
+		{callerAliceNamedToken, walkSight{open: true, held: true, named: true}, false, "", false},
+		{callerBob, walkSight{}, true, seedPrivate, false},
+		{callerBobPrivToken, walkSight{held: true}, true, seedPrivate, true},
 	} {
 		for _, name := range rows {
 			probe := writeProbes[name]
 			if caller.sight.named && (writeClasses[name] != scopeProject || scoped[name] || strings.Contains(name, "/_test/")) {
+				continue
+			}
+			if caller.scopeless && (scoped[name] || strings.Contains(name, "/followers/")) {
 				continue
 			}
 			if caller.sees != "" && probe.namesASessionBeside() {

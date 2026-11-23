@@ -161,12 +161,14 @@ func TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivat
 // a broker token listing PRIV and reads P2's issue under one listing P2; its listener sent no list.
 // The read of a public project records nothing. bob at his browser watches the session and reads
 // its file; his personal token that lists PRIV alone, which sees every private project bob sees but
-// not P2, gets the no-responder verdict and reads the file as one nobody holds: a restricted
-// member's credential is held to its list for public projects too, so a session with no list
-// passes only a credential that sees every project its person sees.
+// not P2, reads the file as one nobody holds: a restricted member's credential is held to its list
+// for public projects too, so a session with no list passes only a credential that sees every
+// project its person sees. The token watches no agent at all: it holds no scope (a restricted
+// member's token, R16), and the view needs the person scope, so its subscribe is refused 403
+// OAUTH_SCOPE_REQUIRED.
 //
 // Control: the credential tested on private projects alone (every private project the viewer's
-// person sees is one it sees), and the PRIV token is relayed the session's replay.
+// person sees is one it sees), and the PRIV token reads the session's file.
 func TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis(t *testing.T) {
 	rig := newListedCredentialRig(t)
 	rig.seed.asSessionOf(t, seedBob, listedCredentialSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+rig.seed.issue[seedPrivate]+"/comments",
@@ -175,5 +177,13 @@ func TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOf
 	rig.upload(t)
 	const state = "PRIV private, P2 public"
 	rig.watched(t, state, "bob at his browser", asUser(seedBob), agentViewResponding)
-	rig.watched(t, state, "bob's token that lists PRIV alone", withBearer(rig.mint(t, "bob's token that lists PRIV", []string{seedPrivate})), agentViewHidden)
+	token := withBearer(rig.mint(t, "bob's token that lists PRIV", []string{seedPrivate}))
+	if got, nobody := rig.read(t, token, rig.target), rig.read(t, token, rig.absent); got != http.StatusNotFound || got != nobody {
+		t.Errorf("%s, bob's token that lists PRIV alone reads bob's session's file as %d, want what one nobody holds answers, %d", state, got, nobody)
+	}
+	client := rig.seed.dialLive(t, rig.url, token)
+	client.send(t, liveSubscribe("v", agentView(listedCredentialSession), ""))
+	if refusal, ok := client.next(t, eventFeedWait, "bob's token's agent view").(LiveError); !ok || refusal.Code != codeScopeRequired {
+		t.Errorf("%s, bob's token that lists PRIV alone subscribes to bob's session's view as %+v, want %s", state, refusal, codeScopeRequired)
+	}
 }

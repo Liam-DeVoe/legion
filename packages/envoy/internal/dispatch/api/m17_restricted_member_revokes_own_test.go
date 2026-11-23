@@ -208,9 +208,10 @@ func TestARestrictedMemberEndsTheirOwnGrantsAndSignIns(t *testing.T) {
 
 // TestACredentialThatListsProjectsRevokesNoGrantOrSignIn: a revoke of a grant or a sign-in is
 // still the deployment's to a credential that lists projects, whoever its person is, so alice's
-// token that lists ACC is refused as before this change, byte for byte (R9), and so is erin's,
-// naming its list, which is the refusal's reason. Neither reaches the broker. alice at a browser
-// revokes her own grant and sign-in as before.
+// token that lists ACC is refused as before this change, byte for byte (R9), naming its list,
+// which is the refusal's reason. erin's token, a restricted member's, holds no scope (R16), so the
+// scope gate refuses it first, 403 OAUTH_SCOPE_REQUIRED. Neither reaches the broker. alice at a
+// browser revokes her own grant and sign-in as before.
 func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
 	broker := newOwnRevokeBroker(t)
 	handler, tokens := newOwnRevokeServer(t, broker.server.URL)
@@ -222,12 +223,12 @@ func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
 		t.Run(row.row, func(t *testing.T) {
 			want := `{"code":"PROJECT_SCOPE_DEPLOYMENT","error":"this request's credential may write project ACC and nothing else; ` + row.row + ` belongs to the deployment rather than to a project"}`
 			before := broker.revokes()
-			for login, id := range map[string]string{"alice": row.alices, accessErin: row.erins} {
-				refused := agentRequest(t, handler, http.MethodPost, revokePath(row.row, id), nil, tokens[login])
-				if got := strings.TrimSpace(refused.Body.String()); refused.Code != http.StatusForbidden || got != want {
-					t.Errorf("%s's token that lists ACC revoking %s = %d %s, want 403 %s", login, id, refused.Code, got, want)
-				}
+			refused := agentRequest(t, handler, http.MethodPost, revokePath(row.row, row.alices), nil, tokens["alice"])
+			if got := strings.TrimSpace(refused.Body.String()); refused.Code != http.StatusForbidden || got != want {
+				t.Errorf("alice's token that lists ACC revoking %s = %d %s, want 403 %s", row.alices, refused.Code, got, want)
 			}
+			wantRefusal(t, agentRequest(t, handler, http.MethodPost, revokePath(row.row, row.erins), nil, tokens[accessErin]),
+				http.StatusForbidden, codeScopeRequired, "erin's token that lists ACC", "revoking "+row.erins)
 			if calls := broker.revokes() - before; calls != 0 {
 				t.Fatalf("the broker was sent %d revokes by a credential that lists projects", calls)
 			}

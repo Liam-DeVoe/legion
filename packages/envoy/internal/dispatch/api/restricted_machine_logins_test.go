@@ -154,9 +154,10 @@ func TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem(t *test
 // credential of hers that held the row's scopes, which
 // TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes holds.
 //
-// Control: give a restricted member's mint the caller's own scopes (tokenScopes answering
-// callerScopes for them) and let any credential of a restricted member through
-// (restrictedOwnLoginAtBrowser answering allowed true), and her personal token is answered, named.
+// Control: give a restricted member's personal token the caller's scopes at its mint and keep them
+// at its use (tokenScopes answering callerScopes for them, personalTokenActor keeping the row's
+// scopes) and let any credential of a restricted member through (restrictedOwnLoginAtBrowser
+// answering allowed true), and her personal token is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
