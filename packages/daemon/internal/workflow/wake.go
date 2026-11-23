@@ -519,9 +519,11 @@ func OpenRoleAt(p phase.Phase, stepRole, placeRole claim.Role) claim.Role {
 // claim is sent its phase's task (readyWorkerTask), which suspended claim the boot resumes
 // (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which role a
 // CI settlement wakes off the owner's place (wakeOnSettlement, which wakes the owner at its own),
-// and which role a release, a pause's stop of a released claim and a cancel of a release while the
-// project is paused arm a backstop for (the daemon's armBackstops and projectPause.stopTx, and
-// OpenRoleAt for the cancel) — an architect gets none, because nothing of its own is due and a
+// which role a release arms a backstop for off the owner's place (BackstopClaim, which the
+// daemon's armBackstops asks, and which at the owner's own place arms the owner's backstop), and
+// which role a pause's stop of a released claim and a cancel of a release while the project is
+// paused arm one for (projectPause.stopTx, and OpenRoleAt for the cancel), which arm no
+// architect's. An architect off its own place gets none: nothing of its own is due, and a
 // sub-architect woken for nothing would hold a pod open for the backstop period. A held issue
 // stands in held, which no role works, so none of those paths gives its worker anything until a
 // release of the hold gives the phase back.
