@@ -358,20 +358,20 @@ func pullRequestEvents(t *testing.T, builds *twoBuilds, eventType string) map[in
 }
 
 // shipPullRequestsTo creates the issue the row's pull requests are for, in a project whose default
-// repository is acme/deploy, so the key in a pull request's title is held to it (attribution.go),
-// and stores a deploy of acme/deploy's main whose production job succeeded after every one of
-// them merged, so each has shipped once its delivery row is written: a handling then appends the
-// pull request's attribution event and its deploy record as well. It answers the issue's key.
+// repository is acme/deploy (projects.default_repo, which both builds read since main's #4457: no
+// build reads a repo_projects row for it), so the key in a pull request's title is held to it
+// (attribution.go), and stores a deploy of acme/deploy's main whose production job succeeded after
+// every one of them merged, so each has shipped once its delivery row is written: a handling then
+// appends the pull request's attribution event and its deploy record as well. It answers the
+// issue's key.
 func shipPullRequestsTo(t *testing.T, builds *twoBuilds) string {
 	t.Helper()
 	ctx := context.Background()
 	project := uniqueProjectKey(t, "PRS")
 	builds.current().createProject(t, project, "Merged pull requests")
-	if _, err := builds.database.Pool.Exec(ctx, `
-		insert into repo_projects (repo, project, is_default, created_by)
-		values ('acme/deploy', $1, true, '{"kind":"system","id":"test"}'::jsonb)
-	`, project); err != nil {
-		t.Fatalf("make acme/deploy %s's default repository: %v", project, err)
+	set, err := builds.database.Pool.Exec(ctx, `update projects set default_repo = 'acme/deploy' where key = $1`, project)
+	if err != nil || set.RowsAffected() != 1 {
+		t.Fatalf("make acme/deploy %s's default repository: %d row(s), %v", project, set.RowsAffected(), err)
 	}
 	issue, _ := createDocument(t, builds.current(), project, "The work the pull requests ship", "The work.")
 	const runID = 7001
