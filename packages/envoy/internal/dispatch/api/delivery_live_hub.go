@@ -364,7 +364,12 @@ type deliveryLiveSpec struct {
 	project string
 	// slug is the eval, of project, whose rows an items view shows; every other kind names none.
 	slug string
-	key  string
+	// narrowed is whether an evals view's query sets a facet of the delivery timeline but the
+	// repository, or its search (parseEvalNarrowing): its evals that count pull requests are
+	// built from the delivery rows when it is read, so a change of one marks it
+	// (touchedByDeliveryRow). Every other view is not narrowed.
+	narrowed bool
+	key      string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's

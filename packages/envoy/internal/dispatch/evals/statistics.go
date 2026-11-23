@@ -139,9 +139,12 @@ func writable(folded map[string]Statistics) map[string]Statistics {
 // day row (YYYY-MM-DD, null for a series with none), before which a range reads "no data", every
 // statistic null; via_repository, how many of the rows the window's day rows count reached the
 // project through a repository rather than an issue; days, the window's per-day array of a
-// headline series, one point per day that holds a row of it ([] for a control series); and
+// headline series, one point per day that holds a row of it ([] for a control series);
 // compare_days, the compare range's per-day array in the same shape, which a page draws as a second
-// series beside days (null with no compare range).
+// series beside days (null with no compare range); and narrowed, the filters the read narrowed the
+// series by beyond its window and its repositories, by key: the delivery timeline's facets and its
+// search (dispatch://INFRA-2918, R21), a series so narrowed built from the stored single records
+// when it was read (ComputeAtRead), and null for a series folded from the stored rows.
 type SeriesValues struct {
 	Series
 	Window        Statistics `json:"window"`
@@ -151,6 +154,7 @@ type SeriesValues struct {
 	ViaRepository int        `json:"via_repository"`
 	Days          []DayPoint `json:"days"`
 	CompareDays   []DayPoint `json:"compare_days"`
+	Narrowed      []string   `json:"narrowed"`
 }
 
 // DayPoint is one day of a headline series' per-day array: the day (YYYY-MM-DD, UTC) and the

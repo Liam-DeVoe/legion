@@ -120,12 +120,14 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // parseEvalsLiveView reads an evals view: the project whose evals it shows, its window, as a
 // timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
 // would be sent without from and to: the compare range (compare_from and compare_to), the
-// repositories (repo), the kind (kind) and the page (limit and offset). A query the route
-// refuses, a key it does not take among them, is refused here, by the route's own reading of the
-// query the view's read sends it (evalsQuery, parseEvalListQuery), before the view is held. That
-// query holds the view's own from and to: a custom window readWindow takes can still end its days
-// past the year 9999, which the route refuses (evalDaysAnswerable), and a view held with it would
-// read and fail every deliveryLiveRetry for as long as it stood, its subscribers told nothing.
+// repositories (repo), the delivery timeline's facets and its search, the kind (kind) and the
+// page (limit and offset). A query the route refuses, a key it does not take among them, is
+// refused here, by the route's own reading of the query the view's read sends it (evalsQuery,
+// parseEvalListQuery), before the view is held. That query holds the view's own from and to: a
+// custom window readWindow takes can still end its days past the year 9999, which the route
+// refuses (evalDaysAnswerable), and a view held with it would read and fail every
+// deliveryLiveRetry for as long as it stood, its subscribers told nothing. A view whose query sets
+// a facet but the repository, or the search, is narrowed (deliveryLiveSpec.narrowed).
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	project, refusal := readLiveProject(view, "an evals view", "INVALID_QUERY")
 	if refusal != nil {
@@ -135,10 +137,11 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 	if refusal != nil {
 		return refusal
 	}
-	if _, err := parseEvalListQuery(spec.evalsQuery(time.Now().UTC()), evalListQueryKeys); err != nil {
+	request, err := parseEvalListQuery(spec.evalsQuery(time.Now().UTC()), evalListQueryKeys)
+	if err != nil {
 		return invalidLiveView("INVALID_QUERY", err.Error())
 	}
-	spec.project = project
+	spec.project, spec.narrowed = project, request.narrowing != nil
 	spec.key = evalsView + "|" + project + "|" + named + "|" + spec.query.Encode()
 	return nil
 }

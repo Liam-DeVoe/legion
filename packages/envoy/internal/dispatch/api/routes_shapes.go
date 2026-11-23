@@ -230,7 +230,10 @@ type deliveryPipelineQuery struct {
 }
 
 // evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
-// which kind of eval, which repositories' day rows, and the page (parseEvalListQuery).
+// which kind of eval, which repositories' day rows, the delivery timeline's search and repeatable
+// facets, which narrow the evals that count pull requests (dispatch://INFRA-2918, R21), and the
+// page (parseEvalListQuery). The `session` facet is read with the others and named here by no
+// field, as deliveryWindowQuery names none.
 type evalListQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To. The window is the
 	// UTC days [from, to) covers.
@@ -245,8 +248,31 @@ type evalListQuery struct {
 	CompareTo string `query:"compare_to"`
 	// Kind keeps the evals of one kind.
 	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
-	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
 	Repo []string `query:"repo"`
+	// Q, as the delivery timeline reads it, keeps the pull requests whose title or id holds it:
+	// the evals that count pull requests are then computed when read, from the pull requests it
+	// keeps, and name it in `narrowed`.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals to pull requests whose first session belongs to
+	// these parents; __no_session__ to those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals to pull requests of these issues.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals to issues of P0-P3; __no_priority__ to an issue with
+	// none, __no_issue__ to a pull request naming none.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals to these components, a parent including its
+	// children; __no_component__ to an issue with none, __no_issue__ to a pull request naming none.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals to these pull-request authors.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status: deployed, waiting or
+	// not_tracked.
+	Deployed []string `query:"deployed"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -254,7 +280,7 @@ type evalListQuery struct {
 }
 
 // evalsQuery is GET /api/v1/evals's query: the projects read, and every key the project read
-// takes.
+// takes, the `session` facet among them.
 type evalsQuery struct {
 	// Project, repeatable, names the projects read, in the order named; absent, every project is
 	// read, by key. A key no project holds is 404 PROJECT_NOT_FOUND.
@@ -269,8 +295,25 @@ type evalsQuery struct {
 	CompareTo string `query:"compare_to"`
 	// Kind keeps the evals of one kind.
 	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
-	// Repo, repeatable, folds these repositories' day rows in place of each project's own.
+	// Repo, repeatable, folds these repositories' day rows in place of each project's own; with a
+	// facet or the search it narrows the pull requests counted to these repositories too.
 	Repo []string `query:"repo"`
+	// Q keeps the pull requests whose title or id holds it, as the project read takes it.
+	Q string `query:"q"`
+	// ParentAgent narrows the pull-request evals by parent agent, as the project read does.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue narrows the pull-request evals by issue, as the project read does.
+	Issue []string `query:"issue"`
+	// Priority narrows the pull-request evals by priority, as the project read does.
+	Priority []string `query:"priority"`
+	// Component narrows the pull-request evals by component, as the project read does.
+	Component []string `query:"component"`
+	// Author narrows the pull-request evals by author, as the project read does.
+	Author []string `query:"author"`
+	// Rework narrows the pull-request evals by rework, as the project read does.
+	Rework []string `query:"rework"`
+	// Deployed narrows the pull-request evals by deployed_status, as the project read does.
+	Deployed []string `query:"deployed"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts, counted across the projects.

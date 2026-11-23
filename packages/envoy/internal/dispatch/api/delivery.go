@@ -506,6 +506,18 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	if !pop.labeled() {
 		return pop, nil
 	}
+	if err := readDeliveryLabels(ctx, pool, &pop); err != nil {
+		return deliveryPopulation{}, err
+	}
+	return pop, nil
+}
+
+// readDeliveryLabels reads into pop, in q, what labels its pull requests and waiting entries and
+// decides which of them a facet or the search selects: the titles of the sessions they name, the
+// facts of the issues they name and the components of those issues' projects. The delivery routes
+// read them on the pool (readDeliveryRows) and an eval list read narrowed by a facet in its
+// snapshot (evalNarrowing.keep).
+func readDeliveryLabels(ctx context.Context, q delivery.Querier, pop *deliveryPopulation) error {
 	sessionIDs := []string{}
 	issueKeys := []string{}
 	for _, pr := range pop.prs {
@@ -521,16 +533,14 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		}
 	}
 	var err error
-	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs); err != nil {
-		return deliveryPopulation{}, err
+	if pop.titles, err = delivery.ResolveSessionTitles(ctx, q, sessionIDs); err != nil {
+		return err
 	}
-	if pop.issues, err = s.deliveryIssueFacts(ctx, issueKeys); err != nil {
-		return deliveryPopulation{}, err
+	if pop.issues, err = deliveryIssueFacts(ctx, q, issueKeys); err != nil {
+		return err
 	}
-	if pop.components, err = s.deliveryComponents(ctx, deliveryIssueProjects(pop.issues)); err != nil {
-		return deliveryPopulation{}, err
-	}
-	return pop, nil
+	pop.components, err = deliveryComponents(ctx, q, deliveryIssueProjects(pop.issues))
+	return err
 }
 
 // deliveryIssueProjects is the projects issues belong to, once each.
@@ -948,12 +958,13 @@ var deliveryIssueFactsQuery = `
 		where i.key = any($1)
 	`
 
-func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[string]deliveryIssue, error) {
+// deliveryIssueFacts reads in q the facts of the issues keys names (deliveryIssueFactsQuery), by key.
+func deliveryIssueFacts(ctx context.Context, q delivery.Querier, keys []string) (map[string]deliveryIssue, error) {
 	issues := make(map[string]deliveryIssue, len(keys))
 	if len(keys) == 0 {
 		return issues, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys)
+	rows, err := q.Query(ctx, deliveryIssueFactsQuery, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -980,13 +991,13 @@ func deliveryComponentKey(project, id string) string {
 	return project + "/" + id
 }
 
-// deliveryComponents names every component of projects, keyed by deliveryComponentKey.
-func (s *server) deliveryComponents(ctx context.Context, projects []string) (map[string]delivery.DeliveryComponentView, error) {
+// deliveryComponents names, read in q, every component of projects, keyed by deliveryComponentKey.
+func deliveryComponents(ctx context.Context, q delivery.Querier, projects []string) (map[string]delivery.DeliveryComponentView, error) {
 	components := map[string]delivery.DeliveryComponentView{}
 	if len(projects) == 0 {
 		return components, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `select project_key, id, title, parent from components where project_key = any($1)`, projects)
+	rows, err := q.Query(ctx, `select project_key, id, title, parent from components where project_key = any($1)`, projects)
 	if err != nil {
 		return nil, err
 	}

@@ -291,15 +291,25 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 // and message, and stay open, since the project's creation seeds its evals and the change rows of
 // those versions mark the view, whose next read answers it.
 //
-// It names no issue and no session, and reads no delivery settings: what moves it is a write of
-// its project's readings, versions or day rows, each of which the change log carries (touchedBy).
-// It sets no expiry, so no expire narrows it: a window is whole UTC days, which move at midnight,
-// and the refresher's pass at midnight writes every project's rows of the new day, its
-// unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change marks the view.
+// It reads no delivery settings, and sets no expiry, so no expire narrows it: a window is whole
+// UTC days, which move at midnight, and the refresher's pass at midnight writes every project's
+// rows of the new day, its unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose
+// change marks the view. What moves it is a write of its project's readings, versions or day rows,
+// each of which the change log carries (touchedBy). A narrowed view (deliveryLiveSpec.narrowed)
+// builds its evals that count pull requests from the delivery rows themselves, so a change of one
+// marks it too (touchedByDeliveryRow), and it names, as a timeline does (nameShown), each issue
+// those pull requests name, with the ancestors of each, and each session with the title it shows,
+// whose write can move what a facet selects. An unnarrowed view names no issue and no session.
 func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	answer, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
 	if err != nil {
 		return nil, err
+	}
+	if narrowing != nil && narrowing.issues != nil {
+		read.issues, read.sessions = narrowing.issues, narrowing.sessions
+		if read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
+			return nil, err
+		}
 	}
 	return answer, nil
 }

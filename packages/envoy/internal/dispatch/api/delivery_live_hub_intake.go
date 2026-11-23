@@ -516,12 +516,17 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read
 		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),
 		// and an evals view by the eval kinds above; an items view reads pr-ci's runs and their
-		// jobs themselves besides (touchedByItemsRun).
+		// jobs themselves besides (touchedByItemsRun), and a narrowed evals view the pull requests
+		// and deploy runs its evals that count pull requests are built from when it is read
+		// (deliveryLiveSpec.narrowed), which a delivery row's change marks as it marks a measures
+		// view (touchedByDeliveryRow), so it is answered within R14's 2 s.
 		switch view.spec.classes().reads {
 		case viewReadsDelivery:
 			return view.touchedByDeliveryRow(change, now)
 		case viewReadsEvalItems:
 			return view.touchedByItemsRun(change, now)
+		case viewReadsEvals:
+			return view.spec.narrowed && view.touchedByDeliveryRow(change, now)
 		}
 		return false
 	}
@@ -571,7 +576,10 @@ func (view *deliveryView) touchedByItemsRun(change delivery.Change, now time.Tim
 // the present; a change whose rows carry no time at all (a pull request never merged, a job of a
 // run not stored) is taken as touching timeline and measures views. Pipeline lead times read only
 // merged pull requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a
-// Pipeline view. A kind no arm names is taken as touching every such view.
+// Pipeline view. A narrowed evals view (deliveryLiveSpec.narrowed) builds its evals that count
+// pull requests from the pull requests merged on the days of its window and compare range and
+// the deploy runs that ship them, and is marked as a measures view is, up to the end of the later
+// of its two ranges' days (evalsEnd). A kind no arm names is taken as touching every such view.
 func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.Time) bool {
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
@@ -580,14 +588,22 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 		}
 	}
 	from, to := view.window(now)
+	if view.spec.kind == evalsView {
+		to = view.spec.evalsEnd(now, to)
+	}
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
+	case delivery.ChangeKindSessionGroup:
 		return true
+	case delivery.ChangeKindSettings:
+		// A narrowed evals view builds its rows under the settings the stored rows stand built
+		// under, as its stored evals read them (evals.BuiltSettingsIn), so the refresher's word
+		// that the rows stand at the settings marks it (touchedBy), and the save does not.
+		return view.spec.kind != evalsView
 	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline:
+		case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline, evalsView:
 			// The timeline's waiting line reads merges before the window, and the measures'
 			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
 			// it (delivery.Deploys.ShippedBy), which also decides the projects a project timeline's
@@ -602,12 +618,13 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))
 		case string(delivery.DeliveryRunKindDeploy):
 			switch view.spec.kind {
-			case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline:
+			case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline, evalsView:
 				// The timeline's waiting line at the window's start reads deploy runs of any age,
 				// and the measures' deploys_with_prs reads the runs created before the window too:
 				// a run of any age whose production job lands late can ship a pull request a deploy
 				// of the window shipped first until then (pop.windowShipped), and so move the
-				// project a project timeline's deploy counts for.
+				// project a project timeline's deploy counts for, or the deploy a narrowed evals
+				// view's lead times to production time a pull request to.
 				return true
 			default:
 				return len(times) == 0 || some(atOrAfterFrom)
@@ -615,6 +632,23 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 		}
 	}
 	return true
+}
+
+// evalsEnd is the end of the days an evals view reads at now, the later of its window's and its
+// compare range's (parseEvalRanges, the midnight after each range's last day), or to where its
+// query names no compare range ending later; its query was read as the route reads it when it was
+// subscribed (parseEvalsLiveView), so it parses.
+func (spec deliveryLiveSpec) evalsEnd(now, to time.Time) time.Time {
+	ranges, err := parseEvalRanges(spec.evalsQuery(now))
+	if err != nil {
+		return to
+	}
+	for _, days := range []*evals.Range{&ranges.window, ranges.compare} {
+		if days != nil && days.To.After(to) {
+			to = days.To
+		}
+	}
+	return to
 }
 
 // window is the view's window as its last answer resolved it: a custom range as named, a preset
