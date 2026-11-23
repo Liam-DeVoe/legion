@@ -5,12 +5,16 @@
 // the judgment keeps of each place of it in the judged text, are in Texts, outside the judge's
 // package, and the one way to read them is Read, which charges the reading first and gives the text
 // only where the charge lets it. The judge's fields and keys hold no text but the words of each
-// finding and of its ways out, which a rule hands the judge with the finding, and for a finding of
-// the rule instructions those words are its whole sentence: the judge hashes them in each map keyed
-// by the finding a fixed number of times for that finding, and reads them only as the words that a
-// way out changes, once for each place where it writes the way out, as it reads any finding's words.
-// So the judgment reads each text a bounded number of times, however many findings read it, and its
-// work stays in proportion to the judged text.
+// finding and of its ways out, which a rule hands the judge with the finding, and the detail of
+// each finding that a reading gives (the key of the findings that the judge compares), which quotes
+// the finding's words, or for a finding of the rule ste100-dangling-conjunction the last line of its
+// list item. For a finding of the rule instructions the words are its whole sentence: the judge
+// hashes them in each map keyed by the finding a fixed number of times for that finding, and reads
+// them only as the words that a way out changes, once for each place where it writes the way out,
+// as it reads any finding's words. A detail it keeps as a reading gives it, so each comes from one
+// charged reading of a text or from one text that a way out writes. So the judgment reads each text
+// a bounded number of times, however many findings read it, and its work stays in proportion to the
+// judged text.
 //
 // What Read gives can be kept in a variable of the code that read it, as any value of Go can; a
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.

@@ -136,8 +136,9 @@ type judgedUnit struct {
 }
 
 // findingKey is a finding as the judge compares two readings of a unit: its rule and its detail,
-// the rule's words at its place, word for word. The ways out that the finding gives are no part of
-// it (broken.waysSaid).
+// the rule's words at its place, word for word, which for a finding of ste100-dangling-conjunction
+// quote the last line of its list item. The ways out that the finding gives are no part of it
+// (broken.waysSaid).
 type findingKey struct {
 	rule   Rule
 	detail string
