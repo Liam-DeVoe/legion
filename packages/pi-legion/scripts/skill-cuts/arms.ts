@@ -395,6 +395,14 @@ const INLINE_SLACK = 2 * 1024;
  *  settings (read-summary.ts's `isProseSummaryPath` at the pin: Markdown, as
  *  packages/tui/src/lang-from-path.ts lines 104-109 names it, and `.txt`). */
 const PROSE_FILE = /\.(md|markdown|mdx|mdc|mkd|mdown|txt)$/i;
+/** The names of the files a read at the pin shows in a form of their own whatever their bytes: a
+ *  notebook, an SVG image, and the documents markit converts (read.ts lines 2380-2445;
+ *  utils/markit.ts line 22). */
+const OWN_FORM_FILE = /\.(ipynb|svg|pdf|docx|pptx|xlsx|epub)$/i;
+/** The lines from which a read at the pin may summarize a file that is not prose
+ *  (`read.summarize.minTotalLines`, settings.ts lines 241-245; read-summary.ts's `trySummarize`
+ *  counts a file's newlines and one more, `countTextLines`). */
+const SUMMARY_MIN_LINES = 100;
 
 /** A line that opens a git conflict block, as Oh My Pi's scanConflictLines finds one
  *  (packages/coding-agent/src/tools/conflict-detect.ts at the pin). */
@@ -421,8 +429,9 @@ export function snapshotTag(text: string): string {
   return (Bun.hash.xxHash32(kept, 0) & 0xffff).toString(16).toUpperCase().padStart(4, "0");
 }
 
-/** A read by path, answered: its text, whether it failed, and the tool's record. */
-interface PathAnswer {
+/** A read by path, answered: its text, whether it failed, and the tool's record. replay.ts answers
+ *  a written case's read of a file of its checkout copy so (checkout.ts). */
+export interface PathAnswer {
   readonly text: string;
   readonly isError: boolean;
   readonly details: Record<string, unknown>;
@@ -440,10 +449,25 @@ interface PathPage {
 
 /** The page of `file` (a path inside the skill's directory) whose bytes are `bytes`, as a whole
  *  read by path shows it in a session that shows its rows as `rows`, or why Oh My Pi shows it in
- *  a form the arms do not rebuild (`pathFormFault`). */
-function pathPage(file: string, bytes: Uint8Array, rows: PathRows): PathPage | string {
+ *  a form the arms do not rebuild (`pathFormFault`). With `text` (a written case's read of its
+ *  checkout, checkout.ts), a file that is no prose is rebuilt too when the pin shows it whole: no
+ *  file of OWN_FORM_FILE, and fewer than SUMMARY_MIN_LINES lines (read.ts lines 2519-2533 at the
+ *  pin summarize one of more, where its parse elides a body). */
+function pathPage(
+  file: string,
+  bytes: Uint8Array,
+  rows: PathRows,
+  text = false
+): PathPage | string {
   if (!PROSE_FILE.test(file)) {
-    return `${file} is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild`;
+    if (!text) {
+      return `${file} is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild`;
+    }
+    if (OWN_FORM_FILE.test(file)) return `${file} is a file a read shows in a form of its own`;
+    const newlines = bytes.reduce((count, byte) => (byte === 10 ? count + 1 : count), 0);
+    if (bytes.length > 0 && newlines + 1 >= SUMMARY_MIN_LINES) {
+      return `${file} is no prose file and counts ${newlines + 1} lines, from ${SUMMARY_MIN_LINES} of which a read may summarize it`;
+    }
   }
   if (bytes.includes(0) || !isUtf8(bytes)) return `${file} is not UTF-8 text`;
   // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
@@ -509,10 +533,18 @@ export function pathFormFault(
  *  being `source`, its hashline line naming `shown` and its rows shown as `rows` (see the file's
  *  header; read.ts lines 2320-3187 at the pin). Returns why the arms do not rebuild it instead
  *  when Oh My Pi shows the file in another form (`pathFormFault`, or a page it saves as an
- *  artifact). */
-function pathAnswer(
+ *  artifact). checkout.ts answers a read of a file of a written case's checkout copy with it,
+ *  `skillDir` the copy, `file` the path inside it and `text` set (`pathPage`). */
+export function pathAnswer(
   skillDir: string | undefined,
-  read: { file: string; target: string; source: string; shown: string; rows: PathRows }
+  read: {
+    file: string;
+    target: string;
+    source: string;
+    shown: string;
+    rows: PathRows;
+    text?: boolean;
+  }
 ): PathAnswer | string {
   const notFound = { text: `Path '${read.target}' not found`, isError: true, details: {} };
   if (skillDir === undefined) return notFound;
@@ -520,7 +552,7 @@ function pathAnswer(
   if (stats === undefined) return notFound;
   if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
   const bytes = readFileSync(full);
-  const page = pathPage(read.file, bytes, read.rows);
+  const page = pathPage(read.file, bytes, read.rows, read.text === true);
   if (typeof page === "string") return page;
   const { raw, lines, shownLines, cut } = page;
   const numbered = shownLines.map((line, index) =>
@@ -743,7 +775,7 @@ function sourceOf(
  *  session's working directory for a file under it, `~/<rest>` for a file under its home, else
  *  `full` (the cases' recorded reads by path show these three forms); the path as read, made
  *  normal, when the case names no directory that resolves it (`full` undefined). */
-function shownPath(
+export function shownPath(
   target: string,
   full: string | undefined,
   where: { readonly cwd?: string; readonly home?: string }

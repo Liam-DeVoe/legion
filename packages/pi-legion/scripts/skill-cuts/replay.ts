@@ -40,6 +40,19 @@
  * answered round's reads are recorded (`Replayed.reads`: the skill, the file, how it was read,
  * and where the answer came from).
  *
+ * A written case's run (`ReplayOptions.checkout`, the case's `checkout` copied from its commit;
+ * cli.ts gives one to a written case only) also answers a reply whose every tool call is
+ * read-only (checkout.ts's `readOnlyCall`): each read of a skill file as above, each other call
+ * from the copy of the context session's checkout (checkout.ts's `answerCall`: in the pinned Oh My
+ * Pi's form, at the session's paths), and the agent runs on, at most `maxCheckoutRounds`
+ * (MAX_CHECKOUT_ROUNDS) such rounds beside the rounds of skill reads. A reply one of whose calls
+ * the copy does not answer (a selector, a path outside the checkout, a form not rebuilt) ends the
+ * run as any other call does, and the run records why (`Replayed.unanswered`). Each such round's
+ * answers are recorded (`CheckoutRead`: the tool, its input, `from: "checkout"`), and its calls go
+ * into the judged step before the reply that ends the run, as a round of skill reads does; a reply
+ * after the last checkout round that is still all read-only calls the copy answers gets no verdict
+ * (ReadsPastLastRound). A session case's run has no checkout, so no such round.
+ *
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
  *
@@ -75,6 +88,7 @@ import {
   unknownSkill,
 } from "./arms";
 import { pathReadFile, skillReadFile } from "./cases";
+import { answerCall, type CheckoutCopy, readOnlyCall } from "./checkout";
 import {
   type ContentBlock,
   freshIdentity,
@@ -93,6 +107,9 @@ import {
  *  a read of another skill (dispatch-first, a skill that sends the agent to others), then a read of
  *  the case's skill, then the act, takes two. */
 export const MAX_SKILL_ROUNDS = 3;
+/** The most rounds of read-only calls a written case's replay answers from its checkout copy,
+ *  beside its rounds of skill reads: a look at a few files before the act the line governs. */
+export const MAX_CHECKOUT_ROUNDS = 5;
 
 /** How the reason of a run begins whose reply after the last answered round still only reads
  *  skill files (ReadsPastLastRound): such a run gets no verdict. */
@@ -186,30 +203,62 @@ export interface AnsweredRead {
   readonly isError: boolean;
 }
 
+/** One read-only call a checkout round answered from the written case's checkout copy
+ *  (checkout.ts's `answerCall`): its tool, its input as the reply gave it (a bash call's command
+ *  among it), and whether the answer is an error. */
+export interface CheckoutRead {
+  readonly from: "checkout";
+  readonly tool: string;
+  readonly input: unknown;
+  readonly isError: boolean;
+}
+
+/** One answer an answered round recorded: a read of a skill file, or a call the checkout copy
+ *  answered. */
+export type RoundRead = AnsweredRead | CheckoutRead;
+
 /** One replay: the judged step (each answered round's tool calls, then the reply that ended the
- *  run; its other fields are that reply's), how many rounds of skill reads were answered before
- *  it and each one's reads, what each reply used, in the order sent, and the session id every
- *  round of the run went with (gateway.ts's `freshIdentity`; null for a body that names none). */
+ *  run; its other fields are that reply's), how many rounds of skill reads and of checkout reads
+ *  were answered before it and each round's answers in order, what each reply used, in the order
+ *  sent, the session id every round of the run went with (gateway.ts's `freshIdentity`; null for a
+ *  body that names none), and, where the reply that ended the run made only read-only calls one of
+ *  which the checkout copy does not answer, why (`unanswered`). */
 export interface Replayed {
   readonly step: Reply;
   readonly rounds: number;
-  readonly reads: readonly (readonly AnsweredRead[])[];
+  readonly checkoutRounds: number;
+  readonly reads: readonly (readonly RoundRead[])[];
   readonly usage: Spent[];
   readonly userId: string | null;
+  readonly unanswered?: string;
+}
+
+/** What an answered round's answer names: a skill read's skill and file, a checkout read's tool
+ *  and the path, pattern or command it named. */
+function readWords(read: RoundRead): string {
+  if (read.from !== "checkout") return `${read.skill} ${read.file}`;
+  const input = typeof read.input === "object" && read.input !== null ? read.input : {};
+  const named = ["command", "path", "pattern"]
+    .map((key) => Reflect.get(input, key))
+    .find((value) => typeof value === "string");
+  return `${read.tool} ${named ?? ""}`.trim();
 }
 
 /** What a replay rejects with when the reply after its last answered round still only reads skill
- *  files: the run gets no verdict (see the file's header). `replayed` is the run as it stood, its
- *  `step` that reply after the answered rounds' calls. Its message begins READS_PAST_LAST_ROUND,
- *  and names the reply's reads. */
+ *  files, or, in a written case's run, still only makes read-only calls its checkout copy answers:
+ *  the run gets no verdict (see the file's header). `replayed` is the run as it stood, its `step`
+ *  that reply after the answered rounds' calls. Its message begins READS_PAST_LAST_ROUND, and names
+ *  the reply's reads. */
 export class ReadsPastLastRound extends Error {
   constructor(
     readonly replayed: Replayed,
-    last: readonly AnsweredRead[]
+    last: readonly RoundRead[]
   ) {
-    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const reads = last.map(readWords).join(", ");
     super(
-      `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still only reads skill files (${files})`
+      last.every((read) => read.from !== "checkout")
+        ? `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still only reads skill files (${reads})`
+        : `${READS_PAST_LAST_ROUND}: after ${replayed.checkoutRounds} answered rounds of read-only calls answered from the checkout and ${replayed.rounds} of skill reads, the reply still only makes read-only calls the checkout answers (${reads})`
     );
   }
 }
@@ -224,7 +273,9 @@ export class ReadsPastLastRound extends Error {
  *  reply holds no tool call, or one that reads no skill file), before the reply after the last
  *  answered round is refused. When it gives true, the run ends at that reply: the reply is the
  *  judged step, its answers are not sent, and they are in no round of `reads`. Without it, a run
- *  ends only as the file's header says. load.ts's load test uses it. */
+ *  ends only as the file's header says. load.ts's load test uses it. A written case's run gives
+ *  `checkout`, the copy of its checkout its read-only calls are answered from, and at most
+ *  `maxCheckoutRounds` rounds of them (see the file's header); a run without one answers none. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
   readonly copies?: readonly SkillCopy[];
@@ -232,6 +283,8 @@ export interface ReplayOptions extends SendOptions {
     content: readonly ContentBlock[],
     round: readonly SkillRead[] | undefined
   ) => boolean;
+  readonly checkout?: CheckoutCopy;
+  readonly maxCheckoutRounds?: number;
 }
 
 /** A tool call that reads a skill file, answered: the call's id, the answer, and its record. */
@@ -320,12 +373,56 @@ function roundReads(
   return reads;
 }
 
+/** A tool call the checkout copy answered: the call's id, the answer, and its record. */
+interface CheckoutAnswered {
+  readonly id: string;
+  readonly text: string;
+  readonly isError: boolean;
+  readonly read: RoundRead;
+}
+
+/** The answers to a reply's `content` from the checkout copy `checkout` when every tool call of it
+ *  is read-only (checkout.ts's `readOnlyCall`): each read of a skill file as `skillRead` answers
+ *  it, each other call from the copy (`answerCall`); undefined when it holds no tool call or one
+ *  that is not read-only; `why` a call of it is not answered, when one is not (see the file's
+ *  header). */
+async function checkoutRound(
+  content: readonly ContentBlock[],
+  arm: Arm,
+  copies: readonly SkillCopy[],
+  checkout: CheckoutCopy
+): Promise<CheckoutAnswered[] | { readonly why: string } | undefined> {
+  const calls = toolCalls(content);
+  if (calls.length === 0) return undefined;
+  for (const { id, name, input } of calls) {
+    if (id === undefined || !readOnlyCall(name, input)) return undefined;
+  }
+  const rows = arm.pathCopy?.rows ?? arm.pathRows ?? "hashline";
+  const answers: CheckoutAnswered[] = [];
+  for (const { id = "", name, input } of calls) {
+    const target =
+      name === "read" && typeof input === "object" && input !== null
+        ? Reflect.get(input, "path")
+        : undefined;
+    const skill = typeof target === "string" ? skillRead(id, target, arm, copies) : undefined;
+    if (skill !== undefined) {
+      answers.push(skill);
+      continue;
+    }
+    const answer = await answerCall(checkout, name, input, rows);
+    if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
+    const read = { from: "checkout", tool: name ?? "", input, isError: answer.isError } as const;
+    answers.push({ id, ...answer, read });
+  }
+  return answers;
+}
+
 /** `body` with `content`, a reply whose every tool call is one of `reads`, and the answer to each
  *  read added, in the form of the body's API (see the file's header). */
 function answered(
   body: RequestBody,
   content: readonly ContentBlock[],
-  reads: readonly SkillRead[]
+  reads: readonly { readonly id: string; readonly text: string; readonly isError: boolean }[]
 ): RequestBody {
   if (isResponsesBody(body)) {
     const outputs = reads.map(({ id, text }) => ({
@@ -353,47 +450,75 @@ function answered(
 
 /** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
  *  file's header) and the run's own session id `userId` (`freshIdentity`), which every round of
- *  the run keeps; answers its skill reads, and returns the judged step, or rejects with
- *  ReadsPastLastRound. `sent` is never changed, and every round's body shares its parts.
- *  `firstSettled` is told once the run's first send has its reply or its failure. */
+ *  the run keeps; answers its skill reads, and, with `checkout`, its rounds of read-only calls, and
+ *  returns the judged step, or rejects with ReadsPastLastRound. `sent` is never changed, and every
+ *  round's body shares its parts. `firstSettled` is told once the run's first send has its reply or
+ *  its failure. */
 async function replaySent(
   sent: RequestBody,
   userId: string | null,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers, endsAt }: ReplayOptions,
+  {
+    maxSkillRounds = MAX_SKILL_ROUNDS,
+    copies = [],
+    headers,
+    endsAt,
+    checkout,
+    maxCheckoutRounds = MAX_CHECKOUT_ROUNDS,
+  }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
   let body = sent;
   const usage: Spent[] = [];
-  const reads: AnsweredRead[][] = [];
+  const reads: RoundRead[][] = [];
   // The answered rounds' tool calls, which the judged step holds before the reply that ends it.
   const calls: ContentBlock[] = [];
-  for (let rounds = 0; ; rounds += 1) {
+  let rounds = 0;
+  let checkoutRounds = 0;
+  for (let sends = 0; ; sends += 1) {
     let reply: Reply;
     try {
       reply = await gateway.send(body, { headers });
     } finally {
-      if (rounds === 0) firstSettled?.();
+      if (sends === 0) firstSettled?.();
     }
     usage.push(reply.spent);
     const content = reply.message.content;
     const round = roundReads(content, arm, copies);
     const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
-    const ends = endsAt?.(content, round) === true;
-    if (round === undefined || ends) return { step, rounds, reads, usage, userId };
-    if (rounds >= maxSkillRounds) {
-      throw new ReadsPastLastRound(
-        { step, rounds, reads, usage, userId },
-        round.map(({ read }) => read)
-      );
+    const replayed = { step, rounds, checkoutRounds, reads, usage, userId };
+    if (endsAt?.(content, round) === true) return replayed;
+    let answers: readonly CheckoutAnswered[];
+    if (round !== undefined) {
+      if (rounds >= maxSkillRounds) {
+        throw new ReadsPastLastRound(
+          replayed,
+          round.map(({ read }) => read)
+        );
+      }
+      rounds += 1;
+      answers = round;
+    } else {
+      const looked =
+        checkout === undefined ? undefined : await checkoutRound(content, arm, copies, checkout);
+      if (looked === undefined) return replayed;
+      if ("why" in looked) return { ...replayed, unanswered: looked.why };
+      if (checkoutRounds >= maxCheckoutRounds) {
+        throw new ReadsPastLastRound(
+          replayed,
+          looked.map(({ read }) => read)
+        );
+      }
+      checkoutRounds += 1;
+      answers = looked;
     }
-    reads.push(round.map(({ read }) => read));
+    reads.push(answers.map(({ read }) => read));
     // A Messages `tool_use` block, or a Responses `function_call` item.
     calls.push(
       ...content.filter((block) => block.type === "tool_use" || block.type === "function_call")
     );
-    body = answered(body, content, round);
+    body = answered(body, content, answers);
   }
 }
 
@@ -472,13 +597,14 @@ export interface InterleavedRun extends Slot {
  * reply or has failed, so that the prefix its reply wrote to the cache serves its arm's later
  * runs. Those waits change no place of the order. Each arm's body to send is made once for all
  * its runs, each run's a copy of its top level with its own id (the body itself, when it names no
- * id). Each run's outcome is kept, whether it was a step or a failure, in the order sent.
+ * id). Each run's outcome is kept, whether it was a step or a failure, in the order sent. A
+ * written case's round gives `checkout`, the copy every arm's runs answer read-only calls from.
  */
 export async function replayInterleaved(
   arms: readonly ArmRuns[],
   gateway: Gateway,
   seed: string,
-  options: Pick<ReplayOptions, "maxSkillRounds"> = {}
+  options: Pick<ReplayOptions, "maxSkillRounds" | "checkout" | "maxCheckoutRounds"> = {}
 ): Promise<InterleavedRun[]> {
   const byName = new Map<ArmName, ArmRuns & { readonly sent: RequestBody }>();
   for (const each of arms) {

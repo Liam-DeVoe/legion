@@ -6,6 +6,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -1788,7 +1789,9 @@ const NO_SKILL_KEEPS =
 /** Writes case `id`'s results under `out` in the runner's shape, made up: each stage of `stages`
  *  with each arm's passes of its runs (10 in the screen, 40 in confirm and control), its other
  *  runs fails. Each stage records `compared` (absent: a stage the cut's runner made before the
- *  compared arm was recorded), and the screen and confirm stages record the ours arm's `ours`. */
+ *  compared arm was recorded), and the screen and confirm stages record the ours arm's `ours`.
+ *  `step`, where given, gives each run's judged step and its answered rounds' reads (by its arm
+ *  and its number from 0); else every run's step is empty. */
 function writeMadeUpResult(
   out: string,
   id: string,
@@ -1796,6 +1799,7 @@ function writeMadeUpResult(
   recorded: {
     compared?: Compared;
     ours?: { name: string; replacedOwn: boolean; removedReads: string[] };
+    step?: (arm: string, n: number) => { reply: unknown[]; skillReads?: unknown[][] };
   } = {}
 ): void {
   const judged = (verdict: "pass" | "fail") => ({ verdict, reason: "made up" });
@@ -1833,7 +1837,12 @@ function writeMadeUpResult(
             userId: null,
             id: null,
             skillRounds: 0,
-            reply: [],
+            ...(recorded.step === undefined
+              ? { reply: [] }
+              : {
+                  reply: recorded.step(arm, n).reply,
+                  skillReads: recorded.step(arm, n).skillReads ?? [],
+                }),
             replaySpent: [],
             judgeSpent: [],
           }))
@@ -2377,6 +2386,68 @@ describe("behaviour: written cases and the report's descriptions", () => {
     expect(reported.stdout.split("\n")).toContain(
       "screened cases, old against none in the screen: 3 ties, 1 floor (0 of 10 in both), 1 ceiling (10 of 10 in both), 1 reverse gap (none above old); a floor or a ceiling is a tie too"
     );
+  }, 60_000);
+
+  // Catches: the measured defect hidden in the mean (a case on which every arm fails on a first
+  // look at the work counts as a tie), a floor counted from an answered round's reads rather than
+  // the judged reply's own calls, or a floor case dropped.
+  test("report counts the inspection floors by kind with their ids, and gives the mean over all screened cases and over those that are not floors", async () => {
+    const s = withWritten(scenario("report-floors", f1File(2), [{ id: "c04" }, { id: "c05" }]), [
+      "w00",
+      "w01",
+    ]);
+    const look = { type: "tool_use", id: "toolu_look", name: "read", input: { path: "app.py" } };
+    const grep = {
+      type: "tool_use",
+      id: "toolu_grep",
+      name: "bash",
+      input: { command: "grep -n main app.py | head" },
+    };
+    const act = {
+      type: "tool_use",
+      id: "toolu_act",
+      name: "write",
+      input: { path: "test_app.py", content: "def test_main(): pass\n" },
+    };
+    const answered = { from: "checkout", tool: "read", input: look.input, isError: false };
+    const screens: Record<string, { old: number; none: number }> = {
+      c04: { old: 0, none: 0 },
+      c05: { old: 8, none: 2 },
+      w00: { old: 1, none: 0 },
+      w01: { old: 0, none: 0 },
+    };
+    const steps: Record<
+      string,
+      (arm: string, n: number) => { reply: unknown[]; skillReads?: unknown[][] }
+    > = {
+      // Every run of each arm is judged on a look: a floor.
+      c04: () => ({ reply: [look, grep] }),
+      // Every run acts: no floor.
+      c05: () => ({ reply: [act] }),
+      // Old passes one run and fails nine on a look; none fails all ten on one: a floor.
+      w00: () => ({ reply: [look] }),
+      // Seven of old's ten fail on a look; the other three on an act after an answered round of
+      // reads, which is no look of the judged reply: no floor.
+      w01: (arm, n) =>
+        arm === "old" && n >= 7
+          ? { reply: [look, act], skillReads: [[answered]] }
+          : { reply: [look] },
+    };
+    for (const [id, screen] of Object.entries(screens)) {
+      writeMadeUpResult(s.out, id, { screen }, { compared: "none", step: steps[id] });
+    }
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const difference = (id: string) => ((screens[id]?.old ?? 0) - (screens[id]?.none ?? 0)) / 10;
+    expect(lines).toContain(
+      "inspection floors (screened cases on which at least 8 of the 10 screen runs of each screen arm are judged fail on a step whose own tool calls are all read-only calls; a description beside the registered rule, which drops no case): 2 of 4 screened (session 1: c04; written 1: w00)"
+    );
+    expect(lines).toContain(
+      `mean of old less none in screen pass rate, each screened case one observation (a description beside the registered rule): over all 4 screened cases ${meanWords(["c04", "c05", "w00", "w01"].map(difference))}; over the 2 screened cases that are not inspection floors (c05, w01) ${meanWords(["c05", "w01"].map(difference))}`
+    );
+    // Each case is still screened and counted.
+    expect(lines).toContain("cases by kind: 2 session (1 informative), 2 written (0 informative)");
   }, 60_000);
 
   // Catches: a case the arm with no skill fails by construction, since its real step reads a file
@@ -4726,7 +4797,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
-      `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of 3 answered rounds of skill reads still only read skill files, which get no verdict and are run again, by stage and arm: screen ${pastByArm(runs)}; confirm old 0, new 0; control old 0, minus 0, twin 0`
+      `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of 3 answered rounds of skill reads, or of 5 rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: screen ${pastByArm(runs)}; confirm old 0, new 0; control old 0, minus 0, twin 0`
     );
     expect(
       pastByArm(runs)
@@ -4745,7 +4816,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const all = SCREEN_RUNS + MAX_EXTRA_RUNS;
-    const reason = `${READS_PAST_LAST_ROUND}: the none arm has 0 of its ${SCREEN_RUNS} judged runs after ${all} runs, ${all} of which still only read skill files after the last answered round (runs that read past the last round: old 0, new 0, none ${all})`;
+    const reason = `${READS_PAST_LAST_ROUND}: the none arm has 0 of its ${SCREEN_RUNS} judged runs after ${all} runs, ${all} of which still only read after the last answered round (skill files, or read-only calls a written case's checkout answers) (runs that read past the last round: old 0, new 0, none ${all})`;
     const c = result(s.out, "c04");
     expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
       dropped: reason,
@@ -4758,5 +4829,238 @@ describe("behaviour: a replay's reads of skill files", () => {
       `case c04: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${all} runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: old 0, new 0, none ${all})\n`
     );
     expect(reported.stdout).toContain(`, 1 ${READS_PAST_LAST_ROUND}), 0 unscreened, 0 not run`);
+  }, 120_000);
+
+  /** A made-up repository acme/proj of one commit holding `files` and the symbolic links `links`
+   *  (each path to its target), as `--repos <dir>/acme/proj.git` gives it to a written case's clone;
+   *  that `--repos` directory and the commit. */
+  const gitRepository = (
+    dir: string,
+    files: Record<string, string>,
+    links: Record<string, string> = {}
+  ): { repos: string; commit: string } => {
+    const repos = path.join(dir, "repos");
+    const work = path.join(dir, "proj-work");
+    writeSkill(work, files);
+    for (const [link, target] of Object.entries(links)) symlinkSync(target, path.join(work, link));
+    const git = (cwd: string, ...args: string[]) => {
+      const ran = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env: {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: work,
+          GIT_AUTHOR_NAME: "Acme",
+          GIT_AUTHOR_EMAIL: "dev@acme.test",
+          GIT_COMMITTER_NAME: "Acme",
+          GIT_COMMITTER_EMAIL: "dev@acme.test",
+          GIT_AUTHOR_DATE: "2026-11-20T00:00:00Z",
+          GIT_COMMITTER_DATE: "2026-11-20T00:00:00Z",
+        },
+      });
+      expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
+      return ran.stdout.toString().trim();
+    };
+    git(work, "init", "--quiet");
+    git(work, "add", ".");
+    git(work, "commit", "--quiet", "-m", "Add the guide");
+    const commit = git(work, "rev-parse", "HEAD");
+    git(dir, "clone", "--quiet", "--bare", work, path.join(repos, "acme", "proj.git"));
+    return { repos, commit };
+  };
+
+  // Catches: a written case run with no copy of its checkout, so its agent is judged on its first
+  // look at the work; a git command answered from no history; a session case answered from a
+  // checkout it does not have; or a checkout made again for each case or stage of one commit (a
+  // large repository's checkout takes minutes and gigabytes).
+  test("written cases of one commit answer a reply that only reads from one shared checkout of their repository at that commit, made once and kept, git history among it, and record the round; a session case's runs are judged on that reply", async () => {
+    const base = scenario("checkout-rounds", LOSS_SKILL(), [{ id: "c04" }]);
+    // The made-up repository acme/proj, one commit, as `--repos` gives it to the fetch.
+    const guide = "# Guide\n\nRun the app.\n";
+    const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
+    const checkout = { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" };
+    const written = ["w00", "w01"].map((id): Case => ({ ...makeWrittenCase(id), checkout }));
+    const cases = [...base.cases, ...written];
+    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
+    const s = { ...base, cases, markers };
+    recordCaptures(s, ["old", "new", "none"]);
+    // Each run reads docs/guide.md and the log first, and acts once their answers are in its body.
+    const answered: string[] = [];
+    let calls = 0;
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      const results = Array.isArray(last)
+        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_look_"))
+        : [];
+      if (results.length > 0) {
+        answered.push(results.map((block) => block.content[0].text).join("\n---\n"));
+        return behaviourStandIn(body);
+      }
+      calls += 1;
+      return sseResponse(
+        messageSse({
+          id: `msg_look_${calls}`,
+          model: "claude-sonnet-5-5",
+          content: [
+            {
+              type: "tool_use",
+              id: `toolu_look_${calls}_read`,
+              name: "read",
+              input: { path: "docs/guide.md" },
+            },
+            {
+              type: "tool_use",
+              id: `toolu_look_${calls}_log`,
+              name: "bash",
+              input: { command: "git log --format=%s && git status --short" },
+            },
+          ],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    const ran = await cli(
+      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
+    );
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const runsOf = (id: string) => result(s.out, id).stages.screen?.runs ?? [];
+    for (const id of ["w00", "w01"]) {
+      expect(runsOf(id)).toHaveLength(3 * SCREEN_RUNS);
+      expect(result(s.out, id).stages.screen?.checkout).toEqual({
+        git: true,
+        depth: 50,
+        removedLinks: [],
+      });
+      for (const run of runsOf(id)) {
+        expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+          rounds: 1,
+          unanswered: undefined,
+        });
+        expect(
+          run.skillReads?.[0]?.map((read) => [read.from, "tool" in read ? read.tool : ""])
+        ).toEqual([
+          ["checkout", "read"],
+          ["checkout", "bash"],
+        ]);
+      }
+    }
+    // A run of a second or more says its wall time, as Oh My Pi's bash does.
+    const expected = `[docs/guide.md#${snapshotTag(guide)}]\n1:# Guide\n2:\n3:Run the app.\n---\nAdd the guide\n`;
+    expect(answered.length).toBeGreaterThan(0);
+    for (const text of answered) {
+      expect(text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")).toBe(expected);
+    }
+    for (const run of runsOf("c04")) {
+      expect(run.checkoutRounds).toBe(0);
+      expect(run.reply).toMatchObject([
+        { type: "tool_use", name: "read", input: { path: "docs/guide.md" } },
+        { type: "tool_use", name: "bash" },
+      ]);
+    }
+    // One checkout of the commit, made once, said once, and kept in the cache with its marker.
+    const made = ran.stdout
+      .split("\n")
+      .filter((line) => line.includes(`the checkout of acme/proj at ${commit} is made in `));
+    expect(made).toHaveLength(1);
+    expect(made[0]).toContain("(git, its history 50 commits deep; no symbolic link leaves it)");
+    const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
+    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+    expect(readFileSync(path.join(checkouts, commit, "docs", "guide.md"), "utf8")).toBe(guide);
+  }, 120_000);
+
+  // Catches: a model-written call of a written case's run that reads a file outside its checkout
+  // copy (a key file of the pod) through a symbolic link the repository holds, so its text reaches
+  // the model and the run records posted on Dispatch; or a half-made checkout, left by a run that
+  // was killed, used as it is.
+  test("a written case's copy holds no symbolic link that resolves outside it: cat, grep -R and read of the repository's link to a secret outside never show it, and the stage records the link removed; a half-made checkout of a dead run is made again", async () => {
+    const base = scenario("checkout-links", LOSS_SKILL(), [{ id: "c04" }]);
+    const secret = fixtureSecret("podkey");
+    const outside = path.join(base.dir, "outside-key.txt");
+    writeFileSync(outside, `${secret}\n`);
+    const { repos, commit } = gitRepository(
+      base.dir,
+      { "docs/guide.md": "# Guide\n\nRun the app.\n" },
+      { "leak.txt": outside }
+    );
+    const written: Case = {
+      ...makeWrittenCase("w00"),
+      checkout: { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" },
+    };
+    const cases = [...base.cases, written];
+    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
+    recordCaptures(s, ["old", "new", "none"]);
+    // A run that died making the checkout: its lock names a process that runs no more, and its
+    // half-made checkout holds a file the commit does not.
+    const checkouts = path.join(s.dir, "cache", "checkouts", "acme", "proj");
+    mkdirSync(path.join(checkouts, commit), { recursive: true });
+    writeFileSync(path.join(checkouts, commit, "half.txt"), "half-made\n");
+    const dead = Bun.spawnSync(["true"]).pid;
+    writeFileSync(path.join(checkouts, `${commit}.lock`), `${dead}\n`);
+    const answered: string[] = [];
+    let calls = 0;
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      const results = Array.isArray(last)
+        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_leak_"))
+        : [];
+      if (results.length > 0) {
+        answered.push(...results.map((block) => block.content[0].text));
+        return behaviourStandIn(body);
+      }
+      calls += 1;
+      const call = (n: number, name: string, input: Record<string, unknown>) => ({
+        type: "tool_use" as const,
+        id: `toolu_leak_${calls}_${n}`,
+        name,
+        input,
+      });
+      return sseResponse(
+        messageSse({
+          id: `msg_leak_${calls}`,
+          model: "claude-sonnet-5-5",
+          content: [
+            call(1, "read", { path: "leak.txt" }),
+            call(2, "bash", { command: "cat leak.txt" }),
+            call(3, "bash", { command: `grep -R ${secret.slice(0, 12)} .` }),
+          ],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    const ran = await cli(
+      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
+    );
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      "(git, its history 50 commits deep; 1 symbolic links that leave it removed: leak.txt)"
+    );
+    expect(ran.stdout).toContain(
+      `the checkout ${path.join(checkouts, commit)} is half-made by process ${dead}, which holds it no more: it is made again`
+    );
+    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+    expect(existsSync(path.join(checkouts, commit, "half.txt"))).toBe(false);
+    const stage = result(s.out, "w00").stages.screen;
+    expect(stage?.checkout).toEqual({ git: true, depth: 50, removedLinks: ["leak.txt"] });
+    for (const run of stage?.runs ?? []) {
+      expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+        rounds: 1,
+        unanswered: undefined,
+      });
+    }
+    expect(answered.length).toBeGreaterThan(0);
+    expect(
+      new Set(answered.map((text) => text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")))
+    ).toEqual(
+      new Set([
+        "Path 'leak.txt' not found",
+        "cat: leak.txt: No such file or directory\n\n\nCommand exited with code 1",
+        "(no output)\n\nCommand exited with code 1",
+      ])
+    );
+    expect(answered.join("\n")).not.toContain(secret);
+    expect(readFileSync(caseResultFile(s.out, "w00"), "utf8")).not.toContain(secret);
   }, 120_000);
 });

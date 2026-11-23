@@ -196,7 +196,13 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   over the cases; one case has none, and a kind with no screened case has no mean); and how many
   screened cases tie (old and the compared arm pass alike), floor (0 of 10 in both), ceil (10 of
   10 in both) and reverse (the compared arm passes more than old), a floor or a ceiling being a
-  tie too. With `--build-summary <file>` (report only, repeatable: the summaries of
+  tie too. Beside them, the inspection floors (`inspection floors (screened cases on which at
+  least 8 of the 10 screen runs of each screen arm are judged fail on a step whose own tool calls
+  are all read-only calls; …): <n> of <screened> screened (session <a>: <ids>; written <b>:
+  <ids>)`): a run's own calls are its judged reply's, less each answered round's calls, and must be
+  one or more, each read-only by the rule below ("Read-only calls"); and the mean of old less the
+  compared arm in screen pass rate over all screened cases and over the screened cases that are
+  not inspection floors (named). No case is dropped for being a floor. With `--build-summary <file>` (report only, repeatable: the summaries of
   `build-cases --drop-navigation`, of the session form and of the `--written` form), it prints
   beside the verdict, as a description that changes no rule, `navigation lines of the skill that
   no case tests (from the build summaries): <file>:<number> "<text>"; …`: each navigation line
@@ -305,6 +311,71 @@ such runs by stage and arm, and a stage that an arm cannot finish for them drops
 `reads-past-last-round`, listed with its counts. Each run records each answered round's reads
 (`skillReads`: the skill, the file, by `skill://` or by path, and whether the arm, the installed
 copy or no copy answered it).
+
+A written case's run (`source.kind` `written`, with a `checkout`) also answers a reply whose every
+tool call is read-only ("Read-only calls" below) from the checkout of its context session's
+repository at its commit, at most 5 rounds (`MAX_CHECKOUT_ROUNDS`) beside the 3 rounds of skill
+reads; a skill read in such a reply is answered as above. A session case's run gets no such
+answers. Every written case of one commit, in every stage and every run that shares the cache,
+answers from one shared checkout, `<cache-dir>/checkouts/<owner>/<name>/<commit>`, read-only once
+made and never removed by a stage (cli.ts's `sharedCheckout`). It is made once: `git init`, `git
+remote add origin https://github.com/<repo>.git` (through the pod's git; `<repos>/<owner>/<name>.git`
+with `--repos`), `git fetch --depth=50 --filter=blob:none origin <commit>` and `git checkout
+--detach <commit>` (a whole clone of a large repository's history does not finish in a stage's
+time: on a repository of 115,950 files the fetch took 12.9 s and the checkout 547 s and 2.7 GB);
+then every symbolic link in it that resolves outside it or not at all is removed (`checkout.ts`'s
+`removeOutsideLinks`; a link that resolves inside stays), and its marker
+(`<commit>.ready.json`: whether it is git, its depth, the links removed, the seconds and bytes of
+its making) is written last, so a half-made checkout is never used. A lock (`<commit>.lock`, the
+pid of the run making it) keeps two runs from making it at once: a run that finds the lock of a
+live process waits for the marker; one that finds the lock of a process that runs no more removes
+it and the half-made checkout and makes it again, and says so. Its making is said once, with its
+seconds and size. Where a git step fails, the checkout is GitHub's tarball of the commit
+(context.ts's tree read, kept in `--cache-dir`) copied there, shared the same way, and its git
+commands are not answered. Each stage records the checkout it answered from (`checkout`: `{"git",
+"depth", "removedLinks"}`): its history is 50 commits deep, so `git log` shows at most 50 commits
+and then the shallow boundary, and `git status` shows a detached HEAD (the session's branch is not
+known) and each link removed as deleted; git runs with `GIT_OPTIONAL_LOCKS=0`, so `git status`
+writes no index there. The answers are
+the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
+case's reads by path show them, or `Path '<path>' not found`; a file that is no prose only below
+100 lines (Oh My Pi may summarize a longer one), and no notebook, SVG or document; `grep` and
+`glob` in their tools' forms (one line of context before a match, three after; `glob`'s paths in
+path order, since a checkout keeps no times of change); `bash` run in the checkout, its working
+directory and the checkout's root mapped between the session's paths and the runner's, its output
+as Oh My Pi's bash tool gives it, within 30 s and 50 KB (a line of at most 768 characters). The
+calls are the model's, run on the runner's machine, so none may read a file outside the checkout:
+with no link out of it left, `cat` of a link, `grep -R`, `rg --follow`, `find -L` and a
+`read` follow no link out, and no option that follows links is refused. Beside that, a `read`,
+`grep` or `glob` whose target resolves outside the copy is not answered, nor is a `bash` command a
+word of which may lead outside it: a `$` or brace expansion, a path under `~`, a word naming
+`.git`, an absolute path off the checkout's root, a relative one that leaves the root from any
+directory a `cd` before it may have moved to, or an option's attached path that does. A call the
+copy does not answer so (a read with a selector or of a directory, a path outside the checkout or
+under `~`, an output Oh My Pi's minimizer would rewrite, a `find` or `ls` tool, a run past its
+time) is not answered: the reply is the judged step, and the run records why (`unanswered`). The
+judged step is each answered round's calls, then the act; a reply after round 5 still all
+read-only calls the copy answers gets no verdict and is run again (`reads-past-last-round`). Each
+run records its checkout rounds (`checkoutRounds`) and, in `skillReads`, each round's answers: a
+checkout one as `{"from": "checkout", "tool", "input", "isError"}`, its input naming the path,
+the pattern or the command.
+
+#### Read-only calls
+
+One rule (`checkout.ts`'s `readOnlyCall`, its lists `READ_ONLY_TOOLS`, `READ_ONLY_PROGRAMS` and
+`READ_ONLY_GIT`) decides both the checkout rounds and the report's inspection floors. A read-only
+call is a call of the `read`, `grep`, `glob`, `find` or `ls` tool (the pinned Oh My Pi's file
+finder is `glob`; `find` and `ls` are declared by no capture), or a `bash` call whose every
+command, joined only by pipes, `&&`, `||`, `;` or line ends, is `cd`, `cat`, `head`, `tail`,
+`ls`, `find` (without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`,
+`-fprintf` or `-fls`), `grep`, `rg` (without `--pre`), `wc`, `sed -n` (without `-i`, or a `w`,
+`W` or `e` command), `nl`, `stat`, `file` (without `-C`), `tree` (without `-o`), or `git` (with at
+most `-C <dir>`, `--no-pager` or `-P` before it) `log`, `show`, `diff`, `status`, `grep`,
+`ls-files` or `blame` (without `--output`, `-O`, `--open-files-in-pager` or `--ext-diff`), with no
+redirection to a file (`/dev/null`, a copy of one stream into another such as `2>&1`, and an
+input `<` are allowed). A command substitution, a backtick, a process substitution, a variable
+assignment, a subshell or `{ }` group, a background `&`, a heredoc, a comment, a program named by
+its path, or any other command makes the call not read-only.
 
 #### The arm of ours
 
@@ -1733,45 +1804,61 @@ start, its first prompt build, and its listing measured against the earliest sub
 spawned under that build; a subagent's at its root's last prompt build before its start. The
 summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
-detail, or `model-not-served` for a session on a model the gateway does not serve). A case's
+detail, `model-not-served` for a session on a model the gateway does not serve, or
+`skill-as-material: <why>` for a session whose work, by the written-case reader's answer, is on
+the skill's own text: such a session is passed over, as the session form drops it, and the next
+candidate taken; a `--context-session` of one is refused, exit 1). A case's
 `model` is the context session's when the gateway serves it; else the served model with the most
 reading sessions of the skill in `--reading-models` (the skill's `<cut or set id>/models/<skill>.json`);
 else the served model with the most reading sessions summed over the `--model-pool` files (each a
 models file of a skill of the set: give the flag once per file); with none, the build fails
-(exit 1). The `written-case` reader (`prompts/written-case.md`) is called once: it reads the base
-text (`--old`, each line numbered), the navigation lines of the session build (`<navigation>`:
-with `--drop-navigation`, those of the summary beside `--session-cases`, as above; else none),
-each session case of `--session-cases` (its real step and its criterion; none when the flag is
-not given) and the context session's first user message, and writes at most n tasks in which a
-line of the skill decides the agent's first step after it reads the skill and then, in their
-order, the files of the skill the navigation lines send it to. Each task comes with the task (the
-user's message), those files (`reads`: paths of the base text other than `SKILL.md`, each once;
-none where no navigation line is given, and none when the answer leaves it out), the line (file,
-number and text; its schema refuses one that is not that line of the base text, or that is a
-navigation line given, by its file and text), the criterion, a following step and a violating
-step. Each task gives a case whose `messages` are the task as the user's message, an assistant
-call `read skill://<skill>` and its result: the base text's `SKILL.md`, answered as the arms
-answer a history read, in the directory the context session's first read of the skill showed (for
-a read by path, the directory of the copy it read: the path read, resolved, less the file inside
-the skill); then, for each file of `reads` in its order, a call `read skill://<skill>/<path>` and
-its result, that file of the base text answered the same way (`skillReads` points at every read
-result). Its `realStep` is the following step, its `violatingStep` the violating one, its `source`
-the context session's store and path hash with `kind` `written`, and its profile, working
-directory and system context the context session's; its evidence names each read of the context
-session its profile is built from, and so how it read the skill (`context session read: message
-<n> reads [Skill file: <path>]` for a `skill://` read, `context session read: message <n> reads
-<path> by its path` for a whole read by path of the cut's copy, its source naming the copy's
-directory), the task (and the navigation lines given), each read of `reads` (`written case: reads
-skill://<skill>/<path> after the skill`, with the navigation lines that send the agent there), the
-context session and the model. Secrets are taken
-out as from a session case. The `restate` reader reads the task and the read calls (never a
+(exit 1). The `written-case` reader (`prompts/written-case.md`) is called once for each context
+session it is asked of: it reads the base text (`--old`, each line numbered), the navigation lines
+of the session build (`<navigation>`: with `--drop-navigation`, those of the summary beside
+`--session-cases`, as above; else none), each session case of `--session-cases` (its real step and
+its criterion; none when the flag is not given), the context session's checkout (`<checkout>`: its
+repository, root and working directory, and every path of the commit's tree, or its root's
+entries for a tree of more than 2,000 paths or one GitHub cuts short; `None.` when the build knows
+no checkout) and its first user message, and writes at most n tasks in which a line of the skill
+(of any file of it, none of the navigation lines) decides the agent's act once it has read the
+skill and looked at what the act needs; or `{"tasks": [], "material": {"why": …}}` when the
+session's work at the skill's read is on the skill's own text. Each task comes with the task (the
+user's message), `existing` (each path the task treats as already in the checkout, as it names
+it; never a path it asks the agent to create), the line (file, number and text; its schema refuses
+one that is not that line of the base text, or that is a navigation line given), the criterion, a
+following step and a violating step. `--written-answer <file>` gives that answer in a file, read
+in place of the reader's call and checked by the same schema (its count against `--written`;
+refused, exit 2, when it is none); the summary records its path and SHA-256
+(`inputs.writtenAnswer`) and `tasksFrom`, and every check below runs on it as on the reader's. A
+task one of whose `existing` paths the checkout does not hold at the commit (or any, where the
+build knows no checkout) is dropped as `written-missing-path`, naming the path; a path it asks to
+create is never checked. Each task gives a case whose `messages` are the task as the user's message,
+an assistant call `read skill://<skill>` and its result, and nothing else: the base text's
+`SKILL.md`, answered as the arms answer a history read, in the directory the context session's
+first read of the skill showed (for a read by path, the directory of the copy it read: the path
+read, resolved, less the file inside the skill). The agent reads any other file of the skill
+itself in the run, where the skill-read rounds answer it, and looks at the checkout in the
+checkout rounds above. Its `realStep` is the following step, its `violatingStep` the violating
+one, its `source` the context session's store and path hash with `kind` `written`, its `checkout`
+the context session's (`{repo, commit, root, cwd}`: the profile's session repository and commit,
+the checkout's root on the session's machine and the working directory; absent where the build
+knows none), and its profile, working directory and system context the context session's; its
+evidence names each read of the context session its profile is built from, and so how it read the
+skill (`context session read: message <n> reads [Skill file: <path>]` for a `skill://` read,
+`context session read: message <n> reads <path> by its path` for a whole read by path of the cut's
+copy, its source naming the copy's directory), the task (`written case: task <n> of the
+written-case reader`, or `of --written-answer <file>`), each existing path (`written case: treats
+<path> as there`), the checkout (`written case: checkout <repo> at <commit>`), the context
+session and the model. Secrets are taken
+out as from a session case. The `restate` reader reads the task and the read call (never a
 file's text): a restatement of the line drops the task (`written-restates`). The `audit` reader
 reads the line, the messages as the judge reads them and the following step: anything but
 `follows` drops the task (`written-not-followed`). The screen's three judge controls run on a
 written case as on a session case. The summary (`<out>.summary.json`) records the inputs, the
-context session, the model, each task's line, `reads` and outcome (its case, or its drop reason
-and detail, with its restatement check and audit), the drops by reason, the readers' spend and
-the largest peak resident memory read (`peakRssBytes`). The build
+context session, the model, where the tasks came from (`tasksFrom`), each task's line,
+`existing` and outcome (its case, or its drop reason and detail, with its restatement check and
+audit), the drops by reason, the readers' spend and the largest peak resident memory read
+(`peakRssBytes`). The build
 does not go on from an earlier run: an `--out` that is there is refused (exit 2). `--budget-usd`
 stops it once its readers cost that much (exit 3), with the cases built so far written; so does a
 peak resident memory above 1 GiB, read after each task decided (`stopped`: `the build's peak

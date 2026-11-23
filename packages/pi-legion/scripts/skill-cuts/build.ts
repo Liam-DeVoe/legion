@@ -412,12 +412,15 @@
  * **build-cases --written <n>** writes up to n written cases of one skill, each a written task in
  * the context of a recorded session (`buildWrittenCases`, `chooseContext`, `writtenContext`;
  * README.md, "build-cases and build-tasks"): its messages the task, a read of
- * `skill://<skill>` and its result from `--old`, then a read of `skill://<skill>/<path>` and its
- * result for each file of the task's `reads` (under `--drop-navigation`, the files the session
- * build's navigation lines send the agent to); its real step the written-case reader's
- * following step, which the audit
+ * `skill://<skill>` and its result from `--old`, and nothing else (the agent reads any other file
+ * of the skill itself in the run, and looks at its checkout in the checkout rounds, replay.ts);
+ * its `checkout` the context session's (`writtenCheckout`); its real step the written-case
+ * reader's following step (or `--written-answer`'s), which the audit
  * must call `follows` (else `written-not-followed`), in a task the restate reader finds no
- * statement of the line in (else `written-restates`); its `source.kind` `written`. The context
+ * statement of the line in (else `written-restates`) and whose `existing` paths the checkout holds
+ * at the commit (else `written-missing-path`); its `source.kind` `written`. A context session
+ * whose work the reader finds is on the skill's own text is passed over as `skill-as-material`
+ * (`chooseContext`). The context
  * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
  * is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first read of
  * the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://` read, or
@@ -448,8 +451,8 @@
  * with the steps dropped for it and counts the drops with a replacement and without
  * (`navigationCounts`), and the last line printed counts them too. In the `--written`
  * form, the written-case reader is given the navigation lines of the session build's summary
- * beside `--session-cases` (`sessionNavigation`), so a task's history reads the files they send
- * the agent to before its step; a task whose line is a navigation line is dropped
+ * beside `--session-cases` (`sessionNavigation`), so it knows which lines only send the agent to
+ * a file (the agent then reads that file itself in the run); a task whose line is a navigation line is dropped
  * (`written-navigation`), with no replacement, and its summary lists those lines too. The
  * summary's inputs record the flag (`dropNavigation`), so a run that goes on with the other value
  * is refused; a summary written before the flag reads as one without it.
@@ -623,6 +626,7 @@ import {
   required,
   STORE_QUIET_MS,
   schemaFaults,
+  sha256,
   textOf,
   timeLimit,
   transientReason,
@@ -706,6 +710,7 @@ import {
   type TasksInput,
   WrittenCaseAnswer,
   type WrittenCaseInput,
+  writtenAnswerSchema,
 } from "./readers";
 import { isObject } from "./replay";
 
@@ -822,7 +827,7 @@ export const DROP_REASONS = {
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
   "skill-as-material":
-    "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it",
+    "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it; in build-cases --written, the written-case reader finds so of the context session's first message, and the session is passed over",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -857,6 +862,8 @@ export const DROP_REASONS = {
     "the audit, which reads no criterion, does not find that a written task's following step follows the line: it breaks it, or the line does not govern it (build-cases --written)",
   "written-navigation":
     "the navigation reader calls a written task's line one that only sends the agent to a file of the skill (build-cases --written --drop-navigation)",
+  "written-missing-path":
+    "a written task treats as already there a path the context session's checkout does not hold at its commit, or names one where the build knows no checkout (build-cases --written)",
 } as const;
 export type DropReason = keyof typeof DROP_REASONS;
 
@@ -958,8 +965,9 @@ const SPOOL_LOCK = "run.lock";
  *  gives up as the call ends. */
 const spoolLocks = new WeakMap<BuildIo, string[]>();
 
-/** Whether the process `pid` runs: a signal 0 reaches it, or the system refuses to send one. */
-function processLives(pid: number): boolean {
+/** Whether the process `pid` runs: a signal 0 reaches it, or the system refuses to send one. The
+ *  spool's lock and cli.ts's shared checkouts' locks read it. */
+export function processLives(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -2730,6 +2738,34 @@ export class GithubReads {
     if (result.code === 0) return result.stdout;
     if (/\b404\b|Not Found/.test(result.stderr)) return undefined;
     return ghAnswer(args, result);
+  }
+
+  /** The paths of `repo` at `commit` a written task may treat as there (`build-cases --written`):
+   *  every file and directory of the commit's tree, from one read of it, when GitHub gives it
+   *  whole (`whole`); else its root's entries, a directory's ending in `/`, and `whole` false, a
+   *  path then looked up alone (`holds`). */
+  async checkoutPaths(
+    repo: string,
+    commit: string
+  ): Promise<{ readonly paths: readonly string[]; readonly whole: boolean }> {
+    const { entries, truncated } = await this.treeAnswer(repo, commit, true);
+    if (!truncated) {
+      return {
+        paths: entries.map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path)),
+        whole: true,
+      };
+    }
+    const root = await this.level(repo, commit, "");
+    return {
+      paths: root.map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path)),
+      whole: false,
+    };
+  }
+
+  /** Whether `repo` at `commit` holds `file` (a path inside it), a file or a directory: one read
+   *  of its contents, which GitHub answers with 404 for none. */
+  async holds(repo: string, commit: string, file: string): Promise<boolean> {
+    return (await this.text(repo, commit, file)) !== undefined;
   }
 
   /** The commit that GitHub's build provenance of the image digest `digest` (sha256, hex) names
@@ -5596,9 +5632,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 /** The flags only `build-cases --written` takes. */
-const WRITTEN_FLAGS = ["context-session", "session-cases", "reading-models", "model-pool"] as const;
+const WRITTEN_FLAGS = [
+  "context-session",
+  "session-cases",
+  "reading-models",
+  "model-pool",
+  "written-answer",
+] as const;
 /** build-cases' options, of each of its forms. */
 const BUILD_CASES_OPTIONS = {
   config: { type: "string" },
@@ -5625,6 +5667,7 @@ const BUILD_CASES_OPTIONS = {
   "session-cases": { type: "string" },
   "reading-models": { type: "string" },
   "model-pool": { type: "string", multiple: true },
+  "written-answer": { type: "string" },
   "drop-navigation": { type: "boolean" },
 } as const;
 /** build-cases' options as `parse` reads them. */
@@ -7411,6 +7454,8 @@ interface WrittenContext {
   /** What its listing measure is made from, the window of the build its profile is read at
    *  among it for a top-level session. */
   readonly listing: ListingInput;
+  /** The session's checkout, a written case's `checkout` (`writtenCheckout`), or undefined. */
+  readonly checkout: Case["checkout"];
 }
 
 /**
@@ -7535,6 +7580,7 @@ async function writtenContext(
     reads: shown,
     profiled,
     digest,
+    checkout: writtenCheckout(profiled.profile, dirs.cwd),
     listing: {
       listed: listedNames(profiled),
       recorded: rebuilt.init?.systemPrompt,
@@ -7551,13 +7597,27 @@ interface PassedSession {
   readonly why: string;
 }
 
+/** A written build's context session (`chooseContext`): the session, the written-case reader's
+ *  tasks for it, how it was chosen, and the sessions passed over before it. */
+interface ChosenContext {
+  readonly chosen: WrittenContext;
+  readonly tasks: WrittenCaseAnswer["tasks"];
+  readonly how: string;
+  readonly passed: PassedSession[];
+}
+
 /**
- * The context session of a written build, how it was chosen, and the sessions passed over before
- * it: the one `given` names (`--context-session`); else the first session of `order` (the build's
- * seeded order of `--sessions`) that gives written cases (`writtenContext`) on a model the gateway
- * serves; else, when none does, the first that gives them on any model. `paths` gives the path of
- * a candidate whose line names none. Each candidate is pulled into a spool of its own under
- * `spools`, removed once it is passed over. Throws, naming why, when no session gives one.
+ * The context session of a written build, the written-case reader's tasks for it (`ask`), how it
+ * was chosen, and the sessions passed over before it: the one `given` names (`--context-session`),
+ * refused (thrown, naming why) where `ask` says its work is on the skill's own text; else the first
+ * session of `order` (the build's seeded order of `--sessions`) that gives written cases
+ * (`writtenContext`) on a model the gateway serves and whose answer is tasks, one whose answer is
+ * `material` passed over as `skill-as-material` with the reader's why; else, when none does, the
+ * first that gives them on any model and whose answer is tasks, each such session asked in its
+ * turn (the first one's context kept, each later one's pulled again). `paths` gives the path of a
+ * candidate whose line names none. Each candidate is pulled into a spool of its own under
+ * `spools`, removed once it is passed over. Throws, naming why, when no session gives one; rejects
+ * as `ask` does (BudgetSpent).
  */
 async function chooseContext(
   run: CaseRun,
@@ -7565,8 +7625,10 @@ async function chooseContext(
   order: readonly Candidate[],
   paths: ReadonlyMap<string, string>,
   spools: string,
-  io: BuildIo
-): Promise<{ chosen: WrittenContext; how: string; passed: PassedSession[] }> {
+  io: BuildIo,
+  ask: (context: WrittenContext) => Promise<WrittenCaseAnswer>
+): Promise<ChosenContext> {
+  const material: DropReason = "skill-as-material";
   if (given !== undefined) {
     const named = `--context-session ${given.store}:${given.hash}`;
     const { paths: found } = await resolvePaths(run.config.psqlCommand, given.store, [given.hash]);
@@ -7577,10 +7639,26 @@ async function chooseContext(
     const spool = path.join(spools, "context.jsonl");
     const made = await writtenContext(run, store, given.hash, filePath, spool);
     if ("drop" in made) throw new Error(`${named}: ${made.drop}: ${made.detail}`);
-    return { chosen: made, how: "--context-session", passed: [] };
+    const answer = await ask(made);
+    if ("material" in answer) throw new Error(`${named}: ${material}: ${answer.material.why}`);
+    return { chosen: made, tasks: answer.tasks, how: "--context-session", passed: [] };
   }
   const passed: PassedSession[] = [];
-  let fallback: { context: WrittenContext; place: string; before: number } | undefined;
+  const passOver = (store: string, hash: string, why: string, place: string) => {
+    passed.push({ store, hash, why });
+    io.out(`build-cases: context session ${place}, ${store} ${hash}: passed over (${why})\n`);
+  };
+  // The candidates on a model the gateway does not serve that give written cases, in order: each
+  // one's place in `passed`, what pulls it again, and the first one's context.
+  const unserved: {
+    at: number;
+    place: string;
+    store: StoreContext;
+    hash: string;
+    filePath: string;
+    spool: string;
+    context?: WrittenContext;
+  }[] = [];
   for (const [position, candidate] of order.entries()) {
     const store = storeNamed(run.config, candidate.store);
     const filePath = candidate.path ?? paths.get(`${store.name}\0${candidate.hash}`);
@@ -7591,35 +7669,90 @@ async function chooseContext(
         : await writtenContext(run, store, candidate.hash, filePath, spool);
     const place = `place ${position + 1} of ${order.length}`;
     if (!("drop" in made) && made.served) {
-      return {
-        chosen: made,
-        how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill: ${place}`,
-        passed,
-      };
+      const answer = await ask(made);
+      if (!("material" in answer)) {
+        return {
+          chosen: made,
+          tasks: answer.tasks,
+          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill and whose work is not on the skill's own text: ${place}`,
+          passed,
+        };
+      }
+      passOver(store.name, candidate.hash, `${material}: ${answer.material.why}`, place);
+      rmSync(spool, { force: true });
+      continue;
     }
-    const why =
+    passOver(
+      store.name,
+      candidate.hash,
       "drop" in made
         ? `${made.drop}: ${made.detail}`
-        : `model-not-served: ${notServed([made.model], run.servedIds)}`;
-    passed.push({ store: store.name, hash: candidate.hash, why });
+        : `model-not-served: ${notServed([made.model], run.servedIds)}`,
+      place
+    );
+    if ("drop" in made || filePath === undefined) {
+      rmSync(spool, { force: true });
+      continue;
+    }
+    const first = unserved.length === 0;
+    unserved.push({
+      at: passed.length - 1,
+      place,
+      store,
+      hash: candidate.hash,
+      filePath,
+      spool,
+      ...(first ? { context: made } : {}),
+    });
+    if (!first) rmSync(spool, { force: true });
+  }
+  for (const each of unserved) {
+    const made =
+      each.context ?? (await writtenContext(run, each.store, each.hash, each.filePath, each.spool));
+    if ("drop" in made) {
+      passed[each.at] = {
+        store: each.store.name,
+        hash: each.hash,
+        why: `${made.drop}: ${made.detail}`,
+      };
+      continue;
+    }
+    const answer = await ask(made);
+    if (!("material" in answer)) {
+      return {
+        chosen: made,
+        tasks: answer.tasks,
+        how: `no reading session on a served model has a rebuilt profile that installs the skill and work that is not on the skill's own text, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
+        passed: passed.slice(0, each.at),
+      };
+    }
+    const why = `${material}: ${answer.material.why}`;
+    passed[each.at] = { store: each.store.name, hash: each.hash, why };
     io.out(
-      `build-cases: context session ${place}, ${store.name} ${candidate.hash}: passed over (${why})\n`
+      `build-cases: context session ${each.place}, ${each.store.name} ${each.hash}: passed over (${why})\n`
     );
-    if (fallback === undefined && !("drop" in made)) {
-      fallback = { context: made, place, before: passed.length - 1 };
-    } else rmSync(spool, { force: true });
+    rmSync(each.spool, { force: true });
   }
-  if (fallback === undefined) {
-    throw new Error(
-      `no session of --sessions gives written cases of ${run.skill}: ${passed.map((each) => `${each.store} ${each.hash}: ${each.why}`).join("; ") || "it holds none"}`
-    );
-  }
-  return {
-    chosen: fallback.context,
-    how: `no reading session on a served model has a rebuilt profile that installs the skill, so the first of the seeded order (--sessions, --seed) whose rebuilt profile installs it, on a model the gateway does not serve: ${fallback.place}`,
-    passed: passed.slice(0, fallback.before),
-  };
+  throw new Error(
+    `no session of --sessions gives written cases of ${run.skill}: ${passed.map((each) => `${each.store} ${each.hash}: ${each.why}`).join("; ") || "it holds none"}`
+  );
 }
+
+/** A written case's `checkout` (cases.ts): the session repository and commit of the context
+ *  session's profile (`sessionRepository`), the checkout's root (the working directory `cwd` less
+ *  its path in the checkout, the profile's `workingDirectory`) and `cwd`; undefined when the
+ *  profile names no session repository, or the session no working directory. */
+function writtenCheckout(profile: Profile, cwd: string | undefined): Case["checkout"] {
+  const repo = profile.sessionRepository;
+  if (repo === undefined || cwd === undefined) return undefined;
+  const rel = profile.workingDirectory ?? "";
+  const root = rel === "" ? cwd : cwd.endsWith(`/${rel}`) ? cwd.slice(0, -(rel.length + 1)) : "";
+  return root === "" ? undefined : { repo: repo.repo, commit: repo.commit, root, cwd };
+}
+
+/** The most paths of a checkout's tree the written-case reader is given: a larger tree is given
+ *  by its root's entries. */
+const CHECKOUT_LIST_PATHS = 2_000;
 
 /** The served model with the most reading sessions over `counts` (models files, their sessions
  *  summed by model), a tie going to the lower name in string order; undefined when none is
@@ -7808,6 +7941,27 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       ? sessionNavigation(casesFile)
       : [];
   const files = skillFiles(given.old);
+  // A written-case answer given in a file (`--written-answer`), checked as the reader's would be,
+  // in place of the reader's call.
+  const answerFile = values["written-answer"];
+  let givenAnswer: { readonly answer: WrittenCaseAnswer; readonly sha256: string } | undefined;
+  if (answerFile !== undefined) {
+    mustBeFile(answerFile, "--written-answer");
+    const text = readFileSync(answerFile, "utf8");
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch (error) {
+      throw new Refused(`--written-answer ${answerFile} is no JSON: ${messageFor(error)}`);
+    }
+    const parsed = writtenAnswerSchema({ files, navigation, count }).safeParse(value);
+    if (!parsed.success) {
+      throw new Refused(
+        `--written-answer ${answerFile} is no written-case answer: ${schemaFaults(parsed.error, "the answer")}`
+      );
+    }
+    givenAnswer = { answer: parsed.data, sha256: sha256(text) };
+  }
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const run: CaseRun = {
     config,
@@ -7856,20 +8010,98 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     readingModels: readingFile ?? null,
     modelPool: poolFiles,
     dropNavigation: run.dropNavigation,
+    writtenAnswer:
+      answerFile === undefined || givenAnswer === undefined
+        ? null
+        : { path: answerFile, sha256: givenAnswer.sha256 },
   };
 
   const spools = spoolDir(given.out, io);
   try {
     // Paths for the candidates that lack one, per store.
     const { paths } = await candidatePaths(config.psqlCommand, config.stores, order);
-    const { chosen, how, passed } = await chooseContext(
-      run,
-      contextGiven,
-      order,
-      paths,
-      spools,
-      io
-    );
+    // The written-case reader, once for each context session asked: the base text, the navigation
+    // lines, the session cases, the session's checkout (its paths: `checkoutPaths`) and its first
+    // user message; or the answer `--written-answer` gives, in place of its call.
+    const stopped = (): string =>
+      `the readers' spend reached --budget-usd ${budget}: $${run.gateway.spend().usd.toFixed(4)} at list price, so no new reader call starts`;
+    const listings = new Map<
+      string,
+      Promise<{ paths: readonly string[]; whole: boolean; held: ReadonlySet<string> }>
+    >();
+    /** The paths of `checkout`'s tree, read once, and every file and directory it holds. */
+    const listingOf = (checkout: NonNullable<Case["checkout"]>) =>
+      readOnce(listings, `${checkout.repo}@${checkout.commit}`, async () => {
+        const { paths: listed, whole } = await run.github.checkoutPaths(
+          checkout.repo,
+          checkout.commit
+        );
+        const held = new Set<string>();
+        for (const each of listed) {
+          const parts = each.replace(/\/$/, "").split("/");
+          for (let n = 1; n <= parts.length; n++) held.add(parts.slice(0, n).join("/"));
+        }
+        return { paths: listed, whole, held };
+      });
+    const ask = async (context: WrittenContext): Promise<WrittenCaseAnswer> => {
+      const firstUser = context.t.items.findIndex((item) => item.slim.role === "user");
+      const firstMessage = firstUser < 0 ? "" : messageText(context.t.message(firstUser)).trim();
+      if (firstMessage === "") {
+        throw new Error(
+          `the context session ${context.store.name}:${context.hash} holds no user message with text, whose kind of work the written tasks take`
+        );
+      }
+      if (givenAnswer !== undefined) return givenAnswer.answer;
+      let checkout: WrittenCaseInput["checkout"] = null;
+      if (context.checkout !== undefined) {
+        const { paths: listed, whole } = await listingOf(context.checkout);
+        const small = whole && listed.length <= CHECKOUT_LIST_PATHS;
+        checkout = {
+          repo: context.checkout.repo,
+          root: context.checkout.root,
+          cwd: context.checkout.cwd,
+          files: small
+            ? listed.filter((each) => !each.endsWith("/"))
+            : listed.filter((each) => !each.replace(/\/$/, "").includes("/")),
+          whole: small,
+        };
+      }
+      try {
+        const result = await runReader(
+          "written-case",
+          {
+            skill: given.skill,
+            files,
+            navigation,
+            sessionCases: sessionCases.map((c) => ({
+              step: stepText(c.realStep.content ?? []),
+              criterion: c.criterion,
+            })),
+            checkout,
+            firstMessage: cut(firstMessage, MESSAGE_CHARS),
+            count,
+          },
+          run.gateway
+        );
+        return WrittenCaseAnswer.parse(result.answer);
+      } catch (error) {
+        if (error instanceof BudgetSpent) throw error;
+        throw new Error(`the written-case reader: ${messageFor(error)}`);
+      }
+    };
+    let picked: ChosenContext;
+    try {
+      picked = await chooseContext(run, contextGiven, order, paths, spools, io, ask);
+    } catch (error) {
+      if (error instanceof BudgetSpent) {
+        io.err(`build-cases: stopped: ${stopped()}; no written case is built`);
+        return EXIT.stopped;
+      }
+      throw error;
+    }
+    const { chosen, how, passed, tasks } = picked;
+    const tasksFrom =
+      answerFile === undefined ? "the written-case reader" : `--written-answer ${answerFile}`;
     const contextPathHash = pathHash(chosen.filePath);
     const contextName = `${chosen.store.name}:${chosen.hash}`;
     io.out(`build-cases: the context session is ${contextName} (${how})\n`);
@@ -7898,44 +8130,51 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         `no served model for the written cases: ${unserved}, ${noSkillModel}, and ${pool.length === 0 ? "no --model-pool is given" : "no --model-pool file names a served model"}`
       );
     }
-
-    // The written-case reader, once: the base text, the navigation lines, the session cases and
-    // the context session's first user message.
-    const messagesOfContext = chosen.t.items.map((item) => item.slim);
-    const firstUser = messagesOfContext.findIndex((message) => message.role === "user");
-    const firstMessage = firstUser < 0 ? "" : messageText(chosen.t.message(firstUser)).trim();
-    if (firstMessage === "") {
-      throw new Error(
-        `the context session ${contextName} holds no user message with text, whose kind of work the written tasks take`
-      );
-    }
-    const stopped = (): string =>
-      `the readers' spend reached --budget-usd ${budget}: $${run.gateway.spend().usd.toFixed(4)} at list price, so no new reader call starts`;
-    let answer: WrittenCaseAnswer;
-    try {
-      const result = await runReader(
-        "written-case",
-        {
-          skill: given.skill,
-          files,
-          navigation,
-          sessionCases: sessionCases.map((c) => ({
-            step: stepText(c.realStep.content ?? []),
-            criterion: c.criterion,
-          })),
-          firstMessage: cut(firstMessage, MESSAGE_CHARS),
-          count,
-        },
-        run.gateway
-      );
-      answer = WrittenCaseAnswer.parse(result.answer);
-    } catch (error) {
-      if (error instanceof BudgetSpent) {
-        io.err(`build-cases: stopped: ${stopped()}; no written case is built`);
-        return EXIT.stopped;
+    /** Why `task` treats as already there a path the context session's checkout does not hold at
+     *  its commit; else, for each path it names, the evidence item of it. */
+    const existingPaths = async (
+      task: WrittenCaseAnswer["tasks"][number]
+    ): Promise<{ missing: string } | { items: Evidence[] }> => {
+      const items: Evidence[] = [];
+      const checkout = chosen.checkout;
+      for (const named of task.existing) {
+        if (checkout === undefined) {
+          return {
+            missing: `it treats ${named} as there, and the build knows no checkout of the context session (no session repository, or no working directory in it)`,
+          };
+        }
+        const full = resolvedReadPath(named, { cwd: checkout.cwd });
+        const inside =
+          full === undefined
+            ? undefined
+            : full === checkout.root
+              ? ""
+              : full.startsWith(`${checkout.root}/`)
+                ? full.slice(checkout.root.length + 1)
+                : undefined;
+        if (inside === undefined) {
+          return {
+            missing: `it treats ${named} as there, outside the checkout of ${checkout.repo} at ${checkout.root}`,
+          };
+        }
+        if (inside !== "") {
+          const listing = await listingOf(checkout);
+          const held = listing.whole
+            ? listing.held.has(inside)
+            : await run.github.holds(checkout.repo, checkout.commit, inside);
+          if (!held) {
+            return {
+              missing: `it treats ${named} as there, and ${checkout.repo} at ${checkout.commit} holds no ${inside}`,
+            };
+          }
+        }
+        items.push({
+          item: `${WRITTEN_EVIDENCE}treats ${named} as there`,
+          source: `${tasksFrom} names ${named} among the paths the task treats as already there; ${checkout.repo} at ${checkout.commit}, the context session's checkout, holds ${inside === "" ? "it as its root" : inside}`,
+        });
       }
-      throw new Error(`the written-case reader: ${messageFor(error)}`);
-    }
+      return { items };
+    };
 
     // What every case takes from the context session: its profile, the listing measure (a
     // top-level session's against the earliest subagent of it spawned under the build its profile
@@ -8014,22 +8253,32 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       task: WrittenCaseAnswer["tasks"][number]
     ): Promise<boolean> => {
       const number = n + 1;
-      const record: Record<string, unknown> = { task: number, line: task.line, reads: task.reads };
+      const record: Record<string, unknown> = {
+        task: number,
+        line: task.line,
+        existing: task.existing,
+      };
       records.push(record);
       const dropTask = (reason: DropReason, detail: string) => {
         Object.assign(record, { outcome: "dropped", reason, detail });
         drops[reason] = (drops[reason] ?? 0) + 1;
         io.out(
-          `build-cases: written task ${number} of ${answer.tasks.length}: dropped (${reason}) ${detail}\n`
+          `build-cases: written task ${number} of ${tasks.length}: dropped (${reason}) ${detail}\n`
         );
       };
       const file = files.find((each) => each.path === task.line.file);
       if (file === undefined) throw new Error(`no base file ${task.line.file}`);
+      // A task that treats as there a path the checkout does not hold is no task of the checkout.
+      const existing = await existingPaths(task);
+      if ("missing" in existing) {
+        dropTask("written-missing-path", existing.missing);
+        return true;
+      }
+      // The history: the task, the read of the skill and its result, and nothing else.
       const secrets = scrubbed({
         messages: [
           { role: "user", content: [{ type: "text", text: task.task }] },
           ...skillRead,
-          ...task.reads.flatMap((each, at) => readOf(each, `${WRITTEN_READ}_${at + 1}`)),
         ] as SessionMessage[],
         systemPrompt: init?.systemPrompt,
         realStep: writtenMessage(task.followingStep, "following"),
@@ -8155,6 +8404,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         realStep,
         violatingStep,
         source: { store: chosen.store.name, pathHash: contextPathHash, kind: "written" },
+        ...(chosen.checkout === undefined ? {} : { checkout: chosen.checkout }),
         sessionStart: chosen.sessionStart,
         secretsRemoved: secrets.removed,
         sessionDigest: chosen.digest ?? null,
@@ -8168,13 +8418,18 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           },
           ...readItems,
           {
-            item: `${WRITTEN_EVIDENCE}task ${number} of the written-case reader`,
-            source: `the written-case reader wrote the task, the line, the criterion, the following step (the case's real step) and the violating step from the base text (--old), ${navigation.length === 0 ? "" : `the navigation lines of the session build (${navigationWords}), `}${sessionCases.length} session cases and the first user message of the context session; the restatement check (the restate reader) finds no statement of the line in the task, and the audit calls the following step follows`,
+            item: `${WRITTEN_EVIDENCE}task ${number} of ${tasksFrom}`,
+            source: `${tasksFrom} gave the task, the paths it treats as there, the line, the criterion, the following step (the case's real step) and the violating step, from the base text (--old), ${navigation.length === 0 ? "" : `the navigation lines of the session build (${navigationWords}), `}${sessionCases.length} session cases, the context session's checkout and its first user message; the history holds the task and the read of the skill alone; the restatement check (the restate reader) finds no statement of the line in the task, and the audit calls the following step follows`,
           },
-          ...task.reads.map((each) => ({
-            item: `${WRITTEN_EVIDENCE}reads ${target}/${each} after the skill`,
-            source: `the written-case reader names ${each} in the task's reads, a file the navigation lines of the session build send the agent to right after the skill (${navigationWords}); the history reads it after the read of the skill, its result the base text's ${each} (--old) as the arms answer a history read`,
-          })),
+          ...existing.items,
+          ...(chosen.checkout === undefined
+            ? []
+            : [
+                {
+                  item: `${WRITTEN_EVIDENCE}checkout ${chosen.checkout.repo} at ${chosen.checkout.commit}`,
+                  source: `the context session's working directory ${chosen.checkout.cwd} is in a checkout of ${chosen.checkout.repo} rooted at ${chosen.checkout.root} (its profile's session repository and the working directory's path in it), at the commit its project was read at: a run of the case answers its read-only calls from that commit (cases.ts's checkout)`,
+                },
+              ]),
           { item: `${WRITTEN_EVIDENCE}context session ${contextName}`, source: how },
           {
             item: `${WRITTEN_EVIDENCE}model ${model.model}`,
@@ -8184,11 +8439,11 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       });
       built.push(c);
       Object.assign(record, { outcome: `case ${id}` });
-      io.out(`build-cases: written task ${number} of ${answer.tasks.length}: case ${id}\n`);
+      io.out(`build-cases: written task ${number} of ${tasks.length}: case ${id}\n`);
       return true;
     };
     // The peak memory, after each task decided: above the limit no task after it is read.
-    for (const [n, task] of answer.tasks.entries()) {
+    for (const [n, task] of tasks.entries()) {
       if (!(await decide(n, task))) break;
       memoryStop = peak.stop("task");
       if (memoryStop !== undefined) break;
@@ -8214,7 +8469,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         thinking: chosen.thinking,
         context: chosen.context,
         sessionCases: sessionCases.length,
-        tasksWritten: answer.tasks.length,
+        tasksWritten: tasks.length,
+        tasksFrom,
         tasks: records,
         casesBuilt: built.length,
         drops,
@@ -8228,7 +8484,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     // The file must load as the behaviour commands load it.
     loadCases(given.out, given.old);
     io.out(
-      `build-cases: ${built.length} written cases of ${answer.tasks.length} tasks, $${run.gateway.spend().usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
+      `build-cases: ${built.length} written cases of ${tasks.length} tasks, $${run.gateway.spend().usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
     );
     if (stop !== undefined) {
       io.err(`build-cases: stopped: ${stop}`);

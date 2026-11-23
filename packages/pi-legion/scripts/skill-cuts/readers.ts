@@ -85,14 +85,15 @@
  *   one-line summary.
  * - `written-case`: a skill's base text, the navigation lines of its session build (none without
  *   `--drop-navigation`), its session cases (each one's real step and criterion; none, when it has
- *   none) and the first user message of a recorded session that read it, and how many tasks to
- *   write; at most that many tasks of that session's kind of work in which a line of the skill
- *   decides the agent's first step after it reads the skill and then the files the navigation
- *   lines send it to, each with the task (the user's message), those files (`reads`: each a file of
- *   the skill but SKILL.md, once; none where no navigation line is given), the line (its file,
- *   number and text: a line of the base text and none of the navigation lines, which the schema
- *   checks), a criterion, a step that follows the line and a violating step (`build-cases
- *   --written`).
+ *   none), the checkout of a recorded session that read it (its repository, root, working
+ *   directory and paths; null when the build knows none), that session's first user message, and
+ *   how many tasks to write; at most that many tasks of that session's kind of work in which a
+ *   line of the skill decides the agent's act once it has read the skill and looked at what the
+ *   act needs, each with the task (the user's message), `existing` (the paths it treats as already
+ *   in the checkout), the line (its file, number and text: a line of the base text and none of the
+ *   navigation lines, which the schema checks, `writtenAnswerSchema`), a criterion, a step that
+ *   follows the line and a violating step; or none, with why, when the session's work is on the
+ *   skill's own text (`material`) (`build-cases --written`).
  *
  * The positive controls of the map, attack, same-job and sentence readers (`runControl`) each
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
@@ -1665,6 +1666,17 @@ const NavigationLine = z.strictObject({
   number: z.int().positive(),
   text: z.string(),
 });
+/** The context session's checkout as the written-case reader reads it: the repository, its root
+ *  on the session's machine and the session's working directory in it, and its paths (`files`):
+ *  every file of the commit's tree (`whole`), or, for a tree too large, its root's entries, a
+ *  directory's ending in `/`. */
+const CheckoutListing = z.strictObject({
+  repo: z.string().min(1),
+  root: z.string().min(1),
+  cwd: z.string().min(1),
+  files: z.array(z.string().min(1)),
+  whole: z.boolean(),
+});
 export const WrittenCaseInput = z.strictObject({
   skill: z.string().min(1),
   /** The skill's base text, every `.md` file of `--old` (`skillFiles`). */
@@ -1672,6 +1684,8 @@ export const WrittenCaseInput = z.strictObject({
   /** The navigation lines of the session build of the skill (`--drop-navigation`), or none. */
   navigation: z.array(NavigationLine),
   sessionCases: z.array(SessionCaseText),
+  /** The context session's checkout, or null when the build knows none. */
+  checkout: CheckoutListing.nullable(),
   /** The first user message of the context session, whose context the tasks go in. */
   firstMessage: NonBlank,
   /** The most tasks to write. */
@@ -1680,70 +1694,64 @@ export const WrittenCaseInput = z.strictObject({
 export type WrittenCaseInput = z.infer<typeof WrittenCaseInput>;
 const WrittenTask = z.strictObject({
   task: NonBlank,
-  /** The files of the skill the task's history reads after the skill, in that order: those the
-   *  navigation lines send the agent to. */
-  reads: z.array(z.string()).default([]),
+  /** The paths the task treats as already in the checkout, as the task names them (relative to the
+   *  working directory, or absolute); never a path it asks the agent to create. */
+  existing: z.array(NonBlank),
   line: z.strictObject({ file: z.string().min(1), number: z.int().positive(), text: OneLine }),
   criterion: z.strictObject({ pass: NonBlank, fail: NonBlank }),
   followingStep: WrittenStep,
   violatingStep: WrittenStep,
 });
-export const WrittenCaseAnswer = z.strictObject({ tasks: z.array(WrittenTask).min(1) });
+/** The written-case reader's answer: its tasks; or none, with why, when the context session's work
+ *  at its read of the skill is on the skill's own text (build.ts passes the session over as
+ *  `skill-as-material`). */
+export const WrittenCaseAnswer = z.union([
+  z.strictObject({ tasks: z.array(WrittenTask).min(1) }),
+  z.strictObject({ tasks: z.tuple([]), material: z.strictObject({ why: NonBlank }) }),
+]);
 export type WrittenCaseAnswer = z.infer<typeof WrittenCaseAnswer>;
+
+/** The schema of a written-case answer to an input of `files`, `navigation` and `count`: at most
+ *  `count` tasks, each under a line of the base text (its file, its number and its text) that is
+ *  none of the navigation lines. The reader's own, and `build-cases --written-answer`'s for an
+ *  answer given in a file. */
+export function writtenAnswerSchema(
+  input: Pick<WrittenCaseInput, "files" | "navigation" | "count">
+): z.ZodType<WrittenCaseAnswer> {
+  return WrittenCaseAnswer.superRefine((answer, ctx) => {
+    if (answer.tasks.length > input.count) {
+      refuse(
+        ctx,
+        ["tasks"],
+        `holds ${answer.tasks.length} tasks, more than the ${input.count} asked for`
+      );
+    }
+    for (const [index, { line }] of answer.tasks.entries()) {
+      const at = ["tasks", index, "line"];
+      const navigation = input.navigation.find(
+        (each) => each.file === line.file && each.text.trim() === line.text.trim()
+      );
+      if (navigation !== undefined) {
+        refuse(ctx, at, `is the navigation line ${navigation.file}:${navigation.number}`);
+      }
+      const file = input.files.find((each) => each.path === line.file);
+      if (file === undefined) {
+        refuse(ctx, [...at, "file"], "is no file of the base text");
+        continue;
+      }
+      const lines = textLines(file.text);
+      if (line.number > lines.length) {
+        refuse(ctx, [...at, "number"], `is past the last line, ${lines.length}, of ${line.file}`);
+      } else if (lines[line.number - 1]?.trim() !== line.text.trim()) {
+        refuse(ctx, [...at, "text"], `is not line ${line.number} of ${line.file}`);
+      }
+    }
+  });
+}
 
 const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
   input: WrittenCaseInput,
-  answer: (input) =>
-    WrittenCaseAnswer.superRefine((answer, ctx) => {
-      if (answer.tasks.length > input.count) {
-        refuse(
-          ctx,
-          ["tasks"],
-          `holds ${answer.tasks.length} tasks, more than the ${input.count} asked for`
-        );
-      }
-      for (const [index, { line, reads }] of answer.tasks.entries()) {
-        // Each read is of a file of the skill other than SKILL.md, once, and only where a
-        // navigation line sends the agent to a file.
-        if (input.navigation.length === 0 && reads.length > 0) {
-          refuse(
-            ctx,
-            ["tasks", index, "reads"],
-            "names files, though <navigation> names no line that sends the agent to one"
-          );
-        }
-        for (const [at, read] of reads.entries()) {
-          const where = ["tasks", index, "reads", at];
-          if (read === "SKILL.md") {
-            refuse(ctx, where, "is SKILL.md, which the read of the skill shows");
-          } else if (!input.files.some((each) => each.path === read)) {
-            refuse(ctx, where, "is no file of the skill");
-          } else if (reads.indexOf(read) !== at) {
-            refuse(ctx, where, `reads ${read} twice`);
-          }
-        }
-        // Each task's line is a line of the base text (its file, its number and its text), and
-        // none of the navigation lines.
-        const at = ["tasks", index, "line"];
-        const navigation = input.navigation.find(
-          (each) => each.file === line.file && each.text.trim() === line.text.trim()
-        );
-        if (navigation !== undefined) {
-          refuse(ctx, at, `is the navigation line ${navigation.file}:${navigation.number}`);
-        }
-        const file = input.files.find((each) => each.path === line.file);
-        if (file === undefined) {
-          refuse(ctx, [...at, "file"], "is no file of the base text");
-          continue;
-        }
-        const lines = textLines(file.text);
-        if (line.number > lines.length) {
-          refuse(ctx, [...at, "number"], `is past the last line, ${lines.length}, of ${line.file}`);
-        } else if (lines[line.number - 1]?.trim() !== line.text.trim()) {
-          refuse(ctx, [...at, "text"], `is not line ${line.number} of ${line.file}`);
-        }
-      }
-    }),
+  answer: writtenAnswerSchema,
   render: (input) =>
     [
       `<skill name="${input.skill}">\n${fileBlocks(input.files)}\n</skill>`,
@@ -1767,6 +1775,9 @@ const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
               )
               .join("\n")
       }\n</session-cases>`,
+      input.checkout === null
+        ? "<checkout>\nNone.\n</checkout>"
+        : `<checkout repo="${input.checkout.repo}" root="${input.checkout.root}" cwd="${input.checkout.cwd}" listing="${input.checkout.whole ? "every file" : "the root's entries"}">\n${input.checkout.files.join("\n")}\n</checkout>`,
       `<first-message>\n${input.firstMessage}\n</first-message>`,
       `<count>${input.count}</count>`,
     ].join("\n\n"),

@@ -1103,6 +1103,19 @@ function checkout(builds: Builds, source: RepoSource, repo: string, commit: stri
   );
 }
 
+/** The whole of `repo` at `commit` from `source` (GitHub's tarball of the commit, through `gh`,
+ *  for `ghSource`), kept once under `cacheDir` (`<cacheDir>/trees/<key>`, as a plugin's checkout
+ *  is), and the directory that holds it. cli.ts answers a written case's read-only calls from a
+ *  copy of its context session's checkout read so. */
+export function repositoryTree(
+  source: RepoSource,
+  cacheDir: string,
+  repo: string,
+  commit: string
+): Promise<string> {
+  return checkout(new Builds(cacheDir), source, repo, commit);
+}
+
 /** A plugin's `package.json`, as far as the build reads it. */
 interface Manifest {
   files?: unknown;

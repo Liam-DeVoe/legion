@@ -1142,6 +1142,7 @@ const WRITTEN_PROMPT = "You write tasks for a behaviour test of a coding agent's
 /** A written task whose following step writes each step's result on a line of its own, LINE. */
 const WRITTEN_TASK = {
   task: "Write the alpha report of the fixture project.",
+  existing: [] as string[],
   line: { file: "SKILL.md", number: 9, text: LINE },
   criterion: CRITERION,
   followingStep: {
@@ -1181,7 +1182,7 @@ const WRITTEN_TASKS = [
  *  read. */
 const WRITTEN_READS_TASK = {
   task: "Write the alpha report of the fixture project with each step's result.",
-  reads: ["references/x.md"],
+  existing: [] as string[],
   line: { file: "references/x.md", number: 3, text: X_LINE },
   criterion: {
     pass: "The step starts each result line with its step number, counted from one.",
@@ -1206,6 +1207,13 @@ function readerAnswer(body: {
   if (system.startsWith(AUDIT_PROMPT)) return JSON.stringify(auditAnswer(name));
   if (system.startsWith(NAVIGATION_PROMPT)) return JSON.stringify(navigationAnswer(user));
   if (system.startsWith(WRITTEN_PROMPT)) {
+    // A session whose work is on alpha's own text: no task, as the prompt asks.
+    if (user.includes("<first-message>\nRewrite the alpha skill")) {
+      return JSON.stringify({
+        tasks: [],
+        material: { why: "The session rewrites alpha's SKILL.md (its first message)." },
+      });
+    }
     if (user.includes("<navigation>\n<line ")) {
       return JSON.stringify({ tasks: [WRITTEN_READS_TASK] });
     }
@@ -4477,7 +4485,7 @@ interface WrittenSummary {
     outcome: string;
     reason?: DropReason;
     detail?: string;
-    reads?: string[];
+    existing?: string[];
   }[];
   stopped: string | null;
   peakRssBytes?: number;
@@ -4663,7 +4671,7 @@ describe("build-cases --written", () => {
       [2],
       "SKILL.md",
     ]);
-    expect(summaryOf<WrittenSummary>(out).tasks.map((each) => each.reads)).toEqual([[], [], []]);
+    expect(summaryOf<WrittenSummary>(out).tasks.map((each) => each.existing)).toEqual([[], [], []]);
   });
 
   test("--reprofile keeps source.kind", async () => {
@@ -4757,11 +4765,11 @@ test("build-cases --written --drop-navigation drops a task whose line the naviga
   expect(usersOf(requests, RESTATE_PROMPT)).toHaveLength(4);
 }, 60_000);
 
-// Catches: a skill whose SKILL.md first sends the agent to a file of the skill, which gets no
-// written task under --drop-navigation (every task's step is the read that line asks for); a
-// written case whose history lacks the read a session's history holds, or holds it out of order;
-// and the session build's navigation lines kept from the written-case reader.
-test("build-cases --written --drop-navigation gives the written-case reader the session build's navigation lines, and a task that reads references/x.md gives a case whose history reads the skill, then references/x.md, under a line of references/x.md", async () => {
+// Catches: a written case whose history holds a read beyond the skill's (a step the agent takes
+// itself in the replay, where the skill-read rounds answer it), the session build's navigation
+// lines kept from the written-case reader, or a task under a line of a file they send the agent to
+// refused.
+test("build-cases --written --drop-navigation gives the written-case reader the session build's navigation lines, and a task under a line of references/x.md gives a case whose history holds the task and the read of the skill alone", async () => {
   const out = path.join(scratch, "written-reads", "cases.jsonl");
   const context = `store_a:${fileHash(sessionPath("good"))}`;
   const casesFile = sessionCasesFile(SESSION_NAVIGATION);
@@ -4788,60 +4796,151 @@ test("build-cases --written --drop-navigation gives the written-case reader the 
   const cases = loadCases(out, old);
   expect(cases.map((each) => each.id)).toEqual([id]);
   const [c] = cases;
-  // The task, the read of skill://alpha and its result, then the read of references/x.md and its
-  // result: the old text at the paths the context session's own reads showed, as F1's hold them.
-  expect(c?.messages).toHaveLength(5);
+  // The task, the read of skill://alpha and its result, and nothing else: the agent reads
+  // references/x.md itself in the replay.
+  expect(c?.messages).toHaveLength(3);
   expect(c?.messages[0]).toEqual({
     role: "user",
     content: [{ type: "text", text: WRITTEN_READS_TASK.task }],
   });
-  const call = (toolCallId: string, target: string) => ({
+  expect(c?.messages[1]).toMatchObject({
     role: "assistant",
-    content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: target } }],
+    content: [
+      { type: "toolCall", id: "written_read", name: "read", arguments: { path: "skill://alpha" } },
+    ],
   });
-  expect(c?.messages[1]).toMatchObject(call("written_read", "skill://alpha"));
   expect(c?.messages[1]?.content).toHaveLength(1);
   expect(c?.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "written_read" });
   expect(c?.messages[2]?.content).toEqual(messages[2]?.content);
-  expect(c?.messages[3]).toMatchObject(call("written_read_1", "skill://alpha/references/x.md"));
-  expect(c?.messages[3]?.content).toHaveLength(1);
-  expect(c?.messages[4]).toMatchObject({ role: "toolResult", toolCallId: "written_read_1" });
-  expect(c?.messages[4]?.content).toEqual(messages[4]?.content);
-  expect(c?.skillReads).toEqual([2, 4]);
+  expect(c?.skillReads).toEqual([2]);
   expect([c?.baseFile, c?.line, c?.criterion]).toEqual([
     "references/x.md",
     { text: X_LINE, lineNumber: 3, lineCount: 3 },
     WRITTEN_READS_TASK.criterion,
   ]);
-  expect(c?.evidence).toContainEqual({
-    item: "written case: reads skill://alpha/references/x.md after the skill",
-    source:
-      "the written-case reader names references/x.md in the task's reads, a file the navigation lines of the session build send the agent to right after the skill (SKILL.md:8 \"1. Read `references/x.md` before the first step.\"); the history reads it after the read of the skill, its result the base text's references/x.md (--old) as the arms answer a history read",
-  });
+  expect((c?.evidence ?? []).some((each) => each.item.includes(" reads skill://"))).toBe(false);
 
-  // The navigation reader judged the task's line; the restatement check read the task and the two
-  // read calls, never a file's text; the audit read both reads with their text left out.
+  // The navigation reader judged the task's line; the restatement check read the task and the
+  // read call, never the skill's text; the audit read the read with its text left out.
   expect(usersOf(requests, NAVIGATION_PROMPT)).toEqual([
     `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nreferences/x.md\n</file>\n\n<line>\n${X_LINE}\n</line>`,
   ]);
   const [restate] = usersOf(requests, RESTATE_PROMPT);
   expect(restate).toContain(`<message index="1" role="assistant">\n[assistant]\n[tool call: read]`);
-  expect(restate).toContain(`<message index="3" role="assistant">\n[assistant]\n${X_READ}`);
-  expect([
-    restate?.includes('<message index="2"'),
-    restate?.includes('<message index="4"'),
-  ]).toEqual([false, false]);
+  expect(restate?.includes('<message index="2"')).toBe(false);
   const left = "[tool result: read]\n[the text of a file of the skill, left out]";
   expect(usersOf(requests, AUDIT_PROMPT)).toEqual([
-    `<line>\n${X_LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_READS_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n${left}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha/references/x.md"}\n\n${left}\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_READS_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`,
+    `<line>\n${X_LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_READS_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n${left}\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_READS_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`,
   ]);
-
-  // The summary records the task's reads.
   const summary = summaryOf<WrittenSummary>(out);
-  expect(summary.tasks.map((each) => [each.task, each.outcome, each.reads])).toEqual([
-    [1, `case ${id}`, ["references/x.md"]],
+  expect(summary.tasks.map((each) => [each.task, each.outcome, each.existing])).toEqual([
+    [1, `case ${id}`, []],
   ]);
 }, 60_000);
+
+/** A written-case answer file of `tasks`, for `--written-answer`. */
+function writtenAnswerFile(name: string, tasks: readonly Record<string, unknown>[]): string {
+  const file = path.join(setupDir, `${name}.json`);
+  writeFileSync(file, JSON.stringify({ tasks }));
+  return file;
+}
+
+// Catches (the check's negative control): a written task that treats as already there a path its
+// context session's checkout does not hold kept as a case, or one that asks the agent to create
+// that path refused for it; an answer file that is not read in place of the reader, or that the
+// summary does not name.
+test("build-cases --written --written-answer drops a task that treats a missing path as there (written-missing-path) and keeps one that asks to create it, with the checkout on the case and the history the skill's read alone", async () => {
+  const out = path.join(scratch, "written-answer", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("proj-devbox"))}`;
+  const farm = "tools/tests/test_farm.py";
+  const answer = writtenAnswerFile("written-answer", [
+    { ...WRITTEN_TASK, task: `Make ${farm} pass again.`, existing: [farm] },
+    {
+      ...WRITTEN_TASK,
+      task: `Add a test of the farm in a new ${farm}, as CLAUDE.md asks of new tests.`,
+      existing: ["CLAUDE.md"],
+    },
+  ]);
+  const args = writtenArgs(out, "--context-session", context, "--written-answer", answer);
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(await main(args, io(printed))).toBe(EXIT.ok);
+  const requests = recorder.requests.slice(from);
+  expect(usersOf(requests, WRITTEN_PROMPT)).toEqual([]);
+  const summary = summaryOf<
+    WrittenSummary & {
+      inputs: { writtenAnswer: { path: string; sha256: string } | null };
+      tasksFrom: string;
+    }
+  >(out);
+  expect(summary.inputs.writtenAnswer).toEqual({
+    path: answer,
+    sha256: createHash("sha256").update(readFileSync(answer)).digest("hex"),
+  });
+  expect(summary.tasksFrom).toBe(`--written-answer ${answer}`);
+  const id = `skills-1-${pathHash(sessionPath("proj-devbox")).slice(0, 12)}-w2`;
+  expect(summary.tasks.map((each) => [each.task, each.outcome, each.reason ?? null])).toEqual([
+    [1, "dropped", "written-missing-path"],
+    [2, `case ${id}`, null],
+  ]);
+  expect(summary.tasks[0]?.detail).toBe(
+    `it treats ${farm} as there, and acme/proj at ${SHA} holds no ${farm}`
+  );
+  expect(summary.drops).toEqual({ "written-missing-path": 1 });
+  const [c] = loadCases(out, old);
+  expect(c?.checkout).toEqual({
+    repo: "acme/proj",
+    commit: SHA,
+    root: "/home/dev/src/proj",
+    cwd: "/home/dev/src/proj",
+  });
+  expect(
+    c?.messages.flatMap((message) =>
+      (message.content ?? []).flatMap((block) => (block.type === "toolCall" ? [block.id] : []))
+    )
+  ).toEqual(["written_read"]);
+  const items = (c?.evidence ?? []).map((each) => each.item);
+  expect(items).toContain(`written case: task 2 of --written-answer ${answer}`);
+  expect(items).toContain("written case: treats CLAUDE.md as there");
+  expect(items).toContain(`written case: checkout acme/proj at ${SHA}`);
+}, 60_000);
+
+// Catches: written tasks taken from a session whose work is on the skill's own text, which tests
+// nothing the skill governs.
+test("build-cases --written passes over a context session the written-case reader finds works on the skill's own text as skill-as-material, takes the next one, and refuses a --context-session of it", async () => {
+  const names = ["material-writing", "good"];
+  const sessions = sessionsFile("written-material.jsonl", names);
+  const candidates = names.map((name) => ({
+    store: "store_a",
+    hash: fileHash(sessionPath(name)),
+    path: sessionPath(name),
+  }));
+  const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+    (each) => blindOrder(candidates, each)[0]?.item.path === sessionPath("material-writing")
+  );
+  expect(seed).toBeDefined();
+  const out = path.join(scratch, "written-material", "cases.jsonl");
+  expect(await main(writtenArgs(out, "--sessions", sessions, "--seed", seed ?? ""), io([]))).toBe(
+    EXIT.ok
+  );
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.contextSession.hash).toBe(fileHash(sessionPath("good")));
+  expect(summary.contextSession.passed).toEqual([
+    {
+      store: "store_a",
+      hash: fileHash(sessionPath("material-writing")),
+      why: "skill-as-material: The session rewrites alpha's SKILL.md (its first message).",
+    },
+  ]);
+  expect(loadCases(out, old).length).toBeGreaterThan(0);
+  const refused: string[] = [];
+  const named = path.join(scratch, "written-material-named", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("material-writing"))}`;
+  expect(await main(writtenArgs(named, "--context-session", context), io(refused))).toBe(
+    EXIT.failed
+  );
+  expect(refused.join("")).toContain(`--context-session ${context}: skill-as-material: `);
+}, 120_000);
 
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
   // not-served runs on a model no route serves; other-copy read acme/other's alpha, so its profile

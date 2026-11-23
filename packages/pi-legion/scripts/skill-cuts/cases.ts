@@ -142,7 +142,13 @@ const AbsoluteDir = z.string().refine(
  * names the store and the SHA-256 of the transcript's path (`pathHash`), never the path, and the
  * case's kind (`caseKind`): `session` (one step of that session) or `written` (a written task in
  * that session's context, `build-cases --written`); a case with no kind is a session case, so a
- * case file written before cases had a kind loads as it was.
+ * case file written before cases had a kind loads as it was. `checkout`, on a written case whose
+ * context session's working directory is in a checkout of a repository the build found (build.ts's
+ * `sessionRepository`), is that checkout: `repo`, the repository, `commit`, the commit its project
+ * was read at (the profile's `sessionRepository`), `root`, the checkout's directory on the
+ * session's machine, and `cwd`, the session's working directory, inside `root`. A run of the case
+ * answers a reply's read-only calls from a copy of `repo` at `commit` (replay.ts), its paths
+ * mapped between `root` and the copy. A case with none gets no such answers.
  * `secretsRemoved` counts what the secret scan took out of the case before it left the pod, and
  * `sessionDigest` is the session's last `system-prompt-digest` before the step, or null.
  * `evidence`, when the case builder wrote it, says where each part of the case came from that the
@@ -190,6 +196,18 @@ export const Case = z.strictObject({
     pathHash: z.string().regex(/^[0-9a-f]{64}$/),
     kind: CaseKind.optional(),
   }),
+  checkout: z
+    .strictObject({
+      repo: RepoPath.repo,
+      commit: RepoPath.commit,
+      root: AbsoluteDir,
+      cwd: AbsoluteDir,
+    })
+    .refine(
+      (checkout) => checkout.cwd === checkout.root || checkout.cwd.startsWith(`${checkout.root}/`),
+      "names a working directory outside the checkout's root"
+    )
+    .optional(),
   sessionStart: z.iso.datetime({ offset: true }),
   secretsRemoved: z.int().nonnegative(),
   sessionDigest: z.string().min(1).nullable(),

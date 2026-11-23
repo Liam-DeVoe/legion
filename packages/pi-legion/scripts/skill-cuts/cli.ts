@@ -200,7 +200,9 @@
  *   Beside the verdict, as descriptions: each kind's screened cases with each arm's screen passes
  *   and the informative ones, the mean of old's screen pass rate less the compared arm's over the
  *   screened cases, all and each kind's, with its 95% t interval over the cases (score.ts's
- *   `meanDifference`), the screened cases that tie, floor, ceil and reverse (`screenShapes`), and
+ *   `meanDifference`), the screened cases that tie, floor, ceil and reverse (`screenShapes`), the
+ *   inspection floors by kind with their ids and the mean over all screened cases and over those
+ *   that are not floors (`inspectionLines`, checkout.ts's `readOnlyCall`), and
  *   the judge's identity (judge.ts's `judgeIdentity`) with how many stages record it; with
  *   `--build-summary` (build-cases' summaries, build.ts's `NavigationSummary`), each navigation
  *   line they name that no case has as its line (`untestedNavigationLine`), and how many
@@ -229,7 +231,10 @@
  * files (the case's skill from the arm, another skill of the profile from the copy its capture
  * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`), and each
  * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
- * and the reply after them. A run whose reply after the last answered round still only reads skill
+ * and the reply after them. A written case's runs also answer, from the shared checkout of its
+ * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only calls
+ * (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads`, with `unanswered`
+ * where a reply's read-only calls were not answered. A run whose reply after the last answered round still only reads skill
  * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
  * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
  * drops its case under that reason, with the counts. A capture made for a stage shows the case's
@@ -317,16 +322,22 @@
  * listing rule dropped most of a load test's tasks); 4 stopped by build-cases' stop rule. The
  * commands of the other files return their own status, which `main` returns as it is.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   cpSync,
   existsSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -350,6 +361,7 @@ import {
   type NavigationCounts,
   NavigationSummary,
   pathFormIn,
+  processLives,
 } from "./build";
 import {
   type Capture,
@@ -372,9 +384,11 @@ import {
   Thinking,
   textLines,
 } from "./cases";
+import { type CheckoutCopy, readOnlyCall, removeOutsideLinks } from "./checkout";
 import {
   configFrom,
   fileDigests,
+  firstLine,
   json,
   OneLine,
   parse,
@@ -383,6 +397,8 @@ import {
   Stopped,
   schemaFaults,
   sha256,
+  textOf,
+  timeLimit,
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
@@ -393,6 +409,7 @@ import {
   localSource,
   type RepoSource,
   readFrontmatter,
+  repositoryTree,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
 } from "./context";
@@ -410,6 +427,7 @@ import {
   type RequestBody,
   type Sent,
   SpentRecord,
+  toolCalls,
   usdOf,
 } from "./gateway";
 import {
@@ -463,6 +481,7 @@ import {
   skillFiles,
 } from "./readers";
 import {
+  MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
@@ -1940,6 +1959,15 @@ const SkillReadRecord = z.strictObject({
   from: z.enum(["arm", "copy", "absent"]),
   isError: z.boolean(),
 });
+/** One read-only call a checkout round of a written case's replay answered from its checkout
+ *  copy (replay.ts's `CheckoutRead`): its tool, its input (a bash call's command among it), and
+ *  whether the answer is an error. */
+const CheckoutReadRecord = z.strictObject({
+  from: z.literal("checkout"),
+  tool: z.string(),
+  input: z.unknown(),
+  isError: z.boolean(),
+});
 
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
 const Run = z.strictObject({
@@ -1958,11 +1986,20 @@ const Run = z.strictObject({
   id: z.string().nullable(),
   /** The rounds of skill reads the replay answered before the step, or null when it failed. */
   skillRounds: z.int().nonnegative().nullable(),
-  /** Each answered round's reads, in order, or null when the replay failed; absent from a run
-   *  made before this field. */
-  skillReads: z.array(z.array(SkillReadRecord)).nullable().optional(),
-  /** The step's content (each answered round's read calls, then the reply after them, which for a
-   *  run that read past the last round is the reply it ended on), or null when the replay failed. */
+  /** The rounds of read-only calls a written case's replay answered from its checkout copy
+   *  before the step, or null when it failed; absent from a run made before this field. */
+  checkoutRounds: z.int().nonnegative().nullable().optional(),
+  /** Each answered round's answers, in order (a skill read's, or a checkout read's), or null when
+   *  the replay failed; absent from a run made before this field. */
+  skillReads: z
+    .array(z.array(z.union([SkillReadRecord, CheckoutReadRecord])))
+    .nullable()
+    .optional(),
+  /** Why the reply that ended the run, every call of it read-only, was not answered from the
+   *  checkout copy (replay.ts's `Replayed.unanswered`); absent otherwise. */
+  unanswered: z.string().optional(),
+  /** The step's content (each answered round's calls, then the reply after them, which for a run
+   *  that read past the last round is the reply it ended on), or null when the replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
   replaySpent: z.array(SpentRecord),
   judgeSpent: z.array(SpentRecord),
@@ -2020,7 +2057,12 @@ type Texts = z.infer<typeof Texts>;
  *  `runner` is the runner that started it (`runnerDigest`), absent in a stage started before the
  *  runner was recorded. `confirmFlagged` is true in a confirm that `behaviour confirm
  *  --confirm-flagged` ran, in any of its rounds, and absent otherwise: report then gives no skill
- *  verdict (CONFIRM_FLAGGED_VERDICT). */
+ *  verdict (CONFIRM_FLAGGED_VERDICT). `checkout`, in a written case's stage, is the shared
+ *  checkout its read-only calls were answered from (`sharedCheckout`): whether it is a git
+ *  checkout (else GitHub's tarball, whose git commands are not answered), the depth of its
+ *  history (`git log` there shows at most that many commits, then the shallow boundary; null for
+ *  the tarball), and each symbolic link removed from it because it resolved outside it or not at
+ *  all (checkout.ts's `removeOutsideLinks`); absent otherwise. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -2035,6 +2077,13 @@ const StageResult = z.strictObject({
   usd: z.number(),
   runner: z.string().optional(),
   confirmFlagged: z.literal(true).optional(),
+  checkout: z
+    .strictObject({
+      git: z.boolean(),
+      depth: z.int().positive().nullable(),
+      removedLinks: z.array(z.string()),
+    })
+    .optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -2210,6 +2259,10 @@ interface Runner extends Behaviour {
   readonly replays: Gateway;
   readonly judge: Gateway;
   readonly source: RepoSource;
+  /** Where a written case's repository is fetched from (`sharedCheckout`): GitHub's
+   *  `https://github.com/<repo>.git`, or, with `--repos <dir>`, the git repository
+   *  `<dir>/<repo>.git`. */
+  readonly gitRemote: (repo: string) => string;
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
@@ -2699,12 +2752,13 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
  *  a session id of its own and its arm's installed copies of the profile's other skills, from its
- *  capture's record and the cache (context.ts's `installedCopies`); then every reply judged blind
- *  under `seed`. A replay that fails is a run with no verdict, and so is one whose reply after the
- *  last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its reason
- *  begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the budget
- *  refused, or whose judgement the budget refused, is no run. The runs are numbered, within their
- *  arm, in the order they were sent. */
+ *  capture's record and the cache (context.ts's `installedCopies`), and, for a written case,
+ *  `checkout`, the copy of its checkout its read-only calls are answered from; then every reply
+ *  judged blind under `seed`. A replay that fails is a run with no verdict, and so is one whose
+ *  reply after the last answered round still only reads (replay.ts's ReadsPastLastRound: its
+ *  reason begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the
+ *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
+ *  their arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -2714,7 +2768,8 @@ async function runRound(
   made: readonly Run[],
   round: number,
   seed: string,
-  phases: Phases
+  phases: Phases,
+  checkout: CheckoutCopy | undefined
 ): Promise<{ runs: Run[]; budgetSpent: boolean }> {
   const replaysStarted = performance.now();
   const sent = await replayInterleaved(
@@ -2726,7 +2781,8 @@ async function runRound(
       runs: toStart[name] ?? 0,
     })),
     r.replays,
-    seed
+    seed,
+    checkout === undefined ? {} : { checkout }
   );
   // Each reply is judged under its arm and its place among its arm's replays of this round.
   const replies: ArmReply[] = sent.flatMap(({ arm, run, outcome }) =>
@@ -2756,8 +2812,8 @@ async function runRound(
         budgetSpent = true;
         continue;
       }
-      // A run whose reply after the last answered round still only reads skill files keeps what
-      // it read and spent.
+      // A run whose reply after the last answered round still only reads keeps what it read and
+      // spent.
       const past = outcome.reason instanceof ReadsPastLastRound ? outcome.reason : undefined;
       runs.push({
         ...base,
@@ -2766,6 +2822,7 @@ async function runRound(
         reason: past?.message ?? `the replay failed: ${messageFor(outcome.reason)}`,
         id: null,
         skillRounds: past?.replayed.rounds ?? null,
+        checkoutRounds: past?.replayed.checkoutRounds ?? null,
         skillReads: past?.replayed.reads.map((each) => [...each]) ?? null,
         reply: past?.replayed.step.message.content ?? null,
         replaySpent: past?.replayed.usage ?? [],
@@ -2786,7 +2843,9 @@ async function runRound(
       reason: judgement.reason,
       id: judgement.id,
       skillRounds: step.rounds,
+      checkoutRounds: step.checkoutRounds,
       skillReads: step.reads.map((each) => [...each]),
+      ...(step.unanswered === undefined ? {} : { unanswered: step.unanswered }),
       reply: step.step.message.content,
       replaySpent: step.usage,
       judgeSpent: [...judgement.spent],
@@ -2906,6 +2965,21 @@ async function runStage(
   countReads();
   save({ ...state, captures, ...(ours === undefined ? {} : { ours }) });
 
+  // A written case's read-only calls are answered from the shared checkout of its context
+  // session's repository at its commit, made once and kept in the cache.
+  let checkout: CheckoutCopy | undefined;
+  if (caseKind(c) === "written" && c.checkout !== undefined) {
+    const { repo, commit, root, cwd } = c.checkout;
+    try {
+      const shared = await sharedCheckout(r, repo, commit);
+      checkout = { dir: shared.dir, root, cwd, git: shared.marker.git };
+      const { git, depth, removedLinks } = shared.marker;
+      save({ ...state, checkout: { git, depth, removedLinks } });
+    } catch (error) {
+      if (!(error instanceof UnreadableDirectory)) throw error;
+      return { ...current, dropped: `${UNREADABLE_DIRECTORY}: ${error.message}`, droppedAt: stage };
+    }
+  }
   for (;;) {
     const outcome = stageOutcome(state.runs, c.id, stage, r.compared);
     if (outcome.state !== "running") {
@@ -2924,7 +2998,8 @@ async function runStage(
       state.runs,
       state.seeds.length + 1,
       seed,
-      phases
+      phases,
+      checkout
     );
     const file = save({
       ...state,
@@ -2935,6 +3010,179 @@ async function runStage(
       throw new Stopped(
         `the budget is spent: the replies so far cost $${r.gateway.spend().usd.toFixed(4)} at list price, so no new model call starts; case ${c.id}'s ${stage} runs so far are saved in ${file}`
       );
+    }
+  }
+}
+
+/** The longest one git command of a shared checkout's making may run: the checkout of a large
+ *  commit fetches its blobs then (a repository of 115,950 files took 547 s). */
+const GIT_TIME_LIMIT_MS = 1_800_000;
+/** The depth of a shared checkout's history (`git fetch --depth`): `git log` in it shows at most
+ *  this many commits, then the shallow boundary. */
+const CHECKOUT_DEPTH = 50;
+/** How long a run waits before it looks again at a shared checkout another live run makes. */
+const CHECKOUT_WAIT_MS = 2_000;
+
+/** Runs `git args` with no prompt for a password: its exit code and its error text. */
+async function runGit(args: readonly string[]): Promise<{ code: number; stderr: string }> {
+  const child = Bun.spawn(["git", ...args], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "pipe",
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  const limit = timeLimit(child, GIT_TIME_LIMIT_MS);
+  const [stderr, code] = await Promise.all([textOf(child.stderr, limit), child.exited]);
+  limit.clear();
+  return { code, stderr: limit.timedOut() ? `timed out after ${GIT_TIME_LIMIT_MS} ms` : stderr };
+}
+
+/** What a shared checkout's marker records (`sharedCheckout`), written last, once it is made:
+ *  whether it is a git checkout (else GitHub's tarball of the commit, with why the git one failed),
+ *  the depth of its history, the symbolic links removed from it, and the seconds and the bytes its
+ *  making took. */
+const CheckoutMarker = z.strictObject({
+  git: z.boolean(),
+  depth: z.int().positive().nullable(),
+  removedLinks: z.array(z.string()),
+  seconds: z.number().nonnegative(),
+  bytes: z.int().nonnegative(),
+  why: z.string().optional(),
+});
+type CheckoutMarker = z.infer<typeof CheckoutMarker>;
+
+/** The shared checkouts this process made or found, by `<cache dir>\0<repo>@<commit>`. */
+const sharedCheckouts = new Map<string, Promise<{ dir: string; marker: CheckoutMarker }>>();
+
+/** The bytes of every file under `dir`, its links counted as links. */
+function bytesUnder(dir: string): number {
+  let bytes = 0;
+  for (const entry of readdirSync(dir, { recursive: true, encoding: "utf8" })) {
+    const stats = lstatSync(path.join(dir, entry));
+    if (!stats.isDirectory()) bytes += stats.size;
+  }
+  return bytes;
+}
+
+/**
+ * The one checkout of `repo` at `commit` that every written case of that commit answers its
+ * read-only calls from (replay.ts's checkout rounds), at `<cacheDir>/checkouts/<repo>/<commit>`,
+ * read-only once made, and never removed by a stage; and its marker. It is made once, for every
+ * run that shares the cache: `git init`, `git remote add origin <r.gitRemote(repo)>`, `git fetch
+ * --depth=CHECKOUT_DEPTH --filter=blob:none origin <commit>` and `git checkout --detach <commit>`
+ * (a whole blobless clone of a large repository's history takes longer than a stage); where one of
+ * them fails, the repository at the commit read into the cache (context.ts's `repositoryTree`:
+ * GitHub's tarball through `gh`, or `--repos`' directory) copied there, whose git commands are not
+ * answered. Then every symbolic link that resolves outside it, or nowhere, is removed (checkout.ts's
+ * `removeOutsideLinks`), and its marker (`<commit>.ready.json`, CheckoutMarker) is written last,
+ * so a half-made checkout is never used. A lock (`<commit>.lock`, `<pid>`, made whole by a link)
+ * keeps a second run from making it at once: a run that finds the lock of a live process waits
+ * for the marker; one that finds the lock of a process that runs no more (or its own pid, which no
+ * call of its own holds) removes the lock and the half-made checkout and makes it again. Said
+ * once, as it is made, with its seconds and size.
+ */
+function sharedCheckout(
+  r: Runner,
+  repo: string,
+  commit: string
+): Promise<{ dir: string; marker: CheckoutMarker }> {
+  const key = `${r.cacheDir}\0${repo}@${commit}`;
+  const held = sharedCheckouts.get(key);
+  if (held !== undefined) return held;
+  const made = makeSharedCheckout(r, repo, commit);
+  sharedCheckouts.set(key, made);
+  made.catch(() => {
+    if (sharedCheckouts.get(key) === made) sharedCheckouts.delete(key);
+  });
+  return made;
+}
+
+/** `sharedCheckout`'s making (see there). */
+async function makeSharedCheckout(
+  r: Runner,
+  repo: string,
+  commit: string
+): Promise<{ dir: string; marker: CheckoutMarker }> {
+  const dir = path.join(r.cacheDir, "checkouts", repo, commit);
+  const markerFile = `${dir}.ready.json`;
+  const lock = `${dir}.lock`;
+  mkdirSync(path.dirname(dir), { recursive: true });
+  for (;;) {
+    if (existsSync(markerFile)) {
+      return { dir, marker: CheckoutMarker.parse(JSON.parse(readFileSync(markerFile, "utf8"))) };
+    }
+    // The lock, made whole: its pid is written into a file of this process's own, then linked to
+    // the lock's name, which fails when the lock is there.
+    const mine = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    const fd = openSync(mine, "wx");
+    writeSync(fd, `${process.pid}\n`);
+    closeSync(fd);
+    let taken = false;
+    try {
+      linkSync(mine, lock);
+      taken = true;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    } finally {
+      rmSync(mine, { force: true });
+    }
+    if (!taken) {
+      const pid = Number(readFileSync(lock, "utf8").trim());
+      if (pid !== process.pid && Number.isInteger(pid) && pid > 0 && processLives(pid)) {
+        await Bun.sleep(CHECKOUT_WAIT_MS);
+        continue;
+      }
+      say(
+        r,
+        `the checkout ${dir} is half-made by process ${pid}, which holds it no more: it is made again`
+      );
+      rmSync(lock, { force: true });
+      continue;
+    }
+    try {
+      if (existsSync(markerFile)) continue;
+      const started = performance.now();
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+      let why: string | undefined;
+      for (const step of [
+        ["init", "--quiet"],
+        ["remote", "add", "origin", r.gitRemote(repo)],
+        ["fetch", "--quiet", `--depth=${CHECKOUT_DEPTH}`, "--filter=blob:none", "origin", commit],
+        ["checkout", "--quiet", "--detach", commit],
+      ]) {
+        const ran = await runGit(["-C", dir, ...step]);
+        if (ran.code !== 0) {
+          why = `git ${step[0]} failed: ${firstLine(ran.stderr)}`;
+          break;
+        }
+      }
+      if (why !== undefined) {
+        say(
+          r,
+          `the checkout of ${repo} at ${commit}: ${why}; GitHub's tarball of the commit answers its reads, and no git command`
+        );
+        rmSync(dir, { recursive: true, force: true });
+        const tree = await repositoryTree(r.source, r.cacheDir, repo, commit);
+        cpSync(tree, dir, { recursive: true, verbatimSymlinks: true });
+      }
+      const removedLinks = removeOutsideLinks(dir);
+      const marker: CheckoutMarker = {
+        git: why === undefined,
+        depth: why === undefined ? CHECKOUT_DEPTH : null,
+        removedLinks,
+        seconds: Math.round((performance.now() - started) / 100) / 10,
+        bytes: bytesUnder(dir),
+        ...(why === undefined ? {} : { why }),
+      };
+      writeWhole(markerFile, json(marker));
+      say(
+        r,
+        `the checkout of ${repo} at ${commit} is made in ${marker.seconds} s, ${mib(marker.bytes)} MiB (${marker.git ? `git, its history ${CHECKOUT_DEPTH} commits deep` : "GitHub's tarball, no history"}; ${removedLinks.length === 0 ? "no symbolic link leaves it" : `${removedLinks.length} symbolic links that leave it removed: ${removedLinks.join(", ")}`}): ${dir}`
+      );
+      return { dir, marker };
+    } finally {
+      rmSync(lock, { force: true });
     }
   }
 }
@@ -3255,7 +3503,8 @@ function stageVerdict(stage: Stage, passes: Passes<Stage>, compared: Compared): 
 
 /** Each arm of `stage`, the old text compared with `compared` (score.ts's `stageArms`), with how
  *  many of `runs`, a stage's runs, got no verdict because the reply after the last answered round
- *  still only read skill files (replay.ts's ReadsPastLastRound, whose reason begins
+ *  still only read skill files, or, in a written case, still only made read-only calls its
+ *  checkout copy answers (replay.ts's ReadsPastLastRound, whose reason begins
  *  READS_PAST_LAST_ROUND). */
 function readsPast(
   runs: readonly Run[],
@@ -3288,7 +3537,7 @@ function readsPastDrop(runs: readonly Run[], stage: Stage, compared: Compared): 
     const judged = own.filter((run) => run.verdict !== null).length;
     return judged < STAGE_RUNS[stage] && count > 0
       ? [
-          `the ${arm} arm has ${judged} of its ${STAGE_RUNS[stage]} judged runs after ${own.length} runs, ${count} of which still only read skill files after the last answered round`,
+          `the ${arm} arm has ${judged} of its ${STAGE_RUNS[stage]} judged runs after ${own.length} runs, ${count} of which still only read after the last answered round (skill files, or read-only calls a written case's checkout answers)`,
         ]
       : [];
   });
@@ -3712,25 +3961,24 @@ function screenedKindLines(b: Behaviour, score: SkillScore): string[] {
   });
 }
 
+/** The report's words of the mean of old's screen pass rate less the compared arm's over the
+ *  screened cases `cases`, each one observation, with its 95% interval clustered by case
+ *  (score.ts's `meanDifference`), or `none` for no case. */
+function meanWords(cases: readonly { old: number; compared: number }[]): string {
+  const mean = meanDifference(cases.map((each) => (each.old - each.compared) / SCREEN_RUNS));
+  if (mean === undefined) return "none";
+  const head = `${counted(mean.cases, "case")} ${mean.mean.toFixed(2)}`;
+  return mean.interval === undefined
+    ? `${head} (one case, so no interval)`
+    : `${head} (95% interval ${mean.interval.low.toFixed(2)} to ${mean.interval.high.toFixed(2)}, t over the cases)`;
+}
+
 /** The report's line of the mean over the screened cases of old's screen pass rate less the
- *  compared arm's, each case one observation, with its 95% interval clustered by case (score.ts's
- *  `meanDifference`): over all of them and over each kind's. A description beside the registered
- *  rule, which it does not change. */
+ *  compared arm's (`meanWords`): over all of them and over each kind's. A description beside the
+ *  registered rule, which it does not change. */
 function meanLine(b: Behaviour, score: SkillScore): string {
   const screened = screenedCases(b, score);
-  const words = (kind: CaseKind | undefined): string => {
-    const mean = meanDifference(
-      screened
-        .filter((each) => kind === undefined || each.kind === kind)
-        .map((each) => (each.old - each.compared) / SCREEN_RUNS)
-    );
-    if (mean === undefined) return "none";
-    const head = `${counted(mean.cases, "case")} ${mean.mean.toFixed(2)}`;
-    return mean.interval === undefined
-      ? `${head} (one case, so no interval)`
-      : `${head} (95% interval ${mean.interval.low.toFixed(2)} to ${mean.interval.high.toFixed(2)}, t over the cases)`;
-  };
-  return `mean of old less ${b.compared} in screen pass rate, each screened case one observation (a description beside the registered rule): all ${words(undefined)}; ${CaseKind.options.map((kind) => `${kind} ${words(kind)}`).join("; ")}`;
+  return `mean of old less ${b.compared} in screen pass rate, each screened case one observation (a description beside the registered rule): all ${meanWords(screened)}; ${CaseKind.options.map((kind) => `${kind} ${meanWords(screened.filter((each) => each.kind === kind))}`).join("; ")}`;
 }
 
 /** The report's line of the screened cases that tie, floor, ceil and reverse, old against the
@@ -3738,6 +3986,53 @@ function meanLine(b: Behaviour, score: SkillScore): string {
 function shapesLine(b: Behaviour, score: SkillScore): string {
   const shapes = screenShapes(screenedCases(b, score));
   return `screened cases, old against ${b.compared} in the screen: ${counted(shapes.ties, "tie")}, ${counted(shapes.floors, "floor")} (0 of ${SCREEN_RUNS} in both), ${counted(shapes.ceilings, "ceiling")} (${SCREEN_RUNS} of ${SCREEN_RUNS} in both), ${counted(shapes.reverse, "reverse gap")} (${b.compared} above old); a floor or a ceiling is a tie too`;
+}
+
+/** The screen runs of each screen arm a screened case must have judged fail on a look
+ *  (`judgedOnLook`) to be an inspection floor. */
+const FLOOR_RUNS = 8;
+
+/** Whether run `run` was judged on a look: its judged reply's own tool calls (its step less each
+ *  answered round's calls, whose answers `skillReads` holds) are one or more, and every one is
+ *  read-only (checkout.ts's `readOnlyCall`). */
+function judgedOnLook(run: Run): boolean {
+  const answered = (run.skillReads ?? []).reduce((sum, round) => sum + round.length, 0);
+  const own = toolCalls(run.reply ?? []).slice(answered);
+  return own.length > 0 && own.every((call) => readOnlyCall(call.name, call.input));
+}
+
+/** The report's lines of the inspection floors, a description beside the registered rule, which
+ *  drops no case: the screened cases on which at least FLOOR_RUNS of the SCREEN_RUNS screen runs
+ *  of each screen arm are judged fail on a look (`judgedOnLook`), by kind with their ids; and the
+ *  mean of old less the compared arm in screen pass rate (`meanWords`) over all screened cases and
+ *  over those that are not floors. */
+function inspectionLines(
+  b: Behaviour,
+  score: SkillScore,
+  results: ReadonlyMap<string, CaseResult>
+): string[] {
+  const screened = screenedCases(b, score);
+  const arms = stageArms("screen", b.compared);
+  const floors = screened.filter(({ caseId }) => {
+    const runs = results.get(caseId)?.stages.screen?.runs ?? [];
+    return arms.every(
+      (arm) =>
+        runs.filter((run) => run.arm === arm && run.verdict === "fail" && judgedOnLook(run))
+          .length >= FLOOR_RUNS
+    );
+  });
+  const byKind = CaseKind.options
+    .map((kind) => {
+      const ids = floors.filter((each) => each.kind === kind).map((each) => each.caseId);
+      return `${kind} ${ids.length}${ids.length === 0 ? "" : `: ${ids.join(", ")}`}`;
+    })
+    .join("; ");
+  const others = screened.filter((each) => !floors.includes(each));
+  const named = others.length === 0 ? "" : ` (${others.map((each) => each.caseId).join(", ")})`;
+  return [
+    `inspection floors (screened cases on which at least ${FLOOR_RUNS} of the ${SCREEN_RUNS} screen runs of each screen arm are judged fail on a step whose own tool calls are all read-only calls; a description beside the registered rule, which drops no case): ${floors.length} of ${screened.length} screened (${byKind})`,
+    `mean of old less ${b.compared} in screen pass rate, each screened case one observation (a description beside the registered rule): over all ${counted(screened.length, "screened case")} ${meanWords(screened)}; over the ${counted(others.length, "screened case")} that are not inspection floors${named} ${meanWords(others)}`,
+  ];
 }
 
 /** The files of `files` (paths inside `old` of its files other than SKILL.md) that case `c`'s
@@ -4057,7 +4352,7 @@ function reportCommand(
     `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
-  // round still only read skill files: an arm that keeps the agent reading acts differently.
+  // round still only read: an arm that keeps the agent reading acts differently.
   const pastByStage = Stage.options.map((stage) => {
     const runs = [...results.values()].flatMap((result) => [
       ...(result.stages[stage]?.runs ?? []),
@@ -4066,7 +4361,7 @@ function reportCommand(
     return `${stage} ${armCounts(readsPast(runs, stage, b.compared))}`;
   });
   lines.push(
-    `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads still only read skill files, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
+    `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads, or of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
   );
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
@@ -4085,7 +4380,8 @@ function reportCommand(
     ...screenedKindLines(b, score),
     stepReadsLine(b, score, old),
     meanLine(b, score),
-    shapesLine(b, score)
+    shapesLine(b, score),
+    ...inspectionLines(b, score, results)
   );
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;
@@ -4433,6 +4729,10 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     replays: loggedGateway(gateway, log, "replay"),
     judge: loggedGateway(gateway, log, "judge"),
     source,
+    gitRemote: (repo) =>
+      values.repos === undefined
+        ? `https://github.com/${repo}.git`
+        : path.join(values.repos, `${repo}.git`),
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
       const saved = savedCapture(capturePaths(outDir, c.id, arm.name), arm);

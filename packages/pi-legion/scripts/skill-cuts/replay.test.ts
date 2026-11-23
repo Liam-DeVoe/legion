@@ -21,6 +21,7 @@ import { judgeReply, stepText } from "./judge";
 import { messageSse, sseResponse } from "./recorder";
 import {
   MAX_BREAKPOINTS,
+  MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
@@ -1361,4 +1362,140 @@ test("in ours, a reply's whole read by path of the cut's own copy is answered fr
     });
     expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
   }
+});
+
+// A written case's run: a reply whose calls all read is answered from a copy of its context
+// session's checkout at its commit (replay.ts's checkout rounds), made here as a small fixture
+// repository; a session case's run gets no such answers.
+
+/** The context session's checkout root and working directory, as a written case names them. */
+const SESSION_ROOT = "/work/acme/proj";
+const APP_PY = "import os\n\ndef main():\n    return os.getcwd()\n";
+const GUIDE_MD = "# Guide\n\nRun the app.\n";
+
+/** A copy of the made-up checkout of acme/proj: src/app.py and docs/guide.md, in a directory of
+ *  its own, and the session's root and working directory it stands for. */
+function checkoutCopy(): { dir: string; root: string; cwd: string; git: boolean } {
+  const dir = path.join(scratch, `checkout-${Math.random()}`);
+  for (const [file, text] of Object.entries({ "src/app.py": APP_PY, "docs/guide.md": GUIDE_MD })) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), text);
+  }
+  return { dir, root: SESSION_ROOT, cwd: SESSION_ROOT, git: false };
+}
+
+/** A tool call `name` with `input`, as a Messages reply holds it. */
+function toolCall(id: string, name: string, input: Record<string, unknown>): ContentBlock {
+  return { type: "tool_use", id, name, input };
+}
+
+/** The act after the inspection: a new test file, which the line governs. */
+const WRITE_ACT = toolCall("toolu_write", "write", {
+  path: "src/test_app.py",
+  content: "from app import main\n",
+});
+
+/** The inspection reply: a read, a grep, a find and a cat through bash, as a session's agent
+ *  looks before it acts. */
+const INSPECTION = [
+  toolCall("toolu_read", "read", { path: "docs/guide.md", i: "Reading the guide" }),
+  toolCall("toolu_grep", "grep", { pattern: "def ", path: "src" }),
+  toolCall("toolu_find", "bash", { command: `find ${SESSION_ROOT}/src -name '*.py'` }),
+  toolCall("toolu_cat", "bash", { command: "cat src/app.py | head -2" }),
+];
+
+// Catches: a written case judged on its agent's first look at the work (the defect: every judged
+// step of test-driven-development's written cases only inspected), an answer that shows the copy's
+// own path, or an answer in another form than the pinned Oh My Pi's.
+test("a written case's reply whose calls all read is answered from a copy of its checkout in Oh My Pi's forms at the session's paths, and the act after it is judged with those calls", async () => {
+  const copy = checkoutCopy();
+  const arm = armWith("old", { "SKILL.md": SKILL_MD });
+  const { gateway, bodies } = scripted([INSPECTION, [WRITE_ACT]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { checkout: copy });
+  expect(bodies).toHaveLength(2);
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_read",
+        `[docs/guide.md#${snapshotTag(GUIDE_MD)}]\n1:# Guide\n2:\n3:Run the app.`,
+        false
+      ),
+      toolResult(
+        "toolu_grep",
+        `# src/\n## app.py#${snapshotTag(APP_PY)}\n 2:\n*3:def main():\n 4:    return os.getcwd()`,
+        false
+      ),
+      toolResult("toolu_find", `${SESSION_ROOT}/src/app.py\n`, false),
+      toolResult("toolu_cat", "import os\n\n", false),
+    ],
+  });
+  expect(JSON.stringify(bodies)).not.toContain(copy.dir);
+  expect({ rounds: replayed.rounds, checkoutRounds: replayed.checkoutRounds }).toEqual({
+    rounds: 0,
+    checkoutRounds: 1,
+  });
+  expect(replayed.reads).toEqual([
+    INSPECTION.map((call) => ({
+      from: "checkout",
+      tool: call.name as string,
+      input: call.input,
+      isError: false,
+    })),
+  ]);
+  expect(replayed.step.message.content).toEqual([...INSPECTION, WRITE_ACT]);
+
+  // A call the copy does not answer (a read with a selector, a command of no read-only program)
+  // makes the reply the judged step, and the run says why.
+  const ranged = toolCall("toolu_ranged", "read", { path: "src/app.py:1-2" });
+  const judged = await replayOnce(
+    { ...BODY, stream: false },
+    arm,
+    scripted([[INSPECTION[0] as ContentBlock, ranged]]).gateway,
+    { checkout: copy }
+  );
+  expect({ checkoutRounds: judged.checkoutRounds, step: judged.step.message.content }).toEqual({
+    checkoutRounds: 0,
+    step: [INSPECTION[0], ranged],
+  });
+  expect(judged.unanswered).toContain("src/app.py:1-2");
+});
+
+// Catches: a session case's reply answered from a checkout, which a session case has none of.
+test("a session case's reply whose calls all read files of the project is the judged step: no checkout answers it", async () => {
+  const { gateway, bodies } = scripted([INSPECTION, [WRITE_ACT]]);
+  const replayed = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    gateway
+  );
+  expect(bodies).toHaveLength(1);
+  expect({ rounds: replayed.rounds, checkoutRounds: replayed.checkoutRounds }).toEqual({
+    rounds: 0,
+    checkoutRounds: 0,
+  });
+  expect(replayed.step.message.content).toEqual(INSPECTION);
+});
+
+// Catches: a written case's run that reads on and on judged on a read, or answered without end.
+test("a written case's reply that still only reads after five answered rounds of the checkout gets no verdict, as reads-past-last-round", async () => {
+  expect(MAX_CHECKOUT_ROUNDS).toBe(5);
+  const read = INSPECTION[0] as ContentBlock;
+  const { gateway, bodies } = scripted(Array(7).fill([read]));
+  const failed = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    gateway,
+    { checkout: checkoutCopy() }
+  ).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  expect(bodies).toHaveLength(6);
+  if (!(failed instanceof ReadsPastLastRound)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toBe(
+    `${READS_PAST_LAST_ROUND}: after 5 answered rounds of read-only calls answered from the checkout and 0 of skill reads, the reply still only makes read-only calls the checkout answers (read docs/guide.md)`
+  );
+  expect(failed.replayed.checkoutRounds).toBe(5);
+  expect(failed.replayed.step.message.content).toEqual(Array(6).fill(read));
 });
