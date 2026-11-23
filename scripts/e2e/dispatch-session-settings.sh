@@ -131,7 +131,7 @@ cleanup() {
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
+    psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
@@ -223,7 +223,7 @@ record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 
 (umask 077 &&
@@ -243,13 +243,16 @@ env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(
 listener_pid=$!
 record_start "$listener_pid" || true
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+# The subshell turns the shell's xtrace off before it expands DATABASE_URL, the connection string
+# run_database_url_env rebuilt, which carries the DSN's password, so a run under `bash -x` traces
+# no part of it. It then execs env, so Dispatch runs as the pid the subshell started as.
+(set +x; exec env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
-  "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
+  "$work/dispatch") >"$evidence/logs/dispatch.log" 2>&1 &
 dispatch_pid=$!
 record_start "$dispatch_pid" || true
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"

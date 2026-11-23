@@ -333,12 +333,12 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url_env, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# reads its caller's DSN with, and psql_env, which runs psql on that DSN by its variable's name,
+# and lib/port-file.sh for read_port_file, which this proof's own await_port_file waits with.
+# Neither file reads a variable of this shell. This proof sources no rig: its await_port_file and
+# keep_port, written for the pid map below, are its own, and lib/rig.sh defines both of those
+# names and a start_held that calls its own await_port_file, so sourcing it for those DSN helpers
+# would leave which await_port_file runs to the order of the two files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
@@ -412,7 +412,7 @@ cleanup() {
     stop_label "$label"
   done
   if [[ -n "$database_created" ]]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
   printf '%s: evidence kept in %s\n' "$me" "$work"
@@ -718,14 +718,17 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 mkdir -p "$web_dist"
 dispatch_ready() { curl -fsS --max-time 2 "${dispatch_url}/healthz" | jq -e '.ok and .nats'; }
+# start_dispatch's subshell turns the shell's xtrace off before it expands DATABASE_URL, the
+# connection string run_database_url_env rebuilt, which carries the DSN's password, so a run under
+# `bash -x` traces no part of it into Dispatch's log, where the subshell's stderr goes.
 start_dispatch() {
-  (isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  (set +x; isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$agent_token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
     DISPATCH_SERVER_URL="$dispatch_url" DISPATCH_SIGNING_KEY="$signing_key" DISPATCH_WEB_DIST="$web_dist" \

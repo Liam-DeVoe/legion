@@ -6048,6 +6048,7 @@ The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_env` before it builds or extracts anything, through that same copy.
 `require_loopback_env` takes the variable's name rather than its value and hands the value to `require_loopback_dsn` with the shell's xtrace off, so a run under `bash -x` traces no DSN, where a caller's own line that passed the DSN would trace it.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database, through `run_database_url_env`, which takes the variable's name in the same way.
+They create and drop that database with `psql_env`, which takes the name in the same way too, and hand Dispatch the connection string `run_database_url_env` rebuilt from a subshell that turns xtrace off before it expands that string, so a run of either under `bash -x` traces no part of the DSN.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
@@ -6098,7 +6099,7 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
-A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
+A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing, and a fourth, `psql_env`, runs `psql` on the DSN a variable holds.
 [`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eleven scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_env` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_env` itself once more, for its negative control.
@@ -6133,6 +6134,11 @@ The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it thr
   is `run_database_url` on the DSN the variable NAME holds, read inside the function rather than passed by its caller, as `require_loopback_env` reads it.
   [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) call it.
 
+- `psql_env NAME ARG…`
+
+  runs `psql` on the DSN the variable NAME holds, with ARG… after it, and returns `psql`'s status; the DSN is read inside the function rather than passed by its caller, as `require_loopback_env` reads it.
+  [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) create and drop their run's database through it.
+
 - `empty_public_schema URL`
 
   drops every table, view, routine and type of the `public` schema of the database URL names, and keeps the extensions that schema holds.
@@ -6144,7 +6150,7 @@ The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it thr
 
 `require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
 Every helper here turns the shell's xtrace off for itself (`local -`), so a run under `bash -x` traces no DSN and no connection string from inside one.
-A caller whose DSN is the value of NAME itself passes NAME alone, to `require_loopback_env` or `run_database_url_env`; a caller that keeps the DSN in a variable of its own traces it wherever it expands that variable.
+A caller whose DSN is the value of NAME itself passes NAME alone, to `require_loopback_env`, `run_database_url_env` or `psql_env`; a caller that keeps the DSN or a connection string in a variable of its own traces it wherever it expands that variable with xtrace on, which is why [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) start Dispatch on theirs from a subshell that turns xtrace off first.
 
 ## lib/held-port.py
 

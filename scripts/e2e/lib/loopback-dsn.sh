@@ -3,7 +3,8 @@
 # libpq reads from that DSN, and the connection string that gives the run its own database on
 # that host. lib/loopback-dsn.py answers both, and this file addresses it beside itself, so it
 # needs nothing of its caller's. A third helper, empty_public_schema, empties the database a run
-# was given, so that a server migrates it from nothing. lib/rig.sh sources this file, and so does
+# was given, so that a server migrates it from nothing, and a fourth, psql_env, runs psql on the
+# DSN a variable holds. lib/rig.sh sources this file, and so does
 # scripts/e2e/envoy-session-delivery.sh, which sources no rig: that proof keeps an await_port_file
 # and a keep_port of its own, written for its own pid map.
 # Sourced, never run.
@@ -12,9 +13,11 @@
 # itself (`local -`), the rule lib/process-tree.sh's env_of states for every reader of a secret, so
 # a run under `bash -x` traces no password from inside them. A caller's own line that passes a DSN
 # still carries it into the trace. So a caller whose DSN is the value of NAME itself, `"$NAME"` at
-# the call, passes NAME alone, to require_loopback_env or run_database_url_env. A caller that keeps
-# the DSN in a variable of its own traces it wherever it expands that variable, which no helper
-# here changes.
+# the call, passes NAME alone, to require_loopback_env, run_database_url_env or psql_env. A caller
+# that keeps the DSN or a connection string in a variable of its own traces it wherever it expands
+# that variable, unless the shell's xtrace is off there: envoy-session-delivery.sh and
+# dispatch-session-settings.sh hand Dispatch the string run_database_url_env gave them from a
+# subshell that turns xtrace off first.
 
 # require_loopback_dsn VAR NAME DSN WHAT assigns VAR the host libpq reads from DSN, which is
 # 127.0.0.1, localhost or ::1, and returns 0. For a DSN the guard refuses it assigns VAR the
@@ -152,6 +155,16 @@ run_database_url_env() {
   local -
   set +x
   run_database_url "$1" "$2" "${!2-}" "$3" "$4"
+}
+
+# psql_env NAME ARG… runs psql on the DSN the variable NAME holds, with ARG… after it, and
+# returns psql's status. The DSN is read here rather than at the call, for the reason
+# require_loopback_env above gives. envoy-session-delivery.sh and dispatch-session-settings.sh
+# create and drop their run's database through it.
+psql_env() {
+  local -
+  set +x
+  psql "${!1}" "${@:2}"
 }
 
 # empty_public_schema URL empties the public schema of the database URL names, so that a server

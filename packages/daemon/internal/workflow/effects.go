@@ -1214,9 +1214,9 @@ func viewSentence(issue record.Issue) string {
 	if issue.ViewOf == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
-		" so Dispatch's Coverage line for %s reads \"the spec marks no requirements\", which is no gap in its work: %s's checks count in %s's Coverage.",
-		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key, issue.Key, issue.Key, issue.ViewOf)
+	return fmt.Sprintf("%[1]s is a view on %[2]s: the requirements of %[1]s are the parts of the requirements of %[2]s that the Delivers: line in the spec of %[1]s names,"+
+		" so Dispatch's Coverage line for %[1]s reads \"the spec marks no requirements\", which is no gap in its work: %[1]s's checks count in %[2]s's Coverage.",
+		issue.Key, issue.ViewOf)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""

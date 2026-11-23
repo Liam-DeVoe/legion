@@ -2040,7 +2040,8 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload), a merge-forward
+// message by its step and the dropped merge forward a phase-ended message names by the ask.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	return slices.Contains(mergeForwardRoles[step], role)
 }
@@ -2721,10 +2722,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if dropped := value.MergeForward; dropped != nil && (dropped.Head == "" || dropped.Base == "") {
 			return fmt.Errorf("a phase-ended message that names a dropped merge forward names its head and its base; it names head %q and base %q", dropped.Head, dropped.Base)
 		}
-		// The role is one MergeForwardAsker names, which awaitChildren writes on every dropped merge
+		// The role is one a merge forward's ask goes to (MergeForwardReaches on MergeForwardAsk),
+		// the role MergeForwardAsker names, which awaitChildren writes on every dropped merge
 		// forward (DroppedMergeForward.Role): a row with another role, or none, would address its
 		// message to no role that was asked.
-		if dropped := value.MergeForward; dropped != nil && dropped.Role != claim.RoleImplementer && dropped.Role != claim.RoleMerger {
+		if dropped := value.MergeForward; dropped != nil && !MergeForwardReaches(MergeForwardAsk, dropped.Role) {
 			return fmt.Errorf("a phase-ended message that names a dropped merge forward names the role it was asked of, the implementer or the merger; it names %q", dropped.Role)
 		}
 	case HookPrompt:

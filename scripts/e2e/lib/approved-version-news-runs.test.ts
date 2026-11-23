@@ -599,9 +599,11 @@ describe.skipIf(withoutGit)("part two's model key", () => {
       xtrace: true,
     });
     // The run is traced, the trace comes back on after the mint, and the driver read a minted
-    // token and a later one.
+    // token and a later one. The assignment of the refresher's pid after the mint
+    // (`gateway_refresher=$!`) traces with digits, while the empty one at the script's top traces
+    // as `+ gateway_refresher=` long before the mint.
     expect(run.out).toMatch(/^\+ mint_gateway_token$/m);
-    expect(run.out).toMatch(/^\+ gateway_refresher=/m);
+    expect(run.out).toMatch(/^\+ gateway_refresher=\d+$/m);
     expect(seen(run.dir, "first")).toMatch(mintedToken);
     expect(seen(run.dir, "later")).toMatch(mintedToken);
     const tokens = readFileSync(join(run.dir, "tokens"), "utf8").trimEnd().split("\n");
