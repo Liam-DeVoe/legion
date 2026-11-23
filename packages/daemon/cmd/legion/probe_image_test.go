@@ -190,9 +190,9 @@ func probeImageAt(clients func(string, []string, string) []tlsClient, controls f
 	return probeImageWithSites(clients, controls, askedVendoredTLSSites, public, args...)
 }
 
-// probeImageWithSites is probeImageAt with vendored in place of the served copies' positive
-// controls.
-func probeImageWithSites(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, vendored func(context.Context, []string, string, []tlsSite) ([]tlsSite, error), public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
+// probeImageWithSites is probeImageAt with vendored in place of the vendored chains' step: curl's
+// timing runs and the served copies' positive controls.
+func probeImageWithSites(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, vendored func(context.Context, []string, string, []tlsSite) ([]tlsSite, tlsCurlTiming, error), public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
 	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	newImageTLSClients, newTLSPositiveControls = clients, controls
 	newVendoredTLSSites, newPublicTLSSites = vendored, public
@@ -300,9 +300,12 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 		t.Fatalf("stdout = %q, want the table, TLS decisions, then the OK line %q", stdout, okLine)
 	}
 	// Every client at the fixture chains and the control, each client that verifies a chain during
-	// the handshake at the two vendored chains, and each of the others at the two public sites.
-	afterHandshake := len(tlsChainAfterHandshakeClients())
-	want := len(servedTLSSiteNames)*len(workerTLSClients) + 2*(len(workerTLSClients)-afterHandshake) + 2*afterHandshake
+	// the handshake at the two vendored chains, and each of the others at the two public sites. Which
+	// set curl is in is curl's timing, here the timing of the stand-in for the vendored chains' step
+	// (askedVendoredTLSSites).
+	_, timing, _ := askedVendoredTLSSites(context.Background(), nil, "", nil)
+	afterHandshake := tlsAfterHandshakeClients(timing)
+	want := len(servedTLSSiteNames)*len(workerTLSClients) + 2*(len(workerTLSClients)-len(afterHandshake)) + 2*len(afterHandshake)
 	if got := strings.Count(stdout, "probe-image: TLS client "); got != want {
 		t.Fatalf("stdout carries %d TLS decisions, want %d:\n%s", got, want, stdout)
 	}
@@ -310,7 +313,7 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 		if line := tlsSiteLine(site); !strings.Contains(stdout, line+"\n") {
 			t.Errorf("stdout = %q, want the line %q", stdout, line)
 		}
-		for _, client := range tlsChainAfterHandshakeClients() {
+		for _, client := range afterHandshake {
 			line := "probe-image: UNKNOWN: " + client + " against " + tlsSiteURL(site).Hostname() + ": not asked: " + site.unasked
 			if !strings.Contains(stdout, line+"\n") {
 				t.Errorf("stdout = %q, want the line %q", stdout, line)

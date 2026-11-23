@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -270,30 +268,141 @@ func probeTLSPositiveControls(ctx context.Context, env []string, stateDir string
 
 var newTLSPositiveControls = probeTLSPositiveControls
 
-// probeVendoredTLSSites returns the vendored sites, each marked unasked where its positive control
-// shows its leaf has expired: the positive controls' curl under env, given the CA-published root
-// alone, must get past the vendored chain to the server's signature, which the probe cannot make
-// (tlsSignatureFailure), and must refuse the control's chain with that root. A chain whose first
-// control run exited by itself refusing it as expired (tlsLeafExpired), as every one does once its
-// leaf has expired, cannot show a client refusing that root, so no client is held to it, and its
-// clients are held to the public site instead (runTLSProbe). Every other run that does not pass
-// fails the probe, as a fixture chain's control does (verifyTLSPositiveControls): one that exited
-// for any other reason, as a curl that cannot read its root, or an isolation that did not refuse
-// the control, since the copy is served on the pod's own loopback from roots the probe embeds; and
-// one its own limit or a signal ended. A run the probe's deadline ended has no verdict, which fails
-// nothing and leaves the chain unasked, since nothing verified it. A first run whose output
-// already shows the server's signature failing got past the chain, whatever ended it after that,
-// as an acceptance a client printed counts whatever ended the run but the probe's deadline
-// (tlsCommandRun.outcome), so the isolation runs and decides the chain. Its error is the failures
-// where any control failed, else a tlsNoVerdicts naming the runs with no verdict where there are
-// any, else nil.
-func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, error) {
-	client := tlsPositiveControlSpec.build("", env, stateDir)
+// tlsCurlVerdict is when the image's curl verifies a chain, as the vendored chains' step measured it.
+type tlsCurlVerdict int
+
+const (
+	tlsCurlDuringHandshake tlsCurlVerdict = iota
+	tlsCurlAfterHandshake
+	// tlsCurlNoVerdict is a measurement with a timing run the probe's deadline ended, which holds
+	// curl as verifying after the handshake.
+	tlsCurlNoVerdict
+)
+
+// tlsCurlTiming is what curl's timing runs at the vendored chains showed (measureTLSCurlTiming).
+type tlsCurlTiming struct {
+	verdict tlsCurlVerdict
+	// detail is each timing run's outcome detail, "vendored emSign: <detail>; vendored AAA: <detail>".
+	detail string
+	// reached names each vendored site whose timing run began a handshake at the probe's server.
+	// A site with no seen counter (nil) counts as begun.
+	reached []string
+}
+
+// tlsProbeNow is the probe's clock, which the probe's own check of a vendored chain holds each
+// certificate's validity to (checkVendoredTLSSite) and the served leaves' warnings read
+// (tlsServedLeafWarnings). Tests set it, so that no verdict depends on the day they run.
+var tlsProbeNow = time.Now
+
+// measureTLSCurlTiming reads when client, the positive controls' curl, verifies a chain from one
+// timing run at each vendored site of sites, in order, each given the control's root as its only
+// trust: that root issues neither vendored chain, so no curl trusts one with it, and a leaf that has
+// expired does not change the reading. A refusal where the probe's server began a handshake for the
+// chain is curl verifying a chain during the handshake (probeTLSSite has already made a refusal
+// where none began unavailable). A failed server signature (tlsSignatureFailure), whatever ended
+// the run, is curl verifying after it: the probe's server cannot make that signature, so only a
+// curl that had not judged the chain yet gets that far. A run the probe's deadline ended has no
+// verdict, and noVerdict names it, "<site> curl timing run at <url>: <detail>". Every other run
+// fails, and so do two runs that answer differently, since when curl verifies is a property of the
+// binary and not of a chain; err names every failure. Where nothing failed, a run with no verdict
+// makes the timing tlsCurlNoVerdict.
+func measureTLSCurlTiming(ctx context.Context, client tlsClient, sites []tlsSite) (timing tlsCurlTiming, noVerdict []string, err error) {
 	control := tlsControlIndex(sites)
-	var vendored []tlsSite
-	var failures, noVerdict []string
+	if control < 0 {
+		return timing, nil, errors.New("worker TLS probe cannot verify test chains: curl's timing runs have no control site to take their root from")
+	}
+	var failures, details, answers []string
+	var verdicts []tlsCurlVerdict
 	for _, site := range sites {
 		if site.kind != tlsVendoredSite {
+			continue
+		}
+		run := site
+		run.root, run.trust = sites[control].trust, ""
+		var before int64
+		if site.seen != nil {
+			before = site.seen.Load()
+		}
+		outcome := probeTLSSite(ctx, client, run, tlsRunTerms{})
+		if site.seen == nil || site.seen.Load() != before {
+			timing.reached = append(timing.reached, site.name)
+		}
+		details = append(details, site.name+": "+outcome.detail)
+		switch {
+		case outcome.status == tlsNoVerdict:
+			noVerdict = append(noVerdict, fmt.Sprintf("%s curl timing run at %s: %s", site.name, site.url, outcome.detail))
+		case outcome.signatureFailed:
+			verdicts, answers = append(verdicts, tlsCurlAfterHandshake), append(answers, "after the handshake at "+site.name)
+		case outcome.status == tlsCertificateRefused:
+			verdicts, answers = append(verdicts, tlsCurlDuringHandshake), append(answers, "during the handshake at "+site.name)
+		default:
+			failures = append(failures, fmt.Sprintf("%s curl timing run at %s was %s, where it must refuse the chain or fail the server's signature: %s", site.name, site.url, outcome.status, outcome.detail))
+		}
+	}
+	timing.detail = strings.Join(details, "; ")
+	switch {
+	case len(failures) > 0:
+	case len(noVerdict) > 0:
+		timing.verdict = tlsCurlNoVerdict
+	case slices.ContainsFunc(verdicts, func(verdict tlsCurlVerdict) bool { return verdict != verdicts[0] }):
+		failures = append(failures, fmt.Sprintf("curl's timing runs disagree: %s: %s", strings.Join(answers, ", "), timing.detail))
+	case len(verdicts) > 0:
+		timing.verdict = verdicts[0]
+	}
+	if len(failures) > 0 {
+		return timing, noVerdict, fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
+	}
+	return timing, noVerdict, nil
+}
+
+// vendoredTLSSitesWith returns the vendored sites of sites and when client, the positive controls'
+// curl, verifies a chain (measureTLSCurlTiming), which it measures first: where the measurement
+// failed, it returns no sites and runs no control. Each vendored chain then gets the positive
+// control that timing allows.
+//
+// Where curl verifies a chain during the handshake, the control is curl's: client, given the
+// CA-published root alone, must get past the vendored chain to the server's signature, which the
+// probe cannot make (tlsSignatureFailure), and must refuse the control's chain with that root. A
+// chain whose first control run exited by itself refusing it as expired (tlsLeafExpired), as every
+// one does once its leaf has expired, cannot show a client refusing that root, so no client is held
+// to it, and its clients are held to the public site instead (runTLSProbe). Every other run that
+// does not pass fails the probe, as a fixture chain's control does (verifyTLSPositiveControls): one
+// that exited for any other reason, as a curl that cannot read its root, or an isolation that did
+// not refuse the control, since the copy is served on the pod's own loopback from roots the probe
+// embeds; and one its own limit or a signal ended. A run the probe's deadline ended has no verdict,
+// which fails nothing and leaves the chain unasked, since nothing verified it. A first run whose
+// output already shows the server's signature failing got past the chain, whatever ended it after
+// that, as an acceptance a client printed counts whatever ended the run but the probe's deadline
+// (tlsCommandRun.outcome), so the isolation runs and decides the chain.
+//
+// Where curl verifies a chain after the handshake, it fails the server's signature whatever root it
+// holds, so it shows nothing of the chain. There, and where its timing has no verdict, the probe
+// checks each chain in its own code instead (checkVendoredTLSSite), at its clock (tlsProbeNow): a
+// chain with a certificate outside its validity is unasked with the check's reason, and every other
+// failure fails the probe.
+//
+// Its error is the failures where any control or check failed, and then it returns no sites; else
+// a tlsNoVerdicts naming the runs with no verdict, the timing runs' first, where there are any;
+// else nil.
+func vendoredTLSSitesWith(ctx context.Context, client tlsClient, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
+	timing, noVerdict, err := measureTLSCurlTiming(ctx, client, sites)
+	if err != nil {
+		return nil, timing, err
+	}
+	control := tlsControlIndex(sites)
+	var vendored []tlsSite
+	var failures []string
+	for _, site := range sites {
+		if site.kind != tlsVendoredSite {
+			continue
+		}
+		if timing.verdict != tlsCurlDuringHandshake {
+			unasked, err := checkVendoredTLSSite(site, tlsProbeNow())
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s chain, checked in the probe's own code: %v", site.name, err))
+			}
+			site.unasked = unasked
+			vendored = append(vendored, site)
 			continue
 		}
 		// run is the control run that decides the chain: the first, or the isolation after a first
@@ -325,12 +434,18 @@ func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, s
 		vendored = append(vendored, site)
 	}
 	if len(failures) > 0 {
-		return nil, fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
+		return nil, timing, fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
 	}
 	if len(noVerdict) > 0 {
-		return vendored, tlsNoVerdicts(noVerdict)
+		return vendored, timing, tlsNoVerdicts(noVerdict)
 	}
-	return vendored, nil
+	return vendored, timing, nil
+}
+
+// probeVendoredTLSSites is vendoredTLSSitesWith with the positive controls' curl under env, its
+// state in stateDir.
+func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
+	return vendoredTLSSitesWith(ctx, tlsPositiveControlSpec.build("", env, stateDir), sites)
 }
 
 // tlsLeafExpired reports whether message, a client's whole output with its error, refuses a chain
@@ -374,6 +489,31 @@ func tlsSiteLine(site tlsSite) string {
 		return fmt.Sprintf("probe-image: UNKNOWN: the %s chain at %s: %s", site.name, tlsSiteURL(site).Hostname(), site.unasked)
 	}
 	return fmt.Sprintf("probe-image: TLS %s: chain verified", site.name)
+}
+
+// tlsCurlTimingLine is the line that says when the image's curl verifies a chain, as its timing
+// runs at the vendored chains showed (measureTLSCurlTiming), with their output, and so where the
+// probe holds curl.
+func tlsCurlTimingLine(timing tlsCurlTiming) string {
+	switch timing.verdict {
+	case tlsCurlDuringHandshake:
+		return "probe-image: TLS curl verifies a chain during the handshake: " + timing.detail
+	case tlsCurlAfterHandshake:
+		return "probe-image: TLS curl verifies a chain after the handshake, so the probe holds it to the public sites: " + timing.detail
+	default:
+		return "probe-image: TLS curl gave no verdict on when it verifies a chain, so the probe holds it to the public sites: " + timing.detail
+	}
+}
+
+// tlsVendoredSiteLine is a vendored site's line, which names the control that asked it
+// (vendoredTLSSitesWith): curl's, whose line says the chain was verified (tlsSiteLine), where curl
+// verifies a chain during the handshake, and the probe's own check otherwise, which is no client's
+// verification. One no client is held to is UNKNOWN, as tlsSiteLine says.
+func tlsVendoredSiteLine(site tlsSite, timing tlsCurlTiming) string {
+	if site.unasked != "" || timing.verdict == tlsCurlDuringHandshake {
+		return tlsSiteLine(site)
+	}
+	return fmt.Sprintf("probe-image: TLS %s: chain checked in the probe's own code, since curl verifies a chain after the handshake", site.name)
 }
 
 // tlsUnknownLine is the line that names a client the probe could not hold to a public site: the
@@ -594,9 +734,7 @@ func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io
 		reached = slices.Clone(local)
 		fmt.Fprintln(stdout, tlsPositiveControlsLine(fixtureTLSSites(local)))
 	}
-	afterHandshake := tlsChainAfterHandshakeClients()
-	duringHandshake := slices.DeleteFunc(workerTLSClientNames(), func(name string) bool { return slices.Contains(afterHandshake, name) })
-	vendored, err := newVendoredTLSSites(ctx, env, stateDir, served)
+	vendored, timing, err := newVendoredTLSSites(ctx, env, stateDir, served)
 	var vendoredNoVerdict tlsNoVerdicts
 	switch {
 	case errors.As(err, &vendoredNoVerdict):
@@ -604,15 +742,18 @@ func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io
 	case err != nil:
 		return nil, err
 	}
+	fmt.Fprintln(stdout, tlsCurlTimingLine(timing))
+	afterHandshake := tlsAfterHandshakeClients(timing)
+	duringHandshake := slices.DeleteFunc(workerTLSClientNames(), func(name string) bool { return slices.Contains(afterHandshake, name) })
 	public := newPublicTLSSites(ctx, env, stateDir)
 	for index := range vendored {
 		vendored[index].clients = duringHandshake
-		if vendored[index].unasked == "" {
+		if vendored[index].unasked == "" && (timing.verdict == tlsCurlDuringHandshake || slices.Contains(timing.reached, vendored[index].name)) {
 			reached = append(reached, vendored[index])
 		}
-		fmt.Fprintln(stdout, tlsSiteLine(vendored[index]))
+		fmt.Fprintln(stdout, tlsVendoredSiteLine(vendored[index], timing))
 	}
-	for _, line := range tlsServedLeafWarnings(tlsServedLeaves(vendored), time.Now()) {
+	for _, line := range tlsServedLeafWarnings(tlsServedLeaves(vendored), tlsProbeNow()) {
 		fmt.Fprintln(stdout, line)
 	}
 	for index := range public {
@@ -1765,15 +1906,7 @@ func chromiumTLSArgs(site tlsSite, stateDir string) []string {
 // path, the form --ignore-certificate-errors-spki-list takes, or "" where the file holds none: then
 // Chromium is given no key, and refuses the control, which fails the probe.
 func tlsSPKIHash(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return ""
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	cert, err := readTLSCertificate(path)
 	if err != nil {
 		return ""
 	}
@@ -1817,6 +1950,21 @@ func tlsChainAfterHandshakeClients() []string {
 	var names []string
 	for _, spec := range workerTLSClients {
 		if spec.chainAfterHandshake {
+			names = append(names, spec.name)
+		}
+	}
+	return names
+}
+
+// tlsAfterHandshakeClients names the clients the probe holds to the public sites in place of the
+// vendored chains, in the inventory's order: each that verifies a chain only after the handshake
+// (tlsClientSpec.chainAfterHandshake), and curl where its timing runs did not show it verifying a
+// chain during the handshake (measureTLSCurlTiming), since a curl that verifies after it, or whose
+// timing has no verdict, cannot show a refusal at a chain the probe's server cannot sign for.
+func tlsAfterHandshakeClients(timing tlsCurlTiming) []string {
+	var names []string
+	for _, spec := range workerTLSClients {
+		if spec.chainAfterHandshake || (spec.name == "curl" && timing.verdict != tlsCurlDuringHandshake) {
 			names = append(names, spec.name)
 		}
 	}

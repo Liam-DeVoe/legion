@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"embed"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -71,6 +72,68 @@ func vendoredTLSChain(host string) ([]*x509.Certificate, error) {
 		return nil, fmt.Errorf("the vendored chain of %s holds no certificate", host)
 	}
 	return chain, nil
+}
+
+// checkVendoredTLSChain is the probe's own check of a vendored chain, leaf first, as its server
+// serves it for host, where curl verifies a chain only after the handshake and so cannot show the
+// chain reaching its root (vendoredTLSSitesWith). Each certificate must be signed by the next, the
+// last by root, the chain's CA-published root, and the leaf must name host; err says which is not.
+// Each certificate must then be inside its validity at now: outside, the reason no client is held
+// to the chain, names the first that is not, leaf first. So a chain that fails a signature or its
+// host fails the probe even where it is also outside its validity. The check uses Go's x509
+// primitives and not x509.Certificate.Verify, which refuses both vendored chains whatever the
+// roots ("x509: no valid chains built"): Go 1.27.3 distrusts the key of their intermediate, EM DV
+// TLS CA - G3B.
+func checkVendoredTLSChain(chain []*x509.Certificate, root *x509.Certificate, host string, now time.Time) (outside string, err error) {
+	for index, cert := range chain[:len(chain)-1] {
+		if err := cert.CheckSignatureFrom(chain[index+1]); err != nil {
+			return "", fmt.Errorf("%s is not signed by %s: %w", cert.Subject, chain[index+1].Subject, err)
+		}
+	}
+	last := chain[len(chain)-1]
+	if err := last.CheckSignatureFrom(root); err != nil {
+		return "", fmt.Errorf("%s is not signed by its CA-published root %s: %w", last.Subject, root.Subject, err)
+	}
+	if err := chain[0].VerifyHostname(host); err != nil {
+		return "", fmt.Errorf("its leaf does not name %s: %w", host, err)
+	}
+	for _, cert := range chain {
+		if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+			return fmt.Sprintf("the probe's own check found %s outside its validity, %s to %s, at %s", cert.Subject,
+				cert.NotBefore.UTC().Format(time.RFC3339), cert.NotAfter.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339)), nil
+		}
+	}
+	return "", nil
+}
+
+// checkVendoredTLSSite is checkVendoredTLSChain at now over the vendored chain the probe's server
+// serves for site's host (vendoredTLSChain) and the CA-published root in the file site.root names:
+// unasked is why no client is held to the chain, and err is a failure, a chain or a root the check
+// cannot read included.
+func checkVendoredTLSSite(site tlsSite, now time.Time) (unasked string, err error) {
+	host := tlsSiteURL(site).Hostname()
+	chain, err := vendoredTLSChain(host)
+	if err != nil {
+		return "", fmt.Errorf("cannot read its chain: %w", err)
+	}
+	root, err := readTLSCertificate(site.root)
+	if err != nil {
+		return "", fmt.Errorf("cannot read its CA-published root %s: %w", site.root, err)
+	}
+	return checkVendoredTLSChain(chain, root, host, now)
+}
+
+// readTLSCertificate is the certificate in the PEM file at path, the first where it holds more.
+func readTLSCertificate(path string) (*x509.Certificate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, errors.New("it holds no PEM certificate")
+	}
+	return x509.ParseCertificate(block.Bytes)
 }
 
 // tlsServedLeafWarning is how long before a served leaf's end the probe warns of it: once the
