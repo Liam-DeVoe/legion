@@ -163,8 +163,8 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	// Nothing asks again during the wait (awaiting_children is in no phase of
-	// record.MergeForwardPhases), and the return asks for none: a conflict still there fails the
+	// Nothing asks again during the wait (no merge forward stands in awaiting_children, which is on
+	// no task's line, classify.MergeForwardStands), and the return asks for none: a conflict still there fails the
 	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
 	// request CONFLICTING (R10). The merge forward the clear drops is named to the role it was
 	// asked of where it had not landed: the implementer for an ask made before merging, and the

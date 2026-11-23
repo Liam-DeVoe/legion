@@ -185,12 +185,13 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		{key: queuedRoot, stands: phase.Admitted, status: "todo", tree: queuedRoot},
 		// The live tree the held child belongs to, and the child itself, held at admitted by a
 		// link: a child the workflow holds is out of the line altogether. The root was started in
-		// a phase short of its review, holding the row it was started with (record.KeepsSlot), and
-		// the held child is an open Dispatch child of it, so the admission pass stops that phase
-		// and the root waits in awaiting_children, holding no row (dispatch://INFRA-3320 R9, R11).
-		// A phase R9 does not reach would not keep this case: a root past its review holds no row
-		// either, and admission.active below lists the issues holding one, so the root is asserted
-		// as R9 makes it rather than moved past its review.
+		// implementing, a phase that keeps a slot, holding the row it was started with
+		// (record.KeepsSlot), and the held child is an open Dispatch child of it, so the admission
+		// pass stops that phase and the root waits in awaiting_children, holding no row
+		// (dispatch://INFRA-3320 R9, R11). A phase R9 does not reach would not keep this case: a
+		// root in retro or merging holds no row either, and admission.active below lists the
+		// issues holding one, so the root is asserted as R9 makes it rather than moved into one of
+		// them.
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.

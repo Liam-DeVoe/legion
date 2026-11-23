@@ -303,7 +303,7 @@ function stateSummary(state: LegionState): string {
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (contract 236), so a step on a basis reads its entry
+      // registered, which no person approved (contract 239), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
       // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
       // one, under the list's name (`LEGION_ANSWER_READS`).
@@ -651,7 +651,8 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
+        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -674,7 +675,8 @@ export function createLegionTool(deps: {
         "(WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
+        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one on an issue in awaiting_children " +
@@ -685,7 +687,9 @@ export function createLegionTool(deps: {
         "each one), since a parent is accepted only once no issue beneath it is still in the workflow, on a head that need not carry " +
         "its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying " +
         "every needed child's merge; send one whose pass names an older base commit, or none, back to testing (implementing " +
-        "where the task has no tester step) with request_backward_move. " +
+        "where no tester step comes before acceptance, with a reason that tells the implementer to run those checks on the head " +
+        "merged with the base tip, in a checkout of its own, push that merge nowhere and record each result at the head with that " +
+        "base commit) with request_backward_move. " +
         "Run each one to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children " +
         "and it comes back by itself to the first step after the implementer's that its task runs, and otherwise you sign off again. " +
         "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
@@ -718,7 +722,7 @@ export function createLegionTool(deps: {
         "is still in the workflow, a root rests on its approval or a Dispatch child of it is open, since closing it would " +
         "stop that work mid-turn or leave it undone. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
@@ -1046,7 +1050,8 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
+            // step or in retro, and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",

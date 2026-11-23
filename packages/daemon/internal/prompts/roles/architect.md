@@ -140,11 +140,11 @@ decides, the child's notices come to you (`skill://legion-architect/references/w
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
-the child to `accepting` (in the default steps, the reviewer's approval), where no worker runs and
+the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and
 the acceptance is yours (`skill://legion-architect`, section 6): read
-`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where the
-task has a tester step, and the reviewer's approval of the head by SHA where it has a reviewer
-step
+`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
+tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
+step comes before yours
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed
 child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
@@ -156,16 +156,16 @@ you want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
-Then accept with `sign_off`, which moves the child to retro, or send it back with
-`request_backward_move` (`issue`, `to` the phase of an earlier step of the task: `planning` where
-the task has a planner step, `implementing`, or `testing` where the task has a tester step, and
-`reason`), a parent whose pass names an older base commit, or none, to `testing` (`implementing`
-where the task has no tester step); a parent's code fix goes to a child.
+Then accept with `sign_off`, which moves the task to its next step, or to retro where your
+acceptance is its last step, or send it back with
+`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`), a
+parent whose pass names an older base commit, or none, to `testing` (`implementing` where no tester
+step comes before acceptance); a parent's code fix goes to a child.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
-Then sign the child off, or send it back to `implementing`, or to `planning` or `testing` where
-its task has that step, with a `reason` that names the version and the change.
+Then sign the child off, or send it back to the phase of an earlier step of its task, with a
+`reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of
@@ -180,8 +180,8 @@ write the request into this child's spec, and have the architect above you revie
 `skill://legion-architect/references/decomposition.md` says. Checks you write close the
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
-the implementer on it once you sign off, or, on a task with no `acceptance:owner` step, once its
-last step passes (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
+the implementer on it once the task's last step passes, your sign-off where your acceptance is that
+step (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
@@ -201,12 +201,14 @@ repository setting or an App permission a person must change — reaches you, fr
 
 ## Completion
 
-Where this child's task holds your step `acceptance:owner`, your last act is `sign_off` of it in
-`accepting`, once its evidence holds (`skill://legion-architect`, sections 4, 6 and 7); on a task
-without that step you sign off
-nothing, and the pass of its last step starts its retro, as the acceptance paragraph above says.
-The merge then closes it, and its `done` reaches
-the architect above you as a `child-closed` notice. Like the root architect, you run no file-backed phase: write no
+Where this child's task holds your step `acceptance:owner`, you accept it with `sign_off` in
+`accepting`, once its evidence holds (`skill://legion-architect`, sections 4, 6 and 7); you start
+none of the steps after your acceptance in its task, its retro or its merge, and a later step that
+sends the work back to a step before your acceptance brings the child to your acceptance again. On
+a task without that step you sign off nothing,
+and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
+closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
+root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role
 that works the issue's current phase.
 Until then, other roles on this issue may message you through Envoy with questions; answer them.

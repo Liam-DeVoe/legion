@@ -286,7 +286,7 @@ admission_cap=4
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
-# root in a phase past its review holds none and keeps its pod. Four pods stand at each
+# root in accepting, retro or merging holds none and keeps its pod. Four pods stand at each
 # gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
 # 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
 # slots. The run launches no controller pod: its controller starts from
@@ -4891,8 +4891,8 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
-# past its review, so the daemon takes the row back there, while its tree stays live and its
+# children-first-acceptance's prompt. A root in accepting holds no admission slot, since
+# accepting keeps none wherever the task places it, so the daemon takes the row back there, while its tree stays live and its
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
@@ -5091,7 +5091,7 @@ phase_change_logged "$tree1" accepting retro sign_off ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from accepting to retro on sign_off"
 until_true 120 "the daemon's retro status on the Dispatch board" dispatch_status_is "$tree1" retro
 note "on the head the review approved, tested after the wait on $pr_base's tip, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
-# The sign-off starts the implementer's retro, whose task names the phase; the resumed implementer
+# The sign-off, the last of tree 1's default steps, starts the implementer's retro, whose task names the phase; the resumed implementer
 # may finish it before the proof's instruction reaches it, so the prompt goes only while the issue
 # sits in retro.
 if issue_phase "$tree1" retro >/dev/null; then
@@ -6592,7 +6592,7 @@ merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it last
-# reached accepting, past its review, its children's at their moves to the backlog, and the close
+# reached accepting, which keeps none, its children's at their moves to the backlog, and the close
 # frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||

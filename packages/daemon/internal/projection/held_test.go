@@ -56,9 +56,9 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // of it is open (awaiting_children), a member under a shut design gate, a child an unfinished
 // Dispatch link holds, a parent whose own children are still open, an issue beneath an accepted
 // ancestor, a parent held before its retro for the issue beneath it, a task stopped in its merge,
-// an issue past its review that nothing holds, which reads at_work (record.HeldAtWork), and an
-// issue none of the others is true of — and the rows are read from the projected state, which is
-// where a reader meets them.
+// an issue in accepting, retro or merging that nothing holds, which reads at_work
+// (record.HeldAtWork), and an issue none of the others is true of — and the rows are read from
+// the projected state, which is where a reader meets them.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -108,10 +108,10 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// (admit.releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and its members carry four of
 	// the words: LEGION-171 dispatch_blocker, LEGION-172 at_work, LEGION-173 accepted_ancestor and
 	// LEGION-174 unclassified. LEGION-172, in merging, is an ancestor the daemon has accepted
-	// (record.Accepted) and holds no slot, since its work is past its review (record.KeepsSlot);
-	// nothing of LEGION-173 under it starts while it stands in merging. LEGION-174 is the issue at work in
-	// a phase up to its review that holds no row and that the line does not place, and LEGION-175,
-	// at work holding one, is the plain slot holder.
+	// (record.Accepted) and holds no slot, since merging keeps none (record.KeepsSlot); nothing
+	// of LEGION-173 under it starts while it stands in merging. LEGION-174 is the issue at work in
+	// implementing, a phase that keeps a slot, that holds no row and that the line does not
+	// place, and LEGION-175, at work holding one, is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	openRoot.ReleasedForWaitAt = &releasedAt
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)
@@ -212,7 +212,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		}
 	}
 
-	// LEGION-172, the accepted ancestor in merging, holds no slot row: its work is past its review
+	// LEGION-172, the accepted ancestor in merging, holds no slot row: merging keeps none
 	// (record.KeepsSlot), so it stands in held as at_work rather than in active. LEGION-185, the
 	// root of the tree whose sub-parent waits on its open child, holds none either: it stands at
 	// admitted, waiting in the line for one.

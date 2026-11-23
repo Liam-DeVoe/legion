@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -783,7 +783,7 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 	pool := migratedPool(t)
 	admission := path.seed(t, pool)
 	asked := path.at
-	if !slices.Contains(record.MergeForwardPhases, asked) {
+	if !classify.MergeForwardStands(record.Issue{Phase: asked}, phase.Order) {
 		asked = phase.Implementing
 	}
 	pwSeedForward(t, pool, forward.asked(asked))

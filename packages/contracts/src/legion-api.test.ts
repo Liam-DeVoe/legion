@@ -901,7 +901,7 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
 // check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
@@ -1419,8 +1419,8 @@ test("register_plan answers each task of the plan it took with its steps", () =>
 });
 
 // Contract 219 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
-// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
-// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// (its owner stopped its task with stop_task) or `children` (a parent whose task's last step is
+// not the owner's acceptance waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
 test("a state with a stopped task and a parent held for its children parses", () => {
   const state = fixture("state.json") as {
@@ -2657,7 +2657,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 236: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 239: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2754,12 +2754,12 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 235 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 238 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 236. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 236 — and with them the whole state body, since
+// in every pod still on an image before 239. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 239 — and with them the whole state body, since
 // `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
-// 236 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// 239 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
 // `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
 // of such a step, so it serves no entry of that issue rather than a wrong one.
 const gatedStepStatusBeforeBasis = z.object({
@@ -2786,7 +2786,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 236): the three fields come
+// The architect's registration on an ancestor's basis (contract 239): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
@@ -2880,17 +2880,17 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
-  // the keys contract 236 added aside: the mark names the contract the caller is served at, 199,
+  // the keys contract 239 added aside: the mark names the contract the caller is served at, 199,
   // the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
   // fixture does not hold. No band stands between 199 and 202 but the repositories block's, and
-  // the one band above 202 is contract 236's, which takes every root's `treeRuns` and the
+  // the one band above 202 is contract 239's, which takes every root's `treeRuns` and the
   // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), so
   // the narrowing changes this one block and those keys and no other key. One value strip of
   // contract 213 stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
-  // it and every other row as the state golden holds them. Contract 236's value strips take
+  // it and every other row as the state golden holds them. Contract 239's value strips take
   // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has
   // taken already, and the golden holds no issue in `awaiting_children` and no held row of it.
   const { daemonApiVersion } = z
