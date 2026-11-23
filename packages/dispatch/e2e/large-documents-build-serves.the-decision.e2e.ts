@@ -29,8 +29,8 @@ import { liveEditorRoot, namedEditor, seedDocument, topLevelBlocks } from "./lar
 import { asUser } from "./users";
 
 /** The page's own draw of the document's text, which is what a reader has in front of them for
- *  every block the editor's batches have not reached yet (`web/src/features/doc/DocumentPreview.tsx`),
- *  as a selector an init script can carry. */
+ *  every block the editor's batches have not reached yet
+ *  (`web/src/features/doc/DocumentPreview.tsx`), as a selector an init script can carry. */
 const theDraw = '[aria-label="Document text"]';
 
 /** The document's blocks in the editor a reader already has while the rest is built. The

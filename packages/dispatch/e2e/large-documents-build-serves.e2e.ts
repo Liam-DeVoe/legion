@@ -58,9 +58,9 @@ import { asUser } from "./users";
  * what it only reports.
  *
  * **It is not held to half a second.** R11's 500 ms is a bound on a main-thread task, which
- * the two measuring rows of `large-documents-measured.e2e.ts` read; the spec asks nowhere that another
- * person's word be *served* within 500 ms. A word may wait behind several lawful tasks, so a
- * row holding the wait to 500 ms would be restating a task bound as a delivery bound and
+ * the two measuring rows of `large-documents-measured.e2e.ts` read; the spec asks nowhere that
+ * another person's word be *served* within 500 ms. A word may wait behind several lawful tasks,
+ * so a row holding the wait to 500 ms would be restating a task bound as a delivery bound and
  * asserting a promise the product never made (the architect, dispatch://INFRA-341). A new
  * promise belongs in a spec version a person approves. **Do not restore that bound here.**
  *

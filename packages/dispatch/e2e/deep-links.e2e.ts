@@ -530,8 +530,9 @@ test("a composer opened from the document is in the margin's view after a commen
 // landing's own focus as it schedules the two. This row makes the late order happen every time -
 // it moves the focus by script, as that field does, once the landing has begun - and then grows
 // the paragraph above the quote, as the document's web font grows each paragraph, so the landing
-// has a growth to correct after the focus moved. Read as the reader, that focus ended the landing
-// and left the quote where the growth pushed it (`focused`, `features/doc/refocus-when-settled.ts`).
+// has a growth to correct after the focus moved. Read as the reader, that focus ended the
+// landing and left the quote where the growth pushed it (`focused`,
+// `features/doc/refocus-when-settled.ts`).
 // @webkit @firefox: the two engines the late order was measured in, beside `chromium`.
 test("a focus the page moves out of the document while a comment link lands does not end the landing @webkit @firefox", async ({
   browser,

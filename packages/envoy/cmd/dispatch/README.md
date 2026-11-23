@@ -5522,7 +5522,6 @@ Each item below names a status and code, then its meaning.
 
   A quote matches more than once without an `occurrence`; the response includes candidate ranges and context.
   A document edit's quote - a `replace`'s or a `delete`'s `find`, an `insert`'s or a `move`'s anchor - counts only its matches inside one block, here and for its `occurrence`: a match that runs across two or more blocks is none an edit can take, so a quote with one match inside a block applies to it whatever such matches it also has, and the candidates and the count the message names are the matches inside blocks alone.
-  Before, a quote matched once inside a paragraph and once across the join of two list items was refused with this code, `matches 2 places`.
 
 - `400 TARGET_SPANS_BLOCKS`
 
