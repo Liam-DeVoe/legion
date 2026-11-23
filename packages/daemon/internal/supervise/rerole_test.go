@@ -206,3 +206,54 @@ func TestTheFirstPromptAfterARoleChangeSaysTheEarlierRolesTokensAreVoid(t *testi
 		})
 	}
 }
+
+// A re-roled generation can come back holding no task and no untold record of what its let-go
+// ended: the suspension's record was told already, and nothing else gives the claim a delivery. It
+// is still told at its ready, in a delivery of the daemon's own that carries the sentence alone, so
+// no turn another input starts runs in the new role before a prompt says the earlier role's tokens
+// are no longer the agent's to use. The control is the same claim in the role it kept, which is
+// sent nothing.
+func TestARoleChangeIsToldToAGenerationThatHoldsNoTask(t *testing.T) {
+	const (
+		notYours = "Any GitHub token you saw in an earlier role is no longer yours to use"
+		app      = "Your gh and git now act as the GitHub App of the tester role."
+	)
+	for _, tc := range []struct {
+		name string
+		role claim.Role
+		told bool
+	}{
+		{"a claim that took another role", claim.RoleTester, true},
+		{"a claim that kept its role", claim.RoleImplementer, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.must(RequestSuspend{Claim: testToken, By: SuspendedByDaemon})
+			if err := h.m.Rerole(stepStands(context.Background()), tc.role); err != nil {
+				t.Fatalf("give the suspended claim the %s's role: %v", tc.role, err)
+			}
+			stored := h.store.load(h.token)
+			stored.EndedWork.Told = true
+			h.store.PutClaim(h.ctx, stored)
+			h.restart()
+			if h.claim().Pending != nil || h.claim().EndedWork.Tells() {
+				t.Fatalf("the claim holds %+v and a record that tells = %v, want neither", h.claim().Pending, h.claim().EndedWork.Tells())
+			}
+
+			before := len(h.prompts())
+			h.must(RequestRuleResume{Claim: testToken, Reason: "its agent's next step is the " + string(tc.role) + "'s"})
+			h.relaunched()
+			sent := h.prompts()[before:]
+			if !tc.told {
+				if len(sent) != 0 {
+					t.Fatalf("the generation of a claim that kept its role was sent %+v, want nothing", sent)
+				}
+				return
+			}
+			if len(sent) != 1 || !strings.Contains(sent[0].Message, notYours) || !strings.Contains(sent[0].Message, app) {
+				t.Fatalf("the re-roled generation was sent %+v, want one prompt that says the earlier role's tokens are no longer its to use", sent)
+			}
+		})
+	}
+}
