@@ -365,7 +365,7 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 	ctx := context.Background()
 	stored := stoppedByRelease(t, claim.RoleImplementer)
 	rig := newReleaseDeliveryRig(t, stored)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rig.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: rig.clock.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: &record.MergeForward{Head: "sha-1", Base: "main",
@@ -561,7 +561,7 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 			machine := rig.supervise(t, stored)
 			rig.sup.deps.Conns.(*fake.Conns).Register(stored.Token, fake.NewConn())
 			if tc.entry > 0 {
-				if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 					return rig.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: tc.role, Claim: stored.Token,
 						Entry: tc.entry, EntryTask: "the work of entry 2", EntryRaisedAt: rig.clock.Now()})
 				}); err != nil {
@@ -620,7 +620,7 @@ func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseSt
 		{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
 			Task: "Fix what the tester found.", Entry: 2},
 	} {
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return workflow.StartOrOwe(ctx, tx, rig.records, "LEGION-208", start, rig.clock.Now())
 		}); err != nil {
 			t.Fatalf("write the %s's start: %v", start.Role, err)
@@ -739,7 +739,7 @@ func TestARowTheProjectReleaseHoldsSpendsNoAttempt(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main"})

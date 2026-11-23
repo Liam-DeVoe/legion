@@ -354,7 +354,7 @@ func (m *projectMove) raiseEntry(t *testing.T, issue idleRigIssue) string {
 	r := m.rig
 	ctx := context.Background()
 	task := "Implement " + issue.key + " again: the reviewer asked for a change after the release began."
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := r.records.Phases(ctx, tx, issue.key)
 		if err != nil {
 			return err
@@ -1091,7 +1091,7 @@ func (m *projectMove) deliverNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
 		t.Fatalf("write the notice for %s's architect: %v", m.clean.key, err)
 	}
 }
@@ -1108,7 +1108,7 @@ func (m *projectMove) deliverRoleMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, row) }); err != nil {
 		t.Fatalf("write the role message for %s's %s: %v", m.clean.key, m.clean.role, err)
 	}
 }

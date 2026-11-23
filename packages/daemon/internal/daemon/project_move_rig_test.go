@@ -320,7 +320,7 @@ type startWatcher struct {
 func (r *idleWakeRig) watchStarts() *startWatcher {
 	r.t.Helper()
 	ctx := context.Background()
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var made bool
 		if err := tx.QueryRow(ctx, `select to_regclass($1) is not null`, idleRigStartsTable).Scan(&made); err != nil || made {
 			return err

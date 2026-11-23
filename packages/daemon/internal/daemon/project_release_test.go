@@ -83,7 +83,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 	if err := st.PutClaim(ctx, stopped); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := store.LockIssueForPause(ctx, tx, "LEGION-208"); err != nil {
 			return err
 		}

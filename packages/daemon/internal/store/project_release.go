@@ -134,7 +134,7 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		takenOver []TakenOverIdleRelease
 		stop      []ProjectReleaseClaim
 	)
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		takenOver, stop = nil, nil
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
@@ -205,39 +205,34 @@ func (e *ProjectPausedError) Error() string {
 }
 
 // PauseRefusesProjectRelease is the *ProjectPausedError with which the project's pause refuses a
-// project release of project, the claim token's spelling, read on the pool, and nil while neither
-// the pause nor a pod hold stands (releasePauseRefusal). The release asks it before it sets its
-// mark, and a dry run before it reads anything; StartProjectRelease asks the same again inside its
-// own transaction, across which no pause commits.
+// project release of project, the claim token's spelling, read in a read-only transaction of its
+// own, and nil while neither the pause nor a pod hold stands (releasePauseRefusal). The release
+// asks it before it sets its mark, and a dry run before it reads anything; StartProjectRelease
+// asks the same again inside its own transaction, across which no pause commits.
 func (s *Store) PauseRefusesProjectRelease(ctx context.Context, project string) error {
-	return releasePauseRefusal(ctx, s.pool, project)
+	return TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return releasePauseRefusal(ctx, tx, project)
+	})
 }
 
-// pauseReader is the part of a pool and of a transaction a read of the project's pause goes
-// through: one row, and many.
-type pauseReader interface {
-	queryRower
-	rowsQuerier
-}
-
-// releasePauseRefusal reads through db what of the project's pause refuses a project release of
+// releasePauseRefusal reads in tx what of the project's pause refuses a project release of
 // project, the claim token's spelling: the open pause (readOpenPauseByToken), and each pod hold
 // that stands (openPausePodHolds), with the claims of its issue stored suspended by `released`
 // (heldPausePods). It answers the *ProjectPausedError that refuses the release, a read that
 // failed, or nil while neither the pause nor a pod hold stands.
-func releasePauseRefusal(ctx context.Context, db pauseReader, project string) error {
-	open, paused, err := readOpenPauseByToken(ctx, db, project, "")
+func releasePauseRefusal(ctx context.Context, tx pgx.Tx, project string) error {
+	open, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 	if err != nil {
 		return err
 	}
-	holds, err := openPausePodHolds(ctx, db, project)
+	holds, err := openPausePodHolds(ctx, tx, project)
 	if err != nil {
 		return err
 	}
 	if !paused && len(holds) == 0 {
 		return nil
 	}
-	held, err := heldPausePods(ctx, db, project, holds)
+	held, err := heldPausePods(ctx, tx, project, holds)
 	if err != nil {
 		return err
 	}
@@ -246,9 +241,9 @@ func releasePauseRefusal(ctx context.Context, db pauseReader, project string) er
 
 // heldPausePods is each of holds as a refused release names it, in the order of holds: its issue,
 // its pause and since when, and the claims of project, the claim token's spelling, on its issue
-// stored suspended by `released` (supervise.SuspendedByReleased), read through q in token order,
-// nil where the issue has none. It reads nothing where holds is empty, and answers nil.
-func heldPausePods(ctx context.Context, q rowsQuerier, project string, holds []PausePodHold) ([]HeldPausePod, error) {
+// stored suspended by `released` (supervise.SuspendedByReleased), read in tx in token order, nil
+// where the issue has none. It reads nothing where holds is empty, and answers nil.
+func heldPausePods(ctx context.Context, tx pgx.Tx, project string, holds []PausePodHold) ([]HeldPausePod, error) {
 	if len(holds) == 0 {
 		return nil, nil
 	}
@@ -256,7 +251,7 @@ func heldPausePods(ctx context.Context, q rowsQuerier, project string, holds []P
 	for i, hold := range holds {
 		issues[i] = hold.Issue
 	}
-	rows, err := q.Query(ctx, `select issue, token from claims
+	rows, err := tx.Query(ctx, `select issue, token from claims
 		where project = $1 and issue = any($2) and state = $3 and suspended_by = $4 order by token`,
 		project, issues, string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
 	if err != nil {
@@ -336,18 +331,21 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 }
 
 // ProjectReleaseStopSet is the stop set a project release of project would read now
-// (projectReleaseStopSet), read through the pool: a dry run's, which records nothing and so reads
-// in no transaction of its own.
+// (projectReleaseStopSet), read in a read-only transaction of its own (ReadOnly): a dry run's,
+// which records nothing.
 func (s *Store) ProjectReleaseStopSet(ctx context.Context, project string) ([]ProjectReleaseClaim, error) {
-	return projectReleaseStopSet(ctx, s.pool, project)
+	return ReadOnly(ctx, s.pool, "read the claims the project release of "+project+" stops",
+		func(ctx context.Context, tx pgx.Tx) ([]ProjectReleaseClaim, error) {
+			return projectReleaseStopSet(ctx, tx, project)
+		})
 }
 
 // projectReleaseStopSet is every claim of project stored in a state whose process is up or coming
 // up (supervise.LiveStates), in token order: a project release's stop set (StartProjectRelease).
 // The states are supervise's, bound as text (claimStateNames), so the store names none of them
 // itself.
-func projectReleaseStopSet(ctx context.Context, q rowsQuerier, project string) ([]ProjectReleaseClaim, error) {
-	rows, err := q.Query(ctx, `select token, tree, issue, role, session, state from claims
+func projectReleaseStopSet(ctx context.Context, tx pgx.Tx, project string) ([]ProjectReleaseClaim, error) {
+	rows, err := tx.Query(ctx, `select token, tree, issue, role, session, state from claims
 		where project = $1 and state = any($2) order by token`, project, claimStateNames(supervise.LiveStates()))
 	if err != nil {
 		return nil, fmt.Errorf("read the claims the project release of %s stops: %w", project, err)
@@ -375,11 +373,16 @@ func (s *Store) RecordProjectRelease(ctx context.Context, id int64, result json.
 	if len(result) == 0 {
 		return fmt.Errorf("record the result of project release %d: the result is empty", id)
 	}
-	tag, err := s.pool.Exec(ctx, `update project_releases set result = $2::jsonb where id = $1 and finished_at is null`, id, string(result))
+	var found bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update project_releases set result = $2::jsonb where id = $1 and finished_at is null`, id, string(result))
+		found = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("record the result of project release %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("record the result of project release %d: %w", id, ErrNoUnfinishedProjectRelease)
 	}
 	return nil
@@ -392,12 +395,17 @@ func (s *Store) FinishProjectRelease(ctx context.Context, id int64, result json.
 	if len(result) == 0 {
 		return fmt.Errorf("finish project release %d: the result is empty", id)
 	}
-	tag, err := s.pool.Exec(ctx, `update project_releases set result = $2::jsonb, finished_at = $3
-		where id = $1 and finished_at is null`, id, string(result), at)
+	var found bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update project_releases set result = $2::jsonb, finished_at = $3
+			where id = $1 and finished_at is null`, id, string(result), at)
+		found = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("finish project release %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("finish project release %d: %w", id, ErrNoUnfinishedProjectRelease)
 	}
 	return nil
@@ -414,17 +422,32 @@ func (s *Store) FinishProjectRelease(ctx context.Context, id int64, result json.
 // It ends the project's rows alone. One database can hold the records of several projects'
 // daemons, and the boot of one ends no release another daemon is running.
 func (s *Store) EndProjectReleasesAtBoot(ctx context.Context, project string, at time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `update project_releases set ended_at = $2, ended_by = $3
-		where project = $1 and ended_at is null`, project, at, ProjectReleaseEndedByBoot)
+	var ended int64
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update project_releases set ended_at = $2, ended_by = $3
+			where project = $1 and ended_at is null`, project, at, ProjectReleaseEndedByBoot)
+		ended = tag.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("end the project releases of %s at the boot: %w", project, err)
 	}
-	return tag.RowsAffected(), nil
+	return ended, nil
 }
 
-// ReadProjectRelease is the newest release of project, and whether one was ever recorded.
+// ReadProjectRelease is the newest release of project, and whether one was ever recorded, read in
+// a read-only transaction of its own.
 func (s *Store) ReadProjectRelease(ctx context.Context, project string) (ProjectRelease, bool, error) {
-	return readProjectRelease(s.pool.QueryRow(ctx, newestProjectRelease, project), project)
+	var (
+		release ProjectRelease
+		found   bool
+	)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		release, found, err = s.ReadProjectReleaseTx(ctx, tx, project)
+		return err
+	})
+	return release, found, err
 }
 
 // ReadProjectReleaseTx is ReadProjectRelease through tx, for a reader whose answer must come from
