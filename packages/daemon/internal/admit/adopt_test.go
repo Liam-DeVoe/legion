@@ -69,9 +69,11 @@ const childStartedOwnership = ". Its own architect starts with it and owns it wh
 //
 // The child waits for a slot where it used to start the moment it joined: the cap counts the
 // issues the daemon has started, so a child of a running tree takes a slot of its own for its
-// first phase and stands in the waiting line until one is free. Its tree's root frees none for
-// it by opening its gate alone: a root keeps the row it was started with until its work is past
-// its review, until it is done, or until Dispatch takes it out of the workflow, and gives it back
+// first phase where that phase keeps one (planning, on the default steps this test runs, does;
+// a first step that is an acceptance takes none) and stands in the waiting line until one is
+// free. Its tree's root frees none for it by opening its gate alone: a root keeps the row it was
+// started with until its work is past its review, until it is done, or until Dispatch takes it
+// out of the workflow, and gives it back
 // sooner only while it waits on another issue, such as an open child its first phase waits for
 // (releaseSlotsForWaits). That is why the pass below runs under a cap of 3, with a slot to spare
 // whatever else the tree holds. The assertion is about where the child ends up, which is the tree
@@ -129,9 +131,9 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 
 // A labelled root waiting in admission's queue that a person makes a child of a running tree
 // leaves the queue on that event: it joins the tree at its next generation and, the tree's gate
-// open, waits there for a slot of its own and starts its first step at it (planning, on the
-// default steps), as any todo child of the tree does. It never takes a tree of its own; its own
-// architect starts with its first phase, in the tree it joined.
+// open, starts its first step there as any todo child of the tree does, on a slot of its own it
+// waits for where that step keeps one (planning, on the default steps, does). It never takes a
+// tree of its own; its own architect starts with its first phase, in the tree it joined.
 func TestAQueuedRootReparentedUnderALiveTreeJoinsItAndTakesNoTreeOfItsOwn(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

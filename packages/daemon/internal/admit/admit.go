@@ -2140,11 +2140,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return admitted, released, err
 	}
 	// A step leaving gates.design needs nothing here. A root left at admitted by a step that has
-	// gone is an issue whose first phase the waiting line offers a slot to on this very pass
-	// (record.Waiting, LineFirstPhase), because the line reads the gate's whole step list on
-	// every pass rather than waiting for a fact about it. The other half that once needed a pass
-	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
-	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
+	// gone is an issue whose first phase the waiting line starts on this very pass, on a slot
+	// where its first step keeps one (record.Waiting, LineFirstPhase, slotFor), because the line
+	// reads the gate's whole step list on every pass rather than waiting for a fact about it. The
+	// other half that once needed a pass of its own — a merger's READY the dropped step refused —
+	// went with READY: the merger merges the head it read and no gate refuses a completion
+	// (dispatch://INFRA-714 R2).
 	return admitted, released, nil
 }
 
@@ -2686,11 +2687,12 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			return nil
 		}
 		// A member standing at admitted has run nothing in this generation, and nothing of it is
-		// brought back here: its own first phase starts when the waiting line gives it a slot
-		// (record.LineFirstPhase), and a claim it kept from an earlier run comes back on its kept
-		// session when a start of its role reaches it. A root whose tree is opened for the first
-		// time is exactly that, so admitting a fresh root relaunches nobody and creates no claim
-		// for a worker that has never worked.
+		// brought back here: its own first phase starts when the waiting line promotes it
+		// (record.LineFirstPhase), on a slot where its first step keeps one (slotFor), and a claim
+		// it kept from an earlier run comes back on its kept session when a start of its role
+		// reaches it. A root whose tree is opened for the first time is exactly that, so
+		// admitting a fresh root relaunches nobody and creates no claim for a worker that has
+		// never worked.
 		if member.Phase == phase.Admitted {
 			return nil
 		}

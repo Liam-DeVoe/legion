@@ -1662,10 +1662,11 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 // own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
 // the move a human would make, and applies that move to the record before it answers
 // (applyOwnStatusWrite), as the move's event would: the child's next run enters its tree at
-// admitted (the workflow's ReenterChild), and its slot starts the first step of its plan, the
-// newest plan its owner gave or the project's default steps; the event, once delivered, changes
-// nothing. A running child is parked first, and a lingering tree runs nothing more; a todo it
-// reached anyway would admit the child as an orphan root of its own.
+// admitted (the workflow's ReenterChild), and the waiting line starts the first step of its plan
+// (the newest plan its owner gave, or the project's default steps), on a slot of its own where
+// that step keeps one; the event, once delivered, changes nothing. A running child is parked
+// first, and a lingering tree runs nothing more; a todo it reached anyway would admit the child
+// as an orphan root of its own.
 //
 // It is refused while an ancestor of the child has already been accepted
 // (CHILD_UNDER_ACCEPTED_PARENT): work entering the workflow beneath such an ancestor would let
