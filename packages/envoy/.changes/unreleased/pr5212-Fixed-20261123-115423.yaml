@@ -12,8 +12,10 @@ body: |-
     unreachable or busy for the last ones and how many; `agent-secrets machine login` and
     `machine login-status` print it.
     Before, the helper polled again at the same interval after an outage, ignored `Retry-After`,
-    and lost a `slow_down`'s 5 s after any other answer; a broker naming a negative interval
-    crashed it, and a code that names no lifetime was polled until someone decided it.
+    and lost a `slow_down`'s 5 s after any other answer; it polled at the broker's interval, an
+    hour or a day included, and a code that names no lifetime until someone decided
+    it. `agent-secrets login` now holds the sign-in issuer's interval and lifetime to the same
+    bounds, where it took a positive interval and any lifetime as sent.
     `agent-secrets <NAME> --wait` now keeps waiting through a status poll the broker, or a front
     door before it, answers 408, 500, 501 or 505 and above, as it did through a 429, 502, 503 or
     504. Before, such an answer ended the wait with exit 1 as a refusal the same poll would get

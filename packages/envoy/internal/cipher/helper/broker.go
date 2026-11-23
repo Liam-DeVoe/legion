@@ -617,9 +617,9 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // refusal naming no error or another one is the broker answering with no decision, and polls
 // again too, until the code's lifetime records "expired".
 //
-// The poll starts at the broker's interval, held to leastDeviceInterval through
-// mostDeviceInterval, and defaultDeviceInterval, RFC 8628 section 3.2's 5 s, where it names none;
-// and the code lives at most mostDeviceLifetime, so long where the broker names no lifetime. Each
+// The poll starts at the broker's interval and the code lives as long as the broker says, each held
+// to the device grant's bounds (cipherclient.BoundDeviceAuth): 1 to 60 s, and RFC 8628 section
+// 3.2's 5 s where it names none, and an hour at most, so long where it names no lifetime. Each
 // poll waits the interval first, and RFC 8628 section 3.5 grows it by 5 s for that poll and every
 // later one on a slow_down, at whatever status the body names it, and on a poll the broker did not
 // answer or answered with an outage, once for an answer that is both. An outage's Retry-After, in
@@ -647,12 +647,10 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 //   - serverwait.Read here also reads a Retry-After count signed "+", and, where an outage names
 //     no Retry-After and X-RateLimit-Remaining is 0, X-RateLimit-Reset; there neither is a wait,
 //     and a Retry-After date counts in any form Date.parse reads, where here only HTTP's do.
-//   - The bounds read the device authorization as x/oauth2 reads it (mostDeviceLifetime).
+//   - The bounds read the device authorization as x/oauth2 reads it (deviceIntervalStep's doc).
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	client := b.tokenClient(key)
-	if most := time.Now().Add(mostDeviceLifetime); da.Expiry.IsZero() || da.Expiry.After(most) {
-		da.Expiry = most
-	}
+	cipherclient.BoundDeviceAuth(da, time.Now())
 	ctx, cancel := context.WithDeadline(context.Background(), da.Expiry)
 	defer cancel()
 	settle := func(state, reason string) {
@@ -661,8 +659,7 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 	// The code's end alone says it lapsed: the context's deadline is that end, or a later one
 	// where a test brought the end nearer.
 	lapsed := func() bool { return !time.Now().Before(da.Expiry) }
-	seconds := min(max(cmp.Or(da.Interval, defaultDeviceInterval), leastDeviceInterval), mostDeviceInterval)
-	interval := time.Duration(seconds) * time.Second
+	interval := time.Duration(da.Interval) * time.Second
 	wait := interval
 	// unreached counts the polls in a row the broker did not answer or answered with an outage.
 	unreached := 0
@@ -798,31 +795,18 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 	return tok, nil
 }
 
-// The bounds of a device code's poll (pollLogin), the TypeScript device login's
-// DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS, MOST_POLL_SECONDS and MOST_LIFETIME_SECONDS
-// (packages/cipher-client/src/device-login.ts): defaultDeviceInterval is the interval, in seconds,
-// a code is polled at where the broker names none (RFC 8628 section 3.2); leastDeviceInterval and
-// mostDeviceInterval are the least and the most it starts at, whatever the broker names; and
-// mostDeviceLifetime is the longest a code is polled, whatever lifetime the broker names, one
-// naming none included. A wait that is not positive would poll as fast as the broker answers
-// authorization_pending, and a huge interval, or a code with no end, would keep the poll past any
-// use. deviceIntervalStep is what a slow_down, or a poll the broker did not answer, adds to the
-// interval, the 5 s of RFC 8628 section 3.5, which can take it past the most.
+// deviceIntervalStep is what a slow_down, or a poll the broker did not answer, adds to a device
+// code's interval (pollLogin), the 5 s of RFC 8628 section 3.5, which can take it past the most
+// the poll starts at (cipherclient.MostDeviceInterval).
 //
-// x/oauth2 reads the device authorization's interval and expires_in as whole seconds
-// (oauth2.DeviceAuthResponse), and the TypeScript login's library, oauth4webapi, reads them apart.
-// Here an interval of 0 or none is 5 s and a negative one the least; a lifetime of 0 or none is the
-// hour, a negative one lapses the code before its first poll, and one past what a time.Duration
-// holds (292 years) wraps, to a time that has passed or that the hour bounds; a fraction of either
-// fails the login. There a missing lifetime, a negative one and an interval that is not positive
-// fail the login, a lifetime of 0 lapses the code at once, and a fraction is kept.
-const (
-	defaultDeviceInterval = 5
-	leastDeviceInterval   = 1
-	mostDeviceInterval    = 60
-	deviceIntervalStep    = 5 * time.Second
-	mostDeviceLifetime    = time.Hour
-)
+// The bounds (cipherclient.BoundDeviceAuth) read the device authorization as x/oauth2 reads it,
+// and the TypeScript login's library, oauth4webapi, reads it apart. Here an interval of 0 or none
+// is 5 s and a negative one the least; a lifetime of 0 or none is the hour, a negative one lapses
+// the code before its first poll, and one past what a time.Duration holds (292 years) wraps, to a
+// time that has passed or that the hour bounds; a fraction of either fails the login. There a
+// missing lifetime, a negative one and an interval that is not positive fail the login, a lifetime
+// of 0 lapses the code at once, and a fraction is kept.
+const deviceIntervalStep = 5 * time.Second
 
 // pollsUnreached is the Reason of a login that expired after n polls in a row the broker did not
 // answer or answered with an outage, in the words the TypeScript device login's lapse uses, and ""

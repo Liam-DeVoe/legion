@@ -3,6 +3,7 @@
 package cipherclient
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-jose/go-jose/v4"
@@ -138,17 +140,59 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 }
 
 // Wait polls the issuer until the person has typed the code in, and answers the sign-in that
-// leaves. x/oauth2 polls at the interval the issuer asked for and stops when the code expires.
+// leaves. x/oauth2 polls a copy of authorization held to the device grant's bounds
+// (BoundDeviceAuth): at the issuer's interval, from 1 to 60 s and 5 s where it names none, and
+// until the code expires, an hour at most, one that names no lifetime included.
 func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthResponse) (*SignIn, error) {
 	config, err := d.discover(ctx)
 	if err != nil {
 		return nil, err
 	}
-	token, err := config.DeviceAccessToken(d.context(ctx), authorization)
+	bounded := *authorization
+	BoundDeviceAuth(&bounded, time.Now())
+	token, err := config.DeviceAccessToken(d.context(ctx), &bounded)
 	if err != nil {
 		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	return d.signIn(token, true)
+}
+
+// The bounds a device grant's poll (RFC 8628) holds a server's device authorization to, whatever it
+// names: the poll starts at DefaultDeviceInterval seconds where the server names no interval (RFC
+// 8628 section 3.2), and at LeastDeviceInterval through MostDeviceInterval seconds where it names
+// one, and a code is polled for MostDeviceLifetime at most, one that names no lifetime included.
+// Both of this module's device grants keep them: a person's sign-in (DeviceFlow.Wait) and the
+// broker helper's machine login (internal/cipher/helper, pollLogin). They are the TypeScript
+// device login's DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS, MOST_POLL_SECONDS and
+// MOST_LIFETIME_SECONDS (packages/cipher-client/src/device-login.ts). A huge interval, or a code
+// with no end, would keep a poll past any use, and a wait that is not positive would poll as fast
+// as the server answers authorization_pending in a loop that waits it as sent (pollLogin's).
+// x/oauth2's own DeviceAccessToken takes any lifetime, and a positive interval a time.Duration
+// holds, as sent. It reads any other interval as 5 s in v0.38.0, the version this repository's
+// workspace builds, and panics its ticker on one that is not positive in v0.37.0, which this
+// module's go.mod names on its own.
+const (
+	DefaultDeviceInterval = 5
+	LeastDeviceInterval   = 1
+	MostDeviceInterval    = 60
+	MostDeviceLifetime    = time.Hour
+)
+
+// BoundDeviceAuth holds da's interval and lifetime to the device grant's bounds, its lifetime read
+// from now. It writes those two fields alone, so a reader of another one, the user code, races
+// nothing.
+//
+// x/oauth2 reads the device authorization's interval and expires_in as whole seconds
+// (oauth2.DeviceAuthResponse), and reads 0 as none, so an interval of 0 is 5 s here and a lifetime
+// of 0 the hour. A negative interval starts at the least, and a negative lifetime lapses the code
+// before its first poll. x/oauth2 wraps a lifetime past what a time.Duration holds (292 years), to
+// a time that has passed or that the hour bounds, and fails the device authorization on a fraction
+// of either.
+func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) {
+	da.Interval = min(max(cmp.Or(da.Interval, DefaultDeviceInterval), LeastDeviceInterval), MostDeviceInterval)
+	if most := now.Add(MostDeviceLifetime); da.Expiry.IsZero() || da.Expiry.After(most) {
+		da.Expiry = most
+	}
 }
 
 // ErrSignInEnded is a kept refresh token the issuer no longer honours: the person revoked the
