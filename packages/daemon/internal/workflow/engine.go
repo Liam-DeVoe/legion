@@ -563,37 +563,80 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // as the release of any other hold queues the status of the phase it ends in: every later status
 // write of the issue is keyed on the record's status (Engine.status), the retro's that ends the
 // hold among them (startHeldRetro), and finds the board at it only once this row has put it back.
+//
+// A root whose plan holds several tasks is held where no task runs and one is held or stopped
+// (issuePhaseOfTasks), so its hold is that of its held and stopped tasks together. The todo names
+// no task, so each of them is released on the copy of the root read for it (viewsOf, and view of
+// the issue as the release before wrote it for each after the first), by the rule above, as the
+// one task of a plan of one is released on the root itself; and the status queued for the tasks
+// retried is that of the phase the root then stands in (phaseNow).
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
 		return err
 	}
-	w, err := e.walk(ctx, tx, released)
+	views, walks, err := e.viewsOf(ctx, tx, released)
 	if err != nil {
 		return err
 	}
-	switch {
-	case !planHold(issue, w.Stored):
-	case record.HeldForChildren(issue):
-		wait, err := e.heldParentWaitOf(ctx, tx, issue)
-		if err != nil {
-			return err
+	retried, releasing := false, false
+	var ended phase.Phase
+	for at, held := range views {
+		w := walks[at]
+		if held.Phase != phase.Held || held.Hold == nil {
+			continue
 		}
-		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
-			"issue", issue.Key, "beneath", wait.beneath)
-		if err := e.WriteIssue(ctx, tx, released); err != nil {
-			return err
+		if releasing {
+			// The release before wrote the issue, the observation with it, so this task is read on
+			// the issue as that write left it, not on the copy read before it, whose status is gone.
+			current, err := e.store.Issue(ctx, tx, issue.Key)
+			if err != nil {
+				return err
+			}
+			if current == nil {
+				return fmt.Errorf("release the held task %s of %s: the issue is no longer recorded", w.Task, issue.Key)
+			}
+			if held, w, err = e.view(ctx, tx, *current, w.Task); err != nil {
+				return err
+			}
 		}
-		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, wait.reason()))
-	default:
-		if !w.Place.Started() {
-			return e.waitForFirstStep(ctx, tx, released, w, restartReason)
+		releasing = true
+		switch {
+		case !planHold(held, w.Stored):
+			if ended, err = e.retryPhase(ctx, tx, held, held.Hold.From, releaseReason, false); err != nil {
+				return err
+			}
+			retried = true
+		case record.HeldForChildren(held):
+			wait, err := e.heldParentWaitOf(ctx, tx, held)
+			if err != nil {
+				return err
+			}
+			e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
+				"issue", held.Key, "beneath", wait.beneath)
+			if err := e.WriteIssue(ctx, tx, held); err != nil {
+				return err
+			}
+			if err := e.enqueue(ctx, tx, held.Key, record.OrdinaryStatusWrite(held.Status, fact.Status, wait.reason())); err != nil {
+				return err
+			}
+		case !w.Place.Started():
+			if err := e.waitForFirstStep(ctx, tx, held, w, restartReason); err != nil {
+				return err
+			}
+		default:
+			if err := e.restartTask(ctx, tx, held, w, restartReason); err != nil {
+				return err
+			}
 		}
-		return e.restartTask(ctx, tx, released, w, restartReason)
 	}
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
-	if err != nil {
-		return err
+	if !retried {
+		return nil
+	}
+	if len(views) > 1 {
+		if ended, err = e.phaseNow(ctx, tx, released); err != nil {
+			return err
+		}
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
@@ -2600,12 +2643,12 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	view, refusal, err := e.actView(ctx, tx, *issue, fact.Task, phase.Accepting)
+	view, ok, refusal, err := e.actView(ctx, tx, *issue, fact.Task, phase.Accepting)
 	if err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	issue = &view
-	if issue.Phase != phase.Accepting {
+	if !ok || issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
 	}
 	open, err := e.openBeneath(ctx, tx, *issue)
@@ -3126,24 +3169,29 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
-		w, err := e.walk(ctx, tx, issue)
+		// Each task of the run is read on its own copy (viewsOf): a plan of several tasks has no
+		// one walk, and each task's lost step is stopped where that task stands.
+		views, walks, err := e.viewsOf(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		if planHold(issue, w.Stored) {
-			continue
-		}
-		lost, ok := w.lostStep(e.cfg.Deployment)
-		if !ok {
-			continue
-		}
-		refusal, err := e.stopLostRole(ctx, tx, issue, w, lost, stepStopped)
-		if err != nil {
-			return err
-		}
-		if refusal != nil {
-			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
-				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
+		for at, view := range views {
+			w := walks[at]
+			if planHold(view, w.Stored) {
+				continue
+			}
+			lost, ok := w.lostStep(e.cfg.Deployment)
+			if !ok {
+				continue
+			}
+			refusal, err := e.stopLostRole(ctx, tx, view, w, lost, stepStopped)
+			if err != nil {
+				return err
+			}
+			if refusal != nil {
+				e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
+					"issue", view.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
+			}
 		}
 	}
 	return nil

@@ -202,8 +202,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		// Each running step's worker is an owner of its own, read at the phase its step runs as
-		// (IssueAtStep), and one claim that works two of them is answered once.
+		// Each running step's worker is an owner of its own, read on the copy of the issue its step
+		// is given its work on (StepCopy), and one claim that works two of them is answered once.
 		seen := map[claim.Token]bool{}
 		for _, step := range steps {
 			token, err := e.workerClaim(ctx, tx, issue, step.Role)
@@ -221,7 +221,11 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 			if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
 				continue
 			}
-			owners.suspended = append(owners.suspended, suspendedOwner{issue: IssueAtStep(issue, step), root: root, role: step.Role, token: token, run: run})
+			standing, err := StepCopy(ctx, e.store, tx, issue, step)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			owners.suspended = append(owners.suspended, suspendedOwner{issue: standing, root: root, role: step.Role, token: token, run: run})
 		}
 	}
 	return owners, nil

@@ -2282,6 +2282,10 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlansOf is the plan of each of issues at the issue's own generation, by key, as Plan reads
+	// one, in as many statements whatever the number of issues; an issue whose generation has no
+	// plan rows has no entry.
+	PlansOf(ctx context.Context, tx pgx.Tx, issues []Issue) (map[string]*StoredPlan, error)
 	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
