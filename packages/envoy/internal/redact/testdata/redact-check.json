@@ -6128,6 +6128,48 @@
       }
     },
     {
+      "id": "supervise-answer-words-adopted-identity",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/supervise",
+      "test": "TestAnAdoptionLogsTheAppsGitNameOnlyInItsShape",
+      "production": "supervise Machine.adopt: the App identity's git name, the bot login an App read of GitHub answered, logged only as a login GitHub allows (githubrest.ShownLogin), never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/supervise.Machine).adopt",
+      "capture": "supervise.answer-words/adopted-identity",
+      "mutation": {
+        "file": "packages/daemon/internal/supervise/delivery.go",
+        "preimage": "\"identity\", githubrest.ShownLogin(id.Name)",
+        "replacement": "\"identity\", id.Name"
+      }
+    },
+    {
+      "id": "sandbox-answer-words-adopt-identity",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestAnAdoptionTheShimRefusesNamesTheAppsGitNameOnlyInItsShape",
+      "production": "sandbox Runtime.AdoptWorkingCopy: a refused adoption names the App identity's git name only as a login GitHub allows, and not its email, which holds that login",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/runtime/sandbox.Runtime).AdoptWorkingCopy",
+      "capture": "sandbox.answer-words/adopt-identity",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/sandbox.go",
+        "preimage": "loc.Claim, githubrest.ShownLogin(id.Name), err)",
+        "replacement": "loc.Claim, id.Name, err)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-app-logins",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBootsAppLoginsRefusalNamesNoLoginOutsideItsShape",
+      "production": "daemon appLoginsAtBoot: the two Apps' bot logins, GitHub's answers to their App reads, named in the boot's refusal only as logins GitHub allows",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.appLoginsAtBoot",
+      "capture": "daemon.answer-words/app-logins",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/workflow.go",
+        "preimage": "return githubrest.ShownLogin(login)",
+        "replacement": "return login"
+      }
+    },
+    {
       "id": "daemon-answer-words-permission-control",
       "requirement": "r4-unchanged",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
