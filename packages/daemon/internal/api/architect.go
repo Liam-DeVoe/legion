@@ -251,10 +251,12 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // its children, so nothing enters the workflow beneath an ancestor already accepted, one in retro
 // or merging (record.Accepted) once the last step of its task, whatever that step is, has passed.
 // Such an ancestor closes next without the new work: by its merge, whose head does not carry it,
-// or at the end of its retro where it has no pull request. operation is what the caller would do
-// again once the ancestor has closed.
+// or at the end of its retro where it has no pull request. A backward move takes it back first
+// only where it stands in a retro its owner does, since a move back is the role's that works the
+// issue's phase (workflow's backwardRefusal). operation is what the caller would do again once the
+// ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath %s now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; %s once %s has closed, or take %s back with a backward move first",
+	return fmt.Sprintf("%s is beneath %s, whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath %s now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; %s once %s has closed, or, where %s stands in a retro its owner does, have that owner take it back with a backward move first",
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
@@ -1338,14 +1340,15 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 }
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
-// architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
-// move it applies ends the requester's own step — the worker's phase, or accepting, the owning
-// architect's — which apply waits for the requester's stream before. A phase worker's move carries
-// the entry its claim serves (intake.BackwardMove.PhaseEntry), which the workflow holds to the
-// worker's phases row under the fact's lock, since the phase can be handed to the role again
-// between the turn's decision and the fact; an architect's carries the run of accepting its read
-// found (intake.BackwardMove.Entry), which the workflow holds to the run that stands.
+// architect's on an issue it owns (architectOwns, as sign_off), named by the request, from a place
+// the architect works itself: an acceptance of its own, or another step or a retro the owner does.
+// The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a move it
+// applies ends the requester's own step — the worker's, or the owning architect's — which apply
+// waits for the requester's stream before. A phase worker's move carries the entry its claim serves
+// (intake.BackwardMove.PhaseEntry), which the workflow holds to the worker's phases row under the
+// fact's lock, since the phase can be handed to the role again between the turn's decision and the
+// fact; an architect's carries the run of the step its read found (intake.BackwardMove.Entry),
+// which the workflow holds to the run that stands.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

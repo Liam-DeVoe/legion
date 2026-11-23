@@ -540,9 +540,9 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 }
 
 // sign_off and retry_or_escalate are the owning architect's: its own issue or one under it. A
-// sub-architect holds a grant for the whole tree and can name any issue of it, but signing off the
-// root ends the tree, and a sibling is another architect's; both are refused, and nothing applies.
-// The root's architect owns every issue of its tree, and a sub-architect its own.
+// sub-architect holds a grant for the whole tree and can name any issue of it, but the root's
+// acceptance is the root architect's, and a sibling is another architect's; both are refused, and
+// nothing applies. The root's architect owns every issue of its tree, and a sub-architect its own.
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
@@ -637,7 +637,8 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
 // notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
-// notice reaches may accept it and retry it, and a sub-architect still may not.
+// notice reaches may accept it, a child with no plan rows whose acceptance is the architect's, and
+// retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
