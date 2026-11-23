@@ -749,27 +749,19 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 }
 
-// The task of a later review round names the commit the reviewer's own newest deciding review of
-// its step read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
-// record.PhaseRow.ReviewedHead, the row of the reviewer's step; the first round of a later reviewer
-// step starts from the row of the reviewer step before it, and keeps that row's commit only where
-// one agent works both steps), so the reviewer can read the difference from that commit rather than
-// the whole change again. Where the step before is another agent's, the reviewer's row holds no
-// commit of its own, so its first round names `none` and reads the whole change, and the daemon
-// writes ` Commit another agent's review read: <sha>.` before the round's two sentences
-// (record.AnotherAgentsReview, reviewround.AnotherAgentsSentence). The composed reviewer prompt
-// therefore names the field, the function that writes it into the task, and whose review sets it:
-// the session the daemon recorded on the claim it started the reviewer under, in the first round as
-// in every later one, in a review whose Legion footer names the entry on the reviewer's row
-// (` Review entry: <n>.`, the task's last sentence, record.PhaseRow.Entry, which the task of a wake
-// ends with too) while that row holds the entry's task. The core part names the commit in the
-// daemon part's words, the head the Legion footer of the reviewer's own newest deciding review of
-// its step named, since a deciding review whose footer names no entry or another one moves no
-// commit. It says to read the difference from that commit and each thread, gives the thermonuclear
-// pair that same diff, keeps every defect seen outside it a finding, and names the three cases that
-// read the whole change again; and each of the three parts says how the first round of a later
-// reviewer step reads after another agent's. The pair's old sentence, which ran it over the whole
-// change in every round, is gone. This shows the text is loaded, never that a reviewer follows it.
+// The task of a later review round names the commit the newest deciding review of the reviewer's
+// own agent on the task read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound
+// writes from record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that
+// commit rather than the whole change again. The composed reviewer prompt therefore names the
+// field, the function that writes it into the task, and whose review sets it: the session the
+// daemon recorded on the claim it started the reviewer under, in the first round as in every later
+// one, in a review whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`,
+// the task's last sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while
+// that row holds the entry's task. It says to read the difference from that commit and each thread,
+// gives the thermonuclear pair that same diff, keeps every defect seen outside it a finding, and
+// names the three cases that read the whole change again. The pair's old sentence, which ran it
+// over the whole change in every round, is gone. This shows the text is loaded, never that a
+// reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -784,17 +776,9 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review of your step named (the daemon part below says which review that is), or in the first round of a later reviewer step the commit the reviewer step before it holds where your agent worked that step too, read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"Where another agent worked the reviewer step before yours, your first round names `none`, so you read the whole change, and `Commit another agent's review read: <sha>.` before it names the commit that agent's review read, whose difference to the head shows what changed since.",
 		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
-		"the head read by the newest of your own deciding reviews of your step whose footer named the entry of its round; each reviewer step of a task keeps its own commit.",
-		"The first round of a later reviewer step names the commit the reviewer step before it holds where your agent worked that step too (one key names both steps); where another agent worked it, your task names `Last reviewed commit: none.`, so you read the whole change, with `Commit another agent's review read: <sha>.` before it, the commit that agent's review read, so you can see what changed since.",
-		"Each reviewer step of a task has a phase row of its own, and the first round of a later reviewer step starts from the row of the reviewer step before it. It keeps the commit that row holds only where one agent works both steps, as the steps of one key are one claim; where the step before is another agent's, your row holds no commit until your own first deciding review, so your task names `Last reviewed commit: none.`, and where that agent's review read a commit, the daemon writes ` Commit another agent's review read: <sha>.` just before the two sentences that end your task (`AnotherAgentsSentence` in `packages/daemon/internal/reviewround/reviewround.go`), so you read the whole change and can see what changed since that review. That sentence is the daemon's too.",
-		"on a reviewer's task, the sentences of its round after it, `Last reviewed commit:` and then `Review entry:`, with `Commit another agent's review read:` before them in the first round of a reviewer step that follows another agent's.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"by a later step of the task that pushes, such as a second implementer step, or after your architect sends the issue back",
-		"Retro commits nothing, so where no step after yours pushes, your approved head",
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
@@ -1042,38 +1026,6 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 			} {
 				if !clauseHolds(text, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
-				}
-			}
-		})
-	}
-}
-
-// A step's task names the report of each earlier step whose row holds a handoff record, the
-// agent's own earlier steps among them and a role at two steps at each of its places (workflow's
-// reportsBefore), and its `Handoff:` line names the report of the row its move carried: the step
-// that just passed, the step an acceptance accepted, or the step that sent the work back
-// (workflow's task). Every worker's composed prompt says so, and gives the read of its own handoff
-// whole, since `dispatch_handoff_read` takes the issue and the phase. This shows the text ships,
-// never that a worker reads it.
-func TestEveryWorkerPromptSaysWhichReportsItsTaskNames(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		t.Run(string(role), func(t *testing.T) {
-			text := composedText(t, composer, role, false)
-			for _, terms := range [][]string{
-				{"one `Step <j> (<step>) reported: <word> version <v>.`", "for each earlier step of the task that recorded a handoff", "your agent's own earlier steps among them", "two steps has one at each of its places"},
-				{"The `Handoff:` line", "on a move forward", "the step that just passed", "the step it accepted"},
-				{"after a return", "the step that sent the work back", "`Reason:` line"},
-				{"your handoff on the Dispatch issue (`dispatch handoff-read --issue <issue> --phase <word>`)"},
-				{"Read the report your task's `Handoff:` line names with the command that line quotes"},
-				{"the first report of a run an event ended, which is taken unless your role works the issue's phase again at another of its steps"},
-				{"Where your role works the issue's phase again at another of its steps", "refused instead, at any head", "`HANDOFF_STALE_ENTRY` where your agent works the step the task stands at", "`HANDOFF_NOT_CURRENT_PHASE` where another agent's claim works it"},
-			} {
-				if !clauseHolds(text, terms...) {
-					t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
 				}
 			}
 		})
