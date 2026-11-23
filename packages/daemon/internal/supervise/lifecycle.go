@@ -128,7 +128,13 @@ func (m *Machine) revive(ctx context.Context, request string, exempt bool, start
 // the agent of the step a start is a run of (StartWork.Agent): both are recorded and they differ.
 // A start that names no agent, and a claim that records none, take the session the claim holds.
 func (c Claim) SessionOfAnotherAgent(agent plan.AgentID) bool {
-	return agent != "" && c.SessionAgent != "" && c.SessionAgent != agent
+	return otherAgent(c.SessionAgent, agent)
+}
+
+// otherAgent is whether held, an agent a claim recorded, and agent are two agents: both are
+// recorded, since "" names none (plan.AgentID), and they differ.
+func otherAgent(held, agent plan.AgentID) bool {
+	return agent != "" && held != "" && held != agent
 }
 
 // TakeSessionFor records agent, the agent of the step a start is a run of (StartWork.Agent), as
