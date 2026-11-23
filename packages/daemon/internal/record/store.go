@@ -2377,6 +2377,19 @@ func (s *Postgres) SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.
 	return pending, nil
 }
 
+// MergeForwardAskPending reads whether issue's outbox still holds a merge-forward ask of head to
+// token: a delivered or finished row is deleted, so any such row is an ask still to tell, waiting
+// for its claim's session or its slot's App, or retrying.
+func (s *Postgres) MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, head string) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2
+		and payload->>'step' = $3 and payload->>'claim' = $4 and payload->>'head' = $5)`,
+		string(OutboxKindMergeForward), issue, string(MergeForwardAsk), string(token), head).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has a merge-forward ask of %s to %s pending: %w", issue, head, token, err)
+	}
+	return pending, nil
+}
+
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",

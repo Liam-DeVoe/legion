@@ -2400,6 +2400,10 @@ type Store interface {
 	// owner's slot back to its own App, which a later notice to that claim waits for (the daemon's
 	// deliverNotice).
 	SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error)
+	// MergeForwardAskPending says whether the outbox still holds a merge-forward ask of issue's
+	// head head to the claim token, so an ask told again is never queued behind the one it repeats
+	// (workflow's issueReopensOwnersMergeForward; Postgres.MergeForwardAskPending).
+	MergeForwardAskPending(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, head string) (bool, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row
@@ -2868,8 +2872,9 @@ func OwnerActsAs(issue Issue, steps []PlanStep, mergeForward bool) (claim.Role, 
 // (PullRequest.MergeForward). Each other state is an end of it: the landing, the clear of the ask
 // on a move into implementing or a leave, the close or the merge of the pull request, a hold, a
 // stopped task, the issue's leave and its tree's linger. The workflow queues the write-back of the
-// owner's slot at each end it writes (its mergeForwardWriteBack), and the daemon's ActsAs reads this
-// for every write of the owner's slot.
+// owner's slot at each end it writes (its mergeForwardWriteBack), asks the owner again where a
+// release of a hold opens the ask again (its issueReopensOwnersMergeForward), and the daemon's ActsAs
+// reads this for every write of the owner's slot.
 func OwnersMergeForward(issue Issue, lingers bool, pr *PullRequest, rows []PhaseRow) bool {
 	if issue.Hold != nil || lingers || !InWorkflow(issue) || pr == nil || pr.State != PullRequestOpen ||
 		pr.MergeForward == nil || pr.MergeForward.Landed != "" {
