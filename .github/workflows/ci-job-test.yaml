@@ -559,8 +559,9 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: bash scripts/priorities-seed-check.test.sh
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the Dispatch census script
-        run: bunx biome check --error-on-warnings scripts/dispatch
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/dispatch
 
       # scripts/dispatch is no workspace; the root package pins its TypeScript and Bun types.
       - name: Typecheck the Dispatch census script
@@ -569,15 +570,17 @@ jobs:
       - name: Test the Dispatch census script
         run: bun test scripts/dispatch
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the GitHub App registration script
-        run: bunx biome check --error-on-warnings scripts/github-apps
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/github-apps
 
       # scripts/github-apps is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the GitHub App registration script
         run: bunx tsc --noEmit -p scripts/github-apps
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the session message-wait script
-        run: bunx biome check --error-on-warnings scripts/sessions
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/sessions
 
       # scripts/sessions is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the session message-wait script
@@ -588,8 +591,9 @@ jobs:
       # this job that needed a database. The lint and the typecheck above stay, since they need
       # none and share this job's Bun.
 
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint the approval-eval statistics
-        run: bunx biome check --error-on-warnings scripts/approval-eval
+        run: bunx biome check --error-on-warnings --diagnostic-level=warn --max-diagnostics=none scripts/approval-eval
 
       # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
       - name: Typecheck the approval-eval statistics
