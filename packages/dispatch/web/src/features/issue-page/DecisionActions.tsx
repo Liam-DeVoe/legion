@@ -31,6 +31,7 @@ import { MentionField, type MentionFieldHandle } from "../conversation/MentionFi
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
@@ -151,7 +152,7 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
+  const decisions = useQuery({ ...issueDecisionsQuery(issueKey, issueKey !== ""), ...EVENT_FRESH });
   const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
   if (decision === undefined || document === undefined || isClosed) return null;
   return (

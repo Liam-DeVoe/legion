@@ -1242,8 +1242,9 @@ function Chip({
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
   // A whole document by the page's word for it, which the chip's reading carries (`chipWord`),
-  // and the word for any document where it carries none.
-  const anyDocument = ambiguous ? undefined : documentWord(target);
+  // and where it carries none, the word the page's rule gives it by its address and the issue
+  // the node's record is on: that issue's spec as the Spec, and another issue's as a document.
+  const anyDocument = ambiguous ? undefined : documentWord(target, issue);
   const word = anyDocument === undefined ? undefined : (chip.reading?.chipWord ?? anyDocument);
   // A block by its first block of words, the line the store projected from the reading the page
   // published for it, which the chip carries: such a chip waits on that line and reads nothing.

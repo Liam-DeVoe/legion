@@ -1161,6 +1161,55 @@ test("A plan with no role that the issue names by its id has its blocks read and
   }
 });
 
+// A link titles another issue's whole spec by that issue's title (`issueOrDocumentTitle`), which
+// the batched read answers only under the issue's own address. So where a comment cites such a
+// spec alone, the page asks the one read for the issue beside it, and publishes the spec by the
+// issue's title for every plain line it feeds, with the page's word for a document beside it for
+// a chip to draw (`targetNaming`).
+test("another issue's spec a comment cites alone is read with its issue and published by the issue's title", async () => {
+  const other = "dispatch://CORE-9";
+  const cited = `${other}/spec`;
+  const title = "Other issue title";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      // The spec by its file name and the issue by its title, each where it is asked for.
+      return {
+        targets: namedTargets(refs).targets.map((target): ReferenceTarget => {
+          if (target.ref === cited) return { ...target, kind: "artifact", name: "spec.md" };
+          return target.ref === other ? { ...target, kind: "issue", name: title } : target;
+        }),
+      };
+    },
+    { comments: [{ ...comment, body: `Wait for ${cited} to be approved.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        const known = useKnownReferences();
+        return { line: known.lines.get(cited), name: known.names.get(cited) };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBeDefined());
+    expect(asked, "the names were read more than once").toHaveLength(1);
+    expect(asked[0]).toContain(cited);
+    expect(asked[0], "the names read was not asked for the spec's issue").toContain(other);
+    expect(view.result.current).toEqual({ line: NODE_TYPE_NAMES.document, name: title });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The batched read names a typed block by its stored excerpt, which opens on the block's
 // directive line. Every surface that reads the page's published names draws the name as it is,
 // so the page publishes the name a chip naming the block is cut from (`targetNaming`): the first

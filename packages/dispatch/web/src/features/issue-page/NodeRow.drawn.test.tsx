@@ -1,6 +1,13 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
@@ -9,7 +16,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { Agent, DisplayTree, IssueChild } from "../../api/types";
+import type { Agent, DisplayTree, IssueChild, ReferenceTarget } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
@@ -28,8 +35,11 @@ import { measureNearWords } from "./clamp-fixtures";
 import {
   artifact,
   DECISIONS_DOCUMENT,
+  decision,
+  decisionsRead,
   issueDetails,
   KEY,
+  shaped,
 } from "./decisions-filter/decisions-fixtures";
 import {
   FIRST_LINE_LIMIT,
@@ -55,6 +65,8 @@ import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
 import { treeContext } from "./tree-drafts";
+import { nodesInOrder } from "./tree-keys";
+import { treeDocumentIds, useIssueTree } from "./useIssueTree";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -778,6 +790,165 @@ test("a whole document reads alike in a plain line and a link, and by the page's
   } finally {
     getIssueSummary.mockRestore();
     body.unmount();
+    view.unmount();
+  }
+});
+
+// R8 over the row above, for another issue's spec cited alone: a link titles it by that issue's
+// title, which the batched read answers only under the issue's own address, so the page asks its
+// read for the issue beside the spec (`useIssueTree.ts`'s `treeReferences`). A plain line the
+// page's read feeds then reads the spec as a line's own read and a link do, and every chip still
+// draws the page's word for another issue's document. The names come from the page's own reads,
+// whose names read answers each address it is asked for, as the server does, and no other.
+test("another issue's spec reads alike in a line the page feeds, a line's own read and a link, and by the page's word in every chip", async () => {
+  const other = "dispatch://CORE-9";
+  const spec = `${other}/spec`;
+  const title = "Other issue title";
+  const words = `Wait for ${spec} to be approved.`;
+  const issue = issueDetails();
+  // Every read of the page but the names', answered: a decision of the issue ties to the spec,
+  // and its words cite it.
+  const reads = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tie = shaped(spec);
+  const made = decision("d1", {
+    links: [{ ...tie, to: { ...tie.to, kind: "artifact" } }],
+    text: words,
+  });
+  reads.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  reads.setQueryData(["issue", KEY, "coverage"], {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  });
+  reads.setQueryData(["issue", KEY, "results"], {
+    checks: [],
+    issue: KEY,
+    verification_artifact_id: "",
+  });
+  reads.setQueryData(["decisions", KEY], decisionsRead([made]));
+  for (const queryKey of [
+    ["asks", KEY],
+    ["comments", KEY],
+    ["issue-messages", KEY],
+  ]) {
+    reads.setQueryData(queryKey, []);
+  }
+  for (const id of treeDocumentIds(issue)) reads.setQueryData(["artifact", id, "blocks"], []);
+  // The names read names the spec by its file name and the issue by its title.
+  const getReferenceTargets = spyOn(api, "getReferenceTargets").mockImplementation(
+    async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        if (ref === spec) return [{ gone: false, kind: "artifact", name: "spec.md", ref }];
+        return ref === other ? [{ gone: false, kind: "issue", name: title, ref }] : [];
+      }),
+    })
+  );
+  // The link and a line's own read, which read the other issue's summary.
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-9",
+    project: "CORE",
+    status: "todo",
+    title,
+  });
+  const page = renderHook(() => useIssueTree(issue), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={reads}>{children}</QueryClientProvider>
+    ),
+  });
+  const drawn: RenderResult[] = [];
+  try {
+    await waitFor(() => expect(page.result.current.namesHeld).toBe(true));
+    const { published, root } = page.result.current;
+    const row = node({
+      chips: nodesInOrder(root).find((one) => one.type === "decision")?.chips ?? [],
+      id: "plan-md#b-t1",
+      parentLine: {
+        id: "spec#b-r2",
+        reference: `dispatch://${KEY}/spec#b-r2`,
+        text: words,
+        tree: readingOf(words),
+        type: "requirement",
+      },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    });
+    // The row under the page's names, and the same row under none, whose line reads its own.
+    const fed = renderRow(row, { body: false, published });
+    const own = renderRow(row, { body: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const body = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <MarkdownBody markdown={words} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    drawn.push(fed, own, body);
+    await within(body.container).findByRole("link", { name: title });
+    await waitFor(() => {
+      expect(
+        [fed, own].map(
+          (view) => view.container.querySelector("[data-node-parent-line] a")?.textContent
+        ),
+        "the line the page's read feeds, then a line's own read"
+      ).toEqual([`Wait for ${title} to be approved.`, `Wait for ${title} to be approved.`]);
+      expect(
+        fed.container.querySelector(`[data-node-words] a[data-row-reference="${spec}"]`)
+          ?.textContent
+      ).toBe(NODE_TYPE_NAMES.document);
+      expect(
+        [...fed.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent)
+      ).toEqual([NODE_TYPE_NAMES.document]);
+    });
+  } finally {
+    getReferenceTargets.mockRestore();
+    getIssueSummary.mockRestore();
+    for (const view of drawn) view.unmount();
+    page.unmount();
+  }
+});
+
+// R8 over the row above, before the page's read answers: a chip the page has given no word yet
+// for a whole document - one in place in a node's words, and a tie's whose reading carries none
+// - names it by the store's rule as far as the address and the row's issue say it
+// (`node-row-chip.ts`'s `documentWord`): the row's own issue's spec as the Spec, and another
+// issue's as a document, the words the store gives both once it answers.
+test("before the page's read answers, a chip names another issue's spec as a document and its own issue's as the Spec", async () => {
+  const other = "dispatch://CORE-9/spec";
+  const own = `dispatch://${KEY}/spec`;
+  const words = `Wait for ${other} and ${own}.`;
+  const view = renderRow(
+    node({
+      chips: [other, own].map((ref): NodeChip => ({ answered: false, gone: false, ref })),
+      id: "plan-md#b-t1",
+      source: { id: "artifact-plan", issue: KEY, kind: "artifact" },
+      text: words,
+      tree: readingOf(words),
+      type: "plan_task",
+    }),
+    // The page has asked for both, and its read has not answered.
+    { body: false, published: publishedNames(new Map(), { asked: [other, own] }) }
+  );
+  try {
+    await waitFor(() => {
+      expect(
+        [other, own].map(
+          (ref) =>
+            view.container.querySelector(`[data-node-words] a[data-row-reference="${ref}"]`)
+              ?.textContent
+        ),
+        "a chip in place"
+      ).toEqual([NODE_TYPE_NAMES.document, PRESET_NAMES.spec]);
+      expect(
+        [...view.container.querySelectorAll("[data-chip-name]")].map((chip) => chip.textContent),
+        "a tie's chip"
+      ).toEqual([NODE_TYPE_NAMES.document, PRESET_NAMES.spec]);
+    });
+  } finally {
     view.unmount();
   }
 });

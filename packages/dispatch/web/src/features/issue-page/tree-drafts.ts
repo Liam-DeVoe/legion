@@ -278,9 +278,10 @@ export function coverageStatements(
  *   link to it reads (R8, `issueOrDocumentTitle`): an issue's spec by the issue's title, and any
  *   other document by its own name, which is its file name, each read as one text run
  *   (`titleReading`), as a title is. This issue's documents are titled by the issue read, and
- *   another issue's by the batched read: its spec by that issue's title where the read answered
- *   for the issue, and its document by the read's name for it. A document nothing titles is
- *   named by the page's word for a document. The reading carries the page's word for the
+ *   another issue's by the batched read: its spec by that issue's title, which the page asks the
+ *   read for beside every whole spec it holds (`useIssueTree.ts`'s `treeReferences`), where the
+ *   read answered for the issue, and its document by the read's name for it. A document nothing
+ *   titles is named by the page's word for a document. The reading carries the page's word for the
  *   document as well (`ReferenceNameReading.chipWord`, `documentWord`), which every chip draws
  *   in place of its name, a tie's and one in place in a node's words: a chip never draws a
  *   document's file name (decision 39).
@@ -330,7 +331,9 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     ]),
   ]);
   // The issue `issueKey` as a link to it is titled: by its whole title where the issue read holds
-  // it, and else by the batched read's name for it, where that read answered for the issue.
+  // it, and else by the batched read's name for it, where that read answered for the issue. The
+  // page asks it for the issue of every whole spec the tree holds (`useIssueTree.ts`'s
+  // `treeReferences`), so another issue's spec is titled as a link to it is.
   const titledIssue = (issueKey: string): { readonly title: string } | undefined => {
     const reference = buildDispatchReference({ key: issueKey, kind: "issue" });
     const whole = titles.get(reference);
@@ -441,7 +444,8 @@ function documentReading(
  * document (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`),
  * since another issue's document plays no part of this one. A link and every line read a
  * document by its own name, which is its file name, `spec.md` (R8); a chip never draws it
- * (decision 39).
+ * (decision 39). A chip the page has given no word yet draws this rule as far as an address and
+ * the row's issue say it (`node-row-chip.ts`'s `documentWord`).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
  * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
