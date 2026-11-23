@@ -1097,9 +1097,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261117213545 adds a column to 20261117034837's plan_steps: left out, it is applied as main's,
 // before that table exists; and one that replaces an index a version of the list creates, as
 // 20261121183336 replaces 20261105183200's pod_resumes_one_open_per_role, and as 20261123114449
-// reads pod_resumes.claim and closed_at, which 20261121183336 and 20261105183200 add. Any other
-// version left out makes the cases below weaker, never red, which is why the comment says where
-// the list comes from.
+// reads pod_resumes.claim and closed_at, which 20261121183336 and 20261105183200 add. It also reads
+// pod_wake_backstops.claim, which 20261122072945 adds; that version is not in the list, but a
+// database main migrated applies it in the first pass, and every other applies it in ascending
+// order, so it stands before 20261123114449 either way. Any other version left out makes the cases
+// below weaker, never red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,

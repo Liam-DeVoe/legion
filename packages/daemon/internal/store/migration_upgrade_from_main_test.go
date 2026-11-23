@@ -138,9 +138,10 @@ import (
 // The record that a claim took another role (20261123033101) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
 // its own here (migration_20261123033101_test.go).
-// The repair of the open resume per claim (20261123114449) is applied after it and touches no
-// outbox_kind_check: over 20261121183336's present shape it closes no row and changes no index, so
-// it needs no row of its own here (migration_20261123114449_test.go).
+// The repair of the claim tables (20261123114449) is applied after it and touches no
+// outbox_kind_check: over the present shapes of 20261121183336 and 20261122072945 it changes no
+// row and leaves the same indexes and constraints, so it needs no row of its own here
+// (migration_20261123114449_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
