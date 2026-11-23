@@ -2377,6 +2377,83 @@ test("health calls a run unhealthy whose world answered a read of another owner 
   );
 }, 120_000);
 
+// Production's answers to a read of a tag object at the commit each pinned tag names (the
+// tester's capture, dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt v3, read in
+// a role App's pane at 2026-11-23T05:52:16Z and 05:52:17Z): both tags are lightweight, so GitHub
+// holds no tag object at that commit and answers 404, and gh prints GitHub's body unformatted,
+// ignores the `-q`, says `gh: Not Found (HTTP 404)` and exits 1. INFRA-764 round 34's world-health
+// run a167a5bc6341 made the first read, as a reviewer's subagent checking the pins.
+const TAG_OBJECT_READS = [
+  [
+    "api",
+    "repos/actions/checkout/git/tags/3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "-q",
+    ".object.sha",
+  ],
+  [
+    "api",
+    "repos/oven-sh/setup-bun/git/tags/0c5077e51419868618aeaa5fe8019c62421857d6",
+    "-q",
+    ".object.sha",
+  ],
+];
+const TAG_OBJECT_404 =
+  '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/git/tags#get-a-tag","status":"404"}';
+
+// Catches (the architect's ruling of 2026-11-23T05:52:25Z: a captured read is answered from the
+// capture, exit and body): a world that answers a read the capture holds as production's 404 with
+// its own 404 (round 34's a167a5bc6341 met `{"message": "Not Found", "documentation_url":
+// "https://docs.github.com/rest", …}` formatted over five lines), so an agent that reads GitHub's
+// documentation link or parses the body meets an answer production does not give.
+test("the world answers a read the capture holds as production's 404 with the captured body and exit", () => {
+  const { dir } = runDir({ fixture: true });
+  for (const argv of TAG_OBJECT_READS) {
+    const [status, stdout, stderr] = asked(dir, "reviewer", argv, PANE_GH);
+    expect([status, String(stdout).trimEnd(), String(stderr)]).toEqual([
+      1,
+      TAG_OBJECT_404,
+      "gh: Not Found (HTTP 404)\n",
+    ]);
+  }
+}, 120_000);
+
+// Catches (the architect's ruling of 2026-11-23T05:52:25Z: ruling (a) means "as production
+// answers", and the capture is the record of production's answer, the 404s included):
+//   - a health that calls a run unhealthy for production's own 404 (INFRA-764 round 34's
+//     world-health run a167a5bc6341, voided by rig health and the tester's reader for
+//     `gh api repos/actions/checkout/git/tags/3d3c42e5… -q .object.sha` answered exit 1, which
+//     production's gh answers exit 1, the tester's capture v3);
+//   - one that keeps the "exit 0 or unhealthy" shortcut, so the same read answered exit 0, an
+//     answer production does not give, reads healthy;
+//   - one that passes a read of the label's read grammar that no capture holds, where production's
+//     answer is not known: it fails closed, naming the call so that it can be captured.
+test("health judges a read of another owner against the capture: a captured 404 answered so is healthy, answered exit 0 is not, and an uncaptured read is not", () => {
+  const { dir } = runDir({ fixture: true });
+  expect(
+    asked(dir, "reviewer", ["api", "repos/example/widgets/pulls/1001", "--jq", ".number"])[0]
+  ).toBe(0);
+  const calls = path.join(dir, "calls.jsonl");
+  const opened = readFileSync(calls, "utf8");
+  const next = opened.split("\n").filter((line) => line.trim() !== "").length + 1;
+  const recorded = (argv: readonly string[], exit: number) =>
+    `${JSON.stringify({ at: "t", as: "gh", by: "reviewer", argv, files: {}, route: null, handler: "unrouted", exit })}\n`;
+  writeFileSync(calls, opened + TAG_OBJECT_READS.map((argv) => recorded(argv, 1)).join(""));
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  const [read] = TAG_OBJECT_READS;
+  writeFileSync(calls, opened + recorded(read, 0));
+  expect(ghUndeclared({ dir, scenario: "reviewer-text-findings" })).toStartWith(
+    `gh refusal: calls.jsonl:${next}, \`gh ${read.join(" ")}\` of the reviewer, exited 0`
+  );
+  const uncaptured = ["api", "repos/actions/checkout/pulls/1", "--jq", ".number"];
+  for (const exit of [0, 1]) {
+    writeFileSync(calls, opened + recorded(uncaptured, exit));
+    expect(ghUndeclared({ dir, scenario: "reviewer-text-findings" })).toStartWith(
+      `gh refusal: calls.jsonl:${next}, \`gh ${uncaptured.join(" ")}\` of the reviewer, exited ${exit}`
+    );
+  }
+}, 120_000);
+
 // GitHub refuses every role App's read of `user` 403 (measured on 2026-11-17 from a Legion pod:
 // `gh api user`, exit 1, `Resource not accessible by integration`), and the world refuses it so
 // (rig.sh's fixture_write). Catches: a health that calls a run unhealthy for a role that asked
