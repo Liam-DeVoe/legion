@@ -74,12 +74,22 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 // it beside the claim of the row the task stands at, so a turn of another agent of the role is told
 // apart from a turn of the same agent's other run (intake.EntryFence).
 func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row.Claim
+	row, _ := rowOnEntry(rows, role, entry)
+	return row.Claim
+}
+
+// rowOnEntry is role's row among rows that stands on entry, and whether one does: none for entry
+// 0, and at most one otherwise, since no two rows of a role stand on one entry (workflow's enter).
+// The run a completion serving entry reports is read through it (ServedClaim, CompletionRow).
+func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) {
+	if entry > 0 {
+		for _, row := range rows {
+			if row.Role == role && row.Entry == entry {
+				return row, true
+			}
 		}
 	}
-	return ""
+	return PhaseRow{}, false
 }
 
 // earlierStepRow is the one lookup of what an earlier step of a role read on a task: the row of
@@ -256,10 +266,8 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 	if works {
 		return PhaseRowAt(rows, role, task, at, steps)
 	}
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row
-		}
+	if row, ok := rowOnEntry(rows, role, entry); ok {
+		return row
 	}
 	if now := PhaseRowOf(rows, role); now.Role == role {
 		return now
