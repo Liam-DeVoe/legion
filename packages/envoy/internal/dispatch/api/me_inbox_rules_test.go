@@ -337,10 +337,10 @@ func TestOneInboxKeepsEverySubtractionRule(t *testing.T) {
 // message, each a thread of its own, alice writes once more in a comment thread and in an issue
 // message thread that bob started and she replied in, each of which she takes part in from that
 // first reply: her second reply reaches every participant but her (inboxwrite.PlanRecord's
-// own-login clause). Her ask waits on her, as bob's ask on the same issue shows, and reaches
-// nobody, since the person it waits on asked it (waitingOnTuples). Each write's delivery tuples
-// hold no tuple to her, the thread it is written in is no row of her unread list, and the write
-// stands in her read under its authorship tuple.
+// own-login clause). Her ask waits on her, as bob's ask on the same issue shows, and draws no
+// delivered_to tuple, since the person it waits on asked it (waitingOnTuples). Each write's
+// delivery tuples hold no tuple to her, the thread it is written in is no row of her unread list,
+// and the write stands in her read under its authorship tuple.
 func meInboxOwnWrites(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "OWN", "Alice's own writes")
