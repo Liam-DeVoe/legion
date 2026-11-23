@@ -506,8 +506,8 @@ var airlockBundleVars = []string{
 
 // proxyRootsTrusted reports whether the command reaches the proxy with the trust it already has,
 // so that it needs no bundle: system, the machine's system trust store, trusts every root the
-// release carries, and so does each file a trust variable of the command names, and the
-// directory its wgetrc names.
+// release carries, and so does each file a trust variable of the command names, the directories
+// its SSL_CERT_DIR names, and the directory its wgetrc names.
 //
 // Every root, not one of them: during a change of the proxy's root a release carries two, the
 // old and the new, and a store that trusts one of them is not yet one the proxy can rely on. A
@@ -518,13 +518,21 @@ var airlockBundleVars = []string{
 // root takes the proxy away from that client, as a file this process cannot read may. Either one
 // keeps the bundle, which holds that file's trust as well (trustBundle). Node adds the file
 // NODE_EXTRA_CA_CERTS names to the roots it has, so a file without the root takes nothing away.
-// The command keeps its WGETRC too, and wget reads its trust there alone (wgetrcTrusts).
+// The command keeps its SSL_CERT_DIR too, which Node's system store (NODE_USE_SYSTEM_CA) reads in
+// place of the system's directory and with no system bundle file beside it (measured with Node
+// v24.22.1), a list of directories joined by ':' that Node, OpenSSL and Go read together; so they
+// must hold every root, though a client that also reads an SSL_CERT_FILE holding the root would
+// not need them to. The bundle carries the root to Node in NODE_EXTRA_CA_CERTS. The command keeps
+// its WGETRC too, and wget reads its trust there alone (wgetrcTrusts).
 func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bool {
 	roots := proxyRoots(caPEM)
 	if len(roots) == 0 || !poolTrustsEvery(system, roots) {
 		return false
 	}
 	if wgetrc := envValue(environ, "WGETRC"); wgetrc != "" && !wgetrcTrusts(wgetrc, roots) {
+		return false
+	}
+	if dirs := envValue(environ, "SSL_CERT_DIR"); dirs != "" && !certDirsTrustEvery(roots, filepath.SplitList(dirs)...) {
 		return false
 	}
 	// One file is often named by several of these, as the system bundle is, and is read once.
@@ -568,17 +576,20 @@ func wgetrcTrusts(path string, roots []*x509.Certificate) bool {
 			directory = strings.TrimSpace(value)
 		}
 	}
-	if directory == "" {
-		return true
-	}
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return false
-	}
+	return directory == "" || certDirsTrustEvery(roots, directory)
+}
+
+// certDirsTrustEvery reports whether the certificate directories dirs, read together, hold every
+// root: each file of each directory is read, and a directory or a file this process cannot read
+// adds nothing, so a list of none that can be read holds no root.
+func certDirsTrustEvery(roots []*x509.Certificate, dirs ...string) bool {
 	pool := x509.NewCertPool()
-	for _, entry := range entries {
-		if data, err := os.ReadFile(filepath.Join(directory, entry.Name())); err == nil {
-			pool.AppendCertsFromPEM(data)
+	for _, dir := range dirs {
+		entries, _ := os.ReadDir(dir)
+		for _, entry := range entries {
+			if data, err := os.ReadFile(filepath.Join(dir, entry.Name())); err == nil {
+				pool.AppendCertsFromPEM(data)
+			}
 		}
 	}
 	return poolTrustsEvery(pool, roots)

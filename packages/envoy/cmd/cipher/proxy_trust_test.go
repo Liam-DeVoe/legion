@@ -147,6 +147,42 @@ func TestProxyRootsTrustedReadsTheWgetrcTheCommandHas(t *testing.T) {
 	}
 }
 
+// TestProxyRootsTrustedReadsTheCertDirTheCommandHas: SSL_CERT_DIR replaces the system's
+// certificate directory for Node's system store (NODE_USE_SYSTEM_CA), and with no bundle the
+// command keeps the SSL_CERT_DIR it has. Node, OpenSSL and Go read it as a list of directories
+// joined by ':', every file of each, together; so the directories together must hold every root,
+// one of them that cannot be read adds nothing, and an empty value names no directory.
+func TestProxyRootsTrustedReadsTheCertDirTheCommandHas(t *testing.T) {
+	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
+	store := proxyTestPool(t, root)
+	dirWithout := filepath.Dir(writeLoginFile(t, "private.pem", other))
+	dirWith := filepath.Dir(writeLoginFile(t, "root.pem", root))
+	missing := filepath.Join(t.TempDir(), "not-there")
+	for _, row := range []struct {
+		name string
+		dirs []string
+		want bool
+	}{
+		{name: "no SSL_CERT_DIR", want: true},
+		{name: "an empty SSL_CERT_DIR", dirs: []string{""}, want: true},
+		{name: "a directory that holds the root", dirs: []string{dirWith}, want: true},
+		{name: "a directory without the root", dirs: []string{dirWithout}},
+		{name: "two directories, the second holding the root", dirs: []string{dirWithout, dirWith}, want: true},
+		{name: "a directory that cannot be read and one that holds the root", dirs: []string{missing, dirWith}, want: true},
+		{name: "a directory that cannot be read", dirs: []string{missing}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var environ []string
+			if row.dirs != nil {
+				environ = []string{"SSL_CERT_DIR=" + strings.Join(row.dirs, string(filepath.ListSeparator))}
+			}
+			if got := proxyRootsTrusted(environ, root, store); got != row.want {
+				t.Fatalf("proxyRootsTrusted with %q = %v, want %v", environ, got, row.want)
+			}
+		})
+	}
+}
+
 // useSystemTrustFiles points systemTrustFiles, the system bundles prepareAirlock reads the store
 // from, at paths until the test ends. A test that calls it swaps a package variable, so neither it
 // nor its subtests run in parallel.
