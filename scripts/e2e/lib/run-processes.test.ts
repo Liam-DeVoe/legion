@@ -1877,12 +1877,12 @@ echo "pid $orphan"`;
 // docker is the gate on whether this host runs a rootful Docker daemon on its own kernel for this
 // user, as the docker-init row below needs: a `docker` CLI whose `docker info` answers, with nothing
 // on stderr, no `name=rootless` among its security options and an operating system that is no
-// Docker Desktop. Rootless Docker runs `docker exec -u <uid>` as a subuid, so the row's readable
-// control reads unreadable; Docker Desktop runs its daemon in a VM, whose pids (`.State.Pid`) this
-// /proc does not show; and podman's docker shim writes a notice on stderr and runs catatonit, no
-// docker-init. A Legion pod has no Docker. The GitHub Actions runner has a rootful Docker. The
-// row's image is the skill scenarios' pinned judge image (ubuntu, which carries perl), a row of
-// .github/ci-images.yaml.
+// Docker Desktop. Rootless Docker runs `docker exec -u <uid>:<gid>` as a subuid, so the row's
+// readable control reads unreadable; Docker Desktop runs its daemon in a VM, whose pids
+// (`.State.Pid`) this /proc does not show; and podman's docker shim writes a notice on stderr and
+// runs catatonit, no docker-init. A Legion pod has no Docker. The GitHub Actions runner has a
+// rootful Docker. The row's image is the skill scenarios' pinned judge image (ubuntu, which
+// carries perl), a row of .github/ci-images.yaml.
 const dockerImage =
   "ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55";
 const docker = hostGate(
@@ -1943,10 +1943,13 @@ test.skipIf(skip || withoutPython || docker.skip)(
     // runtime gives it, which holds no mark of the run unless a caller copies it in by name (`-e`):
     // so another session's not-dumpable process under it failed every walk with 2 (Tester4784-3 at
     // fe4ead44bb, from a subreaper shell and from a plain one). The row starts such a container,
-    // then each walking shell, which has `docker exec -u <this uid>` start a perl whose sh exits at
-    // once, so docker-init adopts it, links it into the row's proc root (rowRoot, unreadableSh's
-    // `linked`) and walks; the perl makes itself not dumpable (prctl PR_SET_DUMPABLE 0), or stays
-    // dumpable, the control, which the walk reads.
+    // then each walking shell, which has `docker exec -u <this uid>:<this gid>` start a perl whose sh
+    // exits at once, so docker-init adopts it, links it into the row's proc root (rowRoot,
+    // unreadableSh's `linked`) and walks; the perl makes itself not dumpable (prctl
+    // PR_SET_DUMPABLE 0), or stays dumpable, the control, which the walk reads. The gid is given
+    // too: `-u <uid>` alone runs the perl with gid 0 where the image's /etc/passwd has no such uid
+    // (the GitHub Actions runner's 1001), and the kernel then keeps even a dumpable perl's
+    // environment from this user, whose fsgid differs.
     const work = join(dir, "docker-init");
     mkdirSync(work);
     const name = `legion-e2e-docker-init-${process.pid}-${Date.now()}`;
@@ -1983,7 +1986,7 @@ pre=
 # The perl names itself (\\$0, its command line, which /proc shows to every user) only once its prctl
 # is done, so the row reads it after it has made itself not dumpable, never between its exec and
 # that call.
-docker exec -u "$(id -u)" "$C" sh -c "perl -e '\${pre}\\$0 = q(walk-row-perl); sleep 60' </dev/null >/dev/null 2>&1 & exit 0"
+docker exec -u "$(id -u):$(id -g)" "$C" sh -c "perl -e '\${pre}\\$0 = q(walk-row-perl); sleep 60' </dev/null >/dev/null 2>&1 & exit 0"
 perl=
 for i in $(seq 1 200); do
   kids=()
