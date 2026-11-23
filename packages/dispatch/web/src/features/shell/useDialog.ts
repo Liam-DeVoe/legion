@@ -8,7 +8,7 @@ import {
 } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
-import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
+import { DIALOG_SCOPE, isEditableTarget, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
@@ -46,6 +46,23 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
   );
 }
 
+/** Whether `element` is a field the reader types text into: a `<textarea>`, an `<input>` of a
+ *  type that takes text (`isEditableTarget` says which), an editable element, or one whose role
+ *  says it is a text box. A dialog that names such a field (`initialFocusRef`) gives it the focus
+ *  in the commit that opens it, so the keys typed straight after opening are its text. A button
+ *  is none: it takes no text, and a Space or an Enter typed before the reader has seen the dialog
+ *  would press it - a Confirm would confirm what the dialog asks, a Close would close the dialog
+ *  unread - so the dialog's own element takes those keys, and the button the focus a frame
+ *  later. Nor is a `<select>`, which `isEditableTarget` counts for its type-ahead: a key there
+ *  picks an option. The element is read as it is drawn when the dialog opens, not by the type
+ *  its ref was declared with. */
+function takesText(element: HTMLElement): boolean {
+  return (
+    element.tagName !== "SELECT" &&
+    (isEditableTarget(element) || element.matches("[role=searchbox],[role=textbox]"))
+  );
+}
+
 // Depth-counted so a picker opening inside an already-locked sheet does not unlock scroll
 // when the picker (not the sheet) closes first; only the outermost acquire/release touches
 // the DOM, and it restores the exact inline values a page may already have set.
@@ -76,8 +93,9 @@ const scrollLock = {
 };
 
 // Every open dialog's container. Escape is a `dialog`-scope keymap binding so it works wherever
-// the focus is - on its field, on the dialog itself in the first frame of one that names no field,
-// or on the page after a press on its text took it there; only the innermost open dialog closes.
+// the focus is - on its field, on the dialog itself in the first frame of one that names no text
+// field or whose field took no focus as it opened, or on the page after a press on its text took
+// it there; only the innermost open dialog closes.
 // Two dialogs nested by DOM containment (a picker opened inside an already-open sheet) resolve by
 // containment, the nested one winning regardless of which mounted its effect first. Two dialogs
 // that are siblings - neither containing the other, such as the phone navigation sheet and a
@@ -101,9 +119,9 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
 }
 
 /** Whether a dialog is open. Its Escape is then its own wherever the focus is: on its field, on
- *  the dialog itself in the frame before a field takes the focus, or on the page after a press on
- *  its text took the focus there. A layer under it that answers Escape itself leaves the key to
- *  it. */
+ *  the dialog itself in the frame before its control takes the focus, or on the page after a
+ *  press on its text took the focus there. A layer under it that answers Escape itself leaves the
+ *  key to it. */
 export function dialogOpen(): boolean {
   return openDialogs.size > 0;
 }
@@ -196,7 +214,8 @@ function handOverFocus(container: HTMLElement | null, giveBackTo: HTMLElement | 
 }
 
 export interface UseDialogOptions {
-  /** Element to focus first instead of the container's first focusable descendant. */
+  /** Element to focus first instead of the container's first focusable descendant: at once if it
+   *  is a text field (`takesText`), else a frame after the dialog's own element took the focus. */
   initialFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
   open: boolean;
@@ -210,13 +229,14 @@ export interface DialogHandle<T extends HTMLElement> {
  * Focus trap, Escape-to-close, focus restoration, and a body scroll lock for an overlay
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
  * picker all use this). On open the focus moves at once, in the commit that opens the dialog: to
- * the field the dialog names (`initialFocusRef`), or, for a dialog that names none, to the dialog
- * itself and to its first control a frame later. A focus already inside the dialog stays. So no
- * key typed straight after opening reaches a control outside the dialog. While open it pushes the
- * `dialog` keymap scope, which masks every page and global binding, and registers Escape there
- * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
- * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
- * Tab trapping listens on the container.
+ * the text field the dialog names (`initialFocusRef`), or, for a dialog that names no text field,
+ * to the dialog itself, and a frame later to the control it names or else to its first control. A
+ * focus already inside the dialog stays. So no key typed straight after opening reaches a control
+ * outside the dialog, nor presses a button inside it. While open it pushes the `dialog` keymap
+ * scope, which masks every page and global binding, and registers Escape there for the innermost
+ * open dialog, whatever element holds focus; a descendant that owns its Escape (the margin
+ * Composer dismissing its picker) stops propagation before the dispatcher sees it. Tab trapping
+ * listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -267,15 +287,18 @@ export function useDialog<T extends HTMLElement>({
   // event, so no key typed straight after the press that opened it reaches the control that
   // opened it: a Space on Approve, behind Request changes that Shift+R opens from it, would
   // approve the document (in CI a space typed 32 ms after Shift+R did). Where it moves turns on
-  // whether the dialog names its field (`initialFocusRef`):
-  // - A named field takes the focus at once. It is the control the dialog is for the reader to
-  //   type into first - the search bar's box, the list of keys' filter, Request changes' reason -
-  //   so the keys typed straight after opening are text for it, and land in it.
-  // - A dialog that names none takes the focus on its own element at once, and gives it to its
-  //   first control a frame later (the passive effect below). That control is only the first in
-  //   the markup, often a button, which a Space or an Enter typed before the reader has seen the
-  //   dialog would press; the element takes such a key and does nothing with it. So does a dialog
-  //   whose named field takes no focus as it opens (not drawn yet, or disabled).
+  // what the dialog names as the control it opens on (`initialFocusRef`):
+  // - A named text field (`takesText`) takes the focus at once. It is the control the dialog is
+  //   for the reader to type into first - the search bar's box, the list of keys' filter, Create
+  //   issue's title, Request changes' reason - so the keys typed straight after opening are text
+  //   for it, and land in it.
+  // - A dialog that names another control - a Close, a Confirm - or names none takes the focus
+  //   on its own element at once, and gives it to that control, or to its first control, a frame
+  //   later (the passive effect below). Such a control is a button as often as not, which a Space
+  //   or an Enter typed before the reader has seen the dialog would press: a Confirm would confirm
+  //   what the dialog asks, a Close would close it unread. The element takes such a key and does
+  //   nothing with it. So does a dialog whose named field takes no focus as it opens (not drawn
+  //   yet, or disabled).
   // The element is made focusable (`tabindex="-1"`, out of the Tab order) when it takes the focus
   // here, or when a dialog inside it is to give the focus back to it (`takeOverTargetOfInner`),
   // unless it already is. A focus already inside the dialog's element stays where it is: React
@@ -310,7 +333,10 @@ export function useDialog<T extends HTMLElement>({
       }
     };
     if (!container.contains(active)) {
-      initialFocusRef?.current?.focus();
+      const named = initialFocusRef?.current;
+      if (named != null && takesText(named)) {
+        named.focus();
+      }
       if (!container.contains(document.activeElement)) {
         makeFocusable();
         container.focus({ preventScroll: true });
@@ -341,16 +367,17 @@ export function useDialog<T extends HTMLElement>({
       }
     };
 
-    // Where the dialog's element took the focus as it opened, its field takes it a frame later, so
-    // a focus a descendant takes in its own effect lands first and is not taken back: the margin
-    // sheet's composer focuses its text box in an effect once it is on screen (`MentionComposer`'s
-    // `autoFocus` prop). Only a focus still on the dialog itself, or gone from it, is moved. A
-    // focus elsewhere inside the element - a named field that took it as the dialog opened among
-    // them - stays, and every record that gives the focus back to the element gives it back to the
-    // field instead (`giveBackToField`). The field is the dialog's own: a control inside an open
-    // dialog inside this one is not it (`ownField`). The element then stops being focusable, unless
-    // the focus is on it, so a press on the dialog's text puts the focus on the page's body, as
-    // before this hook took the focus at once.
+    // Where the dialog's element took the focus as it opened, the control the dialog names, or
+    // else its first control, takes it a frame later, so a focus a descendant takes in its own
+    // effect lands first and is not taken back: the margin sheet's composer focuses its text box
+    // in an effect once it is on screen (`MentionComposer`'s `autoFocus` prop). Only a focus still
+    // on the dialog itself, or gone from it, is moved. A focus elsewhere inside the element - a
+    // named text field that took it as the dialog opened among them - stays, and every record
+    // that gives the focus back to the element gives it back to the field instead
+    // (`giveBackToField`). The field is the dialog's own: a control inside an open dialog inside
+    // this one is not it (`ownField`). The element then stops being focusable, unless the focus
+    // is on it, so a press on the dialog's text puts the focus on the page's body, as before this
+    // hook took the focus at once.
     const initialFocusFrame = window.requestAnimationFrame(() => {
       if (container === null) {
         return;
@@ -385,8 +412,9 @@ export function useDialog<T extends HTMLElement>({
         event.preventDefault();
         return;
       }
-      // The dialog itself holds the focus in the first frame of one that names no field: Tab goes
-      // to its first control and Shift+Tab to its last, not to the page behind it.
+      // The dialog itself holds the focus in the first frame of one that names no text field, or
+      // whose field took no focus as it opened: Tab goes to its first control and Shift+Tab to its
+      // last, not to the page behind it.
       if (document.activeElement === container) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();

@@ -359,8 +359,9 @@ function DetailsDrawer({
     // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
     // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
     // drawer open under it, with the focus on its field, on the dialog itself (the first frame of
-    // one that names no field), or gone to the page (a press on the list's text), and a menu open
-    // in the drawer closes before the drawer does, since Escape closes the innermost layer.
+    // one that names no text field or whose field took no focus as it opened), or gone to the
+    // page (a press on the list's text), and a menu open in the drawer closes before the drawer
+    // does, since Escape closes the innermost layer.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;

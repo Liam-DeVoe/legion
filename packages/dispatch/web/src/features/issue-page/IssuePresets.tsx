@@ -142,9 +142,10 @@ export function IssuePresets({
     // the next one. The menu reads it in the capture phase, so it marks the press before any
     // listener of the page's that a layer under it added earlier. A dialog open over the row
     // takes the press wherever the focus is: on its field, on the dialog itself in the first frame
-    // of one that names no field, or gone to the page after a press on its text. Whether one is
-    // open is `useDialog`'s registry's answer (`dialogOpen()`), which also decides which dialog the
-    // key closes, as Details' drawer asks it.
+    // of one that names no text field or whose field took no focus as it opened, on a control
+    // outside the dialog - the menu's item under it - or gone to the page after a press on its
+    // text. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which also
+    // decides which dialog the key closes, as Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
       if (dialogOpen()) return;

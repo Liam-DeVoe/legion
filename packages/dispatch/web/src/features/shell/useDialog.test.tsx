@@ -246,9 +246,10 @@ function ControlUnderADialog({ onPress }: { onPress: () => void }) {
   );
 }
 
-// The dialog's field takes the focus a frame after the dialog opens, and a loaded machine draws
-// that frame late. A key typed before it reaches nothing behind the dialog: the dialog holds the
-// focus itself from the commit that opens it. The frame is held here, so the field never takes it.
+// A dialog that names no control gives the focus to its first control a frame after it opens, and
+// a loaded machine draws that frame late. A key typed before it reaches nothing behind the dialog:
+// the dialog holds the focus itself from the commit that opens it. The frame is held here, so the
+// first control never takes it.
 test("a key typed in a dialog's first frame presses nothing behind the dialog", async () => {
   const user = userEvent.setup();
   let pressed = 0;
@@ -353,6 +354,65 @@ test("the frame after it opens, a dialog gives the focus to its first control an
     await user.click(view.getByText("Words of the dialog"));
     expect(document.activeElement, "a press on the dialog's text focused the dialog").toBe(
       document.body
+    );
+  } finally {
+    frames.restore();
+    view.unmount();
+  }
+});
+
+/** A control that opens a dialog naming its Confirm button as the control it opens on
+ *  (`initialFocusRef`), as `ConfirmDialog` does, and counts the presses of that Confirm. */
+function ConfirmOverAControl({ onConfirm }: { onConfirm: () => void }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const confirm = useRef<HTMLButtonElement>(null);
+  const dialog = useDialog<HTMLDivElement>({
+    initialFocusRef: confirm,
+    onClose: () => setOpen(false),
+    open,
+  });
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Delete
+      </button>
+      {open ? (
+        <div aria-label="Delete it?" ref={dialog.containerRef} role="dialog">
+          <button type="button">Cancel</button>
+          <button onClick={onConfirm} ref={confirm} type="button">
+            Confirm
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+// A named button is no field to type into: an Enter or a Space typed in the dialog's first frame,
+// before the reader has seen what the dialog asks, would press it, and a Confirm would confirm.
+// So a dialog that names one holds the focus itself as it opens, as one that names nothing does,
+// and gives the focus to the button a frame later. A loaded machine draws that frame late, so the
+// row holds it while it types.
+test("an Enter or a Space typed in the first frame of a dialog that names its Confirm presses nothing, and the frame gives Confirm the focus", async () => {
+  const user = userEvent.setup();
+  let confirmed = 0;
+  const view = render(
+    <KeymapProvider>
+      <ConfirmOverAControl onConfirm={() => (confirmed += 1)} />
+    </KeymapProvider>
+  );
+  const frames = holdFrames();
+  try {
+    await user.click(view.getByRole("button", { name: "Delete" }));
+    const dialog = view.getByRole("dialog", { name: "Delete it?" });
+    await user.keyboard("{Enter} ");
+    expect(confirmed, "a key typed in the dialog's first frame pressed its Confirm").toBe(0);
+    expect(document.activeElement, "the dialog gave its Confirm the focus as it opened").toBe(
+      dialog
+    );
+    frames.run();
+    expect(document.activeElement, "the frame gave the dialog's Confirm no focus").toBe(
+      view.getByRole("button", { name: "Confirm" })
     );
   } finally {
     frames.restore();

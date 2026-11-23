@@ -140,6 +140,30 @@ test("preselects the route's project, submits title and spec, and opens the crea
   }
 });
 
+// Create issue names its Title as the field it opens on (`useDialog`'s `initialFocusRef`), and a
+// field that takes text takes the focus in the commit that opens the dialog, so the keys a reader
+// types straight after `c` are the title's. A loaded machine draws the dialog's first frame late,
+// so the row holds the frames while it types: a title that waited for that frame, as a named
+// button does, would leave those keys on the dialog itself, and the title empty.
+test("a key typed in the dialog's first frame lands in its title", async () => {
+  const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+  const view = renderDialog(userEvent.setup(), () =>
+    Promise.reject(new Error("this row creates no issue"))
+  );
+  try {
+    const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
+    expect(document.activeElement, "the title took no focus as the dialog opened").toBe(title);
+    await view.user.keyboard("Fix it");
+    expect(title.value, "the keys typed in the dialog's first frame missed its title").toBe(
+      "Fix it"
+    );
+    await projectPicked();
+  } finally {
+    frames.mockRestore();
+    view.unmount();
+  }
+});
+
 // A 5xx is no verdict: the write is tried again under its key on its own. Dispatch's refusal is
 // one, so the dialog keeps the draft, says why, and Retry asks again.
 test("a refused create keeps the dialog and draft, shows the server message, and retries", async () => {
