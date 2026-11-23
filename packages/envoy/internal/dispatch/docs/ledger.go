@@ -1505,11 +1505,26 @@ func (l *Ledger) Commit(ctx context.Context) error {
 // every write that meets that close is refused (errRoomReloading). A settlement that read the
 // room's documents once this commit released the issue's row may have reserved that close before
 // this one ran, so the reservation is waited out too (awaitReservedClose).
+//
+// A load of the room under way at the commit may have read the layout before it, and ygo reports
+// a room still loading as absent (Server.GetDoc), so the look below would close nothing and the
+// load would then publish an instance without the document. So the look waits first until that
+// load has published its room or ended without one (awaitRoomLoad, which says how it tells that
+// load from one that begins after the commit and reads the new layout). The wait is bounded by
+// ctx, as the wait for a reserved close is, and by catchUpLoadingTimeout, the time a catch-up
+// gives ygo to publish a room still loading.
+//
+// A load that begins after that look reads the layout after the commit, unless it takes the
+// layout a socket's admission read before the commit (admittedIssueRead). So before the look the
+// join is recorded (noteLayoutMoved), and no load that asks for an admission's read from then on
+// takes one that began before it: a load that asks after the look asks after the record.
 func (l *Ledger) closeJoinedRooms(ctx context.Context) {
 	for document, seed := range l.seeds {
 		if seed.room == document {
 			continue
 		}
+		l.service.noteLayoutMoved()
+		l.service.awaitRoomLoad(ctx, seed.room)
 		if live := l.service.srv.GetDoc(seed.room); live != nil && !slices.Contains(l.service.layoutOf(live), document) {
 			l.service.closeMovedRoom(context.WithoutCancel(ctx), seed.room)
 		}

@@ -511,6 +511,10 @@ type Service struct {
 	// appended while the load ran, which reaches no instance of its own (roomLoad).
 	instances sync.Map
 	roomLoads sync.Map
+	// layoutMoved is the latest instant by which a transaction of this process that joined a
+	// document to an issue room had committed (noteLayoutMoved, Ledger.closeJoinedRooms), nil until
+	// one has. A room's load takes no layout a socket's admission read before it (admittedIssueRead).
+	layoutMoved atomic.Pointer[time.Time]
 	// reads holds the renderings of the documents cold reads served, each under the stored state
 	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
 	// (readBudgetFor).
