@@ -23,7 +23,7 @@
       "agents.e2e.ts": 2.45,
       "anchors.e2e.ts": 3.76,
       "answers.e2e.ts": 4.32,
-      "approval.e2e.ts": 2.86,
+      "approval.e2e.ts": 3.88,
       "architecture-sources.e2e.ts": 4.87,
       "architecture.e2e.ts": 2.85,
       "artifacts.e2e.ts": 2.5,
@@ -70,6 +70,7 @@
       "download-names.e2e.ts": 2.67,
       "editor-paste.e2e.ts": 3.42,
       "email-links.e2e.ts": 2.43,
+      "focus-landing.e2e.ts": 7.44,
       "followers.e2e.ts": 2.28,
       "gated-step-approvals.e2e.ts": 2.59,
       "github-checks.e2e.ts": 2.02,
@@ -78,19 +79,26 @@
       "going-key-forms.e2e.ts": 2.65,
       "going-new-issue.e2e.ts": 3.07,
       "going-operators.e2e.ts": 3.18,
+      "graph-store.e2e.ts": 5.68,
       "handoffs.e2e.ts": 2.01,
       "heavy-streamed-turn.e2e.ts": 6.66,
       "held-sends.e2e.ts": 3.05,
+      "inbox-answer-dismisses.e2e.ts": 12.44,
       "inbox-approval-message.e2e.ts": 2.56,
       "inbox-cli.e2e.ts": 7.52,
+      "inbox-compose.e2e.ts": 5.18,
       "inbox-decline.e2e.ts": 3.86,
       "inbox-dismiss.e2e.ts": 3.46,
+      "inbox-dismissed-window.e2e.ts": 25.84,
       "inbox-drawer.e2e.ts": 5.68,
       "inbox-mark-all.e2e.ts": 4.67,
       "inbox-pane-scroll.e2e.ts": 5.6,
+      "inbox-quoted-range.e2e.ts": 3.98,
+      "inbox-range-select.e2e.ts": 8.99,
       "inbox-read-state.e2e.ts": 3.46,
       "inbox-reading-pane.e2e.ts": 3.63,
       "inbox-stability.e2e.ts": 3.68,
+      "inbox-thread-order.e2e.ts": 17.96,
       "inbox-thread-pane.e2e.ts": 2.24,
       "inbox-threads.e2e.ts": 3.75,
       "inbox-view.e2e.ts": 4.56,
@@ -103,6 +111,7 @@
       "issue-page-k.e2e.ts": 8.19,
       "issue-page-look.e2e.ts": 2.82,
       "issue-page-p.e2e.ts": 6.86,
+      "issue-page-q.e2e.ts": 11.9,
       "issue-page-switch.e2e.ts": 6.03,
       "issue-page-v.e2e.ts": 7.82,
       "issue.e2e.ts": 3.58,
@@ -133,10 +142,12 @@
       "margin-thread-reply.e2e.ts": 3.62,
       "margin.e2e.ts": 5.27,
       "mention-composer.e2e.ts": 2.67,
+      "mention-reference.e2e.ts": 2.8,
       "mermaid.e2e.ts": 3.83,
       "message-agent.e2e.ts": 2.31,
       "nav.e2e.ts": 2.77,
       "offline-edits.e2e.ts": 5.48,
+      "one-inbox.e2e.ts": 10.31,
       "overlapping-marks.e2e.ts": 4.3,
       "parse-count.e2e.ts": 31.83,
       "paste-recovery.e2e.ts": 2.59,
@@ -154,8 +165,20 @@
       "progress.e2e.ts": 4.46,
       "project-default-assignee.e2e.ts": 5.98,
       "project.e2e.ts": 6.4,
+      "reading-agents.e2e.ts": 3.22,
+      "reading-answers.e2e.ts": 2.87,
+      "reading-broadcasts.e2e.ts": 2.07,
+      "reading-conversation.e2e.ts": 2.38,
+      "reading-documents.e2e.ts": 3.52,
+      "reading-inbox-asks.e2e.ts": 3.15,
+      "reading-inbox-threads.e2e.ts": 3.06,
+      "reading-pages.e2e.ts": 2.73,
+      "reading-references.e2e.ts": 3.56,
       "recipients-claim.e2e.ts": 1.54,
       "reference-cards.e2e.ts": 6.56,
+      "reference-kinds.e2e.ts": 20.41,
+      "reference-naming.e2e.ts": 5.67,
+      "reference-picker.e2e.ts": 3.78,
       "reference-titles.e2e.ts": 9.58,
       "references.e2e.ts": 2.44,
       "refetch-budget.e2e.ts": 5.35,
@@ -169,6 +192,7 @@
       "spec-suggestion-decoration.e2e.ts": 2.58,
       "steps.e2e.ts": 2.65,
       "stored-text-reading.e2e.ts": 2.07,
+      "table-controls.e2e.ts": 13.51,
       "task-items.e2e.ts": 2.73,
       "text-typed-blocks.e2e.ts": 3.29,
       "threads-order.e2e.ts": 9.66,
@@ -178,7 +202,8 @@
       "verification.e2e.ts": 2.5,
       "workspace.e2e.ts": 7,
       "writer-spelling.e2e.ts": 1.82,
-      "writes.e2e.ts": 3.65
+      "writes.e2e.ts": 3.65,
+      "writing-surfaces.e2e.ts": 6.47
     },
     "chromium-alone": {
       "agent-workspace-timing.e2e.ts": 1.92,
@@ -197,7 +222,9 @@
       "deep-links.e2e.ts": 5.03,
       "doc-reload-line.e2e.ts": 6.32,
       "download-names.e2e.ts": 3.19,
+      "focus-landing.e2e.ts": 14.62,
       "heavy-streamed-turn.e2e.ts": 11.47,
+      "issue.e2e.ts": 2.98,
       "keyboard-agents-picker.e2e.ts": 3.28,
       "keyboard-session-pickers.e2e.ts": 3.24,
       "keyed-send.e2e.ts": 3.96,
@@ -205,7 +232,8 @@
       "live-socket.e2e.ts": 4.5,
       "mermaid.e2e.ts": 2.11,
       "offline-edits.e2e.ts": 6.51,
-      "picture-link-click.e2e.ts": 3.97
+      "picture-link-click.e2e.ts": 3.97,
+      "table-controls.e2e.ts": 17.47
     },
     "firefox-alone": {
       "heavy-bodies.e2e.ts": 1.59
@@ -252,6 +280,7 @@
       "issue-page-k.e2e.ts": 5.74,
       "issue-page-look.e2e.ts": 1.68,
       "issue-page-p.e2e.ts": 6.45,
+      "issue-page-q.e2e.ts": 5.94,
       "issue-page-switch.e2e.ts": 5.52,
       "issue-page-v.e2e.ts": 11.21,
       "issue.e2e.ts": 2.77,
@@ -271,6 +300,7 @@
       "polish.e2e.ts": 1.73,
       "search.e2e.ts": 1.46,
       "settings.e2e.ts": 1.05,
+      "table-controls.e2e.ts": 7.34,
       "threads.e2e.ts": 1.8
     },
     "stub": {
@@ -302,6 +332,7 @@
       "smoke.stub.e2e.ts": 1.14,
       "spec-primary.stub.e2e.ts": 1.89,
       "strikethrough.stub.e2e.ts": 2.05,
+      "table-controls.stub.e2e.ts": 9.39,
       "text-typed-blocks.stub.e2e.ts": 2.19,
       "theme.stub.e2e.ts": 6.01,
       "threads-order.stub.e2e.ts": 3.46,
@@ -314,21 +345,25 @@
       "nav.stub.e2e.ts": 1.53,
       "project.stub.e2e.ts": 1.49,
       "search.stub.e2e.ts": 1.9,
-      "spec-primary.stub.e2e.ts": 1.6
+      "spec-primary.stub.e2e.ts": 1.6,
+      "table-controls.stub.e2e.ts": 7.04
     },
     "webkit": {
       "collab-cursor.e2e.ts": 7.99,
       "deep-links.e2e.ts": 8.69,
       "doc-reload-line.e2e.ts": 5.71,
       "download-names.e2e.ts": 4.31,
+      "focus-landing.e2e.ts": 12.82,
       "heavy-streamed-turn.e2e.ts": 15.38,
+      "issue.e2e.ts": 7.51,
       "keyboard-agents-picker.e2e.ts": 4.56,
       "keyboard-session-pickers.e2e.ts": 3.61,
       "keyed-send.e2e.ts": 5.04,
       "keyed-writes.e2e.ts": 6.45,
       "live-socket.e2e.ts": 3.35,
       "mermaid.e2e.ts": 3.99,
-      "offline-edits.e2e.ts": 7.7
+      "offline-edits.e2e.ts": 7.7,
+      "table-controls.e2e.ts": 22.95
     },
     "webkit-alone": {
       "heavy-bodies.e2e.ts": 2.49
@@ -357,7 +392,7 @@
     "webkit-iphone": 4.64
   },
   "source": {
-    "command": "bun e2e/tools/shard-weights.ts --main 17",
+    "command": "bun e2e/tools/shard-weights.ts --main 17; then, by the same rules, each sharded file that table has no entry for, and chromium's approval.e2e.ts, from the merged report of run 45249938146 (pull request #4932 at e357cf98)",
     "read": "2026-11-22T08:58:30.278Z",
     "runs": [
       {
@@ -427,6 +462,10 @@
       {
         "commit": "2cdf3b82dbd479d6ab47492eab168339b9cd7ea4",
         "run": 44981988875
+      },
+      {
+        "commit": "e357cf98424c8cfb8d3e81ea5796bb6b8c5ed75a",
+        "run": 45249938146
       }
     ]
   }
