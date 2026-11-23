@@ -42,6 +42,7 @@ function evalItem(slug: string, kind: EvalKind): EvalListItem {
   const written = { id: "alice", kind: "user" } as const;
   return {
     definition: {
+      answer: "",
       created_at: "2026-10-01T00:00:00Z",
       decision: "",
       direction: "",
