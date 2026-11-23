@@ -113,7 +113,7 @@ func entryRefusal(name string, entry, given int64) string {
 
 // seed records every member of every tree as the daemon holds it mid-run, and starts each claim
 // the fixture names through the daemon's own start path (seedTree), in one transaction whose
-// commit runs the hooks its writes register (store.Transact), as a fact the daemon applies writes
+// commit runs the hooks its writes register (seedTransact), as a fact the daemon applies writes
 // them. Each member is recorded in its tree, in its phase, holding an admission slot, on an open
 // pull request unless it stands in admitted, and its tree's lifecycle is opened under the
 // workflow. Every role's prompt is on disk, as the daemon's own launch writes it, so a launch the
@@ -138,7 +138,7 @@ func (r *versionNewsLive) seed() {
 	engine := workflow.New(record.NewStore(), engineConfig(r.cfg, "", nil), quietLogger())
 	names := slices.Sorted(maps.Keys(r.trees))
 	var differences []string
-	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	if err := seedTransact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		differences = nil
 		for _, name := range names {
 			differs, err := r.seedTree(ctx, tx, engine, r.trees[name], told, &number)

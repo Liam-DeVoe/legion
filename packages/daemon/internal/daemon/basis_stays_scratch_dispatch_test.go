@@ -782,7 +782,10 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 // issues.phase and the task's place are two records of where the issue stands, and every later
 // write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. The task
 // runs at the step that runs as the phase, at its retro or at its merge, and waits at no act at
-// admitted. A run with no plan rows has only its phase.
+// admitted. A run with no plan rows has only its phase. It and seedTransact are the two seams of
+// the approved-version-news seed that its negative control gives an older base a version of
+// (scripts/e2e/approved-version-news.sh, control_compat), so they live here, in a file the control
+// does not copy.
 func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
 	stored, err := records.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -809,6 +812,13 @@ func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue re
 		place = record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}
 	}
 	return records.MoveTask(ctx, tx, issue.Key, issue.Generation, task.Task, place, state)
+}
+
+// seedTransact runs write in one transaction on pool whose commit runs the hooks its writes
+// register (store.Transact), as a fact the daemon applies writes them: the approved-version-news
+// seed takes its transaction here (recordTaskAt says why it is a seam).
+func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	return store.Transact(ctx, pool, write)
 }
 
 // requestApprovalWithVerification asks the person, as an architect's session does with
