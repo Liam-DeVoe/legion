@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The operator's spawn of a root draws the tree-unit experiments the project declares only for a
@@ -107,7 +108,7 @@ func TestTheOperatorsSpawnDrawsATreeOnlyWhenTheDaemonHoldsItsRootsRecord(t *test
 func readAssignments(t *testing.T, h *harness, key string) []string {
 	t.Helper()
 	var held []record.Assignment
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = record.NewStore().AssignmentsOf(context.Background(), tx, key)
 		return err
@@ -130,7 +131,7 @@ func readAssignments(t *testing.T, h *harness, key string) []string {
 func readIssue(t *testing.T, h *harness, key string) *record.Issue {
 	t.Helper()
 	var stored *record.Issue
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = record.NewStore().Issue(context.Background(), tx, key)
 		return err
