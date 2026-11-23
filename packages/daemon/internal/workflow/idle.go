@@ -380,8 +380,17 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
 //     close's to stop, exactly as it is for the idle rule (IdleHoldUnownedTreeNotLive);
 //
-//   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
-//     is already gone and nothing of it is reserved (IdleHoldUnownedSandboxGone);
+//   - the runtime holds the issue's Sandbox, and no release of this rule has finished since the
+//     issue's claims last changed (pods.IdleView.UnownedReleasedAt, against view.QuietSince).
+//     Where either fails, the pod this rule would release is already gone and nothing of it is
+//     reserved (IdleHoldUnownedSandboxGone). The second conjunct is there because the first is
+//     the runtime's informer store, which can still hold a Sandbox a release deleted a moment
+//     before: on main's CI the next pass, 45 ms after the delete, read it present and released
+//     the issue a second time (internal/daemon's
+//     TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain, job 137803188625). This
+//     release changes no claim, so a release finished after the newest claim write took the pod
+//     that write knew of, and a pod made again since would have been made by a claim's start,
+//     which writes the claim;
 //
 //   - no pause holds the pod (pods.IdleView.PauseHeld). A pause stopped its roles and kept it,
 //     and it stays until a role of it is ready again or something deletes it
@@ -436,7 +445,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldUnownedTreeNotLive}
 	}
-	if !sandboxPresent {
+	if !sandboxPresent || releasedSinceTheClaimsChanged(view) {
 		return IdleDecision{Hold: IdleHoldUnownedSandboxGone}
 	}
 	if view.PauseHeld {
@@ -462,6 +471,17 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 		return IdleDecision{Hold: IdleHoldPaused}
 	}
 	return IdleDecision{Release: true}
+}
+
+// releasedSinceTheClaimsChanged is whether a release of a pod no claim owns finished for the
+// issue at or after its claims' newest write (UnownedPodRelease's Sandbox conjunct). Both times
+// are the database's (pods.IdleView.UnownedReleasedAt).
+func releasedSinceTheClaimsChanged(view pods.IdleView) bool {
+	if view.UnownedReleasedAt.IsZero() {
+		return false
+	}
+	newest, _ := view.QuietSince()
+	return !view.UnownedReleasedAt.Before(newest)
 }
 
 // idleStateReleasable is whether a live claim's state is one a release may suspend: an agent that

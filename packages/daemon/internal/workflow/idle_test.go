@@ -369,6 +369,38 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			want: IdleHoldUnownedSandboxGone,
 		},
 		{
+			// The runtime's store still holds the Sandbox a release of this rule deleted a moment
+			// ago: the release finished after the claims' newest write, so it took that pod.
+			name: "a release of this rule finished after the claims last changed",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.UnownedReleasedAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedSandboxGone,
+		},
+		{
+			// The release and the newest claim write at the same instant still read as released.
+			name: "a release of this rule finished at the claims' newest write",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.UnownedReleasedAt = v.Claims[2].UpdatedAt
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedSandboxGone,
+		},
+		{
+			// A claim was written after the release: a start made the pod again, so the fence
+			// keeps nothing and the rule decides this pod as any other.
+			name: "a claim changed after the last release of this rule",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.UnownedReleasedAt = v.Claims[2].UpdatedAt.Add(-time.Second)
+				return v
+			}(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
 			name: "a suspended claim still records a process",
 			view: func() pods.IdleView {
 				v := unownedIssue()

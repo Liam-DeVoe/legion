@@ -7888,6 +7888,9 @@ The runtime answers a `Suspended` kept Sandbox that carries the release's record
 A `Suspended` kept Sandbox that carries no such record can still own its Secrets: a launch that failed after it wrote them leaves it so.
 The rule releases such a Sandbox once.
 That release deletes its Secrets, keeps the Sandbox with its uid and writes the record, and the next pass holds the issue under `unowned_sandbox_gone`.
+The rule reads a second fact for the same word: the time the last release of this rule finished for the issue, kept in `unowned_release_fences` and written by the finish in the transaction that clears its mark.
+Where that time is at or after the newest write to any claim of the issue, the release took the pod those claims knew of, and the rule holds the issue under `unowned_sandbox_gone` even while the runtime's store still holds the deleted Sandbox, which it can for a moment after the delete.
+A start writes its claim, so a pod made again after a release is decided as any other.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.

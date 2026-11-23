@@ -265,6 +265,31 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		}
 	})
 
+	t.Run("a pass right after the release, while the runtime's store still holds the Sandbox", func(t *testing.T) {
+		rig := newIdleRig(t)
+		rig.stoppedImplementer(t, false)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
+			t.Fatalf("queued rows = %v, want the teardown alone", got)
+		}
+		rig.drain(t)
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+		}
+		// The runtime still answers the Sandbox present, as its informer store does for a moment
+		// after the teardown's delete: on main's CI the next pass, 45 ms after it, read it so and
+		// released the issue a second time (job 137803188625). Nothing has written a claim since.
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 0 {
+			t.Fatalf("queued rows of the pass after the release = %v, want none: the release took the pod and no claim has started one since", got)
+		}
+		rig.drain(t)
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want still the release's one", suspended)
+		}
+		if releases := rig.records(t).Releases; len(releases) != 1 {
+			t.Fatalf("releases recorded = %+v, want the one", releases)
+		}
+	})
+
 	t.Run("the pod the runtime no longer holds a Sandbox for", func(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)

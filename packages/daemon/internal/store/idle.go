@@ -622,9 +622,21 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 // ClearIssueRelease forgets the mark of issue's release once the release finished. A cancel
 // forgets its mark in the transaction that queues its resumes (CancelIssueRelease). A mark
 // already gone is success, so a retried finish finishes.
+//
+// A finished release of a pod no claim owns (the mark's unowned kind) also records, in the same
+// transaction, when it finished (unowned_release_fences, on the database's clock), which that
+// rule reads beside the issue's claims (pods.IdleView.UnownedReleasedAt): a pass that reads no
+// mark reads the fence, so a runtime store that still holds the Sandbox the release deleted
+// cannot have the rule release the issue again.
 func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) error {
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return deleteIssueRelease(ctx, tx, project, issue)
+		kind, err := deleteIssueReleaseKind(ctx, tx, project, issue)
+		if err != nil || kind != releaseKindUnowned {
+			return err
+		}
+		_, err = tx.Exec(ctx, `insert into unowned_release_fences (project, issue, released_at) values ($1, $2, now())
+			on conflict (project, issue) do update set released_at = excluded.released_at`, project, issue)
+		return err
 	}); err != nil {
 		return fmt.Errorf("clear the release mark of %s: %w", issue, err)
 	}
@@ -634,8 +646,20 @@ func (s *Store) ClearIssueRelease(ctx context.Context, project, issue string) er
 // deleteIssueRelease forgets the mark of issue's release in the caller's transaction. One mark,
 // one delete, whichever runs it.
 func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) error {
-	_, err := tx.Exec(ctx, `delete from issue_releases where project = $1 and issue = $2`, project, issue)
+	_, err := deleteIssueReleaseKind(ctx, tx, project, issue)
 	return err
+}
+
+// deleteIssueReleaseKind is deleteIssueRelease answering the kind of the mark it deleted
+// (issue_releases.kind), "" where there was none.
+func deleteIssueReleaseKind(ctx context.Context, tx pgx.Tx, project, issue string) (string, error) {
+	var kind string
+	err := tx.QueryRow(ctx, `delete from issue_releases where project = $1 and issue = $2 returning kind`,
+		project, issue).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
 }
 
 // readIdleView is issue's pod as the idle rules read it (pods.IdleView), through tx; project is
@@ -710,10 +734,16 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		select 1 from outbox where issue = $1 and `+idleWaitingRow+`)`, issue, idleWaitingKinds).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}
-	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2)`,
-		project, issue).Scan(&view.Releasing); err != nil {
+	// The mark and the fence are one statement, one snapshot: the finish deletes the one and
+	// writes the other in one transaction (ClearIssueRelease), so the view reads the mark or the
+	// fence, never neither.
+	var fence *time.Time
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2),
+		(select released_at from unowned_release_fences where project = $1 and issue = $2)`,
+		project, issue).Scan(&view.Releasing, &fence); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read whether %s is being released: %w", issue, err)
 	}
+	view.UnownedReleasedAt = orZero(fence)
 	unrestored, err := workspaceBundleUnrestored(ctx, tx, issue)
 	if err != nil {
 		return pods.IdleView{}, err

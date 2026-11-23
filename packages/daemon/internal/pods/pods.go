@@ -155,6 +155,13 @@ type IdleView struct {
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool
+	// UnownedReleasedAt is when the release of a pod no claim owns last finished for the issue
+	// (unowned_release_fences, written by the finish in the transaction that clears its mark), on
+	// the database's clock, the clock of the claims' UpdatedAt; zero where none has. That rule
+	// changes no claim, so a release finished at or after the newest claim write took the pod
+	// that write knew of, and nothing has made one since: a pod is made again only by a claim's
+	// start, which writes the claim (workflow.UnownedPodRelease reads the two together).
+	UnownedReleasedAt time.Time
 	// BundleUnrestored is whether the issue holds a saved workspace bundle whose restore is not
 	// recorded: work a release took out of a pod that no pod has put back. Releasing such a pod
 	// again would store a bundle over it, taken from a workspace that never had that work, so

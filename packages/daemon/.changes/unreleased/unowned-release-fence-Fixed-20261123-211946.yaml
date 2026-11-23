@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    The release of a pod no claim owns no longer releases an issue a second time while the
+    runtime's store still holds the Sandbox the first release deleted. It read whether the Sandbox
+    was there from the runtime's informer store, which can lag the delete, and the second release
+    tore down nothing but logged and recorded a release that did not happen. The finish of such a
+    release now records when it finished (`unowned_release_fences`, written in the transaction that
+    clears its mark), and the rule holds an issue whose last release finished at or after its
+    claims' newest write under `unowned_sandbox_gone`. A start writes its claim, so a pod made again
+    after a release is decided as any other.
+time: 2026-11-23T21:19:46Z
+custom:
+    Issue: INFRA-1075
