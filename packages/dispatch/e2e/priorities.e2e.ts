@@ -4095,6 +4095,71 @@ const tableCells: {
   },
   {
     field: "description",
+    name: "a write that never reached the server stopped, another person's text arrives, she edits his text and it lands: her stopped text is not lost",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " eight-a");
+      await busy.stop();
+      await otherWrites(cell, BOB_EXACT);
+      await expect(cell.page.getByText("third host").first()).toBeVisible();
+      cell.taken.push(BOB_EXACT);
+      await typeAndLeave(cell, " eight-b");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" eight-b");
+      // Her edit landed over his text, not over her stopped one, so it carries none of it: her
+      // stopped text stays hers to put back, after a reload too.
+      checkWrites(cell);
+      await checkNotLost(cell, " eight-a");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write that never reached the server stopped, another person renames, she edits his title and it lands: her stopped title is not lost",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " eight-t");
+      await busy.stop();
+      await otherWrites(cell, BOB_TITLE);
+      await expect(titleHeading(cell.page)).toHaveText(BOB_TITLE);
+      cell.taken.push(BOB_TITLE);
+      await typeAndLeave(cell, " eight-u");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" eight-u");
+      checkWrites(cell);
+      await checkNotLost(cell, " eight-t");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write that never reached the server stopped, she edits the description and it lands, then she presses the title's Retry: her title lands",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " eight-x");
+      await busy.stop();
+      // The description's write lands; it is of another field, so it makes nothing of the
+      // stopped title needless.
+      const editor = cell.page.getByRole("textbox", { exact: true, name: "Description" });
+      await editor.click();
+      await cell.page.keyboard.press("ControlOrMeta+End");
+      await cell.page.keyboard.type(" eight-y");
+      await editor.blur();
+      await expect
+        .poll(
+          async () =>
+            (await listPriorities()).priorities?.find((one) => one.id === cell.id)?.description ??
+            "",
+          { message: "her description landed", timeout: 15_000 }
+        )
+        .toContain(" eight-y");
+      const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+      await expect(retry.first()).toBeVisible();
+      await retry.first().click();
+      await checkClean(cell, " eight-x");
+    },
+  },
+  {
+    field: "description",
     name: "a write stopped while out lands late, then she edits again",
     slow: true,
     run: async (cell) => {
