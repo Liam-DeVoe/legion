@@ -36,6 +36,9 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
+	// OutboxKindPartsJoin joins the branch of each part of a task with a sub-owner into the
+	// task's branch on GitHub, once its sub-owner reported the task.
+	OutboxKindPartsJoin OutboxKind = "parts_join"
 	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
 	// other tasks once the pull request of the task that merges has merged, that of a task a later
 	// version of the plan removed, and those of an earlier run at the first step of a run started
@@ -132,7 +135,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindPartsJoin, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -2796,6 +2799,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // daemon's taskBranch, joinCannotEnd): the task's first step waits for its join, the row tries
 // again on its backoff, and the reason names the task, the need and the branch GitHub lacks. No
 // earlier release decodes it, so the way back of migration 20261121165047 deletes its unsent rows.
+//
+// `parts-done`, `report-refused` and `merge-returned` are told to the sub-owner of a task, the agent
+// that writes the task's parts. `parts-done` says that each part of the task is done, so the
+// sub-owner can report the task with complete_task or give another part. `report-refused` says that
+// GitHub could not join the work of a part into the task's branch after the report, so the task
+// stands at its parts again, and the reason names each such part. `merge-returned` says that the
+// merger returned the task from its retro or its merge, with the reason of that move. No earlier
+// release decodes them, so the way back of migration 20261123180305 deletes their unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2803,7 +2814,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
-	"task-join-failed",
+	"task-join-failed", "parts-done", "report-refused", "merge-returned",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

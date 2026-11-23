@@ -270,7 +270,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindPartsJoin}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -333,6 +333,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// issue's branch row makes the issue's, and launches no role and hands none a task: the
 		// start that waits for it is a supervise start, which the pause holds.
 		OutboxKindTaskBranch: "",
+		// The join of a task's parts merges branches on GitHub as the implement App, as a task's
+		// branch row does, and launches no role and hands none a task.
+		OutboxKindPartsJoin: "",
 		// The close of the other tasks' pull requests after the issue's merge writes GitHub as the
 		// implement App and launches no role and hands none a task.
 		OutboxKindTaskPullRequestsClose: "",
@@ -529,6 +532,34 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
 			}
 		})
+	}
+}
+
+// subOwnerNotices is one notice of each kind Legion gives the sub-owner of a task: that each part of
+// its task is done (parts-done), that its report was refused because the parts did not join
+// (report-refused), and that the merger returned its task (merge-returned).
+var subOwnerNotices = []Notice{
+	{Kind: "parts-done", Role: claim.RoleArchitect,
+		Reason: "each part of task f of LEGION-208 is done: f1, f2. Report f with complete_task, or give another part."},
+	{Kind: "report-refused", Role: claim.RoleArchitect,
+		Reason: "Legion did not take your report of task f of LEGION-208: GitHub could not join the work of part f2 into the branch legion/LEGION-208.f, since it conflicts with the work joined before it. Give a part that needs f2, whose first step joins their work, and report f again when it is done."},
+	{Kind: "merge-returned", Role: claim.RoleArchitect,
+		Reason: "The merger returned task f of LEGION-208 from its merge: GitHub refused the merge: the checks failed. Give a part that repairs it, and report f again when it is done."},
+}
+
+// The three notices Legion gives the sub-owner of a task (subOwnerNotices) are kinds the outbox
+// takes. A notice the outbox refused would never reach the sub-owner, so its task would never end.
+// A kind beside them that is none is still refused, so the check is the list and not a pass of
+// every kind.
+func TestANoticeToASubOwnerIsAKnownKind(t *testing.T) {
+	for _, notice := range subOwnerNotices {
+		if err := validateOutboxPayload("LEGION-208", notice); err != nil {
+			t.Fatalf("a %s notice to a sub-owner is refused, so the sub-owner is never told: %v", notice.Kind, err)
+		}
+	}
+	gone := Notice{Kind: "parts-gone", Role: claim.RoleArchitect, Reason: "each part of task f of LEGION-208 is gone."}
+	if err := validateOutboxPayload("LEGION-208", gone); err == nil || !strings.Contains(err.Error(), `unknown notice kind "parts-gone"`) {
+		t.Fatalf("a parts-gone notice = %v, want it refused as a kind that is none", err)
 	}
 }
 
@@ -1146,6 +1177,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
 				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
+	every = append(every, subOwnerNotices...)
 
 	byKind := make(map[NoticeKind]Notice, len(every))
 	for _, notice := range every {
