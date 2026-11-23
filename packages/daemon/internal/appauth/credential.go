@@ -113,12 +113,19 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // A Manager holds every lease and re-mints it as it nears its expiry, so a launch and every
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease.
+//
+// A call whose context carries the App a walk's memo read for that same issue and role
+// (Bundles, withResolvedApp) mints as that App and reads no plan of its own, so one ask reads a
+// role's App once and the bundle is minted as the App it is held under.
 func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, apps RoleApps, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole, err := apps.Of(ctx, issue, role)
-		if err != nil {
-			return ghconfig.Bundle{}, err
+		appRole, resolved := resolvedAppOf(ctx, issue, role)
+		if !resolved {
+			var err error
+			if appRole, err = apps.Of(ctx, issue, role); err != nil {
+				return ghconfig.Bundle{}, err
+			}
 		}
 		layout, err := installedLayout(ctx, source, appRole, role, served, renames, installed, repo)
 		if err != nil {
@@ -126,6 +133,32 @@ func GitHubCredential(source Source, served func(ghrepo.Repository) bool, rename
 		}
 		return mintBundle(ctx, source, appRole, role, false, layout.dflt, layout, left, log)
 	}
+}
+
+// resolvedApp is the App a walk's memo read for role on issue (RoleApps.Of), carried to the
+// build on the build's context (Bundles, GitHubCredential).
+type resolvedApp struct {
+	issue string
+	role  claim.Role
+	app   AppRole
+}
+
+// resolvedAppKey is the context key resolvedApp is carried under.
+type resolvedAppKey struct{}
+
+// withResolvedApp is ctx carrying app, the App role acts as on issue.
+func withResolvedApp(ctx context.Context, issue string, role claim.Role, app AppRole) context.Context {
+	return context.WithValue(ctx, resolvedAppKey{}, resolvedApp{issue: issue, role: role, app: app})
+}
+
+// resolvedAppOf is the App ctx carries for role on issue, and false where it carries none for
+// that issue and role: a carried App is the answer for the one ask it was read for and no other.
+func resolvedAppOf(ctx context.Context, issue string, role claim.Role) (AppRole, bool) {
+	carried, ok := ctx.Value(resolvedAppKey{}).(resolvedApp)
+	if !ok || carried.issue != issue || carried.role != role {
+		return "", false
+	}
+	return carried.app, true
 }
 
 // Bundles holds the gh bundles one walk of a runtime has built, so the walk builds each bundle
@@ -155,8 +188,8 @@ type Bundles struct {
 
 // bundleKey is what one bundle of a walk is held under: the App role it is minted as, with the role
 // itself for a role that is none of Legion's, and the repository it is built for, lowercased as
-// GitHub compares a repository's two halves. A built bundle is held under the App its own
-// directories name (ghconfig.Rendered.App), which the build's one read of the role's App decided.
+// GitHub compares a repository's two halves. The App is the one the ask read (RoleApps.Of), which
+// the build mints as (GitHubCredential), and nothing read back from the bundle it built.
 type bundleKey struct {
 	app  AppRole
 	role claim.Role
@@ -179,30 +212,27 @@ func NewBundles(credential runtime.GitHubCredential, apps RoleApps) *Bundles {
 // with types of one App. A role nothing defines fails here, naming itself, and builds nothing. A
 // walk is one goroutine, so the memo needs no lock of its own.
 //
-// The memo reads the role's App to find a bundle already built, and the build reads it again to
-// mint one, each in a transaction of its own (RoleApps.Plan). A version of the plan taken between
-// the two reads can change the App. So a new bundle is held under the App the build minted it as,
-// which its directories name, and never under the App the memo read first. A later ask that reads
-// the App the build read is served that bundle, and no ask that reads another App is.
+// The memo reads the role's App once per ask (RoleApps.Of), in a transaction of its own
+// (RoleApps.Plan), and hands it to the build on the build's context (withResolvedApp), so
+// GitHubCredential mints as that App and reads no plan of its own: a bundle is held under the App
+// it was minted as, and a version of the plan taken during the build changes nothing of it. A
+// credential that is not GitHubCredential (a test's) reads the App, if at all, as it chooses.
 func (b *Bundles) Bundle(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	key := bundleKey{repo: strings.ToLower(repo.String())}
-	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
-		key.app = app
-	} else {
-		app, err := b.apps.Of(ctx, issue, role)
-		if err != nil {
-			return ghconfig.Bundle{}, err
-		}
-		key.app, key.role = app, role
+	app, err := b.apps.Of(ctx, issue, role)
+	if err != nil {
+		return ghconfig.Bundle{}, err
+	}
+	key := bundleKey{app: app, repo: strings.ToLower(repo.String())}
+	if _, err := AppRoleFor(role, nil, Planned{}); err != nil {
+		key.role = role
 	}
 	if built, held := b.built[key]; held {
 		return built, nil
 	}
-	built, err := b.credential(ctx, issue, role, repo)
+	built, err := b.credential(withResolvedApp(ctx, issue, role, app), issue, role, repo)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
-	key.app = AppRole(built.Dirs[built.Default].App)
 	b.built[key] = built
 	return built, nil
 }

@@ -391,14 +391,63 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 	}
 }
 
-// A version of a plan taken between the memo's read of a role's App and the build's own read of
-// it leaves no bundle under an App it was not minted as. LEGION-43's coder is of the type testing,
-// the review App's, when the memo reads it, and the hook commits a version that makes it
-// implementation before the build reads it, so the build mints the implement App's bundle.
-// LEGION-47's coder, of the type testing, then asks the same walk for the review App's bundle,
-// and gets one minted as the review App. LEGION-43's coder asked again reads the implement App
-// and is served the bundle already built, which is held under the App it was minted as.
-func TestAPlanVersionTakenDuringABuildLeavesNoBundleUnderAnotherApp(t *testing.T) {
+// One ask of a walk's memo for a role of a plan reads the issue's plan once: the memo reads the
+// role's App (RoleApps.Of) and hands it to the build, which mints as that App and reads no plan of
+// its own (GitHubCredential). coder of LEGION-43 is of the type implementation.
+func TestOneAskOfARoleOfAPlanReadsThePlanOnce(t *testing.T) {
+	reads := 0
+	apps := RoleApps{Plan: func(ctx context.Context, issue string, role claim.Role) (Planned, error) {
+		reads++
+		return planOf43(ctx, issue, role)
+	}}
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
+		apps, quietBundleLog())
+	bundle, err := NewBundles(credential, apps).Bundle(context.Background(), "LEGION-43", "coder", ghrepo.MustParse("sjawhar/legion"))
+	if err != nil {
+		t.Fatalf("the bundle of coder on LEGION-43: %v", err)
+	}
+	if rendered := bundle.Dirs["sjawhar"]; rendered.App != "implement" {
+		t.Errorf("coder on LEGION-43 is rendered for the %q App, want implement", rendered.App)
+	}
+	if reads != 1 {
+		t.Errorf("one ask of coder on LEGION-43 read its plan %d times, want once", reads)
+	}
+}
+
+// A bundle is held under the App its ask read, whatever its directories name: a bundle whose
+// default names no directory it holds is held under the tester's App, the review App, and served
+// to the walk's next ask of the same role and repository, and nothing is held under an App no
+// role acts as ("").
+func TestABundleIsHeldUnderTheAppItsAskRead(t *testing.T) {
+	built := 0
+	credential := func(context.Context, string, claim.Role, ghrepo.Repository) (ghconfig.Bundle, error) {
+		built++
+		return ghconfig.Bundle{Default: "elsewhere", Dirs: map[string]ghconfig.Rendered{
+			"sjawhar": ghconfig.Render("ghs_review", string(Review), time.Now().Add(time.Hour)),
+		}}, nil
+	}
+	bundles := NewBundles(credential, RoleApps{})
+	for range 2 {
+		if _, err := bundles.Bundle(context.Background(), "LEGION-43", claim.RoleTester, ghrepo.MustParse("sjawhar/legion")); err != nil {
+			t.Fatalf("the bundle of the tester: %v", err)
+		}
+	}
+	if built != 1 {
+		t.Errorf("two asks of the tester for one repository built %d bundles, want one", built)
+	}
+	if keys, want := slices.Collect(maps.Keys(bundles.built)), []bundleKey{{app: Review, repo: "sjawhar/legion"}}; !slices.Equal(keys, want) {
+		t.Errorf("the walk holds its bundles under %v, want %v", keys, want)
+	}
+}
+
+// A version of a plan taken while a bundle is built changes nothing of that bundle: the walk reads
+// a role's App once per ask (RoleApps.Of), and the build mints as that App and reads no plan of
+// its own, so a bundle is held under the App it was minted as. LEGION-43's coder is of the type
+// testing, the review App's, when its ask reads it, and the hook commits a version that makes it
+// implementation before the build: the build still mints the review App's bundle. LEGION-47's
+// coder, of the type testing, is then served that same bundle, and LEGION-43's coder asked again
+// reads the implement App and gets a bundle minted as it.
+func TestAPlanVersionTakenDuringABuildLeavesTheAppItsAskRead(t *testing.T) {
 	repo := ghrepo.MustParse("sjawhar/legion")
 	committed := false
 	plans := func(_ context.Context, issue string, role claim.Role) (Planned, error) {
@@ -426,7 +475,7 @@ func TestAPlanVersionTakenDuringABuildLeavesNoBundleUnderAnotherApp(t *testing.T
 		issue string
 		app   string
 	}{
-		{"LEGION-43", "implement"},
+		{"LEGION-43", "review"},
 		{"LEGION-47", "review"},
 		{"LEGION-43", "implement"},
 	} {
@@ -438,8 +487,8 @@ func TestAPlanVersionTakenDuringABuildLeavesNoBundleUnderAnotherApp(t *testing.T
 			t.Errorf("coder on %s is served a bundle of the %q App, want %q", ask.issue, rendered.App, ask.app)
 		}
 	}
-	if want := []string{"LEGION-43/coder", "LEGION-47/coder"}; !slices.Equal(built, want) {
-		t.Errorf("the walk built %v, want %v: each bundle held under the App it was minted as", built, want)
+	if want := []string{"LEGION-43/coder", "LEGION-43/coder"}; !slices.Equal(built, want) {
+		t.Errorf("the walk built %v, want %v: each bundle minted as the App its ask read and held under it", built, want)
 	}
 }
 
