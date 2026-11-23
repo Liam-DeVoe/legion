@@ -127,12 +127,14 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 
 // A decision of the owner for an agent of a task goes into the task's text, in a later version of
 // the plan, which every later start of the task holds. The agent at work reads no new start, so the
-// owner also messages the agent of the step register_plan's answer names. An issue that started
-// before Legion took plans has no task text: there the decision goes in a comment on the issue and
-// a message. The rule holds over any other place a general skill offers, and the issue and its
-// plan are the one record of the work to be done. Each rule is held by the terms of the clause
-// that states it, in their order, in both architect compositions. This shows the text is loaded,
-// never that an owner follows it.
+// owner also messages the agent of the step register_plan's answer names. On the default steps
+// the planner's `plan.md` stays as it is: the owner gives its own `owner-plan.md`, for a decision,
+// after a stop of `default` and after a rerun alike, and each later version of that same document.
+// An issue that started before Legion took plans has no task text: there the decision goes in a
+// comment on the issue and a message. The rule holds over any other place a general skill offers,
+// and the issue and its plan are the one record of the work to be done. Each rule is held by the
+// terms of the clause that states it, in their order, in both architect compositions. This shows
+// the text is loaded, never that an owner follows it.
 func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -155,6 +157,11 @@ func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 				{"`plan.md` is the planner's", "leave it as it is"},
 				{"document of your own on the issue", "`owner-plan.md`", "id and version to `register_plan`"},
 				{"each later version of yours", "same `owner-plan.md`", "`PLAN_DOCUMENT_CHANGED`"},
+				// After a stop of default, from stop_task and from a task-stopped notice, and after
+				// a rerun, the version is one of the owner's own document.
+				{"For the task `default`, give that later version", "your own `owner-plan.md`", "planner's `plan.md` as it is"},
+				{"For the task `default`, that version is one of your own `owner-plan.md`"},
+				{"Where that task is `default`", "new version", "your own `owner-plan.md`", "`plan.md` stays as it is"},
 				{"started its work before Legion took plans has no task text"},
 				{"such an issue", "comment on the issue", "by message"},
 				{"hold also where a general skill offers another place"},
@@ -167,6 +174,37 @@ func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Under an owner's plan whose steps name the planner, the planner's plan stands below the owner's
+// task blocks in `plan.md`, and the owner can give a version that changes only a block's text while
+// the task runs. That version is the owner's decision, which the worker's start task holds: no
+// revision of the planner's plan, and no message to the planner. The worker tells the two apart by
+// reading the approved version and the newest with `dispatch doc-read --version`. A change outside
+// the `plan_task` blocks keeps the old rule: build from the approved version and tell the planner.
+// Each rule is held by the terms of the clause that states it, in their order, in each composition
+// that builds from a planner's plan. This shows the text is loaded, never that a worker follows it.
+func TestAWorkerTakesAnOwnersTextOnlyVersionAsNoPlanRevision(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rules := [][]string{
+		{"`Approval:` line does not name the newest version", "`dispatch doc-read --issue <issue> --artifact plan-md --version <approved>`", "`--version <newest>`"},
+		{"differ only in the text of `plan_task` blocks", "newer version is the owner's decision"},
+		{"start task already holds it", "no revision of the plan"},
+		{"approved version and your start task", "send the planner nothing"},
+		{"anything outside those blocks differs", "revision the plan review has not approved"},
+		{"Tell the planner what the newer version means", "`envoy_publish`"},
+	}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
+		composed := composedText(t, composer, role, false)
+		for _, terms := range rules {
+			if !clauseHolds(composed, terms...) {
+				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
+			}
+		}
 	}
 }
 
