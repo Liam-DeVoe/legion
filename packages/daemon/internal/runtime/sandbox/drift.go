@@ -574,7 +574,10 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 // claim in it, so a sweep reads each issue's plan once rather than once for each claim. A read
 // that fails is returned, and the caller decides on the pod's other reasons alone. It answers
 // nothing for a claim with no process, for a pod no round covers, and for a Sandbox the informers
-// no longer hold, which PodDrift answers as gone.
+// no longer hold, which PodDrift answers as gone. Nor does it for a Sandbox suspended, and it reads
+// no plan for one: its pod is on its way out, as PodDrift answers it — the round's own replacement
+// in flight, whose next launch builds the pod again from the plan in force, or a pod gone — and a
+// slot the ending pod lacks would open a round over a pod being deleted.
 func (r *Runtime) PodSlotsDrift(ctx context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod slots drift: %w", err)
@@ -597,6 +600,9 @@ func (r *Runtime) PodSlotsDrift(ctx context.Context, k runtime.Known) ([]string,
 		return nil, fmt.Errorf("sandbox runtime: pod slots drift %s: %w", k.Claim, err)
 	}
 	if u == nil {
+		return nil, nil
+	}
+	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
 		return nil, nil
 	}
 	agents, err := r.store.PlanAgents(ctx, r.project, issue)

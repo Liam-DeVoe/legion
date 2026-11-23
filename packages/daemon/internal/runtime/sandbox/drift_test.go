@@ -1210,6 +1210,46 @@ func TestAPodThatLacksASlotOfItsPlanDrifts(t *testing.T) {
 	}
 }
 
+// A pod under a suspended Sandbox drifts on no slot its issue's plan names, as it drifts on no other
+// reason (PodDrift): the suspension this round's own replacement writes (ReplacePod,
+// roundDisplacedAnnotation) is waiting the pod out, and the launch after it builds the pod again
+// from the plan in force, while any other suspension is a pod gone. So the plan is not read at all
+// while the Sandbox is suspended. The fault: the slot of a plan's agent that the ending pod lacks
+// came back as a reason, and a sweep with no round open could open a new round over a pod being
+// deleted.
+func TestAPodUnderASuspendedSandboxDoesNotDriftOnItsSlots(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer}))
+	// The pod of a suspended Sandbox stays terminating, which is the window the reading below is
+	// taken in: the suspension has landed and the pod has not ended.
+	g.suspendDelay.Store(int64(time.Minute))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	name := loc.Sandbox.Name
+	g.store.plan(testTree, map[claim.Agent]claim.Role{
+		"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer,
+	})
+	if drifted := slotsDriftOf(t, g.ctx, g.r, loc); len(drifted) == 0 {
+		t.Fatal("PodSlotsDrift of the running pod, its plan naming implementer-2, is empty, so this case proves nothing: nothing below could be read as the drift that cleared")
+	}
+
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing(types.UID(loc.Sandbox.PodUID), roundReplacement)); err != nil {
+		t.Fatalf("suspend the sandbox as this round's replacement does: %v", err)
+	}
+	g.eventually("the sandbox store to see it suspended for this round", func() bool {
+		s, err := g.r.storedSandbox(name)
+		return err == nil && s != nil && s.mode() == modeSuspended && s.Annotations[roundDisplacedAnnotation] == loc.Sandbox.PodUID
+	})
+	if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+		t.Fatalf("the pod of %s went while its sandbox was suspended, so this case reads a pod that is gone rather than one on its way out", name)
+	}
+	before := g.store.planReadCount()
+	if drifted, err := g.r.PodSlotsDrift(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}); err != nil || len(drifted) > 0 {
+		t.Errorf("PodSlotsDrift of a pod under a suspended sandbox = %q, %v; want nothing", drifted, err)
+	}
+	if reads := g.store.planReadCount() - before; reads != 0 {
+		t.Errorf("PodSlotsDrift of a pod under a suspended sandbox read the issue's plan %d times, want none", reads)
+	}
+}
+
 // A pod built while its plan names an agent no role has, `implementer-2` beside the six roles, holds
 // that agent's slot, so with the plan unchanged it does not drift on its slots: the pod an update
 // round builds after the plan named the slot is the pod the round was for, and it is not replaced
