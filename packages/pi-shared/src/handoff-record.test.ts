@@ -81,6 +81,35 @@ test("the implementer's round reports the newest implement record and the pushed
   ]);
 });
 
+// A fix runs the task's first implementation step again in a working copy of its own, beside the
+// workspace (the issue record's `fix.dir`). Its round is the commit that copy stands on, so the
+// implementer's completion of the fix reads `@-` and its push there and never in the shared
+// workspace, where `@-` is another step's. The record is the implement record, as for any round.
+test("a fix's round reads @- and its push in the fix's working copy", async () => {
+  const fixDir = "/workspaces/LEGION-208-fix";
+  const asked: string[] = [];
+  const jj: JjRunner = async (args, cwd) => {
+    asked.push(cwd);
+    const revision = args[2];
+    if (revision === "@-") return STANDING;
+    if (revision === `${REMOTE} & ${STANDING}::`) return TIP;
+    throw new Error(`unexpected jj ${args.join(" ")}`);
+  };
+  const { latestHandoff, reads } = recordingDispatch(PUSHED_RECORD);
+  await expect(
+    findHandoffReport({
+      phase: "implementing",
+      role: "implementer",
+      env,
+      dir: fixDir,
+      jj,
+      latestHandoff,
+    })
+  ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(asked).toEqual([fixDir, fixDir]);
+});
+
 test("every file-backed role reports the head its phase's record names", async () => {
   for (const [phase, role, word] of [
     ["planning", "planner", "plan"],
