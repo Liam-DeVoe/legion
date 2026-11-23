@@ -7,11 +7,12 @@
 -- in that session, 0 where it did not (the daemon's ownerStepTold, record.Postgres.MarkOwnerStepTold),
 -- written only for the run the notice names. A published notice row is deleted, so nothing else
 -- records that a session got it. The owner's catch-up at a launch tells the step again only where
--- the claim that is ready now is neither that launch nor that session (workflow's claimReady): a
--- ready of the launch it reached, or of a later launch that resumed the session it reached, holds
--- the notice in that session's transcript, and a fresh session after a loss holds none. Each start
--- of the place begins a run no owner-step has reached (record.Postgres.RaiseStepStarts,
--- OpenUncountedStep), 0 and ''.
+-- the claim that is ready now does not run in that session, or, where the mark names no session,
+-- is not that launch (workflow's claimReady, toldThisSession): a ready in the session it reached,
+-- at the launch it reached or a later one that resumed that session, holds the notice in that
+-- session's transcript, and a fresh session holds none, after a loss or in the same launch where
+-- its resume of the session failed. Each start of the place begins a run no owner-step has
+-- reached (record.Postgres.RaiseStepStarts, OpenUncountedStep), 0 and ''.
 --
 -- Every row the table already holds takes the defaults, 0 and '': no publish was recorded, so the
 -- next launch of each owner at a step of its own tells it the step again, once, as every launch
