@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0041_result_grants.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0042_result_grants.up.sql
 -- A CI run's result grant: what the token exchange decided for a result entry's run
 -- (BROKER_EXCHANGE_RESULT_WORKFLOWS), kept by the broker in place of an access token the run would
 -- hold. The run holds only the grant's airlock placeholder; every broker pod reads the grant by that
