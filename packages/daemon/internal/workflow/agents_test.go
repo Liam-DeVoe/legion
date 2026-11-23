@@ -285,9 +285,9 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
-	worker := func(at record.TaskPlace, want claim.Token) {
+	worker := func(in phase.Phase, at record.TaskPlace, want claim.Token) {
 		t.Helper()
-		assertWalksAt(t, pool, engine, root.Key, issueOf(t, pool, engine, root.Key).Phase, at)
+		assertWalksAt(t, pool, engine, root.Key, in, at)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			rows, err := engine.store.Phases(ctx, tx, root.Key)
 			if err != nil {
@@ -308,15 +308,15 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 		})
 	}
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	worker(stepPlace(1), keyA)
+	worker(phase.Implementing, stepPlace(1), keyA)
 	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
-	worker(stepPlace(2), keyA)
+	worker(phase.Testing, stepPlace(2), keyA)
 	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1)
-	worker(stepPlace(3), keyB)
+	worker(phase.Implementing, stepPlace(3), keyB)
 	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
-	worker(stepPlace(4), keyB)
+	worker(phase.Reviewing, stepPlace(4), keyB)
 	move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
-	worker(stepPlace(1), keyA)
+	worker(phase.Implementing, stepPlace(1), keyA)
 }
 
 // Two agents of one role keep a row of it each, and the entry a step's start raises is above every
