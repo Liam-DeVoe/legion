@@ -54,8 +54,8 @@ type roleForReader struct {
 // issue's own phase for the architect's completion there, as its reader took the issue's phase
 // while RoleFor named no role (phase.Of, and the completion route's answerCompletion, which reads
 // the phase LeftBy answers where the role does not work the issue's), or reads only the places of
-// a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask,
-// Engine.restartViewed and Engine.startReady, which read their task's first step: a planner's, an
+// a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.startAtFirstStep
+// and Engine.startReady, which read their task's first step: a planner's, an
 // implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
 // an implementer, and Engine.startAfterWait, which reads the step a task whose start waited stands
 // at, a step place: a first step whose join ended or is queued again, or a step whose freed agent
@@ -138,8 +138,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, tests: []string{
 		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
-	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
-		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
+	// The role of a stopped task's first step where it starts again, whatever the plan's count of
+	// tasks.
+	{file: "internal/workflow/plan_stop.go", fn: "Engine.startAtFirstStep"}: {calls: 1, tests: []string{
+		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole",
+		"TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone"}},
 	// The role of the step the stop ended, and of the phase where no step of the task ran.
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 2, tests: []string{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
@@ -159,10 +162,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:     {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
-	// The role of the first step of a task whose needs are done, and of a stopped task's first step
-	// where it starts again.
-	{file: "internal/workflow/tasks.go", fn: "Engine.restartViewed"}: {calls: 1, tests: []string{
-		"TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone"}},
+	// The role of the first step of a task whose needs are done.
 	{file: "internal/workflow/tasks.go", fn: "Engine.startReady"}: {calls: 1, tests: []string{"TestEachTaskStartsWhenItsNeedsAreDone"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 1, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},

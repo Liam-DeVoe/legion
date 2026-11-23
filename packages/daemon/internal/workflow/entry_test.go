@@ -231,7 +231,11 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
+		s, err := firstScope(ctx, tx, engine, issue)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -328,7 +332,11 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 			seedPhase(t, pool, merger)
 
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, merger)
+				s, err := firstScope(t.Context(), tx, engine, issue)
+				if err != nil {
+					return err
+				}
+				return engine.SendOwedEntry(t.Context(), tx, s, claim.RoleMerger, merger)
 			})
 
 			starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -418,7 +426,11 @@ func phaseResumeTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key strin
 	if err != nil || issue == nil {
 		t.Fatalf("read %s for its resume task: the record holds it %t, error %v", key, issue != nil, err)
 	}
-	task, err := engine.ResumeTask(ctx, tx, *issue)
+	s, err := firstScope(ctx, tx, engine, *issue)
+	if err != nil {
+		t.Fatalf("read the scope of %s for its resume task: %v", key, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, s)
 	if err != nil {
 		t.Fatalf("compose %s's resume task: %v", key, err)
 	}

@@ -251,7 +251,7 @@ func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact i
 // afterVersion is what a version written on a recorded issue starts. Where it changes the stopped
 // task of an issue held for that task, the stop ends: where the work of the stopped task ran, which
 // the place it stood at says (record.TaskPlace.Started), the task the plan now holds starts again
-// at its first step (restartTask), and its worker is told which version did it; a task stopped
+// at its first step (startAtFirstStep), and its worker is told which version did it; a task stopped
 // before its first step went out waits for that step again, as a task never stopped does
 // (waitForFirstStep). A version taken after the work started writes the run's plan node again,
 // whole (planNode): the start wrote it at the version then in force, and the node names the plan
@@ -266,12 +266,14 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if !written.started && !ends {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
+	// The plan's one task, on its scope (scopes).
+	scopes, err := e.scopes(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
+	s := scopes[0]
 	if written.started && recordsSteps(issue) {
-		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{w})); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{s.walk})); err != nil {
 			return err
 		}
 	}
@@ -280,15 +282,15 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	}
 	reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, strings.Join(written.stopped, ", "))
 	if !written.started {
-		return e.waitForFirstStep(ctx, tx, issue, w, reason)
+		return e.waitForFirstStep(ctx, tx, s, reason)
 	}
-	return e.restartTask(ctx, tx, issue, w, reason)
+	return e.startAtFirstStep(ctx, tx, s, reason)
 }
 
 // afterSeveral is afterVersion of a plan of several tasks. A version taken after the work started
 // writes the run's plan node again, whole, with each task the version holds (WritePlan), before
 // any task of it starts. Each stopped task the version changes ends its stop: once the work
-// started it starts again where its needs are done, or waits for them (restartTask on the copy of
+// started it starts again where its needs are done, or waits for them (startAtFirstStep on the
 // issue read for it), and then each task whose needs are done starts (startReady), a task the
 // version adds among them. Before the work starts each such task waits for its first step
 // (waitForFirstStep), and nothing starts and no node is written: the gate's opening writes the
@@ -308,15 +310,15 @@ func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		if err != nil {
 			return err
 		}
-		view, w, err := e.view(ctx, tx, *now, task)
+		s, err := e.ScopeOf(ctx, tx, *now, task)
 		if err != nil {
 			return err
 		}
 		reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, task)
 		if !written.started {
-			err = e.waitForFirstStep(ctx, tx, view, w, reason)
+			err = e.waitForFirstStep(ctx, tx, s, reason)
 		} else {
-			err = e.restartTask(ctx, tx, view, w, reason)
+			err = e.startAtFirstStep(ctx, tx, s, reason)
 		}
 		if err != nil {
 			return err

@@ -96,7 +96,11 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 					return err
 				}
 				for _, task := range tc.starts {
-					queued, err := engine.startTaskCopy(ctx, tx, root, task)
+					s, err := engine.ScopeOf(ctx, tx, root, task)
+					if err != nil {
+						return err
+					}
+					queued, err := engine.startTaskCopy(ctx, tx, s)
 					if err != nil {
 						return err
 					}

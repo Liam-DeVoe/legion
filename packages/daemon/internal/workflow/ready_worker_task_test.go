@@ -107,36 +107,38 @@ func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
 	}
 }
 
-// The ready of a claim behind its entry, on an issue with no plan rows or with a plan of one task,
-// queues a start of the issue itself, which names no claim (copyClaim): the worker on its role's
-// step takes it. So it takes the place of the start the issue still owes from before its last
-// move (record.Store.EnqueueStart), and the issue owes one start, the tester's at testing carrying
-// the work of the entry its phases row names. A start of the issue itself that named a claim
-// would stand beside the start of the phase the issue left.
+// The ready of a claim behind its entry, on an issue with no plan rows, queues a start of the issue
+// itself, which names no claim (startClaim): the worker on its role's step takes it. So it takes
+// the place of the start the issue still owes from before its last move (record.Store.EnqueueStart),
+// and the issue owes one start, the tester's at testing carrying the work of the entry its phases
+// row names. On a plan of one task the ready's start names the claim of the tester's step's agent,
+// as every start of a run with plan rows does, and so does the implementer's start the issue owes
+// from before its last move, as this release's transition writes it: the two claims are two rows,
+// and the implementer's, at implementing, which the issue has left, is finished without acting
+// where the outbox runs it (record.Issue.HoldsQueued).
 //
-// The fault it catches is a start of an issue of one task that names a claim (its control:
-// copyClaim answering the claim of the step's agent for the issue itself, under which the
+// The fault it catches is a start of an issue with no plan rows that names a claim (its control:
+// startClaim answering the claim of the step's agent for a run with no plan rows, under which the
 // implementer's start of implementing stands beside the tester's).
 func TestTheReadyOfAClaimOfAnIssueOfOneTaskTakesThePlaceOfItsOwedStart(t *testing.T) {
 	const key = "LEGION-209"
-	for name, plan := range map[string]func(t *testing.T, pool *pgxpool.Pool){
-		"no plan rows": func(*testing.T, *pgxpool.Pool) {},
-		"a plan of one task": func(t *testing.T, pool *pgxpool.Pool) {
-			seedTasks(t, pool, key, 1, planTask{id: "a", steps: []string{"implementer", "tester"}, agents: []claim.Agent{"implementer", "tester"},
-				state: record.TaskRunning, place: atStep(2)})
-		},
-	} {
+	for name, planned := range map[string]bool{"no plan rows": false, "a plan of one task": true} {
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Tree: key, Project: "LEGION", Title: "a root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 			seedSlot(t, pool, record.Slot{Issue: key, Index: 0})
-			plan(t, pool)
+			var implementer, tester claim.Token
+			if planned {
+				seedTasks(t, pool, key, 1, planTask{id: "a", steps: []string{"implementer", "tester"}, agents: []claim.Agent{"implementer", "tester"},
+					state: record.TaskRunning, place: atStep(2)})
+				implementer, tester = agentClaim(t, key, "implementer"), agentClaim(t, key, "tester")
+			}
 			// The implementer's start of implementing, written before the issue moved to testing and
 			// not yet run.
 			seedRecord(t, pool, func(tx pgx.Tx) error {
 				return startOrOwe(t.Context(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleImplementer,
-					Generation: 1, Phase: phase.Implementing, Entry: 1, Task: "Implement it."}, stepClock, reassertion)
+					Claim: implementer, Generation: 1, Phase: phase.Implementing, Entry: 1, Task: "Implement it."}, stepClock, reassertion)
 			})
 			token := seedPhaseWorker(t, pool, key, claim.RoleTester, "")
 			seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: token, Entry: 2, EntryTask: "Test it.", EntryRaisedAt: stepClock})
@@ -153,8 +155,12 @@ func TestTheReadyOfAClaimOfAnIssueOfOneTaskTakesThePlaceOfItsOwedStart(t *testin
 			for _, start := range superviseRowsOf(t, pool, key, "start") {
 				starts = append(starts, fmt.Sprintf("the %s's naming %q at %s, entry %d, carrying %q", start.Role, start.Claim, start.Phase, start.Entry, start.Task))
 			}
-			if want := []string{`the tester's naming "" at testing, entry 2, carrying "Test it."`}; !slices.Equal(starts, want) {
-				t.Fatalf("the starts of %s after the tester's ready are %q, want %q: one start, the ready's, naming no claim", key, starts, want)
+			want := []string{fmt.Sprintf(`the tester's naming %q at testing, entry 2, carrying "Test it."`, tester)}
+			if planned {
+				want = append([]string{fmt.Sprintf(`the implementer's naming %q at implementing, entry 1, carrying "Implement it."`, implementer)}, want...)
+			}
+			if !slices.Equal(starts, want) {
+				t.Fatalf("the starts of %s after the tester's ready are %q, want %q", key, starts, want)
 			}
 		})
 	}

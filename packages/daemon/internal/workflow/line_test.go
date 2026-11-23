@@ -45,7 +45,8 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 		if err != nil || issue == nil {
 			return fmt.Errorf("read %s: %v (recorded %t)", key, err, issue != nil)
 		}
-		w, err = engine.walk(ctx, tx, *issue)
+		s, err := firstScope(ctx, tx, engine, *issue)
+		w = s.walk
 		return err
 	})
 
@@ -116,20 +117,20 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 		if err != nil || issue == nil {
 			return fmt.Errorf("read %s: %v (recorded %t)", root.Key, err, issue != nil)
 		}
-		w, err := engine.walk(ctx, tx, *issue)
+		s, err := firstScope(ctx, tx, engine, *issue)
 		if err != nil {
 			return err
 		}
 		// The task's start at its first step, as the start that follows its move ends the wait for
 		// a join that move writes: the task holds the issue's own branch and needs none.
 		first := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
-		if err := engine.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, first, record.TaskRunning); err != nil {
+		if err := engine.store.MoveTask(ctx, tx, issue.Key, issue.Generation, s.walk.Task, first, record.TaskRunning); err != nil {
 			return err
 		}
-		if err := engine.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitNone, nil); err != nil {
+		if err := engine.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, s.walk.Task, record.StepWaitNone, nil); err != nil {
 			return err
 		}
-		if w, err = engine.walk(ctx, tx, *issue); err != nil {
+		if s, err = firstScope(ctx, tx, engine, *issue); err != nil {
 			return err
 		}
 		for _, move := range []struct {
@@ -142,7 +143,7 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 			{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer"},
 			{phase.Admitted, record.TaskPlace{}, ""},
 		} {
-			if err := engine.moveTask(ctx, tx, issue, &w, move.to, move.place, record.TaskRunning); err != nil {
+			if err := engine.moveTask(ctx, tx, &s, move.to, move.place, record.TaskRunning); err != nil {
 				return err
 			}
 			read, err := engine.store.Issue(ctx, tx, root.Key)
@@ -151,10 +152,10 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 			}
 			var want []record.RunningStep
 			if move.role != "" {
-				want = []record.RunningStep{{Task: w.Task, Place: move.place, Role: move.role, Phase: move.to, Agent: claim.Agent(move.role)}}
+				want = []record.RunningStep{{Task: s.walk.Task, Place: move.place, Role: move.role, Phase: move.to, Agent: claim.Agent(move.role)}}
 			}
-			if !reflect.DeepEqual(issue.Running, want) || !reflect.DeepEqual(read.Running, issue.Running) {
-				t.Errorf("after the move to %s, the moved issue's running steps = %+v and a fresh read's = %+v, want %+v", move.to, issue.Running, read.Running, want)
+			if !reflect.DeepEqual(s.issue.Running, want) || !reflect.DeepEqual(read.Running, s.issue.Running) {
+				t.Errorf("after the move to %s, the moved issue's running steps = %+v and a fresh read's = %+v, want %+v", move.to, s.issue.Running, read.Running, want)
 			}
 		}
 		return nil
@@ -337,7 +338,11 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			if err := engine.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return err
 			}
-			_, err = engine.closeMerged(ctx, tx, *stored, pr)
+			s, err := firstScope(ctx, tx, engine, *stored)
+			if err != nil {
+				return err
+			}
+			_, err = engine.closeMerged(ctx, tx, s, pr)
 			return err
 		})
 

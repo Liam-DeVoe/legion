@@ -42,7 +42,11 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.closeMergedTelling(ctx, tx, member, pr)
+		s, err := firstScope(ctx, tx, engine, member)
+		if err != nil {
+			return err
+		}
+		return engine.closeMergedTelling(ctx, tx, s, pr)
 	})
 	var ends []record.StepRecord
 	for _, w := range stepWrites(t, pool, "LEGION-209") {

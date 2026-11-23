@@ -74,7 +74,11 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, record.TaskPlace{}, reviewer, pr, changesBody)
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.transition(ctx, tx, s, TriggerReviewRejected, record.TaskPlace{}, reviewer, pr, changesBody)
 	})
 
 }
@@ -137,6 +141,27 @@ func roleStartsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role)
 	return starts
 }
 
+// returnStartOf is the one start of role a return wrote into key's outbox: the newest start of
+// role, which must stand at an entry above each of before, role's starts before the return, since
+// the return raised that entry (enter), with no more than one start beside before. A start of a
+// run with plan rows names its step's claim, and a start the outbox has not run is taken out by the
+// next start of its claim (record.Store.EnqueueStart), so a return to a step whose earlier start is
+// still queued leaves the count of starts where it was: the raised entry, not the count, is the
+// return's start.
+func returnStartOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, before []record.SuperviseRequest) record.SuperviseRequest {
+	t.Helper()
+	var above int64
+	for _, start := range before {
+		above = max(above, start.Entry)
+	}
+	starts := roleStartsOf(t, pool, key, role)
+	if len(starts) == 0 || len(starts) > len(before)+1 || starts[len(starts)-1].Entry <= above {
+		t.Fatalf("the starts of the %s of %s after the return are %+v, want one at most beside the %d before it, the newest at an entry above %d, the entry the return raised",
+			role, key, starts, len(before), above)
+	}
+	return starts[len(starts)-1]
+}
+
 // noticesOf is every notice of kind key's outbox holds, oldest first: the rows of key alone, so a
 // notice on another issue is not read as key's.
 func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeKind) []record.Notice {
@@ -178,23 +203,20 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
-		implementerBefore, reviewerBefore := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)), len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer))
+		implementersBefore, reviewerBefore := roleStartsOf(t, pool, root.Key, claim.RoleImplementer), len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer))
 
 		reviewRequestsChanges(t, pool, engine, root.Key)
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
-		if len(starts) != implementerBefore+1 {
-			t.Fatalf("the return wrote %d starts of the implementer, want one", len(starts)-implementerBefore)
-		}
 		// The return goes to the agent the step ran before, in its session, and the
 		// reviewer keeps its own: no start of the return asks for a fresh session, and the
 		// reviewer is started nothing.
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Implementing || !strings.Contains(start.Task, "Reason: "+changesBody) {
+		if start := returnStartOf(t, pool, root.Key, claim.RoleImplementer, implementersBefore); start.FreshSession || start.Phase != phase.Implementing ||
+			!strings.Contains(start.Task, "Reason: "+changesBody) {
 			t.Fatalf("the implementer's start = %+v, want a start of implementing in its own session whose task holds %q", start, "Reason: "+changesBody)
 		}
-		// An issue's one pending phase start the outbox has not run is replaced by the next one
-		// (record.Store.EnqueueStart), so the count can fall; it must not rise.
+		// A start the outbox has not run is taken out only by the next start of its claim
+		// (record.Store.EnqueueStart), so the reviewer's count stays; it must not rise.
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer)); got > reviewerBefore {
 			t.Fatalf("the return wrote %d starts of the reviewer, want none: the reviewer keeps its session for the next round", got-reviewerBefore)
 		}
@@ -403,19 +425,15 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 
 	t.Run("returnTo 1 returns the task to the planner, which gets the tester's report", func(t *testing.T) {
 		pool, engine, root := planned(t)
-		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
+		planners, implementers := roleStartsOf(t, pool, root.Key, claim.RolePlanner), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-		starts := roleStartsOf(t, pool, root.Key, claim.RolePlanner)
-		if len(starts) != planners+1 {
-			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
-		}
 		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
+		if start := returnStartOf(t, pool, root.Key, claim.RolePlanner, planners); start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
@@ -552,7 +570,13 @@ func TestTheWalkTakesTheTaskItsReadNames(t *testing.T) {
 		read := root
 		read.ViewTask = task
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			w, walked = engine.walk(t.Context(), tx, read)
+			var s TaskScope
+			if task == "" {
+				s, walked = firstScope(t.Context(), tx, engine, read)
+			} else {
+				s, walked = engine.ScopeOf(t.Context(), tx, read, task)
+			}
+			w = s.walk
 			return nil
 		})
 		return w, walked
@@ -574,10 +598,6 @@ func TestTheWalkTakesTheTaskItsReadNames(t *testing.T) {
 		}
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{first, second}, steps)
 	})
-	_, err := walkOf("")
-	if want := "walk LEGION-208 at generation 1: its plan holds 2 tasks, and this read names none of them"; err == nil || err.Error() != want {
-		t.Fatalf("the walk of a plan of two tasks read for none = %v, want the error %q", err, want)
-	}
 	if w, err := walkOf("a"); err != nil || !w.Stored || w.Task != "a" || w.Merges || !reflect.DeepEqual(w.Line, []phase.Phase{phase.Implementing}) {
 		t.Fatalf("the walk of task a, which task b needs = %+v, %v, want task a on its one step, with no retro and no merge", w, err)
 	}
@@ -585,7 +605,7 @@ func TestTheWalkTakesTheTaskItsReadNames(t *testing.T) {
 		!reflect.DeepEqual(w.Line, []phase.Phase{phase.Implementing, phase.Retro, phase.Merging}) {
 		t.Fatalf("the walk of task b, which no task needs = %+v, %v, want task b on its step, then the retro and the merge", w, err)
 	}
-	if _, err := walkOf("c"); err == nil || err.Error() != "walk LEGION-208 at generation 1: its plan holds no task c" {
+	if _, err := walkOf("c"); err == nil || err.Error() != "read LEGION-208 at generation 1 for task c: its plan holds no such task" {
 		t.Fatalf("the walk of task c, which the plan does not hold = %v, want an error naming c", err)
 	}
 }

@@ -166,7 +166,8 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	}
 	pr := record.PullRequest{Issue: issue.Key, Repo: fact.Repo, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
 		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: record.PullRequestOpen}
-	view, _, ok, err := e.viewOfPullRequest(ctx, tx, *issue, pr)
+	vs, ok, err := e.scopeOfPullRequest(ctx, tx, *issue, pr)
+	view := vs.issue
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -231,7 +232,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if err != nil || !row.Completed() {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.implementationReady(ctx, tx, view, row, &pr)
+	return intake.Result{}, e.implementationReady(ctx, tx, vs, row, &pr)
 }
 
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
@@ -290,12 +291,13 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	if moved {
-		if err := e.mergeForwardLanded(ctx, tx, *issue, pr); err != nil {
+		if err := e.mergeForwardLanded(ctx, tx, *scope, pr); err != nil {
 			return intake.Result{}, err
 		}
 	}
@@ -308,13 +310,13 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if !moved {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
+		return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byPush)
 	case phase.Implementing:
 		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, pr)
+		return intake.Result{}, e.implementationReady(ctx, tx, *scope, row, pr)
 	}
 	return intake.Result{}, nil
 }
@@ -366,11 +368,11 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	// arrived (checks, dispatch://INFRA-714/spec R1). In reviewing the push can be what shows the
 	// head the reviewer approved is about to be replaced, so the round is settled again; the
 	// round's re-ask is reviewing's alone.
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
+	return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byPush)
 }
 
 // reaskRound re-asks issue's review round (settleRound) after a fact that changed the pull
@@ -379,7 +381,8 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 // the fact found it. The round as prior had it is the before a round stuck the same way is
 // deduped against (stuckAs), so a fact at the head the round was already told stuck at tells
 // nothing again. An issue outside reviewing has no round to re-ask, and nothing is read for it.
-func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, prior record.PullRequest, by string) error {
+func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest, prior record.PullRequest, by string) error {
+	issue := s.issue
 	if issue.Phase != phase.Reviewing {
 		return nil
 	}
@@ -387,7 +390,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	_, err = e.settleRound(ctx, tx, issue, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
+	_, err = e.settleRound(ctx, tx, s, reviewer, pr, e.reviewRound(issue, reviewer, &prior), by)
 	return err
 }
 
@@ -434,18 +437,19 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err := e.closeOtherTaskPullRequests(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	if awaitsMerge(*issue) {
-		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
+		return intake.Result{}, e.closeMergedTelling(ctx, tx, *scope, pr)
 	}
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("pull request #%d merged while %s was in %s, not merging", pr.Number, issue.Key, issue.Phase)}); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
+	return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byMerge)
 }
 
 // closeOtherTaskPullRequests queues the close of each other open pull request of merged's issue
@@ -499,8 +503,9 @@ func waitingForTree(issue string, number int, waiting []string) string {
 // notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
 // departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
 // those two tell nobody.
-func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
-	waiting, err := e.closeMerged(ctx, tx, issue, pr)
+func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) error {
+	issue := s.issue
+	waiting, err := e.closeMerged(ctx, tx, s, pr)
 	if err != nil || len(waiting) == 0 {
 		return err
 	}
@@ -535,16 +540,17 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // the last one leaves. The wait is kept inside the branch where the tree does not linger: a
 // member of a tree that already lingers must still close at its merge, which suspends nothing
 // further and is the one thing that still moves there.
-func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) ([]string, error) {
+func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) ([]string, error) {
 	// An issue held from merging is awaiting its merge still (awaitsMerge, the one
 	// predicate written over that wait), and the close goes on from the phase itself, so every
 	// row below reads one shape.
-	if !awaitsMerge(issue) {
+	if !awaitsMerge(s.issue) {
 		return nil, nil
 	}
 	// Only the copy in hand leaves the hold here: the task keeps its place, its merge, which a hold
 	// keeps too (moveTask), and the close below writes the move to done.
-	issue.Phase, issue.Hold = phase.Merging, nil
+	s.issue.Phase, s.issue.Hold = phase.Merging, nil
+	issue := s.issue
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
 		return nil, err
@@ -559,12 +565,9 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, s, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
+	w := s.walk
 	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
@@ -578,16 +581,17 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, placeNamed(row.ToPlace, row.To), record.PhaseRow{}); err != nil {
 		return nil, err
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, row.ToPlace, record.TaskDone); err != nil {
+	if err := e.moveTask(ctx, tx, &s, row.To, row.ToPlace, record.TaskDone); err != nil {
 		return nil, err
 	}
-	issue.Hold = nil
+	s.issue.Hold = nil
 	if status != "" {
-		issue.Status = status
+		s.issue.Status = status
 	}
-	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+	if _, err := e.putScope(ctx, tx, &s); err != nil {
 		return nil, err
 	}
+	issue = s.issue
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is done", issue.Key)}); err != nil {
@@ -621,10 +625,11 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil || repeated {
 		return intake.Result{}, err
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("pull request #%d closed without merging while %s was in %s", pr.Number, issue.Key, issue.Phase)})
 }
@@ -768,7 +773,8 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	}
 	// The pull request the fact says is missing is the one on the branch the fact names.
 	missing := record.PullRequest{Issue: recorded.Key, Repo: fact.Repo, Branch: fact.Branch}
-	issue, _, ok, err := e.viewOfPullRequest(ctx, tx, *recorded, missing)
+	ms, ok, err := e.scopeOfPullRequest(ctx, tx, *recorded, missing)
+	issue := ms.issue
 	if err != nil || !ok || issue.Phase != phase.Implementing {
 		return intake.Result{}, err
 	}
@@ -776,7 +782,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
-	pr, err := e.pullRequestOf(ctx, tx, issue)
+	pr, err := e.taskPullRequest(ctx, tx, ms)
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}

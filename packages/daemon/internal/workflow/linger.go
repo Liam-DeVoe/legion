@@ -76,7 +76,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.clearMergeForward(ctx, tx, issue); err != nil {
+	if err := e.clearMergeForwards(ctx, tx, issue); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -202,29 +202,27 @@ func leaveState(w Walk, status string) record.TaskState {
 }
 
 // endTaskWithLeave writes issue out of the workflow at status: each task of its run ends where it
-// stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
-// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn, or
-// WriteIssue for a plan of several tasks, where the issue stands where its tasks put it). Every
-// leave ends its tasks here: a child's (leave), a root's that begins its linger (beginLinger) and a
-// waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
-// caller's record, which it writes with any field it set, and which stands as written after: the
-// issue itself, read for none of its tasks.
+// stands, in the state its leave gives it (moveTask on each task's scope, leaveState), which writes
+// the phase done, and its hold and its wait on a person are cleared, in the caller's transaction
+// (WriteIssue, where the issue stands where its tasks put it), whatever the plan's count of tasks.
+// Every leave ends its tasks here: a child's (leave), a root's that begins its linger (beginLinger)
+// and a waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is
+// the caller's record, which it writes with any field it set, and which stands as written after:
+// the issue itself, read for none of its tasks.
 func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.Issue, status string) error {
-	walks, err := e.walks(ctx, tx, *issue)
+	scopes, err := e.scopes(ctx, tx, *issue)
 	if err != nil {
 		return err
 	}
-	issue.ViewTask = ""
-	for at := range walks {
-		w := &walks[at]
-		if err := e.moveTask(ctx, tx, issue, w, phase.Done, w.Place, leaveState(*w, status)); err != nil {
+	for i := range scopes {
+		s := &scopes[i]
+		if err := e.moveTask(ctx, tx, s, phase.Done, s.walk.Place, leaveState(s.walk, status)); err != nil {
 			return err
 		}
+		// The issue stands where the last move left its running steps, read fresh after it.
+		issue.Running = s.issue.Running
 	}
-	issue.Hold, issue.Awaiting = nil, nil
-	if len(walks) == 1 {
-		return e.writeIssueOn(ctx, tx, *issue, walks[0])
-	}
+	issue.Phase, issue.Hold, issue.Awaiting = phase.Done, nil, nil
 	return e.WriteIssue(ctx, tx, *issue)
 }
 
@@ -326,11 +324,11 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
-	view, _, ok, err := e.viewOfPullRequest(ctx, tx, merged, *pr)
+	s, ok, err := e.scopeOfPullRequest(ctx, tx, merged, *pr)
 	if err != nil || !ok {
 		return err
 	}
-	waiting, err := e.closeMerged(ctx, tx, view, pr)
+	waiting, err := e.closeMerged(ctx, tx, s, pr)
 	if err != nil || len(waiting) > 0 {
 		return err
 	}

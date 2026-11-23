@@ -575,7 +575,11 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
+			s, err := firstScope(ctx, tx, engine, *issue)
+			if err != nil {
+				return err
+			}
+			_, err = engine.startSuspendedOwner(ctx, tx, suspendedOwner{scope: s, root: *issue, role: claim.RoleReviewer,
 				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 			return err
 		})
@@ -588,7 +592,11 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+			s, err := firstScope(ctx, tx, engine, *issue)
+			if err != nil {
+				return err
+			}
+			return engine.repairSilence(ctx, tx, s, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))
 		})
@@ -607,7 +615,11 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		carried.Generation++
 		seedIssue(t, pool, *carried)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
+			s, err := firstScope(ctx, tx, engine, *carried)
+			if err != nil {
+				return err
+			}
+			return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
 		if want := resumeWant + reviewEntryPartOf(before.Entry+1); after.Entry != before.Entry+1 || after.EntryTask != want {
@@ -674,7 +686,11 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		})
 		member := issueRecord(t, pool, "LEGION-208")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
+			s, err := firstScope(ctx, tx, engine, *member)
+			if err != nil {
+				return err
+			}
+			return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
 		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)

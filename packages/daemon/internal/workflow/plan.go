@@ -266,11 +266,8 @@ func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // end's. Dispatch sets each field once, so the end and the rating merge in either order. The
 // retro's step comes from stepAt, which every writer of a step's record takes, so a record key that
 // is no issue key writes nothing.
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating record.PlanRating) error {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, s TaskScope, rating record.PlanRating) error {
+	issue, w := s.issue, s.walk
 	step, recorded := stepAt(w, issue, placeNamed(record.TaskPlace{Kind: record.PlaceRetro}, phase.Retro))
 	if !recorded {
 		return nil
@@ -303,13 +300,10 @@ func planHold(issue record.Issue, stored bool) bool {
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
 // for its children why it still waits (heldParentWait's refusal).
-func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
-	if issue.Phase != phase.Held || issue.Hold == nil {
+func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, s TaskScope) (*intake.Refusal, error) {
+	issue, w := s.issue, s.walk
+	if issue.Phase != phase.Held || issue.Hold == nil || !planHold(issue, w.Stored) {
 		return nil, nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !planHold(issue, w.Stored) {
-		return nil, err
 	}
 	if record.HeldForChildren(issue) {
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
@@ -345,7 +339,8 @@ const (
 // for its children at its retro, and a stopped task at the step the stop ended, whose own role's
 // report is the run the stop ended and is no left phase's, so a run of a left phase is never also
 // that run.
-func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+	issue := s.issue
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
 	switch {
 	case err != nil:
@@ -353,9 +348,8 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 	case left:
 		return leftPhaseReported, nil
 	case record.HeldFor(issue, record.HoldTaskStopped) && issue.Hold.From == reported:
-		w, err := e.walk(ctx, tx, issue)
-		if err != nil || !planHold(issue, w.Stored) {
-			return noRunReported, err
+		if !planHold(issue, s.walk.Stored) {
+			return noRunReported, nil
 		}
 		return stoppedStepReported, nil
 	}
@@ -373,13 +367,10 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
 // writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
 // handoff record (spendLateHandoff).
-func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
-	if past != stoppedStepReported {
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
+	issue, w := s.issue, s.walk
+	if past != stoppedStepReported || !w.Stored {
 		return nil, nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
-		return nil, err
 	}
 	// The report is of the role's own step, so of two steps that run as step, only the one the stop
 	// ended (the task keeps its place at its stop) is late.

@@ -51,39 +51,39 @@ func seedTasks(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, 
 // atStep is the place of step n of a task.
 func atStep(n int) record.TaskPlace { return record.TaskPlace{Kind: record.PlaceStep, Position: n} }
 
-// onTask runs act in one transaction, as a fact applies it (applyInTx), on the copy of key read for
-// task (Engine.view) and the walk of that task.
-func onTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, act func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error) {
+// onTask runs act in one transaction, as a fact applies it (applyInTx), on the scope of task of
+// key (Engine.ScopeOf): the copy of key read for task and the walk of that task.
+func onTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, act func(ctx context.Context, tx pgx.Tx, s TaskScope) error) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
-		view, w, err := engine.view(ctx, tx, *issue, task)
+		s, err := engine.ScopeOf(ctx, tx, *issue, task)
 		if err != nil {
 			return err
 		}
-		return act(ctx, tx, view, w)
+		return act(ctx, tx, s)
 	})
 }
 
 // taskMoves runs one transition of task of key on trigger, as a completion of the step task
-// stands at moves it: on the copy of key read for task, with the phases row of that step's role
-// and the task's own pull request (pullRequestOf on that copy, as the completion reads it), and
-// reason for the move's notice and the step its work returns to.
+// stands at moves it: on the scope of task, with the phases row of that step's role and the task's
+// own pull request (taskPullRequest on that scope, as the completion reads it), and reason for the
+// move's notice and the step its work returns to.
 func taskMoves(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, trigger TriggerKind, reason string) {
 	t.Helper()
-	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-		pr, err := engine.pullRequestOf(ctx, tx, view)
+	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+		pr, err := engine.taskPullRequest(ctx, tx, s)
 		if err != nil {
 			return err
 		}
-		row, err := engine.phaseRow(ctx, tx, key, w.RoleAt(w.Place))
+		row, err := engine.phaseRow(ctx, tx, key, s.walk.RoleAt(s.walk.Place))
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, view, trigger, record.TaskPlace{}, row, pr, reason)
+		return engine.transition(ctx, tx, s, trigger, record.TaskPlace{}, row, pr, reason)
 	})
 }
 

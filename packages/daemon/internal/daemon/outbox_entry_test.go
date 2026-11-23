@@ -125,7 +125,11 @@ func startPromoted(ctx context.Context, db interface {
 }, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+		s, err := engine.PromotedScope(ctx, tx, issue, role)
+		if err != nil {
+			return err
+		}
+		if err := engine.StartPromotedWorker(ctx, tx, s, role); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -232,7 +236,12 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
+		engine := entryEngine(t)
+		s, err := engine.PromotedScope(ctx, tx, *issue, claim.RoleImplementer)
+		if err != nil {
+			return err
+		}
+		return engine.SendOwedEntry(ctx, tx, s, claim.RoleImplementer, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
 	}

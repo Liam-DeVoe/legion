@@ -110,9 +110,13 @@ func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger 
 		if err != nil {
 			return err
 		}
+		s, err := firstScope(ctx, tx, engine, issue)
+		if err != nil {
+			return err
+		}
 		// A move no completion records (a backward move) says why, as the engine
 		// requires of its notice; the other moves carry the reason unread.
-		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move")
+		return engine.transition(ctx, tx, s, trigger, target, handoff, pr, "the step test's move")
 	})
 }
 
@@ -329,14 +333,14 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		w, err := engine.walk(ctx, tx, issue)
+		s, err := firstScope(ctx, tx, engine, issue)
 		if err != nil {
 			return err
 		}
-		if err := engine.endStep(ctx, tx, issue, w, standingIn(record.StandsAt(issue)), stepStopped); err != nil {
+		if err := engine.endStep(ctx, tx, issue, s.walk, standingIn(record.StandsAt(issue)), stepStopped); err != nil {
 			return err
 		}
-		return engine.endStep(ctx, tx, issue, w, standingIn(record.StandsAt(issue)), stepStopped)
+		return engine.endStep(ctx, tx, issue, s.walk, standingIn(record.StandsAt(issue)), stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -757,11 +761,11 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		w, err := engine.walk(ctx, tx, root)
+		s, err := firstScope(ctx, tx, engine, root)
 		if err != nil {
 			return err
 		}
-		if err := engine.endStep(ctx, tx, root, w, standingIn(record.StandsAt(root)), stepStopped); err != nil {
+		if err := engine.endStep(ctx, tx, root, s.walk, standingIn(record.StandsAt(root)), stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)

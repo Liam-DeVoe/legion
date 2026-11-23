@@ -296,10 +296,11 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			return intake.Result{}, err
 		}
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	if decide {
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
@@ -312,7 +313,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 				"required", fact.Rules.Required, "green", green)
 		}
 	}
-	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
+	return intake.Result{}, e.reaskRound(ctx, tx, *scope, pr, prior, byMergeState)
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
@@ -794,10 +795,11 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
+	issue := &scope.issue
 	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
@@ -866,7 +868,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 				return intake.Result{}, err
 			}
 		}
-		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+		_, err := e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
 		return intake.Result{}, err
 	}
 	// Deciding reviews are ordered by when they were submitted, then by GitHub's review id
@@ -918,7 +920,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+	_, err = e.settleRound(ctx, tx, *scope, reviewer, pr, before, by)
 	return intake.Result{}, err
 }
 
@@ -1216,8 +1218,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
-func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
+func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pr *record.PullRequest) error {
+	return e.transition(ctx, tx, s, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
@@ -1235,16 +1237,17 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // A round GitHub will not merge from (stuckMergeState) is the one cause the reviewer cannot
 // decide, and the whole of its path - its own dedup, its own message to the reviewer, a notice
 // with no topic - is tellStuckMergeState's, which this asks for once.
-func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row record.PhaseRow, pr *record.PullRequest, before round, by string) (bool, error) {
+	issue := s.issue
 	r := e.reviewRound(issue, row, pr)
 	switch r.outcome {
 	case roundRejected:
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, s, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
+		return true, e.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1395,10 +1398,11 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
-	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-	if err != nil || issue == nil {
+	scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+	if err != nil || scope == nil {
 		return err
 	}
+	issue := &scope.issue
 	owed := classify.MergeStateReadOwed(*issue, fact)
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every

@@ -762,7 +762,11 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	if err := r.records.PutIssue(ctx, tx, control); err != nil {
 		t.Fatalf("record the control issue: %v", err)
 	}
-	task, err := r.engine.ResumeTask(ctx, tx, control)
+	s, err := r.engine.PromotedScope(ctx, tx, control, claim.RoleMerger)
+	if err != nil {
+		t.Fatalf("read the control issue's scope for its merger: %v", err)
+	}
+	task, err := r.engine.ResumeTask(ctx, tx, s)
 	if err != nil {
 		t.Fatalf("compose the control issue's resume task: %v", err)
 	}

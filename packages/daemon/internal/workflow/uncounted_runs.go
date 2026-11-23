@@ -49,23 +49,24 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 	booting := &factRuns{}
 	opened := 0
 	for _, issue := range issues {
-		views, walks, err := e.viewsOf(ctx, tx, issue)
+		scopes, err := e.scopes(ctx, tx, issue)
 		if err != nil {
 			return 0, err
 		}
-		for at, view := range views {
-			step, ok := standingStep(walks[at], view)
+		for _, s := range scopes {
+			view := s.issue
+			step, ok := standingStep(s.walk, view)
 			if !ok || counted[runAt{issue: issue.Key, place: step.place}] {
 				continue
 			}
-			_, open, err := e.uncountedRunOpen(ctx, tx, booting, view, read)
+			_, open, err := e.uncountedRunOpen(ctx, tx, booting, s, read)
 			if err != nil {
 				return 0, err
 			}
 			if !open {
 				continue
 			}
-			agent, startedAt, err := e.upgradedStart(ctx, tx, view, step.at)
+			agent, startedAt, err := e.upgradedStart(ctx, tx, s, step.at)
 			if err != nil {
 				return 0, err
 			}

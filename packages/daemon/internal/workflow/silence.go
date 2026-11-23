@@ -37,7 +37,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
-	issue, now := read.issue, e.now()
+	issue, now := read.scope.issue, e.now()
 	if unpromptedPhaseWorker(issue, read.root, read.gate, fact.Role, read.run) &&
 		ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now) {
 		return intake.Result{Unspent: true}, nil
@@ -50,7 +50,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.root, read.run, read.row, fact, now)
+	return intake.Result{}, e.repairSilence(ctx, tx, read.scope, read.root, read.run, read.row, fact, now)
 }
 
 // phaseWorkerRecord reads what both silence facts are decided from: the issue, its tree root, the
@@ -73,13 +73,13 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 		return nil, nil
 	}
 	// The root is the issue as recorded where the issue is its own root; the worker's step is
-	// read on the copy of the issue its step is given its work on (StepCopy).
+	// read on the scope of its step's task (ScopeOfStep).
 	root := issue
-	standing, err := StepCopy(ctx, e.store, tx, *issue, open[at])
+	scope, err := ScopeOfStep(ctx, e.store, tx, *issue, open[at])
 	if err != nil {
 		return nil, err
 	}
-	issue = &standing
+	issue = &scope.issue
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
 	if err != nil || !owed {
 		return nil, err
@@ -112,12 +112,13 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
+	return &phaseWorkerReading{scope: scope, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
 }
 
-// phaseWorkerReading is what phaseWorkerRecord answers.
+// phaseWorkerReading is what phaseWorkerRecord answers: scope is the scope of the worker's step's
+// task, whose copy of the issue is the issue every reader of the worker reads.
 type phaseWorkerReading struct {
-	issue record.Issue
+	scope TaskScope
 	root  record.Issue
 	gate  record.TreeGate
 	run   record.RoleRun
@@ -157,21 +158,22 @@ type phaseWorkerReading struct {
 // (record.QuietTrees), which is where a recovery is read.
 //
 // The log line goes through warnOnCommit, so a fact that rolls back logs no repair.
-func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root record.Issue, run record.RoleRun, row record.PhaseRow,
+func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, s TaskScope, root record.Issue, run record.RoleRun, row record.PhaseRow,
 	fact intake.WorkerSilent, now time.Time,
 ) error {
+	issue := s.issue
 	given := run.Claim.GivenEntry
 	behind := OwedEntry(run, root, row.Entry)
 	if behind {
-		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
+		if err := e.sendOwedEntry(ctx, tx, s, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
 	} else {
-		resume, err := e.ResumeTask(ctx, tx, issue)
+		resume, err := e.ResumeTask(ctx, tx, s)
 		if err != nil {
 			return err
 		}
-		if err := e.started(ctx, tx, issue, fact.Role, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+		if err := e.started(ctx, tx, s, fact.Role, resume, 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
 			return err
 		}
 	}
@@ -221,7 +223,7 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
-	issue, now := read.issue, e.now()
+	issue, now := read.scope.issue, e.now()
 	if !BackgroundStalledWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
 		return intake.Result{}, nil
 	}

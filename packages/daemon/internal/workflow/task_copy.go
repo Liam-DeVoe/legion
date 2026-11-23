@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// startTaskCopy gives task of issue's plan its branch at a start of the task, in the transaction
+// startTaskCopy gives s's task its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
 // the generation to start where no earlier generation gave it, or the one task of a plan of one,
 // else the first give of the task's slug no generation of the issue gave), and answers whether it
@@ -24,7 +24,8 @@ import (
 // the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
 // start of every step (Engine.start), at each start of a task, the first and a start again. A task
 // the plan does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issue, task string) (bool, error) {
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return false, err
@@ -87,11 +88,11 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, fact.Task, record.StepWaitNone, nil); err != nil {
 		return intake.Result{}, err
 	}
-	view, w, err := e.view(ctx, tx, *issue, fact.Task)
+	s, err := e.ScopeOf(ctx, tx, *issue, fact.Task)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.startAfterWait(ctx, tx, view, w, "workflow: a task's join ended, and its step starts",
+	return intake.Result{}, e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
 		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
 }
 

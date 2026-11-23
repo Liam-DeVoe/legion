@@ -92,40 +92,6 @@ func todaysWalk() Walk {
 	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Merges: true}
 }
 
-// walk is the walk of the task issue is read for (record.Issue.ViewTask) on its run's plan rows,
-// or today's line with Stored false (todaysWalk). A read that names no task walks the plan's one
-// task (record.StoredPlan.Task); a plan of several tasks read for none has no one walk, and is an
-// error, as is a plan of no task and a read for a task the plan does not hold. Each step runs as
-// the phase of its role (plan.RunsAs).
-func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-	if err != nil || stored == nil {
-		return todaysWalk(), err
-	}
-	return walkIn(issue, stored)
-}
-
-// walkIn is walk on stored, the plan of issue's run, which the caller read.
-func walkIn(issue record.Issue, stored *record.StoredPlan) (Walk, error) {
-	merging, _ := stored.MergingTask()
-	switch {
-	case issue.ViewTask != "":
-		task, ok := stored.TaskOf(issue.ViewTask)
-		if !ok {
-			return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds no task %s", issue.Key, issue.Generation, issue.ViewTask)
-		}
-		return walkOfTask(issue.Key, stored, task, merging), nil
-	case len(stored.Tasks) > 1:
-		return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds %d tasks, and this read names none of them",
-			issue.Key, issue.Generation, len(stored.Tasks))
-	}
-	task, err := stored.Task()
-	if err != nil {
-		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
-	}
-	return walkOfTask(issue.Key, stored, task, merging), nil
-}
-
 // walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
 // once: today's walk alone for a run with no plan rows (todaysWalk).
 func (e *Engine) walks(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]Walk, error) {
@@ -304,35 +270,49 @@ func taskStanding(w Walk) (phase.Phase, *record.Hold) {
 // task stands (taskStanding). issues.phase so names the phase of no step but one: a reader that
 // asks which steps run reads the issue's running steps (record.Issue.Running).
 func issuePhaseOfTasks(tasks []Walk) (phase.Phase, *record.Hold) {
+	at, hold, _ := standingOfTasks(tasks)
+	return at, hold
+}
+
+// standingOfTasks is issuePhaseOfTasks with the index in tasks of the task whose standing decides
+// it: the running task taken, else the held or stopped task taken, else the first task that waits,
+// and the first task where each is done or left; -1 for no task. A refusal of a write that
+// disagrees with the tasks names that task (WriteIssue).
+func standingOfTasks(tasks []Walk) (phase.Phase, *record.Hold, int) {
 	running, holding := -1, -1
+	runner, holder, waiter, done := -1, -1, -1, -1
 	var runs phase.Phase
 	var hold *record.Hold
-	open := false
-	for _, w := range tasks {
+	for i, w := range tasks {
 		at, held := taskStanding(w)
 		switch w.State {
 		case record.TaskDone, record.TaskLeft:
-			continue
+			if done < 0 {
+				done = i
+			}
 		case record.TaskRunning:
 			if rank := orderRank(at); running < 0 || rank < running {
-				running, runs = rank, at
+				running, runs, runner = rank, at, i
 			}
 		case record.TaskHeld, record.TaskStopped:
 			if rank := orderRank(held.From); holding < 0 || rank < holding {
-				holding, hold = rank, held
+				holding, hold, holder = rank, held, i
+			}
+		default:
+			if waiter < 0 {
+				waiter = i
 			}
 		}
-		open = true
 	}
 	switch {
-	case !open:
-		return phase.Done, nil
-	case running >= 0:
-		return runs, nil
-	case holding >= 0:
-		return phase.Held, hold
+	case runner >= 0:
+		return runs, nil, runner
+	case holder >= 0:
+		return phase.Held, hold, holder
+	case waiter >= 0:
+		return phase.Admitted, nil, waiter
 	}
-	return phase.Admitted, nil
+	return phase.Done, nil, done
 }
 
 // orderRank is where p stands in today's order (phase.Order), from 1, for issuePhaseOfTasks's rule:
@@ -361,11 +341,12 @@ func orderRank(p phase.Phase) int {
 // move ends any wait the task had, so the moved task's step is a running step at once. w then
 // stands where the task does, its wait among it but not the moment the store wrote, which no
 // reader of a walk reads, for whatever the caller reads of it after the move. A run with no plan
-// rows has no task to move:
-// issue.Phase is to, as it always was, and its one running step stands at to
-// (record.RunningOf). A move to where the task already stands writes nothing. The caller clears
-// or keeps issue.Hold itself.
-func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, place record.TaskPlace, state record.TaskState) error {
+// rows has no task to move: its copy's phase is to, as it always was, and its one running step
+// stands at to (record.RunningOf). A move to where the task already stands writes nothing. The
+// caller clears or keeps the copy's hold itself. s's copy and walk are moved together, so no move
+// of a task is written on a bare issue.
+func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, s *TaskScope, to phase.Phase, place record.TaskPlace, state record.TaskState) error {
+	issue, w := &s.issue, &s.walk
 	if !w.Stored {
 		issue.Phase = to
 		issue.Running = record.RunningOf(*issue, false, nil)
@@ -393,43 +374,51 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	return nil
 }
 
-// WriteIssue writes issue (record.Store.PutIssue) through putIssue, and is the one write of an
-// issue of the workflow and of admission: no other code of either package calls a store's
-// PutIssue. issues.phase and the place of the run's task are two records of where the issue
-// stands, and WriteIssue refuses a write in which they disagree: the issue stands in the phase its
-// task's place and state derive (issuePhaseOf), a hold overlays that phase and names it
-// (record.StandsAt), and a root that waits on a person before its first step stands in
-// awaiting_person over the admitted of a task at no act. That root stands there itself: no hold is
-// from awaiting_person, which the issues table refuses (issues_held_from_check), so a hold that
-// names it is refused here too. An issue whose plan holds several tasks stands where they put it
-// (issuePhaseOfTasks), and a copy of it read for one of them is written in that phase (putIssue).
-// It reads the plan in the caller's transaction, after any move of a task (moveTask), so a write
-// that names its phase itself is checked against the store and not against the caller's copy: one
-// read of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
-// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows. A workflow move
-// writes through writeIssueOn instead, on the walk it read once and moved.
+// WriteIssue writes issue (record.Store.PutIssue), the issue itself and never a copy read for one
+// of its tasks, which a step handler writes through putScope: the aggregate write of the workflow
+// and of admission, and no other code of either package calls a store's PutIssue. issues.phase and
+// the places of the run's tasks are two records of where the issue stands, and WriteIssue refuses
+// a write in which they disagree: a run with plan rows stands where its tasks put it, whatever the
+// plan's count of tasks (derivedStanding: issuePhaseOfTasks, a root that waits on a person before
+// its first step in awaiting_person over admitted, and a hold the release before wrote on the issue
+// alone, where a task runs and none is held or stopped, heldBeforeOver), a hold from the phase its
+// tasks' hold is from. The refusal names the phase the write stands in (a hold by the phase it is
+// from) and the task whose standing decides the issue's (standingOfTasks): its state, its place and
+// the phase that place stands in. It reads the plan in the caller's transaction, after any move of
+// a task (moveTask), so a write that names its phase itself is checked against the store and not
+// against the caller's copy. A run with no plan rows has only its phase, and is written as given.
 func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	_, err := e.putIssue(ctx, tx, issue)
-	return err
-}
-
-// writeIssueOn is WriteIssue's check and write on w, the walk of issue's run as the caller holds
-// it: WriteIssue's own read, or a workflow move, which read w and moved its task on it (moveTask),
-// so w is where the store holds the task: moveTask writes the place and the state it sets on w,
-// in the same transaction.
-func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
-	if w.Stored {
-		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
-		if at != task && (issue.Phase != phase.AwaitingPerson || task != phase.Admitted) {
-			stands := string(at)
-			if at != issue.Phase {
-				stands = "held from " + stands
-			}
-			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
-				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return err
+	}
+	if stored != nil {
+		walks := walksOf(issue.Key, stored)
+		at, hold := derivedStanding(issue, walks, heldBeforeOver(walks))
+		if issue.Phase != at || at == phase.Held && (issue.Hold == nil || hold == nil || issue.Hold.From != hold.From) {
+			return writeRefusal(issue, walks)
 		}
 	}
 	return e.store.PutIssue(ctx, tx, issue)
+}
+
+// writeRefusal is WriteIssue's refusal of issue, whose phase disagrees with tasks, the walk of each
+// task of its run: the phase issue stands in, held from the phase its hold is from, and the state,
+// the place and the phase of that place of the task whose standing decides the issue's
+// (standingOfTasks).
+func writeRefusal(issue record.Issue, tasks []Walk) error {
+	at := record.StandsAt(issue)
+	stands := string(at)
+	if at != issue.Phase {
+		stands = "held from " + stands
+	}
+	_, _, decides := standingOfTasks(tasks)
+	if decides < 0 {
+		return fmt.Errorf("put %s at generation %d: it stands in %s, and its plan holds no task", issue.Key, issue.Generation, stands)
+	}
+	w := tasks[decides]
+	return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
+		issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, issuePhaseOf(w, w.Place, w.State))
 }
 
 // row is the row of w's table that moves an issue standing in from on trigger, into target where

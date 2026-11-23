@@ -286,14 +286,11 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 // writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
 // — none ran, one is open, or one an earlier release started after a rollback, whose record this
 // release has not written — nor a record key that is no issue key.
-func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role, report string) error {
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase, role claim.Role, report string) error {
 	if report == "" {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
+	issue, w := s.issue, s.walk
 	place, ok := w.PlaceOf(at)
 	if at == phase.Step {
 		place, ok = w.placeOfRole(role)
@@ -328,14 +325,15 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 // GitHub had already made when the issue reached merging, which started no merger: an entry never
 // raised, or one raised before the retro's completion that brought the issue there, the one move
 // into merging (the table's retro row), which is an earlier visit's.
-func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
+func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, time.Time, error) {
+	issue := s.issue
 	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
 	var worker claim.Role
 	if running := issue.RunningAt(at); len(running) > 0 {
 		worker = running[0].Role
 	}
 	if worker == claim.RoleArchitect {
-		agent, err := e.startAgent(ctx, tx, issue, at)
+		agent, err := e.startAgent(ctx, tx, s, at)
 		return agent, time.Time{}, err
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, worker)
@@ -352,14 +350,15 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return "", time.Time{}, nil
 		}
 	}
-	agent, err := e.placeToken(ctx, tx, issue, at, worker)
+	agent, err := e.placeToken(s, at, worker)
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
-// startAgent is the agent a start of the step issue stands in at names: for accepting, the
-// architect that owns issue now (acceptingAgent), nobody for a merge GitHub has already made,
+// startAgent is the agent a start of the step s's copy stands in at names: for accepting, the
+// architect that owns the issue now (acceptingAgent), nobody for a merge GitHub has already made,
 // where no merger starts, and the agent of the step's place otherwise (placeToken).
-func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
+func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, error) {
+	issue := s.issue
 	switch at {
 	case phase.Accepting:
 		return e.acceptingAgent(ctx, tx, issue)
@@ -376,16 +375,13 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if running := issue.RunningAt(at); len(running) > 0 {
 		worker = running[0].Role
 	}
-	return e.placeToken(ctx, tx, issue, at, worker)
+	return e.placeToken(s, at, worker)
 }
 
-// placeToken is the claim token of the agent of the work issue stands in at, read on the walk of
-// issue's run (stepToken), and role's own token where the walk holds no place for at.
-func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role) (claim.Token, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return "", err
-	}
+// placeToken is the claim token of the agent of the work s's copy stands in at, read on the walk
+// of s's task (stepToken), and role's own token where the walk holds no place for at.
+func (e *Engine) placeToken(s TaskScope, at phase.Phase, role claim.Role) (claim.Token, error) {
+	issue, w := s.issue, s.walk
 	place, ok := w.placeIn(at)
 	if !ok {
 		return stepClaim(issue, issue.Key, role)
@@ -474,12 +470,12 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 // names: a move into accepting, whose role is the architect, for which start starts no worker, or
 // into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
 // admission's promotion of a member whose worker it does not start (StartStepRecord).
-func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
-	agent, err := e.startAgent(ctx, tx, issue, step.at)
+func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, s TaskScope, step standing) error {
+	agent, err := e.startAgent(ctx, tx, s, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent)
+	return e.startStep(ctx, tx, s.issue, step, agent)
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -543,14 +539,14 @@ func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite,
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	views, walks, err := e.viewsOf(ctx, tx, issue)
+	scopes, err := e.scopes(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
 	var runs []record.IssueStepRun
 	read := false
-	for at, view := range views {
-		step, ok := standingStep(walks[at], view)
+	for _, s := range scopes {
+		step, ok := standingStep(s.walk, s.issue)
 		if !ok {
 			continue
 		}
@@ -565,7 +561,7 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 		}) {
 			continue
 		}
-		if err := e.startNamedStep(ctx, tx, view, step); err != nil {
+		if err := e.startNamedStep(ctx, tx, s, step); err != nil {
 			return err
 		}
 	}

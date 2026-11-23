@@ -40,7 +40,11 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, record.TaskPlace{}, reviewer, pr, "")
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, reviewer, pr, "")
 	})
 
 }

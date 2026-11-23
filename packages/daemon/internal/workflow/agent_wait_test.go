@@ -197,8 +197,8 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 		seedTaskBranch(t, pool, root.Key, "w", "legion/"+root.Key+".w")
 		seedTaskPR(t, pool, engine, root.Key, "w", 45)
 
-		onTask(t, pool, engine, root.Key, "w", func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-			pr, err := engine.pullRequestOf(ctx, tx, view)
+		onTask(t, pool, engine, root.Key, "w", func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+			pr, err := engine.taskPullRequest(ctx, tx, s)
 			if err != nil {
 				return err
 			}
@@ -206,7 +206,7 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return engine.transition(ctx, tx, view, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
+			return engine.transition(ctx, tx, s, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
 		})
 
 		tasks := tasksOf(t, pool, engine, root.Key)
@@ -377,7 +377,7 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("read the boot's owners: %v", err)
 		}
-		if len(owners.suspended) != 1 || owners.suspended[0].token != k || owners.suspended[0].issue.Phase != phase.Implementing {
+		if len(owners.suspended) != 1 || owners.suspended[0].token != k || owners.suspended[0].scope.issue.Phase != phase.Implementing {
 			t.Fatalf("the boot's owners of %s = %+v, want the claim of k once, at m's implementing", root.Key, owners.suspended)
 		}
 
@@ -530,8 +530,8 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 			name: "the owner's send-back",
 			back: moveBack{second: "reviewer", at: phase.Implementing,
 				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
-					onTask(t, pool, engine, key, "w", func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-						pr, err := engine.pullRequestOf(ctx, tx, view)
+					onTask(t, pool, engine, key, "w", func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+						pr, err := engine.taskPullRequest(ctx, tx, s)
 						if err != nil {
 							return err
 						}
@@ -539,7 +539,7 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return engine.transition(ctx, tx, view, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
+						return engine.transition(ctx, tx, s, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
 					})
 				}},
 			told: " Pull request: #45. Reason: the owner sends the work back. Task text:",
