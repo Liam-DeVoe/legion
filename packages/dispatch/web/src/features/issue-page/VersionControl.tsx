@@ -22,8 +22,9 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
-/** The control's buttons: the page's small control, as the row's other controls are. */
-const toolbarButton = `disabled:cursor-not-allowed disabled:opacity-50 ${pageHeaderControl}`;
+/** The control's buttons: the page's small control, as the row's other controls are, refused
+ *  alike whether `disabled` (a closed issue) or `aria-disabled` (a write of theirs still out). */
+const toolbarButton = `refused:cursor-not-allowed refused:opacity-50 ${pageHeaderControl}`;
 
 /**
  * The version control beside the filters (dispatch://INFRA-1196 R2, R3, and the Design's "Where
@@ -92,15 +93,11 @@ export function VersionControl({
       {toolbar === undefined ? (
         <NameVersion artifact={artifact} isClosed={isClosed} />
       ) : (
-        <button
-          className={toolbarButton}
-          disabled={isClosed || toolbar.isNamingVersion}
-          onClick={toolbar.requestNamedVersion}
-          type="button"
-          {...pageChrome}
-        >
-          {CONTROL_LABELS.name_version}
-        </button>
+        <NameVersionButton
+          isClosed={isClosed}
+          naming={toolbar.isNamingVersion}
+          onPress={toolbar.requestNamedVersion}
+        />
       )}
       {toolbar === undefined ? null : (
         <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
@@ -149,9 +146,42 @@ export function VersionControl({
 }
 
 /**
+ * "Name version", which opens the name dialog. While a name it asked for is being saved it is
+ * refused with `aria-disabled` and its press does nothing, never `disabled` (decisions 223 and
+ * 245): the dialog's close gives the focus back to it once the versions' re-read is in, which a
+ * disabled control could not take, and the focus would fall to the page's body.
+ */
+function NameVersionButton({
+  isClosed,
+  naming,
+  onPress,
+}: {
+  isClosed: boolean;
+  naming: boolean;
+  onPress: () => void;
+}): ReactNode {
+  return (
+    <button
+      aria-busy={naming || undefined}
+      aria-disabled={naming || undefined}
+      className={toolbarButton}
+      disabled={isClosed}
+      onClick={() => {
+        if (!naming) onPress();
+      }}
+      type="button"
+      {...pageChrome}
+    >
+      {CONTROL_LABELS.name_version}
+    </button>
+  );
+}
+
+/**
  * Names the document's current text with no editor of it on the page: the write the editor's own
  * name dialog makes (`ProofDocument.tsx`), through the same dialog, and the issue read again so
- * the picker lists the version it made.
+ * the picker lists the version it made. The dialog stays open, its Save busy, until that read is
+ * in, and closes then, so its close gives the focus back to Name version once (ST-6).
  */
 function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boolean }): ReactNode {
   const queryClient = useQueryClient();
@@ -162,24 +192,32 @@ function NameVersion({ artifact, isClosed }: { artifact: Artifact; isClosed: boo
     method: "POST",
     inline: true,
     label: () => `New version of ${artifact.name}`,
-    onSuccess: () => {
-      // Made either way, so the dialog closes and a second press names nothing twice.
-      setOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
+    onSuccess: async () => {
+      // Made either way, so a second press names nothing twice. The write stays pending until
+      // the issue's own read, whose documents' versions the picker lists, is in again: Save stays
+      // busy until then, and the dialog closes only then. The issue's other reads and the
+      // document's are asked again beside it, as before; none of them asks that read again,
+      // which would cancel the one this waits for.
+      const reread = queryClient.invalidateQueries({
+        exact: true,
+        queryKey: ["issue", artifact.issue_key],
+      });
+      void queryClient.invalidateQueries({
+        predicate: ({ queryKey }) => queryKey.length > 2,
+        queryKey: ["issue", artifact.issue_key],
+      });
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      await reread;
+      setOpen(false);
     },
   });
   return (
     <>
-      <button
-        className={toolbarButton}
-        disabled={isClosed || name.isPending}
-        onClick={() => setOpen(true)}
-        type="button"
-        {...pageChrome}
-      >
-        {CONTROL_LABELS.name_version}
-      </button>
+      <NameVersionButton
+        isClosed={isClosed}
+        naming={name.isPending}
+        onPress={() => setOpen(true)}
+      />
       <NameVersionDialog
         error={name.error}
         onClose={() => {

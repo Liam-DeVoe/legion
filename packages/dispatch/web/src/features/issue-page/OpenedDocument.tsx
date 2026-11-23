@@ -2,12 +2,7 @@ import { type ReactNode, useContext, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
-import {
-  focusVisibleRing,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-} from "../../theme/classes";
+import { pageHeaderControl } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
@@ -15,13 +10,39 @@ import type { IssueRoute } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
 import { DocumentStage, useDocumentStage } from "./document-stage";
+import { type FocusFallback, type FocusLoss, useFocusKeeper } from "./focus-keeper";
 import { pageChrome } from "./page-structure";
 import { blockAttributeLabel, CONTROL_LABELS, nodeTypeName } from "./page-words";
 import { EditorBox } from "./StagedDocument";
+import { useDocumentToolbars } from "./useDocumentToolbars";
 
 /** The page's words for a typed block's type and its attributes (`page-words.ts`), which the
  *  opened document draws in place of the schema's tokens (part N's R9, R12). */
 const BLOCK_NAMES = { attribute: blockAttributeLabel, type: nodeTypeName } as const;
+
+/**
+ * The opened document's heading, its name as its head draws it: the region's first heading
+ * (`ArtifactHeader`'s, ahead of the editor and every dialog the editor draws). A Rebuild that
+ * succeeds takes its own offer away and hands its focus to nothing (decision 223), so the reader
+ * lands on the rebuilt document's name rather than on the page's body. A heading is no control,
+ * so it is focusable by script alone, out of the tab order (`tabindex="-1"`), from the moment it
+ * is handed the focus. A slug the issue does not hold draws no heading, and the focus stays where
+ * the browser leaves it.
+ *
+ * A focus lost inside a dialog the document draws, as the name dialog's text box is as it closes,
+ * is that dialog's own to give back: it gives it to the control that opened it (`useDialog`), so
+ * the region places nothing, and the focus moves once.
+ */
+function headingOf({ lost, root }: FocusLoss): HTMLElement | null {
+  if (lost.closest('[role="dialog"]') !== null) return null;
+  const heading = root.querySelector<HTMLElement>("h1, h2, h3");
+  if (heading !== null) heading.tabIndex = -1;
+  return heading;
+}
+
+/** Where the opened document's region gives the focus that a change took away with no control
+ *  left to take it (R16, decision 259). */
+const DOCUMENT_FOCUS_FALLBACKS: readonly FocusFallback[] = [headingOf];
 
 /**
  * A document or file of the issue, opened in the main column in place of the outline
@@ -71,6 +92,12 @@ export function OpenedDocument({
 }): ReactNode {
   const navigate = useNavigate();
   const box = useRef<HTMLDivElement>(null);
+  // The region keeps the reader's place (R16): a control of the document that goes while it
+  // holds the focus, as Rebuild does once the rebuilt document is drawn, hands it to the heading.
+  useFocusKeeper(box, DOCUMENT_FOCUS_FALLBACKS);
+  // The versions the document's editor reads, which its head names the latest of: newer than the
+  // issue's own read once a version is named here.
+  const { toolbars } = useDocumentToolbars();
 
   useEffect(() => {
     const held = box.current;
@@ -122,7 +149,7 @@ export function OpenedDocument({
     <div className="flex min-w-0 flex-col gap-3 outline-none" ref={box} tabIndex={-1}>
       <div>
         <button
-          className={`inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-medium md:min-h-9 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+          className={pageHeaderControl}
           onClick={() => navigate(outline)}
           type="button"
           {...pageChrome}
@@ -130,7 +157,12 @@ export function OpenedDocument({
           {CONTROL_LABELS.close_document}
         </button>
       </div>
-      <ArtifactRoutePanel artifact={artifact} artifactRoute={artifactRoute} isClosed={isClosed}>
+      <ArtifactRoutePanel
+        artifact={artifact}
+        artifactRoute={artifactRoute}
+        isClosed={isClosed}
+        versions={artifact === undefined ? undefined : toolbars.get(artifact.id)?.versions}
+      >
         {artifact === undefined || artifact.kind !== "doc" ? null : (
           <DocumentRuntime.Provider value={namedRuntime}>
             <OpenedEditor

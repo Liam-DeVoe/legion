@@ -75,6 +75,7 @@ export function versionsNewestFirst(versions: readonly Version[] | null): Versio
 
 export function ArtifactHeader({
   artifact,
+  byline,
   children,
   highlight,
   documentActions = false,
@@ -86,6 +87,10 @@ export function ArtifactHeader({
   version,
 }: {
   artifact: Artifact;
+  /** A line drawn under the name: the new issue page's opened document says which version it
+   *  shows, who wrote it and when (dispatch://INFRA-1196 part N's R2). None by default, which is
+   *  today's header. */
+  byline?: ReactNode;
   /** Draw Correct title and Remove where no toolbar is given. With a toolbar the header draws
    *  them beside the document's version controls, as it always has. The new issue page gives its
    *  opened document's header none, since it draws the version controls beside its views
@@ -195,6 +200,7 @@ export function ArtifactHeader({
             </h2>
             <CopyRefButton className="-my-2 md:-my-0.5" route={documentRoute(artifact, version)} />
           </div>
+          {byline}
           {artifact.approval === undefined ? null : (
             <div className="mt-1">
               {/* Keyed by the document, as the correction and the removal below are: the chip

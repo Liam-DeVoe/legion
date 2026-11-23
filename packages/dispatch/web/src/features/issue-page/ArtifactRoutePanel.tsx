@@ -1,13 +1,53 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
-import type { Artifact } from "../../api/types";
-import { dangerText } from "../../theme/classes";
+import type { Artifact, Version } from "../../api/types";
+import { dangerText, pageQuietText } from "../../theme/classes";
 import { ArtifactDetails } from "../artifacts/ArtifactDetails";
-import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { ArtifactBlobView, ArtifactHeader, versionsNewestFirst } from "../artifacts/ArtifactHeader";
+import { AgentName } from "../refs/AgentName";
 import type { DispatchRoute } from "../refs/routes";
 import { IssueReferenceClosure } from "./IssueReferenceClosure";
-import { pageChrome } from "./page-structure";
-import { EMPTY_STATE_LINES } from "./page-words";
+import { shortDay } from "./node-time";
+import { authorText, pageChrome } from "./page-structure";
+import { EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
+
+/**
+ * The line under an opened document's name (part N's R2, the prototype's `openDoc`): the version
+ * it shows, who wrote that version and the day it was made, "version 3 · alice · 5 Nov". The
+ * number, the names and the day are the document's own; the word and the dots are the page's.
+ */
+function VersionByline({ version }: { version: Version }): ReactNode {
+  const day = shortDay(version.created_at);
+  const authors = version.authors ?? [];
+  return (
+    <p
+      className={`mt-1 text-xs ${pageQuietText}`}
+      data-testid="opened-artifact-version"
+      {...pageChrome}
+    >
+      {FILE_WORDS.version} <span {...authorText}>{version.number}</span>
+      {authors.length === 0 ? null : (
+        <>
+          {" · "}
+          <span {...authorText}>
+            {authors.map((author, index) => (
+              <Fragment key={`${author.kind}:${author.id}`}>
+                {index === 0 ? null : ", "}
+                <AgentName actor={author} author inline />
+              </Fragment>
+            ))}
+          </span>
+        </>
+      )}
+      {day === "" ? null : (
+        <>
+          {" · "}
+          <span {...authorText}>{day}</span>
+        </>
+      )}
+    </p>
+  );
+}
 
 /**
  * One artifact of an issue, as its own address `/issues/<key>/artifacts/<slug>` opens it: drawn
@@ -29,12 +69,16 @@ export function ArtifactRoutePanel({
   artifactRoute,
   children,
   isClosed,
+  versions,
 }: {
   artifact: Artifact | undefined;
   artifactRoute: Extract<DispatchRoute, { kind: "artifact" }>;
   /** The document's editor, drawn under its header; nothing for a file. */
   children: ReactNode;
   isClosed: boolean;
+  /** The versions the document's editor read, newer than the issue's own read once a version is
+   *  named; the artifact's own where no editor reported any. */
+  versions?: readonly Version[];
 }): ReactNode {
   // A slug the issue does not hold is said in the page's own line: not the slug, which is an
   // identifier, and not the word the old tab used (part N's R2). The region is named by the
@@ -53,10 +97,17 @@ export function ArtifactRoutePanel({
     );
   }
   const isDocument = artifact.kind === "doc";
+  // The version the head names: the one the address pins, else the latest.
+  const listed = versionsNewestFirst(versions ?? artifact.versions);
+  const shown =
+    artifactRoute.version === undefined
+      ? listed[0]
+      : listed.find((one) => one.number === artifactRoute.version);
   return (
     <section aria-label={artifact.name} className="space-y-4" data-testid="opened-artifact">
       <ArtifactHeader
         artifact={artifact}
+        byline={shown === undefined ? undefined : <VersionByline version={shown} />}
         documentActions={isDocument}
         highlight
         isClosed={isClosed}

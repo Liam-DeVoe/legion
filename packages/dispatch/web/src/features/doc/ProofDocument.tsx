@@ -424,6 +424,20 @@ export function ProofDocument({
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
+  /**
+   * Inside `NoTooltips`, the new issue page's opened document (decisions 223, 245 and 362), what a
+   * named version does once its write lands, in place of closing the dialog at once: it reads the
+   * document's record again, whose versions then list the one just made, and closes the dialog
+   * once that read is in, so the dialog's close gives the focus back to its opener, "Name
+   * version", once and never sooner. `onSuccess` returns this, so the write stays pending until
+   * then: Save and the text box stay busy, and a press in between sends nothing. The version
+   * just made opens as it does on today's page, as the dialog closes.
+   */
+  const nameOnceRead = async (created: Version | null): Promise<void> => {
+    await queryClient.invalidateQueries({ exact: true, queryKey: ["artifact", artifact.id] });
+    setIsNameDialogOpen(false);
+    if (created !== null) onVersionChange(created.number);
+  };
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
   const nameVersion = useKeyedWrite({
@@ -435,6 +449,7 @@ export function ProofDocument({
     onSuccess: (created) => {
       // Made either way, so the dialog closes and a second press names nothing twice; with no
       // answer to give, the store has read the document again.
+      if (!tooltips) return nameOnceRead(created);
       setIsNameDialogOpen(false);
       if (created === null) return;
       // Over any read of the document still out: asked before the version was made, it would

@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a file dropped on the menu, which user-event has no form for
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -377,5 +378,101 @@ test("Remove sends the delete for a document the issue can drop, and nowhere els
     expect(screen.getByRole("button", { name: "Remove" })).toHaveAttribute("aria-disabled", "true");
   } finally {
     closed.unmount();
+  }
+});
+
+// A closed issue takes no file and no document from the menu, by any way in: each item stays,
+// refused, with the reason as its description; a press or Enter on Upload opens no chooser and on
+// New document opens no form; a file dropped on the open menu is not staged; and nothing is sent.
+test("a closed issue refuses Upload and New document and says why", async () => {
+  const user = userEvent.setup();
+  const uploadArtifact = spyOn(api, "uploadArtifact");
+  const view = renderMenu(true);
+  try {
+    const upload = screen.getByRole("menuitem", { name: CONTROL_LABELS.upload });
+    const newDocument = screen.getByRole("menuitem", { name: CONTROL_LABELS.new_document });
+    for (const item of [upload, newDocument]) {
+      expect(item).toHaveAttribute("aria-disabled", "true");
+      expect(item).toHaveAccessibleDescription(CLOSED_ISSUE_DOCUMENT_REFUSAL);
+      expect(item).toHaveTextContent(CLOSED_ISSUE_DOCUMENT_REFUSAL);
+    }
+    const chooser = screen.getByLabelText(CONTROL_LABELS.upload_file);
+    expect(chooser).toBeDisabled();
+    const opened = spyOn(chooser, "click");
+    try {
+      await user.click(upload);
+      upload.focus();
+      await user.keyboard("{Enter}");
+      expect(opened).not.toHaveBeenCalled();
+    } finally {
+      opened.mockRestore();
+    }
+    newDocument.focus();
+    await user.keyboard("{Enter}");
+    await user.click(newDocument);
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Title" })).not.toBeInTheDocument();
+
+    const notes = new File(["# Notes\n"], "notes.md", { type: "text/markdown" });
+    fireEvent.drop(screen.getByRole("menu"), { dataTransfer: { files: [notes] } });
+    expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
+    expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+  }
+});
+
+/** A document the issue holds under the name of a file a reader uploads: the upload replaces it. */
+const notesDocument = {
+  ...background,
+  id: "artifact-notes",
+  name: "notes.md",
+  ref_key: "CORE-1/notes-md",
+  slug: "notes-md",
+} satisfies Artifact;
+
+// An upload under the name of a document the issue holds replaces that document, and Dispatch
+// takes it only where it names the version it replaces (`main`'s `useArtifactUpload`): the menu
+// reads that version's token as the file is picked, and Upload sends it as the upload's base.
+test("Upload carries the replaced version's token", async () => {
+  const user = userEvent.setup();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:live-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
+    artifact: notesDocument,
+    version: notesDocument.versions[0],
+  });
+  const view = renderMenu(false, [background, notesDocument]);
+  try {
+    await user.click(screen.getByRole("menuitem", { name: CONTROL_LABELS.upload }));
+    const notes = new File(["# Notes, again\n"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText(CONTROL_LABELS.upload_file), notes);
+    await waitFor(() =>
+      expect(ownerArtifactText).toHaveBeenCalledWith({ issue: "CORE-1" }, "notes.md")
+    );
+    expect(uploadArtifact).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await waitFor(() =>
+      expect(uploadArtifact).toHaveBeenCalledWith(
+        { issue: "CORE-1" },
+        {
+          file: notes,
+          name: "notes.md",
+          precondition: { document: "sha256:live-notes" },
+          summary: undefined,
+        },
+        keyedAttempt
+      )
+    );
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
   }
 });

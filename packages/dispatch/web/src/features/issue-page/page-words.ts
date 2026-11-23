@@ -1408,6 +1408,10 @@ export const FILE_WORDS = freeze({
   file: "file",
   image: "image",
   primary: "Primary",
+  /** What the head of a document or file opened in place of the outline says of the version it
+   *  shows, before that version's number, its author and its day: "version 3 · alice · 5 Nov"
+   *  (part N's R2). */
+  version: "version",
 } as const);
 
 /**
