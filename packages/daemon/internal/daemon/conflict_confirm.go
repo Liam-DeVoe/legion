@@ -52,7 +52,7 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil || r.queueMergeStateFollow == nil {
 		return errors.New("conflict confirm executor has no read of a pull request from GitHub")
 	}
-	recorded, err := issueRecord(ctx, r.pool, r.records, row.Issue)
+	recorded, err := issueRecord(ctx, r.pool, r.records, row.Issue, "")
 	if err != nil {
 		return err
 	}

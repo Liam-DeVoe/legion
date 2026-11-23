@@ -403,3 +403,160 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 		assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
 	})
 }
+
+// The hand-on goes on to each issue a fact wrote after one the record does not hold: the fact
+// writes LEGION-999, which the daemon records nothing of, and then LEGION-208, whose task p waits
+// for agent k, which no step holds. The settle starts p's step for k.
+//
+// The fault it catches is a hand-on that stops at the first issue with no record, so the agents of
+// every later issue the same fact wrote are handed on to nobody (its control: the hand-on that
+// returns at such an issue, under which p keeps its wait).
+func TestTheHandOnGoesOnPastAnIssueWithNoRecord(t *testing.T) {
+	pool := migratedPool(t)
+	engine, _ := tickingEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "p", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"p"}, state: record.TaskWaiting})
+	since := stepClock.Add(-time.Hour)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().SetStepWait(t.Context(), tx, root.Key, root.Generation, "p", record.StepWaitAgent, &since)
+	})
+
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		for _, key := range []string{"LEGION-999", root.Key} {
+			if err := engine.store.DeleteHandover(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "p", atStep(1), record.StepWaitNone)
+	assertStartOf(t, newestStart(t, pool, root.Key, claim.RoleImplementer), root.Key, "p", "k")
+}
+
+// moveBack is a move of task w, `implementer:k <second>`, back from its second step to its first,
+// on an issue standing at at: report is the phases row of the second step's role the move reads,
+// none where nil, and move makes the move on key.
+type moveBack struct {
+	second string
+	at     phase.Phase
+	report *record.PhaseRow
+	move   func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string)
+}
+
+// moveBackStart is the start of w's first step, `implementer:k`, after back moved w there, and the
+// implementer's phases row after that start. Task m, `implementer:k`, holds k at its step where
+// busy, and w's step waits for k until m passes; else m is done and w's step starts at once. z,
+// which needs m and w, is of a role neither runs.
+func moveBackStart(t *testing.T, back moveBack, busy bool) (record.SuperviseRequest, record.PhaseRow) {
+	t.Helper()
+	pool := migratedPool(t)
+	engine, _ := tickingEngine()
+	root := stepRoot(t, pool, back.at)
+	m := planTask{id: "m", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskDone, place: atStep(1)}
+	if busy {
+		m.state = record.TaskRunning
+	}
+	last := "reviewer"
+	if back.second == last {
+		last = "tester"
+	}
+	seedTasks(t, pool, root.Key, root.Generation, m,
+		planTask{id: "w", steps: []string{"implementer:k", back.second}, agents: []claim.Agent{"k", claim.Agent(back.second)}, state: record.TaskRunning, place: atStep(2)},
+		planTask{id: "z", steps: []string{last}, agents: []claim.Agent{claim.Agent(last)}, needs: []string{"m", "w"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "w", "legion/"+root.Key+".w")
+	seedTaskPR(t, pool, engine, root.Key, "w", 45)
+	if back.report != nil {
+		row := *back.report
+		row.Issue, row.Claim = root.Key, agentClaim(t, root.Key, claim.Agent(back.second))
+		seedPhase(t, pool, row)
+	}
+
+	back.move(t, pool, engine, root.Key)
+	if busy {
+		assertWaits(t, tasksOf(t, pool, engine, root.Key), "w", atStep(1), record.StepWaitAgent)
+		assertNothingStarted(t, pool, root.Key, "w", atStep(1))
+		taskMoves(t, pool, engine, root.Key, "m", TriggerImplementationReady, "")
+		joinsEnd(t, pool, engine, root.Key)
+	}
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "w", atStep(1), record.StepWaitNone)
+	start := newestStart(t, pool, root.Key, claim.RoleImplementer)
+	assertStartOf(t, start, root.Key, "w", "k")
+	return start, storedPhaseRow(t, pool, root.Key, claim.RoleImplementer)
+}
+
+// A move back whose step waits for its agent keeps what makes it a move back until the agent is
+// free: task w, `implementer:k <second>`, is moved back from its second step to its first, whose
+// agent k does task m's step, so it waits for k; m passes, and w's step starts for k. That start is
+// told word for word what the start of the same move back is told where k was free: the report of
+// the step that sent the work back (under the labels the prompts read: Handoff:, Handoff commit:,
+// Tester's verdict:), then the move's own reason, a person's or a review's text, last, in the
+// reason's place after the pull request and before the task's text, and that report once. Each
+// start's entry counts as raised by a move back (record.PhaseRow.EntryMovedBack). Three move backs:
+// a tester's fail, which gives a report and no reason; a review's request for changes, which gives
+// both; and the owner's send-back, which gives a reason alone.
+//
+// The fault it catches is a move back that, once it has waited for its agent, starts as a step the
+// task reached going forward: told nothing of the report or the reason that sent the work back, and
+// its entry fence taking the completion of the entry before it at the head the record holds (its
+// control: the start after a wait that tells no start reason).
+func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		back moveBack
+		told string
+	}{
+		{
+			name: "a tester's fail",
+			back: moveBack{second: "tester", at: phase.Testing,
+				report: &record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-w", HandoffVersion: 1, HandoffCommit: "head-w", Verdict: "fail", StepTask: "w", StepPlace: 2},
+				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+					taskMoves(t, pool, engine, key, "w", TriggerTesterFailed, "")
+				}},
+			told: " Pull request: #45. Reason: Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: head-w. Tester's verdict: fail. Task text:",
+		},
+		{
+			name: "a review's request for changes",
+			back: moveBack{second: "reviewer", at: phase.Reviewing,
+				report: &record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "review-w", HandoffVersion: 1, HandoffCommit: "head-w", StepTask: "w", StepPlace: 2},
+				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+					taskMoves(t, pool, engine, key, "w", TriggerReviewRejected, changesBody)
+				}},
+			told: " Pull request: #45. Reason: Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1). Handoff commit: head-w. " + changesBody + " Task text:",
+		},
+		{
+			name: "the owner's send-back",
+			back: moveBack{second: "reviewer", at: phase.Implementing,
+				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+					onTask(t, pool, engine, key, "w", func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
+						pr, err := engine.pullRequestOf(ctx, tx, view)
+						if err != nil {
+							return err
+						}
+						row, err := engine.phaseRow(ctx, tx, key, claim.RoleArchitect)
+						if err != nil {
+							return err
+						}
+						return engine.transition(ctx, tx, view, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
+					})
+				}},
+			told: " Pull request: #45. Reason: the owner sends the work back. Task text:",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at, atRow := moveBackStart(t, tc.back, false)
+			waited, waitedRow := moveBackStart(t, tc.back, true)
+			if waited.Task != at.Task {
+				t.Fatalf("the start after the wait for k is told %q,\nwant what the start where k was free is told: %q", waited.Task, at.Task)
+			}
+			if !atRow.EntryMovedBack || !waitedRow.EntryMovedBack {
+				t.Fatalf("the implementer's entry is counted as raised by a move back %t where k was free and %t after the wait for k, want both", atRow.EntryMovedBack, waitedRow.EntryMovedBack)
+			}
+			if !strings.Contains(at.Task, tc.told) || strings.Count(at.Task, "Handoff:") != strings.Count(tc.told, "Handoff:") {
+				t.Fatalf("the start of the move back is told %q,\nwant the report once, then the move's reason last, after the pull request: %q", at.Task, tc.told)
+			}
+		})
+	}
+}

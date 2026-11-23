@@ -144,8 +144,8 @@ func (g *handoffGitHub) serves() []string {
 
 // newHandoffHarness serves the daemon's routes over a real Postgres, reading GitHub at github as
 // the implement App for the implementer's completion, with facts recording every
-// fact the routes apply, refused as refusal says. The issue's repository is acme/widgets, so a
-// read minted for anyone but acme shows.
+// fact the routes apply, refused as refusal says, and every call of the completion route's hook.
+// The issue's repository is acme/widgets, so a read minted for anyone but acme shows.
 func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.Grants, refusal *intake.Refusal) (*harness, *factRecorder) {
 	t.Helper()
 	h := newHarness(t)
@@ -159,7 +159,7 @@ func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.G
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: grants, Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
-		Tokens: handoffTokens{}, GitHubAPI: github.url,
+		Tokens: handoffTokens{}, GitHubAPI: github.url, HandoffCompleted: facts.completed,
 	}).Handler
 	return h, facts
 }

@@ -248,13 +248,15 @@ type Options struct {
 	// no one. Nil tells no one. It is called before the route answers the agent, so it returns
 	// at once.
 	ClaimReady func(c supervise.Claim)
-	// HandoffCompleted is told of the issue of each phase completion the workflow recorded, once
-	// the fact has committed: the daemon reads that issue's pull request from GitHub then, as the
-	// backstop for a webhook that never arrived (the daemon's readIssuePullRequest). A completion
-	// the route or the workflow refused, and a production check report, tell no one. Nil tells no
-	// one. It is called before the route answers the agent, so it returns at once, and this
-	// package reads no GitHub for it.
-	HandoffCompleted func(issue string)
+	// HandoffCompleted is told of the issue of each phase completion the workflow recorded, and of
+	// the task of the issue's plan whose step completed (the task of the step the claim's agent
+	// runs, record.Issue.StepOfAgent; "" for a plan of one task, or none), once the fact has
+	// committed: the daemon reads that task's pull request from GitHub then, as the backstop for a
+	// webhook that never arrived (the daemon's readIssuePullRequest). A completion the route or the
+	// workflow refused, and a production check report, tell no one. Nil tells no one. It is called
+	// before the route answers the agent, so it returns at once, and this package reads no GitHub
+	// for it.
+	HandoffCompleted func(issue, task string)
 	// PromptAgents is the sorted names of every task agent the role prompts dispatch
 	// (prompts.RoleReferences), which the registration answers so a session's capability report
 	// measures the agents its role is told to run (LEGION-663). Nil or empty answers an empty list.
@@ -381,7 +383,7 @@ type server struct {
 	dispatch    dispatch.Client
 	claimReady  func(c supervise.Claim)
 	// handoffCompleted is Options.HandoffCompleted.
-	handoffCompleted func(issue string)
+	handoffCompleted func(issue, task string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string

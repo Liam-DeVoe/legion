@@ -2785,6 +2785,22 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
+	// A move back of a task with plan rows writes why the step it returns to starts on its task
+	// (moveBackReason: the report of the step that sent the work back, then the move's reason), after
+	// its move, which cleared the reason before it. The start of that step tells that one stored
+	// reason in the reason's place, and no report of its own, whether it starts below or after a
+	// wait for its agent (startAfterWait), so the two starts are told the same and each counts its
+	// entry as raised by a move back.
+	report, why := handoff, reason
+	if movedBack && w.Stored {
+		w.StartReason = moveBackReason(issue, handoff, reason)
+		if w.StartReason != "" {
+			if err := e.store.SetStartReason(ctx, tx, issue.Key, issue.Generation, w.Task, w.StartReason); err != nil {
+				return err
+			}
+		}
+		report, why = record.PhaseRow{}, w.StartReason
+	}
 	// The role the row moves the task to: on a task with plan rows the role of the step at the
 	// row's place (Walk.RoleAt), so the second of two steps that run as step starts its own role,
 	// and on an issue with none the role of the phase. The merge's row keeps the task at its merge
@@ -2829,7 +2845,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, w, starting, func(at Standing) string {
-			return task(issue, at, handoff, pr, reason)
+			return task(issue, at, report, pr, why)
 		}, movedBack); err != nil {
 			return err
 		}
