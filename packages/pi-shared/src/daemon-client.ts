@@ -210,19 +210,23 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
-/** The daemon answered with a status that is not success. `detail` is the sentence it put
- * under `error`; workflow refusals also carry their stable `code`. A refusal the daemon wrote
- * says what it refused. A non-success answer this build cannot read as a refusal carries no code,
- * and its `detail` names the body's length in bytes, the contract this build speaks, the contract
- * the daemon stated and which side is behind, and quotes no part of the body, as
- * `LegionDaemonContractError` does for a success this build cannot read. */
+/** A request was answered with a status that is not success. `refusalShape` says by whom: true
+ * where the body was the daemon's refusal shape (`LegionErrorResponse`), which is the daemon's
+ * own answer, and false for any other body, such as a proxy's page in front of the daemon or an
+ * empty body. In the refusal shape, `detail` is the sentence the daemon put under `error`, and
+ * `code` the stable code workflow and credential refusals carry beside it; a refusal the daemon
+ * wrote says what it refused. Any other body carries no code, and its `detail` names the body's
+ * length in bytes, the contract this build speaks, the contract the daemon stated and which side
+ * is behind, and quotes no part of the body, as `LegionDaemonContractError` does for a success
+ * this build cannot read. */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
     readonly code: string | undefined,
-    readonly detail: string
+    readonly detail: string,
+    readonly refusalShape: boolean
   ) {
     super(
       `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
@@ -352,16 +356,18 @@ const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
 /** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent: a
- * refused connection, or a 408 or a 429 with no code, which the daemon writes neither of, so a
- * proxy in front of it sent one before it forwarded anything); `dropped` may have reached it (a
- * connection reset or closed before a response, or a 5xx with no code: a proxy's page in front
- * of it, or a claim route's sentence, which names no code). Each of those statuses is an outage
- * (`outage`), and `mayHaveReachedServer` says which of the two it is. Undefined for an answer the
- * daemon gave, which is never retried: a 4xx other than those two above all, and any refusal that
- * carries a code, whatever its status, such as the daemon's own 502 `DISPATCH_FAILED`. */
+ * refused connection, or a 408 or a 429 whose body is not the daemon's refusal shape, which a
+ * proxy in front of the daemon sent before it forwarded anything); `dropped` may have reached it
+ * (a connection reset or closed before a response, or a 5xx whose body is not the daemon's
+ * refusal shape: a proxy's page, which it may have sent once the daemon had the request). Each of
+ * those statuses is an outage (`outage`), and `mayHaveReachedServer` says which of the two it is.
+ * Undefined for everything else, which is never retried: a body in the daemon's refusal shape
+ * (`refusalShape`), which is the daemon's answer whatever its status and whether or not it
+ * carries a code, such as a claim route's 500 that names no code or the 502 `DISPATCH_FAILED`;
+ * and any other body whose status is not an outage, which answers the same request the same way. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
   if (error instanceof LegionDaemonApiError) {
-    if (error.code !== undefined || !outage(error.status)) return undefined;
+    if (error.refusalShape || !outage(error.status)) return undefined;
     return mayHaveReachedServer(error.status) ? "dropped" : "refused";
   }
   if (!(error instanceof Error)) return undefined;
@@ -553,7 +559,8 @@ export function createLegionDaemonClient(
         path,
         response.status,
         refusal.value.code,
-        refusal.value.error
+        refusal.value.error,
+        true
       );
     }
     // A body that is not the daemon's refusal was written by something in its place, which can
@@ -563,7 +570,8 @@ export function createLegionDaemonClient(
       path,
       response.status,
       undefined,
-      `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`
+      `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`,
+      false
     );
   };
 

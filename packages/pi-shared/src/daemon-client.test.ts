@@ -759,10 +759,11 @@ function behindAProxy(status: number): { client: LegionDaemonClient; attempts: (
   return { client, attempts: () => attempts };
 }
 
-// An outage with no code (`@legion/contracts/http-status`) is no answer of the daemon's, so the
-// restart retry waits it out. The daemon writes no 408 and no 429, so a proxy sent either before
-// it forwarded anything: that attempt reached nothing. After a 5xx it may have, so the daemon's
-// refusal that follows says the earlier attempt may have been applied.
+// An outage whose body is not the daemon's refusal shape (`@legion/contracts/http-status`), a
+// proxy's page, is no answer of the daemon's, so the restart retry waits it out. The daemon writes
+// no 408 and no 429, so a proxy sent either before it forwarded anything: that attempt reached
+// nothing. After a 5xx it may have, so the daemon's refusal that follows says the earlier attempt
+// may have been applied.
 test.each([
   [408, "refused"],
   [429, "refused"],
@@ -770,10 +771,10 @@ test.each([
   [502, "dropped"],
   [503, "dropped"],
   [504, "dropped"],
-] as const)("a %i with no code is an outage the restart retry waits out, %s", async (status, reading) => {
+] as const)("a proxy's page answering %i is an outage the restart retry waits out, %s", async (status, reading) => {
   const { client, attempts } = behindAProxy(status);
   const first = await client.state().catch((error: unknown) => error);
-  expect(first).toMatchObject({ status, code: undefined });
+  expect(first).toMatchObject({ status, code: undefined, refusalShape: false });
   expect(daemonUnreachable(first)).toBe(reading);
 
   const proxied = behindAProxy(status);
@@ -794,16 +795,70 @@ test.each([
   expect(refused.message.includes("may have been applied")).toBe(reading === "dropped");
 });
 
-test("a coded refusal of an outage's status, and a 4xx with no code, are the daemon's answer", () => {
-  for (const [status, code] of [
-    [500, "STORE_FAILED"],
-    [503, "PAUSE_UNAVAILABLE"],
-    [429, "SOME_CODE"],
-    [404, undefined],
-    [409, undefined],
+// The daemon's refusal shape is its own answer, whatever its status and with no code: a claim
+// route answers a failure of its own with a sentence alone (`refuse` in the daemon's
+// `internal/api/credentials.go`, as `claims.go` does for release records it keeps none of).
+// Asking again would hold the agent for the restart budget and then call a daemon that answered
+// unreachable, so the retry hands the refusal back at once.
+test.each([
+  408, 429, 500, 502, 503, 504,
+])("the daemon's own refusal answering %i with no code is its answer, handed back at once", async (status) => {
+  const sentence = "the daemon keeps no release records";
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      return Response.json({ error: sentence }, { status });
+    }) as typeof fetch,
+  });
+  const first = await client.state().catch((error: unknown) => error);
+  expect(first).toBeInstanceOf(LegionDaemonApiError);
+  expect(first).toMatchObject({ status, code: undefined, detail: sentence, refusalShape: true });
+  expect(daemonUnreachable(first)).toBeUndefined();
+
+  attempts = 0;
+  let clock = 0;
+  const waits: number[] = [];
+  const told: string[] = [];
+  const refused = await retryWhileDaemonRestarts("handoff_complete", () => client.state(), {
+    now: () => clock,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+      clock += ms;
+    },
+    onRetrying: (message) => told.push(message),
+  }).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status, code: undefined, detail: sentence });
+  expect((refused as Error).message).not.toContain("unreachable");
+  expect(attempts).toBe(1);
+  expect(waits).toEqual([]);
+  expect(told).toEqual([]);
+});
+
+test("a coded refusal of an outage's status and a 4xx with no code are the daemon's answer, and a page whose status is no outage is not retried", () => {
+  for (const [status, code, refusalShape] of [
+    [500, "STORE_FAILED", true],
+    [503, "PAUSE_UNAVAILABLE", true],
+    [429, "SOME_CODE", true],
+    [404, undefined, true],
+    [409, undefined, true],
+    [404, undefined, false],
   ] as const) {
-    const refusal = new LegionDaemonApiError("POST", "/legion/v1/x", status, code, "refused");
-    expect([status, daemonUnreachable(refusal)]).toEqual([status, undefined]);
+    const refusal = new LegionDaemonApiError(
+      "POST",
+      "/legion/v1/x",
+      status,
+      code,
+      "refused",
+      refusalShape
+    );
+    expect([status, refusalShape, daemonUnreachable(refusal)]).toEqual([
+      status,
+      refusalShape,
+      undefined,
+    ]);
   }
 });
 
@@ -932,8 +987,9 @@ test("a non-success answer that is not the daemon's refusal names both contracts
     .state()
     .catch((error: unknown) => error);
   expect(behind).toBeInstanceOf(LegionDaemonApiError);
-  expect(behind).toMatchObject({ status: 503, code: undefined });
-  // Still a dropped attempt to the restart retry: the class, status and missing code are kept.
+  expect(behind).toMatchObject({ status: 503, code: undefined, refusalShape: false });
+  // Still a dropped attempt to the restart retry: the class, the status and a body that is not
+  // the daemon's refusal shape are kept.
   expect(daemonUnreachable(behind)).toBe("dropped");
   const detail = (behind as LegionDaemonApiError).detail;
   expect(detail).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
