@@ -765,6 +765,15 @@ export default defineConfig({
     // 31 s, Playwright's own processes from 83 s to 55 s. The shard machines are CPU-bound, so
     // that CPU is the lane's machine time. What a failure's trace still shows is the page as a
     // DOM snapshot at each action, which the trace viewer draws, and its network and console.
+    //
+    // Recording every first attempt leaves each worker's trace files in its artifacts directory
+    // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
+    // after a hundred rows on the default branch, whose traces held the screencast's frames, and
+    // fewer here, where they hold none. Playwright 1.64.1's runner removed them before it let the
+    // worker's stop end, and timed that wait by heartbeats of a worker that had already exited, so
+    // a slow disk printed "worker-<n> process did not exit within 300000ms after stop" for a
+    // worker that had exited. patches/playwright@1.64.1.patch removes them in the background
+    // instead, and e2e/__tests__/playwright-worker-exit.test.ts holds that.
     trace: {
       mode: "retain-on-first-failure",
       screenshots: false,

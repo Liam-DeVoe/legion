@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          (cd packages/envoy && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd) &
+          (cd packages/envoy && CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed && CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd) &
           commands=$!
           .github/scripts/dispatch-browser-build-dashboards.sh "${{ inputs.lane }}" &
           dashboards=$!
