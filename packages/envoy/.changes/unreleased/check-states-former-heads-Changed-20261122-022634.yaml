@@ -30,9 +30,10 @@ body: |-
     mark with `check_states_owed.reads_from`, due after the backoff, which the `test` handoff's
     fence waits for, so the backoff never releases the fence while a commit that may be a former
     head is undecided, and a mark that commits after a handoff began, with a lower id than those it
-    waits for, never stands in for them; a claim another settle holds and an answer that applied
-    nothing keep them the same way, due a second on, and any settle of the issue that resolves the
-    read deletes them), one read for
+    waits for, never stands in for them; a claim another settle holds and an answer whose claim,
+    lifecycle or snapshot moved since the read keep them the same way, due a second on, an answer
+    about a head or a base revision no write has stored yet after the backoff, and any settle of
+    the issue that resolves the read deletes them), one read for
     a pull request whichever issue it moves to, since a settle claims the read by the pull
     request's identity
     (`pull_request_former_heads_claim`, `pull_request_former_heads_reads`) and a settle of another

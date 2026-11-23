@@ -110,8 +110,9 @@
 -- Any other answer, about a claim that ran out or was taken over, about a lifecycle that ended,
 -- about a head or a base revision since stored anew, about a head or a base revision GitHub names
 -- and Dispatch does not store, or about a candidate since replaced, applies nothing, and its
--- candidates are read again: a base branch moves with no change of its name, so the snapshot and
--- the answer name its revision, not the name alone.
+-- candidates are read again, after the failure backoff where GitHub named revisions no write has
+-- stored yet: a base branch moves with no change of its name, so the snapshot and the answer name
+-- its revision, not the name alone.
 --
 -- pull_request_former_heads_keep() records each insert of a row, open, closed or merged, each
 -- update that moves a row's key, head or state while it is or becomes open, and each delete, by an
@@ -745,14 +746,18 @@ end $$;
 -- the row stores none (pull_request_former_heads_snapshot). The snapshot shows that Dispatch stored
 -- nothing new while the read ran; the revisions show that GitHub answered about what Dispatch
 -- stores, not about a head or a base revision GitHub has moved the pull request to that no write
--- has stored yet, which a later settle reads again once one has. An answer that decides no commit,
--- every commit unknown, changes nothing either way. It marks each member verified and deletes each
--- commit shown outside, each only where it is still a candidate of the incarnation read, and marks
--- owed each other issue an open row of the pull request is at where a candidate became a former
--- head. Answers whether it applied, and how many candidates it kept, dropped and issues it marked
--- owed.
+-- has stored yet. An answer that decides no commit, every commit unknown, changes nothing either
+-- way. It marks each member verified and deletes each commit shown outside, each only where it is
+-- still a candidate of the incarnation read, and marks owed each other issue an open row of the
+-- pull request is at where a candidate became a former head. Answers whether it applied; whether
+-- it applied nothing because GitHub answered about revisions the row does not store (outdated),
+-- apart from an answer whose claim, lifecycle or snapshot moved since the read: a read made again
+-- at once can apply after such a move, while it answers about the same revisions until a write
+-- stores them, which a base branch's move alone owes no issue, so the settle reads again after the
+-- failure backoff (api/check_states.go, verifyFormerHeads); and how many candidates it kept,
+-- dropped and issues it marked owed.
 create function pull_request_former_heads_answer(integer, bigint, integer, text, text[], bigint[], text[], bigint[], text, text, integer, text, text)
-returns table (applied boolean, kept integer, dropped integer, owed integer)
+returns table (applied boolean, outdated boolean, kept integer, dropped integer, owed integer)
 language plpgsql as $$
 #variable_conflict use_column
 declare
@@ -767,13 +772,16 @@ begin
   into live;
   delete from pull_request_former_heads_reads claim where claim.pull = $1 and claim.token = $2;
   select pulls.generation into standing from pull_request_former_heads_pulls pulls where pulls.pull = $1;
-  if not live or standing is distinct from $3 or pull_request_former_heads_snapshot($1) <> $4
-    or (cardinality($5) + cardinality($7) > 0 and not exists (
-      select 1 from pull_request_heads head
-      join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
-      where alias.pull = $1 and head.state = 'open' and lower(head.repo) = lower($10) and head.number = $11
-        and head.head_sha = $12 and (head.base_sha is null or head.base_sha = $13))) then
-    return query select false, 0, 0, 0;
+  if not live or standing is distinct from $3 or pull_request_former_heads_snapshot($1) <> $4 then
+    return query select false, false, 0, 0, 0;
+    return;
+  end if;
+  if cardinality($5) + cardinality($7) > 0 and not exists (
+    select 1 from pull_request_heads head
+    join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+    where alias.pull = $1 and head.state = 'open' and lower(head.repo) = lower($10) and head.number = $11
+      and head.head_sha = $12 and (head.base_sha is null or head.base_sha = $13)) then
+    return query select false, true, 0, 0, 0;
     return;
   end if;
   with confirmed as (
@@ -797,7 +805,7 @@ begin
       ) holder
     ) select count(*) into owed_count from owing;
   end if;
-  return query select true, kept_count, dropped_count, owed_count;
+  return query select true, false, kept_count, dropped_count, owed_count;
 end $$;
 
 -- A result recorded, a role's or a CI job's, whose settle an issue reads: its commit is pending

@@ -167,10 +167,11 @@ func TestAnAnswerAboutARowWithNoStoredBaseRevisionAppliesUntilAWriteStoresOne(t 
 // is at baseRevisionB, or its head is H3; or GitHub's whole list of #70's commits is of an earlier
 // head than the one its read of #70 names. The answer a read makes there is about revisions the
 // claim did not name, whichever way it answered and whether GitHub's list of #70's commits is
-// whole or capped: it applies nothing, H1 stays a candidate and its obligation stays. Once
-// Dispatch stores what GitHub names, or GitHub's list catches up, the next settle reads #70 again
-// and applies what GitHub answers then. The neighbour's GitHub stands at the revisions Dispatch
-// stores, and its answer applies at once.
+// whole or capped: it applies nothing, H1 stays a candidate and its obligation stays, read again
+// after the failure backoff, not a second on, since no read can apply until a write stores what
+// GitHub names. Once Dispatch stores what GitHub names, or GitHub's list catches up, the next
+// settle reads #70 again and applies what GitHub answers then. The neighbour's GitHub stands at
+// the revisions Dispatch stores, and its answer applies at once.
 func TestAMembershipAnswerAboutRevisionsDispatchHasNotStoredAppliesNothing(t *testing.T) {
 	capped := make([]string, 251)
 	for index := range capped {
@@ -233,6 +234,16 @@ func TestAMembershipAnswerAboutRevisionsDispatchHasNotStoredAppliesNothing(t *te
 				}
 				if marks := fenceMarksOf(t, rig, rig.issue); len(marks) == 0 {
 					t.Fatalf("%s holds no mark a handoff waits for once the answer about revisions Dispatch does not store applied nothing, want its obligation kept", rig.issue)
+				}
+				var failures int
+				var due float64
+				if err := rig.database.Pool.QueryRow(context.Background(), `
+					select coalesce(min(failures), 0), coalesce(min(extract(epoch from due_at - now())), 0)::float8
+					from check_states_owed where issue_key = $1`, rig.issue).Scan(&failures, &due); err != nil {
+					t.Fatalf("read the marks of %s: %v", rig.issue, err)
+				}
+				if failures < 1 || due < 20 {
+					t.Fatalf("%s's marks count %d failures and fall due in %.1fs once the answer about revisions Dispatch does not store applied nothing, want a failure counted and the 30 s backoff: a read a second on answers about the same revisions", rig.issue, failures, due)
 				}
 				row.caught(t, rig)
 			}

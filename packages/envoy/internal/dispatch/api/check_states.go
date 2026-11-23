@@ -454,14 +454,16 @@ func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []
 const formerHeadsReadClaim = time.Minute
 
 // formerHeadsReads is what verifyFormerHeads made of the candidates of an issue's open pull
-// requests. unverified is true where a read GitHub did not answer left a candidate undecided;
-// pending where another settle's claim holds a pull request's read, or where an answer applied
-// nothing because what it was read about moved before it was applied (a claim run out or taken
-// over, a lifecycle ended, a head or a base revision stored anew, a candidate replaced) or GitHub
-// answered about a head or a base revision Dispatch does not store, so a later read decides those
-// candidates. verifications counts the logical reads, one for each pull request whose candidates
-// were read, and requests the requests to GitHub those reads sent: a read of several pages, a page
-// asked again or a comparison is one verification and several requests.
+// requests. unverified is true where a read GitHub did not answer left a candidate undecided, or
+// GitHub answered about a head or a base revision Dispatch does not store, which a read made again
+// at once answers about too until a write stores it, so both wait the failure backoff; pending
+// where another settle's claim holds a pull request's read, or where an answer applied nothing
+// because what it was read about moved before it was applied (a claim run out or taken over, a
+// lifecycle ended, a head or a base revision stored anew, a candidate replaced), which a read made
+// again at once can apply, so a later read decides those candidates. verifications counts the
+// logical reads, one for each pull request whose candidates were read, and requests the requests
+// to GitHub those reads sent: a read of several pages, a page asked again or a comparison is one
+// verification and several requests.
 type formerHeadsReads struct {
 	unverified, pending     bool
 	verifications, requests int
@@ -505,14 +507,16 @@ type formerHeadsReads struct {
 // about, gives the claim back by its token, and applies only where that claim is still live, the
 // generation and the snapshot are still the pull request's, that row stores the head the answer is
 // about and its base revision (any, where the row stores none), and each candidate still has the
-// incarnation read; any other answer applies nothing, and pending answers true, so a later settle
-// reads the candidates again, and publish keeps the obligation that asked for the read. The base
-// branch can move with no change of its name, and GitHub can move a pull request on before a write
-// stores where it went, so an answer read before a write stored the new revision, or about a
-// revision no write has stored yet, is about another pull request than the one stored, whichever
-// way it answered, and applies nothing. Where a candidate became a former head and the pull
-// request now belongs to another issue than the one settling, it marks that issue owed, so its
-// settle publishes there.
+// incarnation read; any other answer applies nothing, so a later settle reads the candidates again,
+// and publish keeps the obligation that asked for the read. The base branch can move with no change
+// of its name, and GitHub can move a pull request on before a write stores where it went, so an
+// answer read before a write stored the new revision, or about a revision no write has stored yet,
+// is about another pull request than the one stored, whichever way it answered, and applies
+// nothing. The first is pending, read again a second on, which can apply; the second (outdated) is
+// unverified, read again after the failure backoff, since every read answers about the same
+// revisions until a write stores them, and a base branch's move alone owes no issue a settle.
+// Where a candidate became a former head and the pull request now belongs to another issue than
+// the one settling, it marks that issue owed, so its settle publishes there.
 func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string, heads []delivery.AttributedHead) (formerHeadsReads, error) {
 	var reads formerHeadsReads
 	pool := c.server.deps.Store.Pool
@@ -581,14 +585,14 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			}
 			return read
 		}
-		var applied bool
+		var applied, outdated bool
 		var kept, dropped, owedElsewhere int
 		if err := pool.QueryRow(ctx, `
-			select applied, kept, dropped, owed from pull_request_former_heads_answer($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			select applied, outdated, kept, dropped, owed from pull_request_former_heads_answer($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 			held.pull, claim.token, claim.generation, claim.snapshot,
 			nonNilStrings(membership.Members), incarnationsOf(membership.Members),
 			nonNilStrings(membership.Outside), incarnationsOf(membership.Outside), issue,
-			held.repo, held.number, membership.Head, membership.Base).Scan(&applied, &kept, &dropped, &owedElsewhere); err != nil {
+			held.repo, held.number, membership.Head, membership.Base).Scan(&applied, &outdated, &kept, &dropped, &owedElsewhere); err != nil {
 			return reads, fmt.Errorf("verify the former heads of %s#%d: %w", held.repo, held.number, err)
 		}
 		if len(claim.candidates) == 0 {
@@ -599,6 +603,10 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			"base", membership.Base, "pages", membership.Pages, "pull_reads", membership.PullReads, "compares", membership.Compares,
 			"commit_reads", membership.CommitReads, "requests", sent}
 		switch {
+		case outdated:
+			reads.unverified = true
+			slog.Info("dispatch: check states applied nothing of an answer about the candidate former heads of a pull request at revisions Dispatch does not store",
+				attrs...)
 		case !applied:
 			reads.pending = true
 			slog.Info("dispatch: check states applied nothing of an answer about the candidate former heads of a pull request that moved since its read",
