@@ -13,7 +13,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. A late one for an older version: answer its reason if the latest does not. |
 | `carried-gate-opened` | Start and release nothing. |
-| `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
+| `phase-finished` | The next phase started, or `retro-held` came too. Read the finished handoff (`dispatch handoff-read`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
@@ -29,20 +29,20 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `worker-died` | A phase worker: the issue is held; `retry_or_escalate` with `retry` for an agent or transient failure (its `reason` says what changed), `escalate` for an environmental one or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send questions to you. A finished role: nothing is held; read its handoff. |
 | `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the agent, ask its holder to resume it ("An agent of your tree that needs an action" in operations.md). |
-| `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Bring it up to date as `skill://legion-architect/references/wake-routing-steps.md#a-lost-session` says. |
+| `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Bring it up to date as "A lost session" in wake-routing-steps.md says. |
 | `provider-errors` | "An agent of your tree that needs an action" in operations.md. |
 | `merge-holds-changed` | "A merge hold" in acceptance.md. |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
-| `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as `skill://legion-architect/references/wake-routing-steps.md#a-full-issue-volume` says. |
+| `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as "A full issue volume" in wake-routing-steps.md says. |
 | A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
 
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Requests for changes are what it counts.
+Only requests for changes count: no tester's fail, no move back.
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it.

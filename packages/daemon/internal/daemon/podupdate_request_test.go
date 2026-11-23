@@ -140,10 +140,11 @@ func TestPodUpdateTheControllerAsksForOpensTheRoundAndItsAskReachesEachReadyRole
 	for _, role := range asked {
 		rig.awaitAsked(role, podUpdateRound)
 	}
-	text := supervise.UpdateTask(podUpdateRound, requestedPodUpdateReasons, podUpdateStart.Add(podUpdateGrace))
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
+		// The text names what the role's push keeps, so each role's is its own (main's #5161).
+		text := supervise.UpdateTask(ask.Role, podUpdateRound, requestedPodUpdateReasons, podUpdateStart.Add(podUpdateGrace))
 		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
 		}

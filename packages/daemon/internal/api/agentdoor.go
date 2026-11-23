@@ -168,7 +168,7 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by}, true
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on, in claim.Roles' order.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {

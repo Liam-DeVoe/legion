@@ -30,7 +30,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A refused completion is information, not a retry loop.
   Quote the answer verbatim to the architect, and do what its code asks in `skill://legion-worker/references/stop-rules.md`.
 
-- Wait in these cases, and end the turn with a `WAITING` line that names what you wait on:
+  - Wait in these cases, and end the turn with a `WAITING` line that names what you wait on:
 
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
 
@@ -47,7 +47,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, except on a volume the deployment keeps.
+  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives but a volume the deployment keeps.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
@@ -71,8 +71,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
-  So is a wording nit or any clear fix in a file it touches.
-  `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
+  So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review, if any. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
@@ -89,17 +88,14 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`.
   Request a secret only for your issue's work.
 
-- A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`).
-  It is the one write the token is lent to you for.
-  A branch that your App cannot create is the implementer's work: send it to the architect as a cross-phase decision.
-  Any other write your `gh` cannot make is a finding.
-  A denial is final: ask no other session to make the write.
+- A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`). It is the one write the token is lent to you for. A branch that your App cannot create is the implementer's work: send it to the architect as a cross-phase decision. Any other write your `gh` cannot make is a finding. A denial is final: ask no other session to make the write.
 
 ## Deployment instructions
 
 They override this skill, except: no deferrals;
 the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows;
-the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`); and the production check after the close.
+the implementer's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
+and the production check after the close.
 
 ## References
 
