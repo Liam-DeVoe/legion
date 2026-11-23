@@ -153,6 +153,23 @@ func TestAFixStartAndTheReviewersStartBothStand(t *testing.T) {
 	})
 }
 
+// runs is each run of a step of LEGION-208 the store counts, as `<task>/<kind>/<place> <run>`.
+func (r *fixRig) runs() []string {
+	r.t.Helper()
+	return outboxStrings(r.t, r.pool, `select task || '/' || kind || '/' || place || ' ' || run from step_starts
+		where issue = $1 order by task, kind, place`, "LEGION-208")
+}
+
+// The fix's run of the implementer's step stays open beside the review's: a later fact of the
+// issue settles its runs, and the issue stands at the review's place, yet the step the fix runs
+// is not over while the fix runs. The control is the tester's run, which the move into reviewing
+// ended.
+func TestTheFixsRunStaysOpenBesideTheReview(t *testing.T) {
+	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+	r.fails(fixHead, "k-ci2")
+	assertStrings(t, "the runs", r.runs(), []string{"a/step/1 open", "a/step/2 ended", "a/step/3 open"})
+}
+
 // At the fix's start each other step of the task that was handed work in this run is told of the
 // fix, by one role message: the tester and the reviewer here. The implementer's own fix is its
 // task, and no step of the task's line that has not started is told.
