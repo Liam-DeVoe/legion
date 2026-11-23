@@ -1528,10 +1528,12 @@ type editArtifactResponse struct {
 	// moved, in document order, and a line for each one it removed or emptied. It is empty for a
 	// batch that left the document as it was.
 	Written string `json:"written"`
-	// UnguardedBlocks is, for an edit under a block guard, each block the edit took that the
-	// guard did not name, with the token the edit read it at (docs.EditOutcome.UnguardedBlocks):
-	// the guard did not name them, and a named block that holds one may still cover it; naming
-	// them in it refuses the edit when one changed. It is absent where there is none.
+	// UnguardedBlocks is, for an edit under a block guard, each typed block a replace's with of
+	// blocks rewrote in place under its own id that the guard did not name, with the token the
+	// edit read it at (docs.EditOutcome.UnguardedBlocks): the guard did not name them, and a named
+	// block that holds one may still cover it; naming them in it refuses the edit when one
+	// changed. It is absent where there is none. A block the edit would remove that the guard does
+	// not cover refuses it instead (editPreconditionError.UnguardedBlocks).
 	UnguardedBlocks []model.EditBlockPrecondition `json:"unguarded_blocks,omitempty"`
 }
 

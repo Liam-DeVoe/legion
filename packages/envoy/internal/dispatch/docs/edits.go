@@ -295,15 +295,16 @@ type ErrFindCrossesSpan struct {
 	Span  pmdoc.Span
 	// Crossing is why the find crosses the span, which the refusal says.
 	Crossing pmdoc.Crossing
-	// Marker is the list marker, and the task box after it, that the find opens with where they
-	// selected the item its match opens (resolveEditQuote's byMarker), and "" otherwise.
-	Marker string
-	// Own is the find to send in place of this one: Marker, then the text the find matched with
-	// each span the document holds over it written with its markup, the span the find crosses and
-	// a link under its own URL and title (pmdoc.TextblockAt.SpanOver). It is zero where no match
-	// of it is that text, selected as the find selected it, or it would be refused there itself
-	// (findKeepingRange).
+	// Own is the find to send in place of this one: the list marker, and the task box after it,
+	// that the find opens with where they selected the item its match opens (resolveEditQuote's
+	// byMarker), then the text the find matched with each span the document holds over it written
+	// with its markup, the span the find crosses and a link under its own URL and title
+	// (pmdoc.TextblockAt.SpanOver). It is zero where no match of it is that text, selected as the
+	// find selected it, or it would be refused there itself (findKeepingRange).
 	Own NamedFind
+	// OwnIsText says SpanOver wrote the span the find crosses as its bare text, as it writes a bare
+	// link, whose markup is that text: a replace's with is then written inside the link.
+	OwnIsText bool
 	// Blocked is the span that stops every find where Own is zero: the span the find written from
 	// the document's text crosses where it matches that text and is refused there, and Span
 	// otherwise.
@@ -396,7 +397,7 @@ func (e *ErrFindCrossesSpan) Error() string {
 	case pmdoc.SpellsAnotherLinkAlone:
 		// A bare link's markup is its own text, so a replace's find that is that text, after the
 		// marker that selected its item, spells no markup, and its with is written inside the link.
-		if strings.TrimPrefix(e.Own.Quote, e.Marker) == e.Span.Text {
+		if e.OwnIsText {
 			return spellsAnother + e.named("write the link as it is in find", writesInsideLink)
 		}
 		return spellsAnother + e.named("write the link as it is in find", replacesMarkup)
@@ -581,11 +582,12 @@ var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 // refusal for its reader (api's upload).
 var ErrPreconditionUnavailable = errors.New("an upload repairing a document outside the Proof schema must name no token, since such a document has none")
 
-// ErrPreconditionFailed reports a stale document or block token without changing the live tree.
-// CurrentDocument is the token the live tree carries now, which is what the write read. How far
-// behind the client is, and what it should do next, are the caller's: the write reads no version
-// rows and knows no command its reader runs, so the route that answers the client words both
-// (api's writeUploadDocumentError).
+// ErrPreconditionFailed reports a stale document or block token, or an edit under a block guard
+// that removes a block the guard does not cover, without changing the live tree. CurrentDocument
+// is the token the live tree carries now, which is what the write read. How far behind the client
+// is, and what it should do next, are the caller's: the write reads no version rows and knows no
+// command its reader runs, so the route that answers the client words both (api's
+// writeUploadDocumentError).
 type ErrPreconditionFailed struct {
 	CurrentDocument string
 	Mismatches      []model.EditPreconditionMismatch
@@ -594,6 +596,10 @@ type ErrPreconditionFailed struct {
 	// id that block carries now where the batch's own text names exactly one
 	// (adviseRemovedPreconditionBlock). It is empty for every other mismatch.
 	Advice string
+	// Unguarded is each block an edit under a block guard removes that the guard does not cover,
+	// with the token the edit read it at (requirePreconditionCoverage): a guard naming them at
+	// those tokens takes the edit while none of them has changed. It is empty for a stale token.
+	Unguarded []model.EditBlockPrecondition
 }
 
 func (e *ErrPreconditionFailed) Error() string {
@@ -609,7 +615,25 @@ func (e *ErrPreconditionFailed) Error() string {
 		}
 		reasons = append(reasons, fmt.Sprintf("block %q changed", mismatch.BlockID))
 	}
+	if len(e.Unguarded) > 0 {
+		reasons = append(reasons, unguardedReason(e.Unguarded))
+	}
 	return "document edit precondition failed: " + strings.Join(reasons, ", ") + e.Advice
+}
+
+// unguardedReason is why an edit under a block guard is refused for the blocks it removes that
+// the guard does not cover (ErrPreconditionFailed.Unguarded), naming each by its id.
+func unguardedReason(blocks []model.EditBlockPrecondition) string {
+	ids := make([]string, len(blocks))
+	for index, block := range blocks {
+		ids[index] = strconv.Quote(block.ID)
+	}
+	if len(ids) == 1 {
+		return fmt.Sprintf("the edit removes block %s, which the block guard does not cover; "+
+			"name it in the guard at the token the edit read it at, and send the edit again", ids[0])
+	}
+	return fmt.Sprintf("the edit removes blocks %s, which the block guard does not cover; "+
+		"name them in the guard at the tokens the edit read them at, and send the edit again", strings.Join(ids, ", "))
 }
 
 // adviseRemovedPreconditionBlock adds that way back to a precondition refused for a block the
@@ -830,14 +854,18 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 
 // requirePreconditionCoverage refuses a block guard that leaves out a block the batch requires
 // (operationPreconditionBlocks): the block an operation names or whose text it matched, and a
-// move's block and its anchor's - what a block guard has always required. What an operation
-// takes beyond them - the whole of what a delete or a move removes, the typed block a replace
-// rewrites - is warned of rather than refused, so no edit a guard took before is refused now: it
-// answers each such block the guard does not name, with the token the edit read it at
-// (unguarded). A guard that names one is held to that block's token as to any other
-// (checkEditPrecondition), so naming them refuses the edit when one of them changed. A block the
-// tree the batch starts from does not hold - one an earlier insert of the batch wrote - has no
-// token a caller read, so none is answered for it.
+// move's block and its anchor's - what a block guard has always required. A guarded removal is
+// refused when it takes a block that neither the guard names nor a named block contains
+// (uncoveredBlocks): it is refused as a stale token is (ErrPreconditionFailed.Unguarded), with
+// nothing written, and the refusal names each such block with the token the edit read it at, so
+// the caller adds them to its guard and sends the edit again. A list, a list item or a quote the
+// removal empties of blocks the guard covers holds nothing another writer could have changed, so
+// it is taken. A guard that names a block is held to its token as to any other block
+// (checkEditPrecondition). A typed block a replace's with rewrites in place under its own id is
+// not refused: the edit answers each such block the guard does not name, with the token the edit
+// read it at (unguarded), and naming them in the guard refuses the edit when one of them changed.
+// A block the tree the batch starts from does not hold - one an earlier insert of the batch wrote
+// - has no token a caller read, so the guard is not refused for it and none is answered for it.
 func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, precondition model.EditPrecondition, before string) (unguarded []model.EditBlockPrecondition, err error) {
 	if precondition.Document != "" {
 		return nil, nil
@@ -846,39 +874,32 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 	for _, block := range precondition.Blocks {
 		covered[block.ID] = struct{}{}
 	}
-	required, taken := make(map[string]struct{}), make(map[string]struct{})
+	required, uncovered, rewritten := make(map[string]struct{}), make(map[string]struct{}), make(map[string]struct{})
 	if _, err := applyBatch(tree, ops, func(current *batchTree, op model.EditOp) error {
-		names, takes, err := operationPreconditionBlocks(current, op)
+		names, removes, rewrites, err := operationPreconditionBlocks(current, op)
 		if err != nil {
 			return err
 		}
 		for _, id := range names {
 			required[id] = struct{}{}
 		}
-		for _, id := range takes {
-			taken[id] = struct{}{}
+		for _, id := range removes {
+			for _, block := range uncoveredBlocks(current.node, id, covered) {
+				uncovered[block] = struct{}{}
+			}
+		}
+		for _, id := range rewrites {
+			rewritten[id] = struct{}{}
 		}
 		return nil
 	}, before); err != nil {
 		return nil, err
 	}
-	missing := make([]string, 0)
-	for id := range required {
-		if _, found := covered[id]; !found {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
+	if missing := unnamedBlocks(required, covered); len(missing) > 0 {
 		return nil, &ErrInvalidPrecondition{Reason: "blocks must include tokens for resolved blocks: " + strings.Join(missing, ", ")}
 	}
-	unnamed := make([]string, 0, len(taken))
-	for id := range taken {
-		if _, found := covered[id]; !found {
-			unnamed = append(unnamed, id)
-		}
-	}
-	if len(unnamed) == 0 {
+	unremoved, unrewritten := unnamedBlocks(uncovered, covered), unnamedBlocks(rewritten, covered)
+	if len(unremoved) == 0 && len(unrewritten) == 0 {
 		return nil, nil
 	}
 	// Only an edit whose guard leaves such a block unnamed encodes the tree again for its tokens.
@@ -890,59 +911,166 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 	if tokens.blocksErr != nil {
 		return nil, tokens.blocksErr
 	}
-	sort.Strings(unnamed)
-	for _, id := range unnamed {
-		if token, read := tokens.blocks[id]; read {
-			unguarded = append(unguarded, model.EditBlockPrecondition{ID: id, Token: token})
+	if refused := readBlockTokens(unremoved, tokens.blocks); len(refused) > 0 {
+		return nil, &ErrPreconditionFailed{CurrentDocument: before, Mismatches: []model.EditPreconditionMismatch{}, Unguarded: refused}
+	}
+	return readBlockTokens(unrewritten, tokens.blocks), nil
+}
+
+// unnamedBlocks is the ids of blocks that a guard naming covered leaves out, sorted.
+func unnamedBlocks(blocks, covered map[string]struct{}) []string {
+	unnamed := make([]string, 0, len(blocks))
+	for id := range blocks {
+		if _, found := covered[id]; !found {
+			unnamed = append(unnamed, id)
 		}
 	}
-	return unguarded, nil
+	sort.Strings(unnamed)
+	return unnamed
+}
+
+// readBlockTokens is each of ids with its token among tokens, the tree the batch starts from,
+// leaving out a block that tree does not hold: one an earlier insert of the batch wrote.
+func readBlockTokens(ids []string, tokens map[string]string) []model.EditBlockPrecondition {
+	var read []model.EditBlockPrecondition
+	for _, id := range ids {
+		if token, found := tokens[id]; found {
+			read = append(read, model.EditBlockPrecondition{ID: id, Token: token})
+		}
+	}
+	return read
+}
+
+// uncoveredBlocks is what of the block carrying id, which an operation removes from root, a guard
+// naming covered does not cover, as the listing names it: nothing where that block or a block
+// holding it is named, and otherwise what uncoveredIn finds in it. An id root does not carry is
+// itself uncovered.
+func uncoveredBlocks(root *pmdoc.Node, id string, covered map[string]struct{}) []string {
+	path := blockPath(root, id)
+	if path == nil {
+		return []string{id}
+	}
+	for _, node := range path {
+		if namedBlock(node, covered) {
+			return nil
+		}
+	}
+	return uncoveredIn(path[len(path)-1], covered)
+}
+
+// uncoveredIn is what of node, a block no named block holds, a guard naming covered does not
+// cover: nothing where node is named; for a list, a list item or a quote that holds a named
+// block, what each block it holds leaves uncovered, since such a wrapper holds nothing of its own
+// another writer could change, so one emptied of covered blocks is covered too; and otherwise node
+// as the listing names it (pmdoc.ListedBlocks), whose tokens cover all it holds.
+func uncoveredIn(node *pmdoc.Node, covered map[string]struct{}) []string {
+	if namedBlock(node, covered) {
+		return nil
+	}
+	if !wrapsBlocks(node.Type) || !holdsNamedBlock(node, covered) {
+		return pmdoc.ListedBlocks(node)
+	}
+	var uncovered []string
+	for _, child := range node.Children {
+		uncovered = append(uncovered, uncoveredIn(child, covered)...)
+	}
+	return uncovered
+}
+
+// wrapsBlocks reports a node that holds blocks and nothing of its own but its attributes: a list,
+// a list item or a quote, the containers a removal empties (pmdoc's removalRoot).
+func wrapsBlocks(nodeType string) bool {
+	switch nodeType {
+	case "bullet_list", "ordered_list", "list_item", "blockquote":
+		return true
+	}
+	return false
+}
+
+// namedBlock reports a node carrying a block id covered names.
+func namedBlock(node *pmdoc.Node, covered map[string]struct{}) bool {
+	id := blockID(node)
+	if id == "" {
+		return false
+	}
+	_, named := covered[id]
+	return named
+}
+
+// holdsNamedBlock reports a node that holds a block covered names.
+func holdsNamedBlock(node *pmdoc.Node, covered map[string]struct{}) bool {
+	holds := false
+	pmdoc.Walk(node, func(inner *pmdoc.Node) bool {
+		holds = holds || (inner != node && namedBlock(inner, covered))
+		return !holds
+	})
+	return holds
+}
+
+// blockPath is the nodes from root down to the block carrying id, the last of them in pre-order
+// where several carry it, as an edit addressing the id reads (spanTokens), and nil where none does.
+func blockPath(root *pmdoc.Node, id string) []*pmdoc.Node {
+	var found []*pmdoc.Node
+	var walk func(node *pmdoc.Node, path []*pmdoc.Node)
+	walk = func(node *pmdoc.Node, path []*pmdoc.Node) {
+		path = append(path, node)
+		if blockID(node) == id {
+			found = append(found[:0], path...)
+		}
+		for _, child := range node.Children {
+			walk(child, path)
+		}
+	}
+	walk(root, nil)
+	return found
 }
 
 // operationPreconditionBlocks is, for op read over the tree it applies to, the blocks a block
-// guard must name (required) and the blocks op takes (taken), which the edit's answer names where
-// the guard does not (requirePreconditionCoverage). An operation must name the block it names or
-// the block holding the text it matched, and a move the block it moves and its anchor's block.
-// One that removes or rewrites a block holding others takes the whole of it (INFRA-341): a delete
-// what its removal takes (deletePreconditionBlocks), a replace the typed block its with rewrites
-// under that block's own id (rewrittenTypedBlock), and a move the list or quote its block's
-// leaving empties (anchoredPreconditionBlocks).
-func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, taken []string, err error) {
+// guard must name (required), the blocks op removes beyond them (removed), which the guard must
+// name or hold in a block it names, and the typed block op rewrites in place (rewritten), which
+// the edit's answer names where the guard does not (requirePreconditionCoverage). An operation
+// must name the block it names or the block holding the text it matched, and a move the block it
+// moves and its anchor's block. One that removes a block holding others removes the whole of it
+// (INFRA-341): a delete what its removal takes (deletePreconditionBlocks), and a move the list or
+// quote its block's leaving empties (anchoredPreconditionBlocks). A replace removes no block: it
+// rewrites the typed block its with names under that block's own id (rewrittenTypedBlock).
+func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, removed, rewritten []string, err error) {
 	switch op.Op {
 	case "replace":
 		r, at, _, byMarker, err := findEditQuote(tree, op)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if required, err = rangePreconditionBlock(tree, r); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if rewritten := rewrittenTypedBlock(tree, at, r, op, byMarker); rewritten != nil && blockID(rewritten) != "" {
-			taken = []string{blockID(rewritten)}
+		if typed := rewrittenTypedBlock(tree, at, r, op, byMarker); typed != nil && blockID(typed) != "" {
+			rewritten = []string{blockID(typed)}
 		}
-		return required, taken, nil
+		return required, nil, rewritten, nil
 	case "delete":
 		target, err := resolveDelete(tree, op)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		named := op.Block != ""
 		if named {
 			required = []string{op.Block}
 		} else if required, err = rangePreconditionBlock(tree, target.text); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		taken, err = deletePreconditionBlocks(tree, target, named)
-		return required, taken, err
+		removed, err = deletePreconditionBlocks(tree, target, named)
+		return required, removed, nil, err
 	case "retype", "delete_row", "delete_column":
 		if err := requireBlock(tree, op, "block", op.Block); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return []string{op.Block}, nil, nil
+		return []string{op.Block}, nil, nil, nil
 	case "insert", "move":
-		return anchoredPreconditionBlocks(tree, op)
+		required, removed, err = anchoredPreconditionBlocks(tree, op)
+		return required, removed, nil, err
 	default:
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 }
 
@@ -980,9 +1108,9 @@ func removalPreconditionBlocks(tree *batchTree, id string, held map[string]struc
 // named where the delete names its block: for a block, the whole of what its removal takes
 // (removalPreconditionBlocks), which for a list item a find's marker selected is the item with the
 // items nested in it; where a find covers a textblock's whole text, the outermost node that
-// removal takes (pmdoc.ValidDocument.TextblockRemoval) - the textblock, the list item whose text
-// it is, or the list or quote that empties - as the listing names it; otherwise the block holding
-// the text it deletes.
+// removal takes (pmdoc.ValidDocument.TextblockRemoval) - the textblock, which is all a list item
+// whose one nested list takes its place loses, the list item whose text it is, or the list or
+// quote that empties - as the listing names it; otherwise the block holding the text it deletes.
 func deletePreconditionBlocks(tree *batchTree, target deleteTarget, named bool) ([]string, error) {
 	if target.block != "" {
 		return removalPreconditionBlocks(tree, target.block, target.held, named)
@@ -2532,33 +2660,35 @@ func findEditQuote(tree *batchTree, op model.EditOp) (r pmdoc.Range, at pmdoc.Te
 		return pmdoc.Range{}, pmdoc.TextblockAt{}, pmdoc.Spelling{}, false, err
 	}
 	at, _ = pmdoc.ContainingTextblock(tree.node, r.From)
-	writes := op.Op == "replace"
-	removed := removedText(at, r, writes, byMarker)
-	if span, crossing := at.CrossedSpan(r, removed, spelled, writes); crossing != pmdoc.CrossesNoSpan {
-		return pmdoc.Range{}, pmdoc.TextblockAt{}, pmdoc.Spelling{}, false, crossingRefusal(tree, at, op, r, removed, span, crossing, byMarker)
+	if err := refuseCrossing(tree, at, op, r, removedText(at, r, op.Op == "replace", byMarker), spelled, byMarker); err != nil {
+		return pmdoc.Range{}, pmdoc.TextblockAt{}, pmdoc.Spelling{}, false, err
 	}
 	return r, at, spelled, byMarker, nil
 }
 
-// crossingRefusal is the refusal of op's find, which matched r in the textblock at, selecting the
-// item r opens where byMarker says its list marker did, and crosses span (crossing) over removed,
-// the text op removes there. It names the find to send in its place (findKeepingRange), or else
-// the span that stops every find and what of it the find leaves on a space.
-func crossingRefusal(tree *batchTree, at pmdoc.TextblockAt, op model.EditOp, r, removed pmdoc.Range, span pmdoc.Span, crossing pmdoc.Crossing, byMarker bool) error {
+// refuseCrossing is the refusal of op's find where it crosses a marked span over removed, the text
+// op removes there (pmdoc.TextblockAt.CrossedSpan), text being written over its match where op is
+// a replace, and nil where it crosses none. The find matched r in the textblock at, spelling
+// spelled over it, and selected the item r opens where byMarker says its list marker did. The
+// refusal names the find to send in its place (findKeepingRange), or else the span that stops
+// every find and what of it the find leaves on a space.
+func refuseCrossing(tree *batchTree, at pmdoc.TextblockAt, op model.EditOp, r, removed pmdoc.Range, spelled pmdoc.Spelling, byMarker bool) error {
 	writes := op.Op == "replace"
+	span, crossing := at.CrossedSpan(r, removed, spelled, writes)
+	if crossing == pmdoc.CrossesNoSpan {
+		return nil
+	}
 	refusal := &ErrFindCrossesSpan{Quote: op.Find, Span: span, Crossing: crossing, Writes: writes}
 	own, err := at.SpanOver(span.Mark, r)
 	if err != nil {
 		return err
 	}
+	refusal.OwnIsText = own == span.Text
 	// A find whose list marker selected its item is named with that marker, the text after it
 	// being what the marker made it match (pmdoc.ParseListItemQuote), so the find named selects
 	// that item too and the edit removes what the refused one would have.
-	if byMarker {
-		refusal.Marker = strings.TrimSuffix(op.Find, pmdoc.ParseListItemQuote(op.Find).Text)
-		if own != "" {
-			own = refusal.Marker + own
-		}
+	if byMarker && own != "" {
+		own = strings.TrimSuffix(op.Find, pmdoc.ParseListItemQuote(op.Find).Text) + own
 	}
 	var blocked pmdoc.Span
 	if refusal.Own, blocked = findKeepingRange(tree, at, own, op.Occurrence, r, removed, writes, byMarker); refusal.Own.Quote == "" {
@@ -2589,7 +2719,9 @@ func removedText(at pmdoc.TextblockAt, r pmdoc.Range, writes, byMarker bool) pmd
 
 // blockReplacementRemoves is the text of the textblock at that a replace whose with is blocks
 // removes where its find matched r: r, and the whitespace the split leaves beside r, which the
-// write drops in a textblock carrying an id (trimSplitEdges, splitHalves).
+// write drops in a textblock carrying an id. It is the one place that decides that whitespace: the
+// find is weighed over this range (refuseCrossing), and the write cuts exactly it
+// (settleBlockReplacement).
 func blockReplacementRemoves(at pmdoc.TextblockAt, r pmdoc.Range) (pmdoc.Range, error) {
 	if blockID(at.Node) == "" {
 		return r, nil
@@ -3047,6 +3179,9 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	blocks := false
 	level := 0
 	var tick *bool
+	// removed is the text a with of blocks removes (blockReplacementRemoves): the find is weighed
+	// again over it, and the write cuts exactly it (settleBlockReplacement).
+	var removed pmdoc.Range
 	if code {
 		with = codeReplacement(op.With)
 	} else {
@@ -3057,14 +3192,13 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		blocks, level, tick = read.blocks, read.level, read.tick
 		if blocks {
 			// The blocks split the textblock at r, and the write drops the whitespace the split
-			// leaves beside r (trimSplitEdges), so a link whose text beyond r is that whitespace
-			// alone goes whole: it must be spelled as it is wherever the find spells it.
-			removed, err := blockReplacementRemoves(at, r)
-			if err != nil {
+			// leaves beside r, so a link whose text beyond r is that whitespace alone goes whole:
+			// it must be spelled as it is wherever the find spells it.
+			if removed, err = blockReplacementRemoves(at, r); err != nil {
 				return nil, err
 			}
-			if span, crossing := at.CrossedSpan(r, removed, spelled, true); crossing != pmdoc.CrossesNoSpan {
-				return nil, crossingRefusal(tree, at, op, r, removed, span, crossing, byMarker)
+			if err := refuseCrossing(tree, at, op, r, removed, spelled, byMarker); err != nil {
+				return nil, err
 			}
 			// The blocks the document keeps are the second parse's, the one the batch pays for.
 			if with, err = parseFragmentInput(read.markdown, opensDocument(tree.node, r.From), budget); err != nil {
@@ -3146,7 +3280,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// box was set on: the settlement removes children and moves every position after them,
 	// so nothing that reads a position may run after it.
 	if blocks {
-		next = settleBlockReplacement(valid, next, found, at, r, with, op.With)
+		next = settleBlockReplacement(valid, next, found, at, r, removed, with, op.With)
 	}
 	// The two read-back checks below read the blocks this replace changed, and the block it
 	// lands in can hold the whole document's text: each block is rendered and parsed once for
@@ -3411,9 +3545,10 @@ func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) error {
 // settleBlockReplacement settles what the block path wrote over the match and carries the block
 // ids of the textblock it split, over the tree the splice made.
 //
-// The settlement is the accepted suggestion's (settleAccepted), with the whitespace run the split
-// left at the inner edge of each half taken off first (trimSplitEdges). Measured on 2026-11-11
-// over `Alpha beta gamma.`, a `with` of "beta\n\n- a\n- b" splices to
+// The settlement is the accepted suggestion's (settleAccepted), with what removed, the text the
+// replace removes (blockReplacementRemoves), holds beyond r cut off the inner edge of each half
+// first (trimSplitEdges): the whitespace the split left there. Measured on 2026-11-11 over
+// `Alpha beta gamma.`, a `with` of "beta\n\n- a\n- b" splices to
 // "Alpha&#32;\n\nbeta\n\n- a\n- b\n\n&#32;gamma.\n" and pmdoc.AgreeWithReadBack leaves that
 // string exactly as it is: it drops a changed child the renderer does not write that carries no
 // block id, copies the spread of lists and items from their read-back, and never changes text.
@@ -3422,9 +3557,9 @@ func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) error {
 //
 // The ids follow the settlement, which drops an unwritten half only while that half carries no id
 // of its own (carryReplacedBlockIDs).
-func settleBlockReplacement(valid pmdoc.ValidDocument, next *pmdoc.Node, found matchBlocks, at pmdoc.TextblockAt, r pmdoc.Range, fragment *pmdoc.Node, with string) *pmdoc.Node {
+func settleBlockReplacement(valid pmdoc.ValidDocument, next *pmdoc.Node, found matchBlocks, at pmdoc.TextblockAt, r, removed pmdoc.Range, fragment *pmdoc.Node, with string) *pmdoc.Node {
 	held := blockID(at.Node)
-	trimSplitEdges(splitHalves(next, found, held), at, r)
+	trimSplitEdges(splitHalves(next, found, held), r, removed)
 	next = settleAccepted(valid, next, found, with)
 	carryReplacedBlockIDs(next, found, held, fragment)
 	return next
@@ -3454,51 +3589,55 @@ func splitHalves(next *pmdoc.Node, found matchBlocks, held string) []*pmdoc.Node
 	return halves
 }
 
-// trimSplitEdges drops the whitespace run the split left at the inner edge of each half: the end
-// of the part before the match, and the start of the part after it. A match stays inside one
-// textblock, since a quote reaching across blocks is refused (ErrQuoteSpansBlocks), so one that
-// opens that text leaves no part before it and one that runs to the end of it leaves no part
-// after it, and the one half there is belongs to the other edge.
-func trimSplitEdges(halves []*pmdoc.Node, at pmdoc.TextblockAt, r pmdoc.Range) {
+// trimSplitEdges cuts what removed holds beyond r off the inner edge of each half the split left:
+// the end of the part before the match, and the start of the part after it. That is the whitespace
+// blockReplacementRemoves reads at the end of the last text run before r and at the start of the
+// first one after it, which the splice wrote as that half's last and first run. removed reaches
+// past r only where text stands beside it, so it reaches before r only where a part before the
+// match is left, which is then the first half, and after r only where a part after it is left,
+// the last half.
+func trimSplitEdges(halves []*pmdoc.Node, r, removed pmdoc.Range) {
 	if len(halves) == 0 {
 		return
 	}
-	if r.From > at.Content.From {
-		trimTextEnd(halves[0])
+	if units := r.From - removed.From; units > 0 {
+		trimTextEnd(halves[0], units)
 	}
-	if r.To < at.Content.To {
-		trimTextStart(halves[len(halves)-1])
+	if units := removed.To - r.To; units > 0 {
+		trimTextStart(halves[len(halves)-1], units)
 	}
 }
 
-// trimTextEnd takes the whitespace off the end of a textblock's last text run, and the run itself
+// trimTextEnd cuts units UTF-16 units off the end of a textblock's last run, and the run itself
 // where nothing is left of it. The run is the splice's own, written from the text it kept
 // (pmdoc's inlineRange), so changing it changes no node of the tree the write started from.
-func trimTextEnd(textblock *pmdoc.Node) {
+func trimTextEnd(textblock *pmdoc.Node, units int) {
 	children := textblock.Children
-	if len(children) == 0 {
-		return
-	}
 	last := children[len(children)-1]
-	if last.Type != "text" {
-		return
+	for ; units > 0 && last.Text != ""; units-- {
+		char, size := utf8.DecodeLastRuneInString(last.Text)
+		last.Text = last.Text[:len(last.Text)-size]
+		if char > 0xFFFF {
+			units--
+		}
 	}
-	if last.Text = strings.TrimRight(last.Text, markdownSpace); last.Text == "" {
+	if last.Text == "" {
 		textblock.Children = children[:len(children)-1]
 	}
 }
 
 // trimTextStart is trimTextEnd at a textblock's start.
-func trimTextStart(textblock *pmdoc.Node) {
+func trimTextStart(textblock *pmdoc.Node, units int) {
 	children := textblock.Children
-	if len(children) == 0 {
-		return
-	}
 	first := children[0]
-	if first.Type != "text" {
-		return
+	for ; units > 0 && first.Text != ""; units-- {
+		char, size := utf8.DecodeRuneInString(first.Text)
+		first.Text = first.Text[size:]
+		if char > 0xFFFF {
+			units--
+		}
 	}
-	if first.Text = strings.TrimLeft(first.Text, markdownSpace); first.Text == "" {
+	if first.Text == "" {
 		textblock.Children = children[1:]
 	}
 }

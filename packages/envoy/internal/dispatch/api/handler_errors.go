@@ -72,19 +72,23 @@ type editPreconditionCurrent struct {
 }
 
 // editPreconditionError is the 409 PRECONDITION_FAILED body every document write answers a
-// precondition the document no longer meets.
+// precondition the document no longer meets. UnguardedBlocks is, for an edit under a block guard
+// that would remove blocks the guard does not cover, each of them with the token the edit read it
+// at (docs.ErrPreconditionFailed.Unguarded), which the caller adds to its guard before it sends the
+// edit again; it is absent from every other refusal.
 type editPreconditionError struct {
-	Code       string                           `json:"code"`
-	Current    editPreconditionCurrent          `json:"current"`
-	Error      string                           `json:"error"`
-	Mismatches []model.EditPreconditionMismatch `json:"mismatches"`
+	Code            string                           `json:"code"`
+	Current         editPreconditionCurrent          `json:"current"`
+	Error           string                           `json:"error"`
+	Mismatches      []model.EditPreconditionMismatch `json:"mismatches"`
+	UnguardedBlocks []model.EditBlockPrecondition    `json:"unguarded_blocks,omitempty"`
 }
 
 // editPreconditionBody reads that body off the refusal: the live document token, the block
-// tokens the write found, and the mismatches that named them. The version is the caller's to
-// fill in, since the write reads no version rows: an edit's refusal names none, and an upload's
-// names the number it read beside its write and adds the sentence saying where a current token
-// is printed (writeUploadDocumentError).
+// tokens the write found, the mismatches that named them, and the blocks the edit would remove
+// that its guard does not cover. The version is the caller's to fill in, since the write reads no
+// version rows: an edit's refusal names none, and an upload's names the number it read beside its
+// write and adds the sentence saying where a current token is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
 	for _, mismatch := range failed.Mismatches {
@@ -95,10 +99,11 @@ func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionEr
 		}
 	}
 	return editPreconditionError{
-		Code:       "PRECONDITION_FAILED",
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Code:            "PRECONDITION_FAILED",
+		Current:         editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
+		Error:           failed.Error(),
+		Mismatches:      failed.Mismatches,
+		UnguardedBlocks: failed.Unguarded,
 	}
 }
 

@@ -20541,6 +20541,12 @@
               "array",
               "null"
             ]
+          },
+          "unguarded_blocks": {
+            "items": {
+              "$ref": "#/components/schemas/EditBlockPrecondition"
+            },
+            "type": "array"
           }
         },
         "required": [

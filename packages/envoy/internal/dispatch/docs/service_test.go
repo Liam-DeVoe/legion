@@ -6315,23 +6315,38 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
 }
 
+// waitForDocumentVersion is version number of artifactID's document, once a settlement has
+// stored it.
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
+	t.Helper()
+	var version model.Version
+	if !waitForDocumentVersionThat(t, func() bool {
+		var stored bool
+		var err error
+		if version, stored, err = loadDocumentVersion(context.Background(), database, artifactID, number); err != nil {
+			t.Fatalf("load document version: %v", err)
+		}
+		return stored
+	}) {
+		t.Fatal("document version did not settle")
+	}
+	return version
+}
+
+// waitForDocumentVersionThat polls holds, a test of the versions a document's settlements have
+// stored, until it is true, and answers false where it is still false at the ceiling.
+func waitForDocumentVersionThat(t *testing.T, holds func() bool) bool {
 	t.Helper()
 	// A ceiling, not a duration: a settlement that needs a room reload first (a test that evicted
 	// the room) takes longer than one that only writes, and a loaded CI runner stretches both.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		version, ok, err := loadDocumentVersion(context.Background(), database, artifactID, number)
-		if err != nil {
-			t.Fatalf("load document version: %v", err)
-		}
-		if ok {
-			return version
+		if holds() {
+			return true
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("document version did not settle")
-	return model.Version{}
+	return false
 }
 
 func loadDocumentVersion(ctx context.Context, database *store.Store, artifactID string, number int) (model.Version, bool, error) {

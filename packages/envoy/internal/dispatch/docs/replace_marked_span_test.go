@@ -345,16 +345,15 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // span's markup and covers a second bold span whose markup it does not spell, which crosses the
 // second span: each span is weighed alone. Then a find that spells a link with another URL or title
 // than it has over the link's whole text, which its replace would remove whole: a longer find with
-// another URL, and one with the link's URL and not its title, as finds copied from an older read
-// after another writer changed the URL or gave the link a title; that one link alone, spelled with
-// another URL and with another title; a find over a link's whole text and nothing more that spells
-// only part of it as another link; and a longer find spelling part of a link's text as another
-// link. Each names the link the document holds, which a find over its whole text spells with the
-// link's own URL and title (pmdoc.TextblockAt.SpanOver). A longer find's refusal says it covers
-// text outside the link and spells the link with another URL or title; one over the link's whole
-// text and nothing more says it spells the link with another URL or title, and nothing of text
-// outside it. A find over part of a link that spells it with another URL or title, whose replace
-// removes only that part, is taken (TestARefusedFindNamesTheFindThatKeepsItsRange).
+// the link's URL and not its title, as a find copied from an older read after another writer gave
+// the link a title; a find over a link's whole text and nothing more that spells only part of it as
+// another link; and a longer find spelling part of a link's text as another link. Each names the
+// link the document holds, which a find over its whole text spells with the link's own URL and
+// title (pmdoc.TextblockAt.SpanOver). A longer find's refusal says it covers text outside the link
+// and spells the link with another URL or title; one over the link's whole text and nothing more
+// says it spells the link with another URL or title, and nothing of text outside it. A find over
+// part of a link that spells it with another URL or title, whose replace removes only that part,
+// is taken (TestARefusedFindNamesTheFindThatKeepsItsRange).
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	// acrossAnotherLink is what the refusal of a longer find spelling a link with another URL or
 	// title says: why it crosses the link, not what text written over it would do.
@@ -392,16 +391,6 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			span:     "b",
 		},
 		{
-			name:     "a find that spells a link's markup with another URL",
-			markdown: "I wrote [this](https://a.example/1) today.\n",
-			find:     "wrote [this](https://wrong.example/9) today",
-			with:     "wrote that today",
-			kind:     "link",
-			span:     "this",
-			markup:   "[this](https://a.example/1)",
-			says:     acrossAnotherLink,
-		},
-		{
 			name:     "a find that spells a link's markup without the title it has",
 			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
 			find:     "wrote [this](https://a.example/1) today",
@@ -410,28 +399,6 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			span:     "this",
 			markup:   "[this](https://a.example/1 \"Spec\")",
 			says:     acrossAnotherLink,
-		},
-		{
-			name:     "a find that is one link alone, spelled with another URL",
-			markdown: "I wrote [this](https://a.example/1) today.\n",
-			find:     "[this](https://wrong.example/9)",
-			with:     "that",
-			kind:     "link",
-			span:     "this",
-			markup:   "[this](https://a.example/1)",
-			says:     "another URL or title",
-			unsaid:   "text outside it",
-		},
-		{
-			name:     "a find that is one link alone, spelled with another title",
-			markdown: "I wrote [this](https://a.example/1 \"Spec\") today.\n",
-			find:     "[this](https://a.example/1 \"Draft\")",
-			with:     "that",
-			kind:     "link",
-			span:     "this",
-			markup:   "[this](https://a.example/1 \"Spec\")",
-			says:     "another URL or title",
-			unsaid:   "text outside it",
 		},
 		{
 			name:     "a find over a link's whole text alone that spells part of it as another link",
@@ -620,7 +587,7 @@ func TestAnAnchorFindsItsBlockWhateverItSpellsALinkWith(t *testing.T) {
 			t.Run(op.op+" after "+spelling.name, func(t *testing.T) {
 				service, artifactID := newTestService(t)
 				seedServiceText(t, service, artifactID, markdown)
-				moved := blockIDOfText(t, persistedProofTree(t, service.store, artifactID), "Moved.")
+				moved := blockIDOfText(t, liveTree(t, service, artifactID), "Moved.")
 				if _, err := joinedApplyOps(service, artifactID, []model.EditOp{op.edit(spelling.quote, moved)},
 					model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
 					t.Fatalf("%s after %q in %q: %v, want it taken", op.op, spelling.quote, markdown, err)
@@ -663,7 +630,8 @@ func TestAnAnchorFindsItsBlockWhateverItSpellsALinkWith(t *testing.T) {
 // named matches at another occurrence than the refused find did: the text stands inside another
 // word before the link, or bare before it, or in a second link, or in a link before it with no bold
 // run; the link holds a bold run; or the selected item's link stands in a paragraph before the list
-// too, where the find named counts only the items it selects.
+// too, or in the item before it, where the find named counts only the items it selects. One more
+// is a link whose text starts on a space, which a with of blocks drops before the find.
 func TestARefusedFindNamesTheFindThatKeepsItsRange(t *testing.T) {
 	const (
 		plain   = "I wrote [one two](https://a.example/1) today.\n"
@@ -874,6 +842,15 @@ func TestARefusedFindNamesTheFindThatKeepsItsRange(t *testing.T) {
 			leaves:  "I wrote [one two](https://a.example/1).\n\n- second\n",
 		},
 		{
+			// Both items hold the link, and the find's occurrence selects the second; the find
+			// named, with its marker, counts the items it selects, so it selects that item too.
+			shape: "a list item its marker selects", name: "its whole link spelled with another URL, in the second of two items holding that link",
+			markdown: "- [one two](https://a.example/1) and more\n- [one two](https://a.example/1) and less\n",
+			op:       "delete", find: "- [one two](https://b.example/2)", occurrence: occurrence(1),
+			refusal: `find "- [one two](https://b.example/2)" ` + another + `write the link as it is in find ("- [one two](https://a.example/1)") with occurrence 1`,
+			leaves:  "- [one two](https://a.example/1) and more\n",
+		},
+		{
 			// A replace writes over what its find matched alone, whatever selected it, so part of
 			// the link spelled otherwise is taken as it is with no marker.
 			shape: "a list item its marker selects", name: "part of its link spelled with another URL", markdown: list, op: "replace", find: "- [one](https://b.example/2)",
@@ -920,6 +897,16 @@ func TestARefusedFindNamesTheFindThatKeepsItsRange(t *testing.T) {
 			// space.
 			shape: "a link whose text ends on a space", name: "part of it spelled with another URL", markdown: spaced, op: "replace", find: "[one](https://b.example/2)",
 			takes: "I wrote NEW[ ](https://a.example/1) today.\n",
+		},
+		{
+			// The link's text opens on a space, the end of the run before the find, which blocks
+			// written over the find drop too, so the replace removes the link whole.
+			shape: "a link whose text starts on a space", name: "part of it spelled with another URL, with blocks", markdown: "I wrote[ one](https://a.example/1) today.\n",
+			op: "replace", find: "[one](https://b.example/2)", with: "- x\n- y",
+			refusal: `find "[one](https://b.example/2)" covers part of the link " one", whose rest is whitespace beside find that a with of blocks drops, ` +
+				`so the replace removes the link whole, and find spells that link with another URL or title than the one it has; ` +
+				`write the link as it is in find ("[one](https://a.example/1)")` + replaces,
+			leaves: "I wrote\n\n- x\n- y\n\ntoday.\n",
 		},
 		{
 			shape: "a link's edge", name: "the whole link and text before it", markdown: "Sami wrote [this](https://example.com/Sami) today.\n",
@@ -1164,16 +1151,19 @@ func TestARefusalNamingNoFindGivesTheAdviceOfTheSpanThatStopsIt(t *testing.T) {
 }
 
 // requireDocument fails unless the write before it left artifactID's document reading want, as
-// the version it stored holds it and as a caller reads it, and its live tree holds no two text
+// the latest version stored holds it and as a caller reads it, and its live tree holds no two text
 // runs beside each other under the same marks, which the markdown writes as one. what names the
-// write. The write's version is the document's version 2: version 1 is the one the document was
-// created with, the seed stores none of its own, and the settlement after the write stores what
-// both wrote. A test that loaded the document's room between its seed and its write would arm the
-// seed's settlement, which may store version 2 first, so none does: one that reads the document
-// before its write reads the stored tree (persistedProofTree).
+// write. It waits for the latest version to read want: the seed stores no version of its own, and
+// the settlement after the write stores what both wrote, unless a read of the room between the
+// seed and the write armed the seed's settlement, which then stores the seed's text first and the
+// write's after it. A write that left anything else never stores a version reading want, so the
+// wait ends at its ceiling and the comparison names what it stored.
 func requireDocument(t *testing.T, service *Service, artifactID, want, what string) {
 	t.Helper()
-	waitForDocumentVersion(t, service.store, artifactID, 2)
+	waitForDocumentVersionThat(t, func() bool {
+		stored, _ := latestVersionOf(t, service.store, artifactID)
+		return stored == want
+	})
 	stored, _ := latestVersionOf(t, service.store, artifactID)
 	read, err := service.Text(context.Background(), artifactID)
 	if err != nil {
@@ -1272,7 +1262,7 @@ func TestADeleteOrAnAnchorAcrossASpansEdgeIsTaken(t *testing.T) {
 				markdown := "Moved.\n\n" + shape.paragraph + "\n"
 				service, artifactID := newTestService(t)
 				seedServiceText(t, service, artifactID, markdown)
-				moved := blockIDOfText(t, persistedProofTree(t, service.store, artifactID), "Moved.")
+				moved := blockIDOfText(t, liveTree(t, service, artifactID), "Moved.")
 				if _, err := joinedApplyOps(service, artifactID, []model.EditOp{op.edit(shape.quote, moved)},
 					model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
 					t.Fatalf("%s %q in %q: %v, want it taken", op.op, shape.quote, markdown, err)

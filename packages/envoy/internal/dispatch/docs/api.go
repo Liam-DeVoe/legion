@@ -80,11 +80,12 @@ type VersionResult struct {
 // under the id of an ask the document already holds and settlement leaves closed: answered, or
 // resolved by a person. Written is what the batch wrote, read back off the tree it wrote
 // (editBatch.readBack), so a caller sees the markdown it left rather than only how many
-// operations landed. UnguardedBlocks is, for an edit under a block guard, each block the batch
-// took that the guard did not name - the rest of what a delete or a move removed, a typed block a
-// replace rewrote - with the token the edit read it at (requirePreconditionCoverage): the guard
-// did not name them, and a named block that holds one may still cover it; naming them in it
-// refuses the edit when one of them changed.
+// operations landed. UnguardedBlocks is, for an edit under a block guard, each typed block a
+// replace's with of blocks rewrote in place under its own id that the guard did not name, with
+// the token the edit read it at (requirePreconditionCoverage): the guard did not name them, and a
+// named block that holds one may still cover it; naming them in it refuses the edit when one of
+// them changed. A block the batch removed that the guard did not cover refuses the edit instead
+// (ErrPreconditionFailed.Unguarded).
 type EditOutcome struct {
 	Applied         int
 	Changed         bool

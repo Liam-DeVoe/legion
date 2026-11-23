@@ -10727,10 +10727,10 @@ describe("executeDispatchTool", () => {
     );
   });
 
-  // An edit under a block guard that took blocks the guard did not name - the nested list of an
-  // item a marker delete removed - says so, with each block's token to compare with the one the
+  // An edit under a block guard whose replace rewrote a typed block in place under its own id,
+  // which the guard did not name, says so, with the block's token to compare with the one the
   // caller read, under the Applied line, and its details carry them for the session's ledger.
-  test("names the blocks a guarded edit took that its guard did not name", async () => {
+  test("names the typed blocks a guarded edit rewrote in place that its guard did not name", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;
       if (path === "/api/v1/issues/DSP-42") {
@@ -10749,7 +10749,7 @@ describe("executeDispatchTool", () => {
           lost_ops: [],
           token: "sha256:after-edit",
           written: "",
-          unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+          unguarded_blocks: [{ id: "c1", token: "sha256:callout" }],
         });
       }
       throw new Error(`unexpected request: ${path}`);
@@ -10760,8 +10760,14 @@ describe("executeDispatchTool", () => {
       args: {
         issue: "DSP-42",
         artifact: "spec",
-        ops: [{ op: "delete", find: "- Parent" }],
-        precondition: { blocks: [{ id: "parent-1", token: "sha256:parent" }] },
+        ops: [
+          {
+            op: "replace",
+            find: "Alpha.",
+            with: ':::callout{#c1 kind="warning" title="T"}\nNew.\n:::',
+          },
+        ],
+        precondition: { blocks: [{ id: "alpha-1", token: "sha256:alpha" }] },
       },
       cwd: "/workspace",
       host: "omp",
@@ -10774,7 +10780,7 @@ describe("executeDispatchTool", () => {
 
     expect(result.text).toBe(
       "Applied 1 ops (version 3)\n" +
-        "Block guard: this edit also took a block the guard did not name: nested-1 (token sha256:nested); compare its token with the one you read.\n" +
+        "Block guard: this edit rewrote in place a typed block the guard did not name: c1 (token sha256:callout); compare its token with the one you read.\n" +
         "Document token: sha256:after-edit"
     );
     expect(result.details).toEqual({
@@ -10782,9 +10788,108 @@ describe("executeDispatchTool", () => {
       applied: 1,
       version: 3,
       lost_ops: [],
-      unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+      unguarded_blocks: [{ id: "c1", token: "sha256:callout" }],
       token: "sha256:after-edit",
     });
+  });
+
+  // An edit under a block guard that would remove blocks the guard leaves out - the nested list of
+  // an item a marker delete selects - is refused 409 PRECONDITION_FAILED, and the refusal carries
+  // them in unguarded_blocks. The command keeps Dispatch's words and every field of the refusal,
+  // and adds a line naming each block with its token and saying where they go, so the caller can
+  // send the edit again without reading the document. A refusal naming no such block reads as
+  // Dispatch wrote it.
+  test("names each block a refused guarded edit would remove, with its token, and where it goes", async () => {
+    const refusal = (body: Record<string, unknown>) => async (url: RequestInfo | URL) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/artifacts/artifact-42/edits") {
+        return new Response(JSON.stringify(body), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+    const edit = (body: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_doc_edit",
+        args: {
+          issue: "DSP-42",
+          artifact: "spec",
+          ops: [{ op: "delete", find: "- Parent" }],
+          precondition: { blocks: [{ id: "parent-1", token: "sha256:parent" }] },
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: refusal(body) as typeof fetch,
+      });
+    const current = { document: "sha256:live", blocks: [] };
+
+    const one = [{ id: "nested-1", token: "sha256:nested" }];
+    await expect(
+      edit({
+        code: "PRECONDITION_FAILED",
+        error:
+          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; name it in the guard at the token the edit read it at, and send the edit again',
+        current,
+        mismatches: [],
+        unguarded_blocks: one,
+      })
+    ).rejects.toEqual(
+      expect.objectContaining({
+        name: "DispatchServiceError",
+        code: "PRECONDITION_FAILED",
+        status: 409,
+        message:
+          'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; name it in the guard at the token the edit read it at, and send the edit again\n' +
+          "Block guard: this edit would remove a block the guard did not name: nested-1 (token sha256:nested); add it to the guard's precondition.blocks (--precondition-json) at that token and send the edit again.",
+        current,
+        mismatches: [],
+        unguardedBlocks: one,
+      })
+    );
+
+    const two = [
+      { id: "nested-1", token: "sha256:nested" },
+      { id: "nested-2", token: "sha256:deeper" },
+    ];
+    await expect(
+      edit({
+        code: "PRECONDITION_FAILED",
+        error: "refused",
+        current,
+        mismatches: [],
+        unguarded_blocks: two,
+      })
+    ).rejects.toThrow(
+      "refused\nBlock guard: this edit would remove 2 blocks the guard did not name: nested-1 (token sha256:nested), nested-2 (token sha256:deeper); add them to the guard's precondition.blocks (--precondition-json) at those tokens and send the edit again."
+    );
+
+    const stale = await edit({
+      code: "PRECONDITION_FAILED",
+      error: 'document edit precondition failed: block "parent-1" changed',
+      current: { document: "sha256:live", blocks: [{ id: "parent-1", token: "sha256:now" }] },
+      mismatches: [
+        { scope: "block", block_id: "parent-1", expected: "sha256:parent", current: "sha256:now" },
+      ],
+    }).catch((error: unknown) => error);
+    expect(stale).toEqual(
+      expect.objectContaining({
+        code: "PRECONDITION_FAILED",
+        message: 'document edit precondition failed: block "parent-1" changed',
+      })
+    );
   });
 
   // A concurrent browser deletion that lands after the version is written is past undoing, so the

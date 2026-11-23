@@ -724,12 +724,12 @@ func (d ValidDocument) DeleteTextblock(r Range) (*Node, bool, error) {
 	return out, true, nil
 }
 
-// TextblockRemoval is the outermost node DeleteTextblock(r) removes from the tree d validated, and
-// nil where it removes none: the textblock whose whole text r covers, or the list item that goes
-// with that text, whether its one nested list's items take its place or not, or else the list,
-// list item or blockquote that removal empties, up through every such container (removalRoot). Its
-// error is DeleteTextblock's refusal of r (ErrListItemContent). The zero ValidDocument wants a
-// document.
+// TextblockRemoval is the outermost node DeleteTextblock(r) removes from the tree d validated with
+// all it holds, and nil where it removes none: the textblock whose whole text r covers, or the list
+// item that goes with that text, or else the list, list item or blockquote that removal empties, up
+// through every such container (removalRoot). A list item whose one nested list's items take its
+// place keeps every block it held but its text, so the textblock is what it removes. Its error is
+// DeleteTextblock's refusal of r (ErrListItemContent). The zero ValidDocument wants a document.
 func (d ValidDocument) TextblockRemoval(r Range) (*Node, error) {
 	if d.doc == nil {
 		return nil, wantsDocument("TextblockRemoval")
@@ -738,11 +738,12 @@ func (d ValidDocument) TextblockRemoval(r Range) (*Node, error) {
 	if err != nil || !found {
 		return nil, err
 	}
-	// Hoisted items take the item's place, so the list that held it keeps them.
-	if !hoistNested {
-		removePath = removalRoot(d.doc, removePath)
+	// Hoisted items take the item's place, so the list that held it keeps them: the item's text
+	// goes, and of its nested list only the node that held those items.
+	if hoistNested {
+		return nodeAtPath(d.doc, removePath).Children[0], nil
 	}
-	return nodeAtPath(d.doc, removePath), nil
+	return nodeAtPath(d.doc, removalRoot(d.doc, removePath)), nil
 }
 
 // textblockRemoval is what DeleteTextblock(r) removes from doc: the path of the textblock whose

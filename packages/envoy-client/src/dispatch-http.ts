@@ -137,7 +137,8 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    readonly unguardedBlocks?: DispatchServiceErrorShape["unguarded_blocks"]
   ) {
     super(message);
   }
@@ -2656,7 +2657,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          error.unguarded_blocks
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +37,9 @@ type documentPreconditionConflict struct {
 		Document string                      `json:"document"`
 		Blocks   []documentPreconditionBlock `json:"blocks"`
 	} `json:"current"`
-	Mismatches []documentPreconditionMismatch `json:"mismatches"`
+	Error           string                         `json:"error"`
+	Mismatches      []documentPreconditionMismatch `json:"mismatches"`
+	UnguardedBlocks []model.EditBlockPrecondition  `json:"unguarded_blocks"`
 }
 
 // preconditionTestHandler is newTestServer with settlement held back for the test's duration.
@@ -470,11 +473,12 @@ func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.
 
 // A delete whose find opens with a list marker removes the whole item it selects, the items
 // nested in it included. A block guard must name what it always had to, the item's paragraph,
-// whose text the find matched, so such a delete guarded on that paragraph alone is taken, as it
-// always was, even after another writer changed a nested item: the change goes with the item. The
-// edit's answer names what it took that the guard did not name, the nested list, at the token the
-// edit read it at, which is the changed one (INFRA-341, testing round 17, at 1808df5f).
-func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeNamesWhatItTook(t *testing.T) {
+// whose text the find matched, and a guard on that paragraph alone leaves out the nested list the
+// delete removes, so after another writer changed a nested item the edit is refused 409
+// PRECONDITION_FAILED with nothing written: the refusal's unguarded_blocks names the nested list
+// at the token the edit read it at, which is the changed one, and its error names the list's id
+// (INFRA-341, testing round 17 at 1808df5f, open-items version 174).
+func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeIsRefusedNamingTheChangedList(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete guard", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
@@ -485,38 +489,141 @@ func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeNamesWhatItToo
 	if writer.Code != http.StatusOK {
 		t.Fatalf("the other writer's change: status=%d body=%s", writer.Code, writer.Body.String())
 	}
+	changed := readDocumentPrecondition(t, handler, artifact)
 	nested := listedBlock(t, handler, artifact, "bullet_list", "- Child, changed by another writer")
 	response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "- Parent"}, parent)
-	if response.Code != http.StatusOK {
-		t.Fatalf("a marker delete guarded on the item's paragraph alone, after a nested item changed: status=%d body=%s, want 200", response.Code, response.Body.String())
+	if !refusedUnguarded(t, response, changed.Token, nested) {
+		t.Fatalf("a marker delete guarded on the item's paragraph alone, after a nested item changed: status=%d body=%s, "+
+			"want 409 PRECONDITION_FAILED naming the nested list %s at its token %s", response.Code, response.Body.String(), nested.ID, nested.Token)
 	}
-	if got := decodeBody[guardedEditAnswer](t, response).UnguardedBlocks; len(got) != 1 || got[0] != (model.EditBlockPrecondition{ID: nested.ID, Token: nested.Token}) {
-		t.Fatalf("unguarded_blocks = %#v, want the nested list %s at its token %s", got, nested.ID, nested.Token)
+	if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != changed.Markdown {
+		t.Fatalf("document after the refused delete = %q, want the other writer's %q", got, changed.Markdown)
+	}
+}
+
+// A marker delete guarded on the item's paragraph alone, with no other writer about, is refused
+// too, with nothing written: the refusal names the nested list the delete would remove, at its
+// token. Sent again with that block added to the guard at the token the refusal names, the delete
+// is taken, removes the item with its nested item, and its answer names no block.
+func TestAMarkerDeleteGuardedOnItsParagraphAloneIsRefusedNamingTheNestedList(t *testing.T) {
+	handler, _, _ := preconditionTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Marker delete refusal", "- Parent\n  - Child\n- Other\n")
+	artifact := issue.PrimaryArtifactID
+	deleteParent := map[string]string{"op": "delete", "find": "- Parent"}
+	before := readDocumentPrecondition(t, handler, artifact)
+	parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
+	nested := listedBlock(t, handler, artifact, "bullet_list", "- Child")
+	response := blockGuardedEdit(t, handler, artifact, deleteParent, parent)
+	if !refusedUnguarded(t, response, before.Token, nested) {
+		t.Fatalf("a marker delete guarded on the item's paragraph alone: status=%d body=%s, want 409 PRECONDITION_FAILED naming the nested list %s at its token %s",
+			response.Code, response.Body.String(), nested.ID, nested.Token)
+	}
+	if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != before.Markdown {
+		t.Fatalf("document after the refused delete = %q, want it unchanged, %q", got, before.Markdown)
+	}
+	named := decodeBody[documentPreconditionConflict](t, response).UnguardedBlocks[0]
+	again := blockGuardedEdit(t, handler, artifact, deleteParent, parent, model.ArtifactBlock{ID: named.ID, Token: named.Token})
+	if again.Code != http.StatusOK {
+		t.Fatalf("the delete sent again with the refusal's block in its guard: status=%d body=%s, want 200", again.Code, again.Body.String())
+	}
+	if got := decodeBody[guardedEditAnswer](t, again).UnguardedBlocks; len(got) != 0 {
+		t.Fatalf("unguarded_blocks = %#v, want none for a delete whose guard names all it removes", got)
 	}
 	if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != "- Other\n" {
 		t.Fatalf("document after the guarded delete = %q, want the item gone with its nested item", got)
 	}
 }
 
-// A marker delete guarded on the item's paragraph alone, with no other writer about, is taken,
-// and its answer names the nested list it took, which the guard did not name, at its token, to
-// compare with the one the caller read: naming it would refuse the edit if it had changed.
-func TestAMarkerDeleteGuardedOnItsParagraphAloneNamesTheNestedListItTook(t *testing.T) {
+// A marker delete under no guard removes the whole item it selects, its nested item with it: an
+// edit naming no precondition is taken unchecked, as it always was (INFRA-341).
+func TestAMarkerDeleteUnderNoGuardRemovesTheWholeItem(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Marker delete warning", "- Parent\n  - Child\n- Other\n")
+	issue := createInteractionIssue(t, handler, "TEST", "Marker delete unguarded", "- Parent\n  - Child\n- Other\n")
 	artifact := issue.PrimaryArtifactID
-	parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
-	nested := listedBlock(t, handler, artifact, "bullet_list", "- Child")
-	response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "- Parent"}, parent)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "delete", "find": "- Parent"}},
+	}, "alice")
 	if response.Code != http.StatusOK {
-		t.Fatalf("a marker delete guarded on the item's paragraph alone: status=%d body=%s, want 200", response.Code, response.Body.String())
-	}
-	if got := decodeBody[guardedEditAnswer](t, response).UnguardedBlocks; len(got) != 1 || got[0] != (model.EditBlockPrecondition{ID: nested.ID, Token: nested.Token}) {
-		t.Fatalf("unguarded_blocks = %#v, want the nested list %s at its token %s", got, nested.ID, nested.Token)
+		t.Fatalf("a marker delete under no guard: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
 	if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != "- Other\n" {
-		t.Fatalf("document after the guarded delete = %q, want the item gone with its nested item", got)
+		t.Fatalf("document after the unguarded delete = %q, want the item gone with its nested item", got)
 	}
+}
+
+// A delete of an item's whole text with no list marker, under a guard on that paragraph alone, is
+// taken, with the nested list as it was read and after another writer changed a nested item: the
+// item's one nested list takes its place, so the delete removes the item's text alone and keeps
+// every nested item, the other writer's change included, as main does, and its answer names no
+// block (INFRA-341).
+func TestATextDeleteThatHoistsANestedListIsTakenUnderAGuardOnItsParagraph(t *testing.T) {
+	for _, test := range []struct{ name, change, want string }{
+		{name: "the nested list as it was read", want: "- Child\n- Other\n"},
+		{name: "after another writer changed a nested item", change: "Child, changed by another writer", want: "- Child, changed by another writer\n- Other\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, _, _ := preconditionTestHandler(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Hoisting delete guard", "- Parent\n  - Child\n- Other\n")
+			artifact := issue.PrimaryArtifactID
+			parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
+			if test.change != "" {
+				writer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits", map[string]any{
+					"ops": []map[string]string{{"op": "replace", "find": "Child", "with": test.change}},
+				}, "alice")
+				if writer.Code != http.StatusOK {
+					t.Fatalf("the other writer's change: status=%d body=%s", writer.Code, writer.Body.String())
+				}
+			}
+			response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "Parent"}, parent)
+			if response.Code != http.StatusOK {
+				t.Fatalf("a delete of the item's text guarded on its paragraph: status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != test.want {
+				t.Fatalf("document after the guarded delete = %q, want %q, the nested list in the item's place", got, test.want)
+			}
+			if got := decodeBody[guardedEditAnswer](t, response).UnguardedBlocks; len(got) != 0 {
+				t.Fatalf("unguarded_blocks = %#v, want none: the nested list is kept", got)
+			}
+		})
+	}
+}
+
+// A guarded removal is refused when it takes a block that neither the guard names nor a named
+// block contains, and taken where every block it takes is covered (INFRA-341, open-items version
+// 177). A marker delete of an item whose nested list holds two items, under a guard on the item's
+// paragraph and one nested item, is refused naming only the other nested item, at its token, with
+// nothing written. A delete of a list's only item, by its text, under a guard on that text's
+// paragraph is taken as on main: the list it empties held nothing but that covered item.
+func TestAGuardedRemovalIsRefusedOnlyForWhatTheGuardDoesNotCover(t *testing.T) {
+	t.Run("a wrapper the guard covers part of", func(t *testing.T) {
+		handler, _, _ := preconditionTestHandler(t)
+		issue := createInteractionIssue(t, handler, "TEST", "Partly covered", "- Parent\n  - First\n  - Second\n- Other\n")
+		artifact := issue.PrimaryArtifactID
+		before := readDocumentPrecondition(t, handler, artifact)
+		parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
+		first := listedBlock(t, handler, artifact, "paragraph", "First")
+		second := listedBlock(t, handler, artifact, "paragraph", "Second")
+		response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "- Parent"}, parent, first)
+		if !refusedUnguarded(t, response, before.Token, second) {
+			t.Fatalf("status=%d body=%s, want 409 PRECONDITION_FAILED naming the uncovered item %s at its token %s", response.Code, response.Body.String(), second.ID, second.Token)
+		}
+		if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != before.Markdown {
+			t.Fatalf("document after the refused delete = %q, want it unchanged, %q", got, before.Markdown)
+		}
+	})
+	t.Run("a list emptied of the item the guard covers", func(t *testing.T) {
+		handler, _, _ := preconditionTestHandler(t)
+		issue := createInteractionIssue(t, handler, "TEST", "Emptied list", "Intro.\n\n- Only\n")
+		artifact := issue.PrimaryArtifactID
+		only := listedBlock(t, handler, artifact, "paragraph", "Only")
+		response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "Only"}, only)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+		if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != "Intro.\n" {
+			t.Fatalf("document after the guarded delete = %q, want %q", got, "Intro.\n")
+		}
+	})
 }
 
 // guardedEditAnswer is the part of a guarded edit's answer these cases read.
@@ -571,6 +678,21 @@ func refusedStale(t *testing.T, response *httptest.ResponseRecorder, id string) 
 	return conflict.Code == "PRECONDITION_FAILED" && len(conflict.Mismatches) == 1 && conflict.Mismatches[0].BlockID == id
 }
 
+// refusedUnguarded reports whether response is the refusal of an edit that would remove removed,
+// a block its guard leaves out, read on the document whose token is document: 409
+// PRECONDITION_FAILED with no stale token, whose unguarded_blocks names that block alone at the
+// token it was listed with, and whose error names its id.
+func refusedUnguarded(t *testing.T, response *httptest.ResponseRecorder, document string, removed model.ArtifactBlock) bool {
+	t.Helper()
+	if response.Code != http.StatusConflict {
+		return false
+	}
+	conflict := decodeBody[documentPreconditionConflict](t, response)
+	return conflict.Code == "PRECONDITION_FAILED" && conflict.Current.Document == document && len(conflict.Mismatches) == 0 &&
+		len(conflict.UnguardedBlocks) == 1 && conflict.UnguardedBlocks[0] == (model.EditBlockPrecondition{ID: removed.ID, Token: removed.Token}) &&
+		strings.Contains(conflict.Error, strconv.Quote(removed.ID))
+}
+
 // A guard that names the nested list a marker delete takes is held to that list's token, as to any
 // block it names: a guard on the item's paragraph and its nested list, read before another writer
 // changed a nested item, is stale, and nothing is written; a guard on both read after that change
@@ -612,10 +734,10 @@ func TestAMarkerDeleteIsGuardedOnTheWholeItemItRemoves(t *testing.T) {
 // another writer changed each typed block's second paragraph, `delete {block}` under the block's
 // own guard read before that change is stale, and its first paragraph's guard alone does not name
 // the block the delete names. A marker delete of the item holding a typed block under the item's
-// paragraph and the typed block read before the change is stale. Each refusal writes nothing. The
-// same marker delete under the item's paragraph alone is taken, and its answer names the typed
-// block it took at the token it read (INFRA-341).
-func TestADeletedTypedBlockIsGuardedOnEveryBlockInIt(t *testing.T) {
+// paragraph and the typed block read before the change is stale, and under the item's paragraph
+// alone it is refused naming the typed block it would remove, at the token the edit read, the
+// changed one. Each refusal writes nothing (INFRA-341).
+func TestADeleteThatRemovesATypedBlockIsRefusedUnlessItsGuardNamesItAsItStands(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Typed block delete coverage",
 		":::callout{#c1 kind=\"note\" title=\"T\"}\nAlpha.\n\nBeta.\n:::\n\n"+
@@ -641,7 +763,11 @@ func TestADeletedTypedBlockIsGuardedOnEveryBlockInIt(t *testing.T) {
 	if writer.Code != http.StatusOK {
 		t.Fatalf("the other writer's change: status=%d body=%s", writer.Code, writer.Body.String())
 	}
-	changed := readDocumentPrecondition(t, handler, artifact).Markdown
+	changed := readDocumentPrecondition(t, handler, artifact)
+	current := map[string]model.ArtifactBlock{}
+	for _, block := range listedBlocks(t, handler, artifact) {
+		current[block.ID] = block
+	}
 
 	deleteC1 := map[string]string{"op": "delete", "block": "c1"}
 	deleteLead := map[string]string{"op": "delete", "find": "- Lead"}
@@ -649,10 +775,12 @@ func TestADeletedTypedBlockIsGuardedOnEveryBlockInIt(t *testing.T) {
 		name  string
 		op    map[string]string
 		guard []model.ArtifactBlock
-		// stale says the refusal is 409 PRECONDITION_FAILED on id's stale token, and otherwise it
-		// is 400 INVALID_PRECONDITION naming id as the block the guard leaves uncovered.
-		stale bool
-		id    string
+		// stale says the refusal is 409 PRECONDITION_FAILED on id's stale token, removed that it
+		// is 409 PRECONDITION_FAILED naming id among the blocks the delete removes that the guard
+		// leaves out, at its token now, and otherwise it is 400 INVALID_PRECONDITION naming id as
+		// the block the guard leaves uncovered.
+		stale, removed bool
+		id             string
 	}{
 		{name: "delete {block} under the typed block's guard read before", op: deleteC1, guard: []model.ArtifactBlock{c1}, stale: true, id: "c1"},
 		{name: "delete {block} under its first paragraph's guard alone", op: deleteC1, guard: []model.ArtifactBlock{alpha}, id: "c1"},
@@ -660,31 +788,24 @@ func TestADeletedTypedBlockIsGuardedOnEveryBlockInIt(t *testing.T) {
 			name: "a marker delete of the item holding a typed block, under the item's paragraph and the typed block read before",
 			op:   deleteLead, guard: []model.ArtifactBlock{lead, c2}, stale: true, id: "c2",
 		},
+		{
+			name: "a marker delete of the item holding a typed block, under the item's paragraph alone",
+			op:   deleteLead, guard: []model.ArtifactBlock{lead}, removed: true, id: "c2",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := blockGuardedEdit(t, handler, artifact, test.op, test.guard...)
-			if test.stale && !refusedStale(t, response, test.id) {
+			switch {
+			case test.stale && !refusedStale(t, response, test.id):
 				t.Fatalf("status=%d body=%s, want 409 PRECONDITION_FAILED on %s", response.Code, response.Body.String(), test.id)
-			}
-			if !test.stale && !refusedUncovered(response, test.id) {
+			case test.removed && !refusedUnguarded(t, response, changed.Token, current[test.id]):
+				t.Fatalf("status=%d body=%s, want 409 PRECONDITION_FAILED naming %s at its token %s", response.Code, response.Body.String(), test.id, current[test.id].Token)
+			case !test.stale && !test.removed && !refusedUncovered(response, test.id):
 				t.Fatalf("status=%d body=%s, want 400 INVALID_PRECONDITION naming %s", response.Code, response.Body.String(), test.id)
 			}
-			if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != changed {
-				t.Fatalf("document after the refused delete = %q, want the other writer's %q", got, changed)
+			if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != changed.Markdown {
+				t.Fatalf("document after the refused delete = %q, want the other writer's %q", got, changed.Markdown)
 			}
 		})
-	}
-	var current model.ArtifactBlock
-	for _, block := range listedBlocks(t, handler, artifact) {
-		if block.ID == "c2" {
-			current = block
-		}
-	}
-	response := blockGuardedEdit(t, handler, artifact, deleteLead, lead)
-	if response.Code != http.StatusOK {
-		t.Fatalf("a marker delete of the item holding a typed block, under the item's paragraph alone: status=%d body=%s, want 200", response.Code, response.Body.String())
-	}
-	if got := decodeBody[guardedEditAnswer](t, response).UnguardedBlocks; len(got) != 1 || got[0] != (model.EditBlockPrecondition{ID: "c2", Token: current.Token}) {
-		t.Fatalf("unguarded_blocks = %#v, want c2 at its token %s", got, current.Token)
 	}
 }

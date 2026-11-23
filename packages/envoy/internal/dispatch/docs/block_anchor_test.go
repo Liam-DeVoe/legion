@@ -116,19 +116,24 @@ func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
 }
 
 // A block guard must name what it always had to: the block an operation names or whose text it
-// matched. What an operation takes beyond that - the list or quote a removal empties; for a list
-// item a find removes, the nested list after its paragraph, since the listing names no list item;
-// the typed block a replace's with rewrites under its own id - is warned of, not refused: the
-// coverage answers each such block the guard did not name, with its token (INFRA-341). A guard on
-// that container alone, leaving out the block the operation names, is refused as it always was. A
-// delete warns of no block an earlier insert of its batch wrote into what it removes: the document
-// the edit read holds no such block, so no token a caller read names it. Nor does it warn of an
-// item an earlier move of its batch put there, which it keeps where it stood: a move puts a block
-// inside a list item only as an item of a list the item holds, which the listing names in its
-// place, and the guard names the block a move moves.
-func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
+// matched. A guarded removal is refused when it takes a block that neither the guard names nor a
+// named block contains - for a list item a find's marker selects, the nested list after its
+// paragraph, since the listing names no list item, or the one nested item of it the guard leaves
+// out - naming each such block with the token the edit read (ErrPreconditionFailed.Unguarded), so
+// the caller adds it to the guard and sends the edit again (INFRA-341). A list or quote the removal
+// empties of blocks the guard covers is taken: it holds nothing another writer could have changed.
+// So is a delete of an item's whole text whose one nested list takes the item's place, which
+// removes the item's text alone. The typed block a replace's with of blocks rewrites in place
+// under its own id is answered, not refused: the coverage answers it where the guard did not name
+// it, with its token. A guard on a container alone, leaving out the block the operation names, is
+// refused as it always was. A delete is refused for no block an earlier insert of its batch wrote
+// into what it removes: the document the edit read holds no such block, so no token a caller read
+// names it. Nor for an item an earlier move of its batch put there, which it keeps where it stood:
+// the guard names the block a move moves, which covers it.
+func TestPreconditionBlocksRefuseARemovalOfABlockTheGuardDoesNotCover(t *testing.T) {
 	const (
 		nested = "- Parent\n  - Child\n- Other\n"
+		twice  = "- Parent\n  - First\n  - Second\n- Other\n"
 		moved  = nested + "\nBetween.\n\n- Moved\n- Stays\n"
 		only   = "Intro.\n\n- Only\n  - Child\n"
 		lone   = "Intro.\n\n- Only\n"
@@ -140,26 +145,34 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 		// earlier is the operations the batch applies before op, none where op is alone.
 		earlier func(ids map[string]string) []model.EditOp
 		op      func(ids map[string]string) model.EditOp
-		// covered, unguarded, missing and kept name blocks as blockIDsByName does. unguarded is
-		// the block the coverage warns of, "" for none; missing is the block it refuses the guard
-		// for leaving out, "" where it accepts the guard; kept is a block the batch's document
-		// still holds under its id, and written the markdown that document renders, each "" where
-		// the row reads none.
-		covered                           []string
-		unguarded, missing, kept, written string
+		// covered, refused, unguarded, missing and kept name blocks as blockIDsByName does.
+		// refused is the block the coverage refuses the guard for leaving out among what the batch
+		// removes, and unguarded the rewritten block it answers, each "" for none; missing is the
+		// block it refuses the guard for leaving out among those it must name, "" where it does not;
+		// kept is a block the batch's document still holds under its id, and written the markdown
+		// that document renders, each "" where the row reads none.
+		covered                                    []string
+		refused, unguarded, missing, kept, written string
 	}{
 		{
-			name:      "a delete whose list marker selects an item, under the item's paragraph alone",
-			markdown:  nested,
-			op:        func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
-			covered:   []string{"Parent"},
-			unguarded: "bullet_list 1",
+			name:     "a delete whose list marker selects an item, under the item's paragraph alone",
+			markdown: nested,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
+			covered:  []string{"Parent"},
+			refused:  "bullet_list 1",
 		},
 		{
 			name:     "a delete whose list marker selects an item, under its paragraph and its nested list",
 			markdown: nested,
 			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
 			covered:  []string{"Parent", "bullet_list 1"},
+		},
+		{
+			name:     "a delete whose list marker selects an item, under its paragraph and one of the two items nested in it",
+			markdown: twice,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
+			covered:  []string{"Parent", "First"},
+			refused:  "Second",
 		},
 		{
 			name:     "a delete whose list marker selects an item an earlier insert wrote into, under every block the document held",
@@ -176,19 +189,18 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 			earlier: func(ids map[string]string) []model.EditOp {
 				return []model.EditOp{{Op: "move", Block: ids["list_item 3"], After: "Child"}}
 			},
-			op:        func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
-			covered:   []string{"list_item 3", "Child", "Parent"},
-			unguarded: "bullet_list 1",
-			kept:      "Moved",
+			op:      func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Parent"} },
+			covered: []string{"list_item 3", "Child", "Parent"},
+			kept:    "Moved",
 			// The move put Moved in Parent's nested list, and the delete keeps it where Parent stood.
 			written: "- Moved\n- Other\n\nBetween.\n\n- Stays\n",
 		},
 		{
-			name:      "a delete whose list marker selects a list's only item, under all the item holds",
-			markdown:  only,
-			op:        func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Only"} },
-			covered:   []string{"Only", "bullet_list 1"},
-			unguarded: "bullet_list 0",
+			name:     "a delete whose list marker selects a list's only item, under all the item holds",
+			markdown: only,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "- Only"} },
+			covered:  []string{"Only", "bullet_list 1"},
+			written:  "Intro.\n",
 		},
 		{
 			name:     "a delete whose list marker selects a list's only item, under the list alone",
@@ -198,32 +210,32 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 			missing:  "Only",
 		},
 		{
-			name:      "a delete of an item's whole text, which hoists its nested list, under the item's paragraph",
-			markdown:  nested,
-			op:        func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Parent"} },
-			covered:   []string{"Parent"},
-			unguarded: "bullet_list 1",
+			name:     "a delete of an item's whole text, which hoists its nested list, under the item's paragraph",
+			markdown: nested,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Parent"} },
+			covered:  []string{"Parent"},
+			written:  "- Child\n- Other\n",
 		},
 		{
-			name:      "a delete of the whole text of a list's only item, under the item's paragraph",
-			markdown:  lone,
-			op:        func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Only"} },
-			covered:   []string{"Only"},
-			unguarded: "bullet_list 0",
+			name:     "a delete of the whole text of a list's only item, under the item's paragraph",
+			markdown: lone,
+			op:       func(map[string]string) model.EditOp { return model.EditOp{Op: "delete", Find: "Only"} },
+			covered:  []string{"Only"},
+			written:  "Intro.\n",
 		},
 		{
-			name:      "a delete of the paragraph a list's only item holds, under that paragraph",
-			markdown:  lone,
-			op:        func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["Only"]} },
-			covered:   []string{"Only"},
-			unguarded: "bullet_list 0",
+			name:     "a delete of the paragraph a list's only item holds, under that paragraph",
+			markdown: lone,
+			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["Only"]} },
+			covered:  []string{"Only"},
+			written:  "Intro.\n",
 		},
 		{
-			name:      "a delete of the typed block a quote holds alone, under the typed block",
-			markdown:  quoted,
-			op:        func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["callout 0"]} },
-			covered:   []string{"callout 0"},
-			unguarded: "blockquote 0",
+			name:     "a delete of the typed block a quote holds alone, under the typed block",
+			markdown: quoted,
+			op:       func(ids map[string]string) model.EditOp { return model.EditOp{Op: "delete", Block: ids["callout 0"]} },
+			covered:  []string{"callout 0"},
+			written:  "After.\n",
 		},
 		{
 			name:     "a delete of the list item it names, under that item",
@@ -237,8 +249,7 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 			op: func(ids map[string]string) model.EditOp {
 				return model.EditOp{Op: "move", Block: ids["Only"], After: "Intro."}
 			},
-			covered:   []string{"Intro.", "Only"},
-			unguarded: "bullet_list 0",
+			covered: []string{"Intro.", "Only"},
 		},
 		{
 			name:     "a move of a list's only item, under the anchor and the list",
@@ -287,14 +298,20 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 			}
 			ops = append(ops, test.op(ids))
 			unguarded, err := preconditionCoverage(tree, ops, covered...)
-			if test.missing != "" {
+			switch {
+			case test.missing != "":
 				var invalid *ErrInvalidPrecondition
 				if want := "blocks must include tokens for resolved blocks: " + ids[test.missing]; !errors.As(err, &invalid) || invalid.Reason != want {
 					t.Fatalf("coverage of %v = %v, want the reason %q, naming %s", test.covered, err, want, test.missing)
 				}
 				return
-			}
-			if err != nil {
+			case test.refused != "":
+				var failed *ErrPreconditionFailed
+				if !errors.As(err, &failed) || len(failed.Unguarded) != 1 || failed.Unguarded[0].ID != ids[test.refused] ||
+					failed.Unguarded[0].Token == "" || !strings.Contains(err.Error(), strconv.Quote(ids[test.refused])) {
+					t.Fatalf("coverage of %v = %v (%#v), want it refused naming %s (%s) with its token", test.covered, err, failed, ids[test.refused], test.refused)
+				}
+			case err != nil:
 				t.Fatalf("coverage of %v = %v, want it accepted", test.covered, err)
 			}
 			want := []string{}
@@ -309,7 +326,7 @@ func TestPreconditionBlocksWarnOfTheWholeOfWhatAnOperationTakes(t *testing.T) {
 				got = append(got, block.ID)
 			}
 			if !slices.Equal(got, want) {
-				t.Fatalf("coverage of %v warns of %v, want %v (%s)", test.covered, got, want, test.unguarded)
+				t.Fatalf("coverage of %v answers %v, want %v (%s)", test.covered, got, want, test.unguarded)
 			}
 			if test.kept == "" && test.written == "" {
 				return
@@ -449,8 +466,8 @@ func TestBlockNotFoundNamesTheBlockHoldingTheQuotedText(t *testing.T) {
 }
 
 // preconditionCoverage is what a block guard covering ids answers for ops, as a conditional edit
-// asks it before applying the batch (requirePreconditionCoverage): the blocks the batch takes that
-// the guard does not name, or its refusal.
+// asks it before applying the batch (requirePreconditionCoverage): the typed blocks the batch
+// rewrites in place that the guard does not name, or its refusal.
 func preconditionCoverage(tree *pmdoc.Node, ops []model.EditOp, ids ...string) ([]model.EditBlockPrecondition, error) {
 	blocks := make([]model.EditBlockPrecondition, 0, len(ids))
 	for _, id := range ids {

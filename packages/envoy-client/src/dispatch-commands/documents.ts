@@ -10,7 +10,7 @@ import type {
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchDocumentRef,
@@ -41,6 +41,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -377,6 +378,30 @@ async function refuseRemovingOpenDecisionBlocks(
   );
 }
 
+/**
+ * A `409 PRECONDITION_FAILED` naming the blocks an edit would remove that its block guard leaves
+ * out (`unguarded_blocks`), with a line under Dispatch's own words that names each with the token
+ * the edit read it at and says to add them to the guard and send the edit again; every other error
+ * as it is, so a refusal naming no such block, an older server's among them, reads as it always
+ * did.
+ */
+function withUnguardedBlocks(error: unknown): unknown {
+  if (!dispatchAnswered(error, 409) || error.code !== "PRECONDITION_FAILED") return error;
+  const unguarded = error.unguardedBlocks ?? [];
+  if (unguarded.length === 0) return error;
+  const one = unguarded.length === 1;
+  const line = `Block guard: this edit would remove ${one ? "a block" : `${unguarded.length} blocks`} the guard did not name: ${unguarded.map((block) => `${block.id} (token ${block.token})`).join(", ")}; add ${one ? "it" : "them"} to the guard's precondition.blocks (--precondition-json) at ${one ? "that token" : "those tokens"} and send the edit again.`;
+  return new DispatchServiceError(
+    error.code,
+    error.status,
+    `${error.message}\n${line}`,
+    error.candidates,
+    error.current,
+    error.mismatches,
+    error.unguardedBlocks
+  );
+}
+
 /** `dispatch doc-edit`: apply one batch of block operations to a live document. */
 export async function docEditCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase, documentOwner, resolveDocument } = context;
@@ -385,12 +410,16 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const summary = optionalString(args, "summary");
   const precondition = optionalPrecondition<EditPrecondition>(args);
   await refuseRemovingOpenDecisionBlocks(client, input.tool, resolved, ops);
-  const edited = await client.docEdit(resolved.artifact.id, {
-    ops,
-    ...(summary === undefined ? {} : { summary }),
-    ...(precondition === undefined ? {} : { precondition }),
-    actor,
-  });
+  const edited = await client
+    .docEdit(resolved.artifact.id, {
+      ops,
+      ...(summary === undefined ? {} : { summary }),
+      ...(precondition === undefined ? {} : { precondition }),
+      actor,
+    })
+    .catch((error: unknown) => {
+      throw withUnguardedBlocks(error);
+    });
   const retyped = ops.filter((operation) => operation.op === "retype").length;
   const versionText =
     edited.version === null ? "no new version" : `version ${edited.version.number}`;
@@ -460,18 +489,18 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   // (packages/contracts/src/dispatch-tools.ts).
   const written = edited.written;
   const writtenLines = written === undefined || written === "" ? [] : [written];
-  // The blocks the edit took that its block guard did not name - the rest of what a delete or a
-  // move removed, a typed block a replace rewrote - at the token the edit read each at. The guard
-  // may still have covered one, through a block it names that holds it, so the line says only that
-  // the guard did not name it, and gives its token to compare with the one the caller read. An
-  // edit under no block guard, or an older server, carries none, and the result reads as it always
-  // did.
+  // The typed blocks a replace's with of blocks rewrote in place under their own ids that the
+  // edit's block guard did not name, at the token the edit read each at; a block the edit would
+  // remove that the guard leaves out refuses it instead (withUnguardedBlocks). The guard may still
+  // have covered one, through a block it names that holds it, so the line says only that the guard
+  // did not name it, and gives its token to compare with the one the caller read. An edit under no
+  // block guard, or an older server, carries none, and the result reads as it always did.
   const unguarded = edited.unguarded_blocks ?? [];
   const unguardedLines =
     unguarded.length === 0
       ? []
       : [
-          `Block guard: this edit also took ${unguarded.length === 1 ? "a block" : `${unguarded.length} blocks`} the guard did not name: ${unguarded.map((block) => `${block.id} (token ${block.token})`).join(", ")}; compare ${unguarded.length === 1 ? "its token with the one" : "their tokens with the ones"} you read.`,
+          `Block guard: this edit rewrote in place ${unguarded.length === 1 ? "a typed block" : `${unguarded.length} typed blocks`} the guard did not name: ${unguarded.map((block) => `${block.id} (token ${block.token})`).join(", ")}; compare ${unguarded.length === 1 ? "its token with the one" : "their tokens with the ones"} you read.`,
         ];
   // The token of the document this edit produced, rendered as dispatch_doc_read renders it:
   // the next guarded edit passes it as `precondition.document` with no read in between. A

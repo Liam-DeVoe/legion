@@ -200,9 +200,9 @@ const (
 	// CrossesNoSpan is a quote that crosses no span.
 	CrossesNoSpan Crossing = iota
 	// CrossesEdge is a quote text is written over that covers text inside a span and text
-	// outside it, and spells neither the span's own markup over all of the span's text it covers
-	// nor a whole link with another URL or title. Only a quote text is written over, a replace's
-	// find, crosses a span so.
+	// outside it, and spells neither the span's own markup over all of the span's text it covers,
+	// nor a whole link with another URL or title, nor another URL or title for a link the edit
+	// removes whole. Only a quote text is written over, a replace's find, crosses a span so.
 	CrossesEdge
 	// LeavesEdgeOnSpace is a quote text is written over that spells a span's own markup over the
 	// part of the span it covers, across its edge, where the part of the span it leaves would meet
@@ -414,11 +414,11 @@ func (at TextblockAt) textOver(r Range) (string, error) {
 }
 
 // SpaceBeside is r and the run of the characters of space beside each of its inner edges in a
-// text run: the end of the run r cuts at its start, where r starts after the textblock's text
-// does, and the start of the run r cuts at its end, where r ends before that text does. That is
-// what a write that splits the textblock at r's edges and drops the whitespace the split leaves
-// at them removes (docs' trimSplitEdges): a link whose text beyond r is that whitespace alone goes
-// whole.
+// text run, measured in UTF-16 units as every position is: the end of the run r cuts at its start,
+// where r starts after the textblock's text does, and the start of the run r cuts at its end, where
+// r ends before that text does. That is what a write that splits the textblock at r's edges and
+// drops the whitespace the split leaves at them removes: a link whose text beyond r is that
+// whitespace alone goes whole.
 func (at TextblockAt) SpaceBeside(r Range, space string) (Range, error) {
 	beside := r
 	if r.From > at.Content.From {
@@ -427,7 +427,8 @@ func (at TextblockAt) SpaceBeside(r Range, space string) (Range, error) {
 			return Range{}, err
 		}
 		if last := before[len(before)-1]; last.Type == "text" {
-			beside.From -= len(last.Text) - len(strings.TrimRight(last.Text, space))
+			trimmed := strings.TrimRight(last.Text, space)
+			beside.From -= len16(last.Text[len(trimmed):])
 		}
 	}
 	if r.To < at.Content.To {
@@ -436,7 +437,8 @@ func (at TextblockAt) SpaceBeside(r Range, space string) (Range, error) {
 			return Range{}, err
 		}
 		if first := after[0]; first.Type == "text" {
-			beside.To += len(first.Text) - len(strings.TrimLeft(first.Text, space))
+			trimmed := strings.TrimLeft(first.Text, space)
+			beside.To += len16(first.Text[:len(first.Text)-len(trimmed)])
 		}
 	}
 	return beside, nil

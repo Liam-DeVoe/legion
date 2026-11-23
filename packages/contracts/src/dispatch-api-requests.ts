@@ -3,6 +3,7 @@ import type {
   ArtifactVersionText,
   DocumentWriteAdvice,
   DuplicateCandidate,
+  EditBlockPrecondition,
   EditPreconditionCurrent,
   EditPreconditionMismatch,
   IssueDetails,
@@ -115,4 +116,8 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** On a `409 PRECONDITION_FAILED` of an edit under a block guard, each block the edit would
+   *  remove that the guard does not name, with the token the edit read it at: the guard that
+   *  names them at those tokens takes the edit while none of them has changed. */
+  readonly unguarded_blocks?: EditBlockPrecondition[];
 }

@@ -4958,6 +4958,7 @@ export interface components {
       current: components["schemas"]["EditPreconditionCurrent"];
       error: string;
       mismatches: components["schemas"]["EditPreconditionMismatch"][] | null;
+      unguarded_blocks?: components["schemas"]["EditBlockPrecondition"][];
     };
     EditPreconditionMismatch: {
       block_id?: string;
