@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/programfile"
+
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
@@ -312,29 +314,14 @@ func (h heldCheck) privateCopy(base, fallback string) (string, error) {
 	return dir, nil
 }
 
-// writeCopyFile writes body to path as a new file of mode exactly: O_EXCL and O_NOFOLLOW, so
-// nothing already at path, a link included, is opened or written through, and the mode set again
-// on the open file, since the umask may have taken bits off the create's. syscall.ForkLock is held
-// for reading while the file is open for writing, which keeps every fork of this process out of
-// that span: a child forked then would hold the write descriptor until its own exec closed it, and
-// the kernel refuses to exec a file open for writing (ETXTBSY), which the launcher is the moment
-// this answers.
+// writeCopyFile writes body to path as a new file of mode exactly, by programfile.Write: O_EXCL and
+// O_NOFOLLOW, so nothing already at path, a link included, is opened or written through, and the
+// mode set again on the open file, since the umask may have taken bits off the create's. Write
+// keeps every fork of this process out of the span the file is open for writing: a child forked
+// then would hold the write descriptor until its own exec closed it, and the kernel refuses to
+// exec a file open for writing (ETXTBSY), which the launcher is the moment this answers.
 func writeCopyFile(path string, body []byte, mode os.FileMode) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
-	if err != nil {
-		return err
-	}
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(body); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
+	return programfile.Write(path, os.O_EXCL|syscall.O_NOFOLLOW, mode, bytes.NewReader(body))
 }
 
 // found is path, once it is absolute and an executable regular file is there: a name taken from a

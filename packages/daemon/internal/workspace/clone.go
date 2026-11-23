@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/programfile"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -65,7 +67,10 @@ func (r remote) scrub(text string) string {
 // directory (FromGitHub) or a pod's TMPDIR (Fetch, the repository cache), either of which may be
 // reached through a symlink. It is resolved once here, so the credential directory is made, and
 // removed (rolefile.RemoveTree, which refuses a parent that is a link), under the directory the
-// operator's link names, and no link below it is followed.
+// operator's link names, and no link below it is followed. The helper, which git runs by its
+// path, is written by programfile.Write: the tmux daemon starts git and tmux from other goroutines
+// while it writes, and a child forked inside an unguarded write could hold the helper open for
+// writing when git runs it, which the kernel refuses (ETXTBSY).
 func newProvisioningCredential(parent, token string) (remote, error) {
 	if token == "" {
 		return remote{}, errors.New("workspace provisioning token is required")
@@ -92,11 +97,8 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 		return cleanup(fmt.Errorf("write provisioning token: %w", err))
 	}
 	helper := filepath.Join(directory, "helper")
-	if err := os.WriteFile(helper, []byte(provisioningHelper), 0o700); err != nil {
+	if err := programfile.Write(helper, os.O_EXCL, 0o700, strings.NewReader(provisioningHelper)); err != nil {
 		return cleanup(fmt.Errorf("write provisioning credential helper: %w", err))
-	}
-	if err := os.Chmod(helper, 0o700); err != nil {
-		return cleanup(fmt.Errorf("chmod provisioning credential helper: %w", err))
 	}
 	return remote{
 		dir:   directory,

@@ -3,28 +3,28 @@
 // file busy") whenever another goroutine of the test process forks while the file is open for
 // writing, as a test running beside it (t.Parallel) does each time it starts a command: the child
 // holds a copy of the write descriptor from the fork until its own exec closes it, and the kernel
-// refuses to exec a file some process holds open for writing. WriteFile keeps every fork of the
-// process out of that span, so no process the test binary starts can hold the file open when it
-// runs. Unguarded is the check the modules' text checks hold their tests to.
+// refuses to exec a file some process holds open for writing. WriteFile writes it with
+// programfile.Write, the writer of every program file in the code a deployment runs too, which
+// keeps every fork of the process out of that span, so no process the test binary starts can hold
+// the file open when it runs. ForkBeside is the forking a test of such a write runs beside it.
+// Unguarded is the check the modules' text checks hold their code and their tests to.
 package testexec
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/programfile"
 )
 
-// WriteFile is os.WriteFile for a file a test will run. It holds syscall.ForkLock for reading while
-// the file is open for writing: os/exec, and every other fork of a Go process, takes that lock for
-// writing around the fork, so no fork of this process falls inside the write and no child holds the
-// file's write descriptor when the file is run.
+// WriteFile is os.WriteFile for a file a test will run: programfile.Write with os.O_TRUNC, so a
+// file already at name is written over, as os.WriteFile writes over one, and given perm exactly.
 func WriteFile(name string, data []byte, perm os.FileMode) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	return os.WriteFile(name, data, perm)
+	return programfile.Write(name, os.O_TRUNC, perm, bytes.NewReader(data))
 }
 
 // ForkBeside starts n goroutines that each start true and start it again as soon as it exits,

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/programfile"
+
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -400,19 +402,15 @@ func unpackServed(body []byte, dir string) (int, error) {
 	}
 }
 
-// writeMember writes content to path as a new file of mode: O_EXCL, so a file already at path,
-// whatever it is — a fifo a plain open would wait on, a symlink a plain open would write through —
-// fails the write at once rather than being opened.
+// writeMember writes content to path as a new file of mode exactly, by programfile.Write: O_EXCL,
+// so a file already at path, whatever it is — a fifo a plain open would wait on, a symlink a plain
+// open would write through — fails the write at once rather than being opened. Write keeps every
+// fork of this process out of the span the file is open for writing: the launcher that writes the
+// check starts its roles' processes from other goroutines, a child forked then would hold the
+// write descriptor until its own exec closed it, and the kernel refuses to exec a file open for
+// writing (ETXTBSY), which verifyServed does to the launcher member as soon as the unpack ends.
 func writeMember(path string, content io.Reader, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(file, content); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
+	return programfile.Write(path, os.O_EXCL, mode, content)
 }
 
 // verifyServed runs the freshly unpacked check once, before anything may use it, in the one shape
