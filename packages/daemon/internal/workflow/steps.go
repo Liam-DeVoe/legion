@@ -251,11 +251,12 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // have named, so its end is written the same way. endRun writes it. A phase that runs no step
 // writes nothing, and neither does a record key that is no issue key (recordsSteps).
 //
-// It is the one writer of the end of each step, so it is the one place an owner's slot is given
-// its own App back: where the run it ends is a step of a stored plan that the owner of before's
-// task ran (record.OwnerClaim), it queues a supervise slot_credential of the owner's claim in the
-// same transaction, which writes the owner's slot for the App the record answers when it runs —
-// the owner's own role's, its step having ended (ownerSlotCredential).
+// It is the one writer of the end of each step on a walk, so it is the one place an owner's slot is
+// given its own App back: where the run it ends is a step of a stored plan whose start named an
+// architect (the owner, or the architect above that ran the step for it, ownerAgent), it queues a
+// supervise slot_credential of the owner's claim in the same transaction, which writes the owner's
+// slot back to its own App when it runs (ownerSlotCredential). A run on no step of its walk is
+// ended, and its write-back queued, by endOffWalk.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
@@ -272,15 +273,21 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	return e.ownerSlotCredential(ctx, tx, before, agent)
 }
 
-// ownerSlotCredential queues, where agent is the owner of issue's task (record.OwnerClaim), the
-// supervise slot_credential that writes the owner's slot for the App its claim holds as the record
-// stands when the row runs (internal/daemon's slotCredential). While the owner does a step its
-// slot holds the App of that step's role (record.OwnerActsAs), so the end of that step gives it
-// its own App back at once rather than at the next refresh of the slot. Any other agent's slot
-// never held another App, and an issue whose key makes no claim token has no owner's slot.
+// ownerSlotCredential queues, where agent, the agent the start of an ended step named, is an
+// architect, the supervise slot_credential that writes the slot of the owner of issue's task
+// (record.OwnerClaim) back to the App of the owner's own role (internal/daemon's slotCredential).
+// While the owner does a step its slot holds the App of that step's role (record.OwnerActsAs), so
+// the end of that step gives it its own App back at once rather than at the next refresh of the
+// slot, and the next notice to the owner waits for that write (internal/daemon's deliverNotice).
+// The slot written in the step is always the owner's, whichever architect the start named: the
+// owner-step goes to the owner, and only the owner's claim acts as another role. Any other agent's
+// slot never held another App, and an issue whose key makes no claim token has no owner's slot.
 func (e *Engine) ownerSlotCredential(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
+	if _, of, ok := agent.Cut(); !ok || of != claim.Agent(claim.RoleArchitect) {
+		return nil
+	}
 	owner, err := record.OwnerClaim(issue)
-	if err != nil || agent != owner {
+	if err != nil {
 		return nil
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "slot_credential", Tree: issue.Tree, Role: claim.RoleArchitect,

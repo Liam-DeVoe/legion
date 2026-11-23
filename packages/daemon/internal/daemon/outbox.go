@@ -1942,6 +1942,16 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
+	// The end of a step the owner did queues the write of the owner's slot back to its own App
+	// (workflow's ownerSlotCredential); a notice queued after it waits until that write ran, so
+	// nothing told the owner after its step ended reaches it while its gh files still hold the
+	// step's App. Under Kubernetes the kubelet's sync of the written Secret into the pod is not
+	// waited for: the next owner-step that needs another App waits for its own (ownerSlotHolds).
+	if pending, err := r.slotWritePending(ctx, architect, row.ID); err != nil {
+		return err
+	} else if pending {
+		return fmt.Errorf("%w: %s's notice row %d waits for the write of its slot back to its own App", errNoticeWaits, architect, row.ID)
+	}
 	// An owner's step is told once the owner's slot holds the App of the step's role, so the
 	// owner's gh acts as that App for the whole step (ownerSlotHolds).
 	if payload.Kind == record.OwnerStepNotice {
@@ -2495,7 +2505,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// A slot's credential is written for the App its claim's slot holds as the record stands when
 	// the row runs (slotCredential), whatever the issue's generation, phase or tree.
 	if payload.Op == "slot_credential" {
-		return r.slotCredential(ctx, payload)
+		return r.slotCredential(ctx, row.Issue, payload)
 	}
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -3117,14 +3127,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	}
 }
 
-// slotCredential runs a supervise row slot_credential, which the end of a step its owner ran
-// queues (workflow's endStep): the slot of the row's claim is written at once for the App of the
-// role runtime.SlotRole answers as the record stands now, over the daemon's ActsAs (ownerActsAs) —
-// the owner's own role once its step has ended, or the step's where another step of the owner's
-// runs already — and waits for nothing: the next owner-step notice holds for its own App
-// (ownerSlotHolds). Each such write reads the record when it runs, so the order of the rows does
-// not change what the slot holds. A runtime that holds no slots has nothing to write.
-func (r *outbox) slotCredential(ctx context.Context, payload record.SuperviseRequest) error {
+// slotCredential runs a supervise row slot_credential of issue, which the end of a step its owner
+// did queues (workflow's ownerSlotCredential): the write of the owner's slot back to the App of its
+// own role. The role the slot holds now is runtime.SlotRole over the daemon's ActsAs
+// (ownerActsAs), as the record stands when the row runs. Where its App is the owner's own (ownApp:
+// the owner does no step now, or one of its own App) the slot is written for it, once. Where
+// another step of the owner's that needs another App runs already, the row writes nothing: that
+// step's owner-step writes the slot for its App (ownerSlotHolds), and waits for this row, so the
+// slot is written once at that end too. Notices to the owner queued after the row wait for it
+// (deliverNotice). A runtime that holds no slots has nothing to write.
+func (r *outbox) slotCredential(ctx context.Context, issue string, payload record.SuperviseRequest) error {
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
 	if !ok {
 		return nil
@@ -3133,10 +3145,25 @@ func (r *outbox) slotCredential(ctx context.Context, payload record.SuperviseReq
 	if err != nil {
 		return err
 	}
+	if !r.ownApp(ctx, issue, role) {
+		return nil
+	}
 	if err := slots.WriteSlotCredential(ctx, payload.Claim, role); err != nil {
 		return fmt.Errorf("write %s's slot for the App of %s: %w", payload.Claim, role, err)
 	}
 	return nil
+}
+
+// slotWritePending is whether the outbox still holds a write of owner's slot back to its own App
+// queued before row (record.Store.SlotWritePending), read in a read-only transaction of its own.
+func (r *outbox) slotWritePending(ctx context.Context, owner claim.Token, row int64) (bool, error) {
+	var pending bool
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		pending, err = r.records.SlotWritePending(ctx, tx, owner, row)
+		return err
+	})
+	return pending, err
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will

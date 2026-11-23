@@ -2370,6 +2370,18 @@ func (s *Postgres) NoticePending(ctx context.Context, tx pgx.Tx, issue string, k
 	return pending, nil
 }
 
+// SlotWritePending reads whether the outbox still holds a supervise slot_credential row of token
+// with an id below before: a finished row is deleted, so any such row is a write still to run.
+func (s *Postgres) SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and id < $2
+		and payload->>'op' = 'slot_credential' and payload->>'claim' = $3)`,
+		string(OutboxKindSupervise), before, string(token)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s's slot has a write pending before row %d: %w", token, before, err)
+	}
+	return pending, nil
+}
+
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",

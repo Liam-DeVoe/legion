@@ -1,7 +1,11 @@
 package workflow
 
 import (
+	"context"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -41,4 +45,63 @@ func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
 	written(t, 1)
+}
+
+// Every end of an owner's step queues the write of the owner's slot back to its own App, the two
+// ends the write-back once skipped among them. A child's step whose start named the architect
+// above it (the child's own architect holds no claim, so the tree's architect runs the step,
+// ownerAgent) ends, stopped by the owner's stop_task, with one slot_credential of the child's own
+// architect, whose slot the owner-step wrote. A run whose plan rows the way back of a rollback
+// dropped while the owner's step ran ends off its walk at the next settle (endOffWalk), with one
+// slot_credential of the owner.
+//
+// The control: the end that queued a write-back only where the start named the issue's own
+// architect, and the off-walk end that queued none, left both slots holding the step's App.
+func TestEveryEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
+	written := func(t *testing.T, pool *pgxpool.Pool, key string, owner claim.Token) {
+		t.Helper()
+		rows := superviseRowsOf(t, pool, key, "slot_credential")
+		if len(rows) != 1 || rows[0].Claim != owner || rows[0].Role != claim.RoleArchitect {
+			t.Fatalf("%s's outbox holds the slot_credential rows %+v, want one of its owner %s", key, rows, owner)
+		}
+	}
+
+	t.Run("a child's step run by the architect above", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		stepRoot(t, pool, phase.Implementing)
+		child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
+		seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
+		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := engine.store.Issue(ctx, tx, child.Key)
+			if err != nil {
+				return err
+			}
+			return engine.StartStepRecord(ctx, tx, *issue)
+		})
+		above := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
+		if starts := stepStartsAt(t, pool, child.Key, "step", 1); len(starts) != 1 || starts[0].Agent != above {
+			t.Fatalf("the start records of the child's step 1 = %+v, want one naming the architect above, %s", starts, above)
+		}
+		stored := issueOf(t, pool, engine, child.Key)
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, stored, "a")); result.Refusal != nil {
+			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+		}
+		written(t, pool, child.Key, claim.Token(treeRoleToken(t, child.Key, claim.RoleArchitect)))
+	})
+
+	t.Run("a run off its walk", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:owner", "tester")
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		dropPlanRows(t, pool, root.Key)
+		rebooted(t, pool)
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		if runs := stepRunsOf(t, pool, root.Key); len(runs) == 0 || runs[0] != "a step 1 1 ended" {
+			t.Fatalf("the runs of %s = %v, want task a's step 1 ended off its walk", root.Key, runs)
+		}
+		written(t, pool, root.Key, claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)))
+	})
 }

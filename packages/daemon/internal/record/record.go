@@ -2372,6 +2372,11 @@ type Store interface {
 	// on issue (OutboxKindNotice), so a notice told again is never queued behind the one it
 	// repeats (workflow's owedOwnersStep, for an owner-step).
 	NoticePending(ctx context.Context, tx pgx.Tx, issue string, kind NoticeKind) (bool, error)
+	// SlotWritePending says whether the outbox still holds a supervise slot_credential row of the
+	// claim token queued before the row before (workflow's ownerSlotCredential): the write of an
+	// owner's slot back to its own App, which a later notice to that claim waits for (the daemon's
+	// deliverNotice).
+	SlotWritePending(ctx context.Context, tx pgx.Tx, token claim.Token, before int64) (bool, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

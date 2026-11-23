@@ -41,9 +41,9 @@ func slotCalls(rt *fake.Runtime, token claim.Token) []string {
 //  2. A pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate) holds the row the same way.
 //  3. Once the runtime answers that the slot holds it, the notice is published once, to the
 //     owner's role topic.
-//  4. A supervise slot_credential of the owner's claim writes the slot for the App the record
-//     answers when the row runs: the implementer's while step 1 runs, the architect's own once the
-//     task stands at step 2, the reviewer's step, and waits for nothing.
+//  4. A supervise slot_credential of the owner's claim writes the slot back to the owner's own App
+//     when the row runs: nothing while step 1 runs, whose owner-step writes that step's App, and
+//     the architect's own once the task stands at step 2, the reviewer's step; it waits for nothing.
 //  5. A notice owner-step of step 1 that runs after the task moved to step 2 finishes unpublished,
 //     with one log line, and asks the runtime nothing.
 func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
@@ -136,12 +136,16 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if err := runner.execute(ctx, row); err != nil {
 			t.Fatalf("the slot_credential row = %v", err)
 		}
-		if got := slotCalls(rt, owner)[before:]; len(got) != 1 || got[0] != "WriteSlotCredential "+want {
-			t.Fatalf("the slot_credential row asked the runtime %q of the owner's slot, want one write for %s", got, want)
+		if _, err := pool.Exec(ctx, "delete from outbox where id = $1", row.ID); err != nil {
+			t.Fatalf("finish the slot_credential row: %v", err)
+		}
+		got := slotCalls(rt, owner)[before:]
+		if want == "" && len(got) != 0 || want != "" && (len(got) != 1 || got[0] != "WriteSlotCredential "+want) {
+			t.Fatalf("the slot_credential row asked the runtime %q of the owner's slot, want one write for %q (none for \"\")", got, want)
 		}
 	}
-	t.Run("4 a slot_credential row writes the App the record answers", func(t *testing.T) {
-		slotCredential(t, "implementer")
+	t.Run("4 a slot_credential row writes the owner's own App back", func(t *testing.T) {
+		slotCredential(t, "")
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			if err := records.MoveTask(ctx, tx, "LEGION-1", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 				return err
