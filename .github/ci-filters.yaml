@@ -2839,6 +2839,7 @@ envoy_go_race:
   - '!packages/envoy/internal/testnats/nats_test.go'
   - '!packages/envoy/internal/testnats/proxy_test.go'
   - '!packages/envoy/internal/testnats/relay_test.go'
+  - '!packages/envoy/internal/testnats/reply_hold_test.go'
   - '!packages/envoy/internal/testnats/responsetimer_test.go'
   - '!packages/envoy/internal/testnats/start_wait_test.go'
   - '!packages/envoy/internal/testnats/stream_create_test.go'
