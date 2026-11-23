@@ -704,9 +704,10 @@ type Issue struct {
 	StepRole string `json:"stepRole,omitempty"`
 	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
 	// the slot of the start's claim or the role of its step, the pod having been built before the
-	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its
-	// claim has none to show yet, and only the pod's update round or its release lets it start.
-	// Absent where none waits.
+	// deployment defined or the issue's plan named that name, such as the slot `implementer-2` of
+	// a second agent of one role, whose start is named here by its role, `implementer`
+	// (record.Store.StartsWaitingForPod): a start that creates its claim has none to show yet, and
+	// only the pod's update round or its release lets it start. Absent where none waits.
 	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
