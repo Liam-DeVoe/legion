@@ -11,4 +11,8 @@ A step of a part written `<role>:owner`, such as `implementer:owner`, is yours t
 
 When Legion tells you that each part is done (`parts-done`), report your task with `complete_task` (`issue`, `task`, `summary`), or give another part. When Legion tells you that the parts do not join (`report-refused`), give a part that needs each of them. Its first step joins their work. Report your task again when that part is done.
 
+When Legion tells you that the merger returned your task (`merge-returned`), give a part that repairs it. Report your task again when that part is done.
+
+The other operations of the tree that the text above gives are the issue owner's, and Legion refuses them to a sub-owner. So of the `legion` tool's operations, use only those this part names. Read your issue with `read_record`, and answer an update round with `ready_for_update`, as the text above says.
+
 Send each question to the owner above you, whose claim your start names. Ask no person.

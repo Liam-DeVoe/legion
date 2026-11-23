@@ -1046,9 +1046,12 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 // then the sub-owner's own (sub-owner.md). It holds no part of a phase worker (worker-common.md) and
 // not the sub-architect's own part of this daemon (go/architect.md), whose operations move the
 // issues of a tree. A role that is neither architect nor one of Legion's step roles has no such
-// prompt. The sub-owner's part names its acts in the order it does them, and none of the tree's
-// operations that only an architect's grant passes. This shows the text is loaded, never that a
-// sub-owner follows it.
+// prompt. The sub-owner's part names its acts in the order it does them, a merger's return of its
+// task among them, and none of the tree's operations that only an architect's grant passes. The
+// owner's part above it names those operations as its reader's, so the sub-owner's part says that
+// Legion refuses them to a sub-owner and that it uses only the operations it names, which include
+// the read of its record and the answer of an update round. This shows the text is loaded, never
+// that a sub-owner follows it.
 func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -1111,7 +1114,7 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 	}
 	part, at, previous := foldWhitespace(string(body)), 0, "its start"
 	for _, act := range []string{"sub-owner of one task", "`plan_task`", "`parent`", "`steps`", "`owner`", "`needs`", "`register_plan`",
-		"yours to change", "`stop_task`", "`complete_step`", "`parts-done`", "`complete_task`", "`report-refused`", "owner above you", "no person"} {
+		"yours to change", "`stop_task`", "`complete_step`", "`parts-done`", "`complete_task`", "`report-refused`", "`merge-returned`", "owner above you", "no person"} {
 		found := strings.Index(part[at:], act)
 		if found < 0 {
 			t.Errorf("go/sub-owner.md does not name %q after %q", act, previous)
@@ -1122,6 +1125,20 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 	for _, operation := range []string{"park_child", "rerun_child", "release_children", "sign_off"} {
 		if strings.Contains(part, operation) {
 			t.Errorf("go/sub-owner.md names %s, an operation of the tree that a sub-owner's grant does not pass", operation)
+		}
+	}
+	for _, terms := range [][]string{
+		{"merger returned your task", "`merge-returned`", "give a part that repairs it"},
+		{"operations of the tree", "issue owner's", "Legion refuses them to a sub-owner"},
+		{"operations", "use only", "this part names"},
+	} {
+		if !clauseHolds(string(body), terms...) {
+			t.Errorf("no clause of go/sub-owner.md holds %q, in that order", terms)
+		}
+	}
+	for _, operation := range []string{"`read_record`", "`ready_for_update`"} {
+		if !strings.Contains(part, operation) {
+			t.Errorf("go/sub-owner.md does not name %s, so a sub-owner that uses only the operations it names cannot use it", operation)
 		}
 	}
 	if strings.Contains(part, "part_of") {
