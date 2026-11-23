@@ -53,9 +53,11 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters, the retry, the last refused status and whether the
+// the token, the endpoint's query parameters, the retry, the last refused status, whether the
 // first 64 KiB of that refusal's body name the provider's content filter (FaultContentFilter),
-// and nothing else.
+// and the few hundred bytes of that body that say the filter's verdict - each error's code and
+// message and the labels it flagged (ContentFilterRefusal), which Result.Detail names - and
+// nothing else.
 //
 // # Cache marks
 //
@@ -77,6 +79,13 @@
 // openai-responses, and on openai-chat as response_format.json_schema without the provider's
 // strict mode, because the package checks the reply against the schema itself and strict mode
 // refuses schemas that are valid JSON Schema.
+//
+// The SDK parses the whole reply so far on each delta for the snapshot OnPartial is given, which
+// over one reply is work in the square of its length. So a snapshot is parsed at each delta of a
+// reply up to 16 KiB long, more than a reply of 4,096 output tokens, and past that only once the
+// reply has grown by half since the last, which keeps the parses within three times its length;
+// and none is parsed of a reply whose first byte that is not white space can start no JSON value,
+// which no schema's object is (partial.go). The reply's value is read whole as the call ends.
 //
 // # Bounds
 //

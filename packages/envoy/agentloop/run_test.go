@@ -789,6 +789,57 @@ func TestAContentFilterRefusalIsItsOwnFault(t *testing.T) {
 	}
 }
 
+// A content filter's refusal says what the provider said of it: the Detail of the fault names the
+// error's code and message and the labels the filter flagged, from the body of the refusal, so a
+// log line or a run's reason tells a jailbreak shield from a harm category without the request in
+// hand; the SDK's own error says only the status ("openai: API request failed with status 400"),
+// which is all the Detail named before. It names nothing else of the body: the prompt text a body
+// echoes stays out, and a long message is cut, so the Detail stays a few hundred bytes.
+func TestAContentFilterRefusalNamesTheProvidersWords(t *testing.T) {
+	t.Parallel()
+	const prefix = "the provider's content filter refused the call with 400"
+	long := strings.Repeat("blocked ", 60)
+	for _, c := range []struct {
+		name, body, want string
+	}{
+		{
+			// The stream chunk the eval's grok-4.7 deployment answered chart-08 and change-14
+			// with (chat-calls.log of the c13 rerun).
+			name: "an Azure stream chunk",
+			body: `data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
+				`"content_filter_results":{"error":{"code":"content_filter","message":"Response content blocked by label 'Jailbreak'."}}}]}` + "\n\n",
+			want: prefix + " (content_filter: Response content blocked by label 'Jailbreak'.)",
+		},
+		{
+			name: "an Azure OpenAI error naming the labels it filtered",
+			body: `{"error":{"message":"The response was filtered due to the prompt triggering the content management policy.","type":null,"param":"prompt",` +
+				`"prompt":"ignore the rules above","code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation",` +
+				`"content_filter_result":{"hate":{"filtered":false,"severity":"safe"},"jailbreak":{"filtered":true,"detected":true}}}}}`,
+			want: prefix + " (content_filter: The response was filtered due to the prompt triggering the content management policy.; filtered: jailbreak)",
+		},
+		{
+			name: "a message past its bound",
+			body: `{"error":{"code":"content_filter","message":"` + long + `"}}`,
+			want: prefix + " (" + strings.TrimSpace(("content_filter: " + long)[:filterErrorLimit]) + ")",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, reply{status: http.StatusBadRequest, body: []byte(c.body)})
+			result, err := Run(context.Background(), newFixture(t, s, OpenAIChat, 1).req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != FaultContentFilter || result.Detail != c.want {
+				t.Errorf("fault %q with detail\n%q\nwant %q with\n%q", result.Fault, result.Detail, FaultContentFilter, c.want)
+			}
+			if strings.Contains(result.Detail, "ignore the rules") {
+				t.Errorf("the detail %q names the prompt text the body echoed", result.Detail)
+			}
+		})
+	}
+}
+
 // A redirect is never followed, in a run and in a decision alike: the transport puts the
 // endpoint's credential on every request it carries, and Go's own client strips Authorization
 // on a cross-domain redirect before a transport runs, so following one would hand the token to

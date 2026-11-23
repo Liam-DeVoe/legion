@@ -250,10 +250,12 @@ type Request struct {
 	// Result.Value holds. A nil Final asks for free text.
 	Final json.RawMessage
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
-	// built, and OnStep every step as it finishes. An error from any of them ends the run
-	// at that point and Run returns it with the Result so far, and so does a panic in one,
-	// which the run recovers and returns as an error naming it. A nil callback is not
-	// called.
+	// built, and OnStep every step as it finishes. OnPartial is given a snapshot at each delta
+	// of a reply up to 16 KiB long, and past that each time the reply has grown by half, and
+	// none of a reply that does not start as JSON (doc.go, "The structured reply"). An error
+	// from any of them ends the run at that point and Run returns it with the Result so far,
+	// and so does a panic in one, which the run recovers and returns as an error naming it. A
+	// nil callback is not called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error

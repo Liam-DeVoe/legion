@@ -120,9 +120,14 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
 	case transport.contentFiltered() && (stream.Err() != nil || len(result.Steps) == 0):
+		// The provider's own words name the filter's verdict, such as the label it blocked
+		// the call for; the SDK's error says no more than the status, so it is the detail
+		// only where the body said nothing this package reads.
 		result.Fault, result.Status = FaultContentFilter, transport.failedStatus()
 		result.Detail = fmt.Sprintf("the provider's content filter refused the call with %d", result.Status)
-		if err := stream.Err(); err != nil {
+		if words := transport.contentFilterWords(); words != "" {
+			result.Detail += " (" + words + ")"
+		} else if err := stream.Err(); err != nil {
 			result.Detail += ": " + err.Error()
 		}
 	case stream.Err() != nil:
@@ -225,8 +230,9 @@ func languageModel(req Request, client *http.Client) (provider.LanguageModel, pr
 }
 
 // finalOutput is Request.Final as the SDK's output: the last reply is validated against the
-// schema and read back as the object itself. A schema the SDK refuses is a request the loop
-// cannot run.
+// schema and read back as the object itself, and its snapshots as it streams are parsed within
+// finalPartials' bounds. A schema the SDK refuses is a request the loop cannot run. Each Run
+// builds its own, since finalPartials keeps the state of the reply it is reading.
 func finalOutput(final json.RawMessage) (aisdk.Output, error) {
 	s, err := schema.SchemaFromJSON(final)
 	if err != nil {
@@ -236,7 +242,7 @@ func finalOutput(final json.RawMessage) (aisdk.Output, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentloop: the request's final schema: %w", err)
 	}
-	return out, nil
+	return &finalPartials{Output: out}, nil
 }
 
 // run is one Run's state across its model calls.

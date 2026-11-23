@@ -3,16 +3,21 @@ package agentloop
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -23,8 +28,9 @@ import (
 // at WARN, once for the attempt it answered (rateLimited), which is the one place a caller's 429
 // is logged: the agent's runs and the server's short answers each make their calls here. It keeps
 // the status of the last response it handed back, which is how a provider error is given the
-// HTTP status the provider answered with, and whether that response's body names the provider's
-// content filter; and it cuts a response past streamLimit bytes.
+// HTTP status the provider answered with, whether that response's body names the provider's
+// content filter and what the body says of the refusal; and it cuts a response past streamLimit
+// bytes.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
@@ -42,8 +48,11 @@ type modelTransport struct {
 	// it was, or where the attempt drew no response at all.
 	status atomic.Int32
 	// filtered is set where the last attempt's response was not a 2xx and the first
-	// filterPeek bytes of its body name the provider's content filter (contentFilterMark).
-	filtered atomic.Bool
+	// filterPeek bytes of its body name the provider's content filter (contentFilterMark), and
+	// filterWords holds what those bytes say of the refusal (ContentFilterRefusal), "" where
+	// they say nothing of the shape it reads.
+	filtered    atomic.Bool
+	filterWords atomic.Pointer[string]
 }
 
 // filterPeek is how many bytes of a refused response's body the transport reads for whether it
@@ -55,6 +64,14 @@ const filterPeek = 64 << 10
 // their filter blocked (an error body, or a stream chunk sent with the error status), and Azure
 // OpenAI's inner code for the same refusal.
 var contentFilterMark = regexp.MustCompile(`"(?:finish_reason|code)"\s*:\s*"content_filter"|"ResponsibleAIPolicyViolation"`)
+
+// The bounds of what ContentFilterRefusal keeps of a refusal: each error's code and message at
+// most filterErrorLimit bytes, and all it keeps at most filterWordsLimit, so a log line and a
+// run's reason carry the provider's verdict and never a long body.
+const (
+	filterErrorLimit = 200
+	filterWordsLimit = 400
+)
 
 // errStreamTooLarge is a read of a response past the transport's streamLimit.
 var errStreamTooLarge = errors.New("the model's response passed its stream limit")
@@ -74,6 +91,15 @@ func (t *modelTransport) failedStatus() int {
 // the provider's content filter.
 func (t *modelTransport) contentFiltered() bool {
 	return t.filtered.Load()
+}
+
+// contentFilterWords is what the last attempt's refusal says of the provider's content filter
+// (ContentFilterRefusal), "" where it was no such refusal or says nothing of the shape read.
+func (t *modelTransport) contentFilterWords() string {
+	if words := t.filterWords.Load(); words != nil {
+		return *words
+	}
+	return ""
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
@@ -124,6 +150,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// or a request that drew no response, is never given an earlier attempt's.
 		t.status.Store(0)
 		t.filtered.Store(false)
+		t.filterWords.Store(nil)
 		var key string
 		// Azure signs its own calls: the provider's credential middleware sets the header,
 		// and this transport reads no token for it.
@@ -187,15 +214,127 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // peekFilter reads the first filterPeek bytes of resp's body, a refused response's, sets filtered
-// where they name the provider's content filter, and puts them back in front of the rest, so the
-// SDK reads the body as the provider sent it.
+// and filterWords where they name the provider's content filter, and puts them back in front of
+// the rest, so the SDK reads the body as the provider sent it.
 func (t *modelTransport) peekFilter(resp *http.Response) {
 	head, _ := io.ReadAll(io.LimitReader(resp.Body, filterPeek))
-	t.filtered.Store(contentFilterMark.Match(head))
+	if words, filtered := ContentFilterRefusal(head); filtered {
+		t.filtered.Store(true)
+		t.filterWords.Store(&words)
+	}
 	resp.Body = struct {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+}
+
+// ContentFilterRefusal reports whether body, or the start of it, the body of a response a
+// provider refused a call with, names the provider's content filter (contentFilterMark), and
+// what it says of the refusal: each error's code and message, as Azure's endpoints give them (an
+// error object, or a stream chunk's content_filter_results.error), and the labels the filter
+// flagged (innererror.content_filter_result, content_filter_results, prompt_filter_results), such
+// as "content_filter: Response content blocked by label 'Jailbreak'." or "filtered: jailbreak",
+// within filterWordsLimit bytes. It keeps no other text of the body, which may echo what the
+// call held; the words are "" where the body says nothing of that shape. The body is one JSON
+// object, or a stream of server-sent events whose data lines each are; a line the read cut short
+// says nothing.
+func ContentFilterRefusal(body []byte) (string, bool) {
+	if !contentFilterMark.Match(body) {
+		return "", false
+	}
+	var words filterVerdict
+	if trimmed := bytes.TrimSpace(body); bytes.HasPrefix(trimmed, []byte("{")) {
+		words.read(trimmed)
+	} else {
+		for line := range bytes.Lines(body) {
+			if data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:")); ok {
+				words.read(bytes.TrimSpace(data))
+			}
+		}
+	}
+	return words.String(), true
+}
+
+// filterVerdict is what a refused body says of the provider's content filter: its errors, each
+// as "code: message", and the labels the filter flagged, each once, in the order read.
+type filterVerdict struct {
+	errors, labels []string
+}
+
+// read adds what one JSON value says of the filter: every error object and every set of the
+// filter's results it holds, at any depth, its keys read in order.
+func (v *filterVerdict) read(data []byte) {
+	var value any
+	if json.Unmarshal(data, &value) == nil {
+		v.walk(value)
+	}
+}
+
+func (v *filterVerdict) walk(value any) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			v.walk(item)
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			child, _ := value[key].(map[string]any)
+			switch key {
+			case "error":
+				v.addError(child)
+			case "content_filter_result", "content_filter_results":
+				v.addLabels(child)
+			}
+			v.walk(value[key])
+		}
+	}
+}
+
+// addError adds an error object's code and message, the message cut at filterErrorLimit bytes.
+func (v *filterVerdict) addError(object map[string]any) {
+	code, _ := object["code"].(string)
+	message, _ := object["message"].(string)
+	text := strings.TrimSpace(code)
+	if message = strings.Join(strings.Fields(message), " "); message != "" {
+		if text != "" {
+			text += ": "
+		}
+		text += message
+	}
+	if text = strings.TrimSpace(cutBytes(text, filterErrorLimit)); text != "" && !slices.Contains(v.errors, text) {
+		v.errors = append(v.errors, text)
+	}
+}
+
+// addLabels adds each label of a set of the filter's results that it filtered: {"jailbreak":
+// {"filtered": true, "detected": true}} flags jailbreak. A label it only detected, or rated safe,
+// refused nothing.
+func (v *filterVerdict) addLabels(results map[string]any) {
+	for _, label := range slices.Sorted(maps.Keys(results)) {
+		if result, ok := results[label].(map[string]any); ok && result["filtered"] == true && !slices.Contains(v.labels, label) {
+			v.labels = append(v.labels, label)
+		}
+	}
+}
+
+func (v *filterVerdict) String() string {
+	parts := slices.Clone(v.errors)
+	if len(v.labels) > 0 {
+		parts = append(parts, "filtered: "+strings.Join(v.labels, ", "))
+	}
+	return cutBytes(strings.Join(parts, "; "), filterWordsLimit)
+}
+
+// cutBytes is text cut to at most limit bytes, at a rune's start.
+func cutBytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // rateLimited logs a 429 the model service answered attempt (0 for the first) with, at WARN:
