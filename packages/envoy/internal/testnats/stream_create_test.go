@@ -340,13 +340,18 @@ const (
 	// One send of the create then takes accountInfoDelay and createSendWait, as nothing answers the
 	// create of the bucket's stream: 18 s of the child's 48. The shared wait gives up 30 s before the
 	// child's deadline, 18 s in, so the child's setup, the server's start (awaitReady) among it, has
-	// 18 s before each of its waits asks only once more: more than main's 16 s, as main's wait for
-	// that start ended halfway to the child's 32 s deadline, and main records a server start past
-	// 30 s at a load near 1,000. The first send begins once the setup ends, later than 0 s in and,
-	// as a wait of the setup asks only once more past the give-up, about 18 s in at the latest, and
-	// ends 18 s after it began, past the give-up, so it is the last: the create fails naming its
-	// sends at the setup's end plus 18 s, about 36 s in at the latest, so about 12 s before go test's
-	// timeout panic at the least, and about 30 s before it when the setup is quick.
+	// 18 s: more than main's 16 s, as main's wait for that start ended halfway to the child's 32 s
+	// deadline, and main records a server start past 30 s at a load near 1,000. Each step of the
+	// setup that waits is a shared wait, which asks only once more past the give-up, or the
+	// stand-in's flush, which the give-up ends (Context) and which fails at once when it begins past
+	// it. Of those asks only a connect's takes long: nats.go's default 2 s for its dial (giveUpDial)
+	// and its 2 s for the handshake (processConnectInit). The second connect begins only once the
+	// flush has succeeded, which it does only before the give-up, so at most one connect runs past
+	// the give-up, and the setup ends, or fails naming the step the give-up ended, about 22 s in at
+	// the latest. The first send begins once the setup ends, later than 0 s in, and ends 18 s after
+	// it began, past the give-up, so it is the last: the create fails naming its sends at the setup's
+	// end plus 18 s, about 40 s in at the latest, so about 8 s before go test's timeout panic at the
+	// least, and about 30 s before it when the setup is quick.
 	unansweredBucketDeadline = 48 * time.Second
 	accountInfoDelay         = 8 * time.Second
 )
@@ -375,11 +380,7 @@ func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *test
 // accountInfoDelay late and never answers the create of the bucket's stream.
 func createUnansweredBucket(t *testing.T) {
 	server := start(t, "", nil)
-	standIn, err := natsgo.Connect(server.URL())
-	if err != nil {
-		t.Fatalf("connect the stand-in for JetStream: %v", err)
-	}
-	t.Cleanup(standIn.Close)
+	standIn := connectWithoutJetStream(t, server.URL(), "the stand-in for JetStream")
 	if _, err := standIn.Subscribe("$JS.API.INFO", func(msg *natsgo.Msg) {
 		time.AfterFunc(accountInfoDelay, func() {
 			_ = msg.Respond([]byte(`{"type":"io.nats.jetstream.api.v1.account_info_response"}`))
@@ -390,16 +391,28 @@ func createUnansweredBucket(t *testing.T) {
 	if _, err := standIn.Subscribe("$JS.API.STREAM.CREATE.KV_UNANSWERED", func(*natsgo.Msg) {}); err != nil {
 		t.Fatalf("take the bucket's create: %v", err)
 	}
-	if err := standIn.Flush(); err != nil {
+	if err := standIn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the stand-in's subscriptions: %v", err)
 	}
-	conn, err := natsgo.Connect(server.URL())
-	if err != nil {
-		t.Fatalf("connect the creating client: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := connectWithoutJetStream(t, server.URL(), "the creating client")
 	(&Cluster{}).CreateKeyValue(t, conn, &natsgo.KeyValueConfig{Bucket: "UNANSWERED"})
 	t.Fatal("the create of a bucket nothing answers returned")
+}
+
+// connectWithoutJetStream connects who to the server at uri through the shared wait, as Connect
+// does, each dial carrying the wait's give-up (giveUpDial), and closes the connection when the test
+// ends. Unlike Connect it waits for no JetStream: the unanswered-bucket child's server has none,
+// and its stand-in answers JetStream's account reads late on purpose. A connect whose 2 s of
+// nats.go's own ran out on a loaded machine is made again, where a bare connect would fail the
+// child's setup.
+func connectWithoutJetStream(t testing.TB, uri, who string) *natsgo.Conn {
+	t.Helper()
+	dial := testwait.Until(t, fmt.Sprintf("a connection of %s to the NATS server at %s", who, uri), func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), giveUpDial(t))
+		return dialAttempt{conn: conn, err: err}, err == nil
+	})
+	t.Cleanup(dial.conn.Close)
+	return dial.conn
 }
 
 // A bucket create the connection's grant refuses fails the test naming the server's refusal after

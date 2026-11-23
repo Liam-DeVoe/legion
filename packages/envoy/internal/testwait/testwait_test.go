@@ -315,9 +315,13 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 // test or in TestMain, and Context has no deadline. So a wait that is not answered at once keeps
 // asking rather than giving up at a false reading or an empty channel: Until returns the third
 // reading after three asks, Eventually and InMain hold at their third question, and Receive takes
-// a value sent once it waits.
+// a value sent an hour after it began to wait, on a synctest bubble's clock, so no span of its own
+// shorter than that passes it. The child has no deadline, so a wait of its that never returns, or a
+// Receive that never blocks and so holds the bubble's clock still, would hold it for good: the
+// child runs under Context, which ends it at this test's give-up, and the failure then shows the
+// child's output up to the wait it hung in, rather than go test's alarm with none of it.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
-	child := exec.Command(os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
+	child := exec.CommandContext(Context(t), os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
 	output, err := child.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "--- PASS: TestNoDeadlineChild (") {
@@ -384,11 +388,20 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 // the moments and the timer a wait would give up on, which it reads, each wait runs as a subtest of
 // its own, so one that gives up hides none of the others: Until reads false twice and true the
 // third time, Eventually and InMain are answered true at their third question, and Receive's value
-// is sent only once Receive waits on an empty channel. A wait that gave up on a false reading or on
-// the empty channel fails its subtest. Receive runs in a synctest bubble, where the sender's
-// synctest.Wait returns only once the test goroutine is durably blocked in Receive, so no span of
-// time decides that the value comes after the wait began; Receive reads the deadline of the test
-// that started the bubble (bubbled). It runs only when the parent re-executes this binary.
+// is sent an hour after Receive began to wait on an empty channel. A wait that gave up on a false
+// reading, on the empty channel or after a span of its own fails its subtest.
+//
+// Receive runs in a synctest bubble, whose clock moves only while every goroutine in it is durably
+// blocked. The sender's synctest.Wait returns once the test goroutine is blocked in Receive, and
+// at the bubble's start: an idle bubble wakes a goroutine blocked in Wait before it moves its clock
+// (Go 1.27.3's runtime/synctest.go, maybeWakeLocked). The sender's hour then passes at once, but
+// only once both goroutines are blocked again, and the bubble moves its clock to its earliest
+// timer first: a timer of Receive's own shorter than the hour fires before the value is sent, and
+// its give-up fails the subtest, as main's send 100 ms on the real clock failed a span under that.
+// The sender also ends with the bubble's test (t.Context), so a Receive that gave up leaves no
+// goroutine asleep in the bubble, which synctest.Test would end in a panic rather than in the
+// subtest's failure. Receive reads the deadline of the test that started the bubble (bubbled). It
+// runs only when the parent re-executes this binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
@@ -435,10 +448,14 @@ func TestNoDeadlineChild(t *testing.T) {
 			sent := make(chan string, 1)
 			go func() {
 				synctest.Wait()
-				sent <- "the value sent once the wait began"
+				select {
+				case <-time.After(time.Hour):
+					sent <- "the value sent an hour after the wait began"
+				case <-t.Context().Done():
+				}
 			}()
-			if got := Receive(bubbled{T: t, outer: outer}, "a value sent once the wait began", sent); got != "the value sent once the wait began" {
-				t.Errorf("under -timeout 0 Receive returned %q, want the value sent once it waited", got)
+			if got := Receive(bubbled{T: t, outer: outer}, "a value sent an hour after the wait began", sent); got != "the value sent an hour after the wait began" {
+				t.Errorf("under -timeout 0 Receive returned %q, want the value sent an hour after it began to wait", got)
 			}
 		})
 	})

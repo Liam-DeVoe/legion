@@ -15,14 +15,15 @@ import (
 
 const (
 	// pastGiveUpChildEnv has TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp run as its own
-	// child, which connects, then publishes and flushes past the shared wait's give-up, under a
-	// deadline of pastGiveUpDeadline.
+	// child, which connects to the server whose URL the variable holds, then publishes and flushes
+	// past the shared wait's give-up, under a deadline of pastGiveUpDeadline.
 	pastGiveUpChildEnv = "TESTNATS_PAST_GIVE_UP_CHILD"
 
 	// pastGiveUpDeadline is the child's go test -timeout. The shared wait gives up 30 s before it,
-	// 20 s in. The child's setup, a server's start and a connect, has 18 s of that, as
-	// stream_create_test.go's child has: a dial begun later than nats.go's default timeout (2 s)
-	// before the give-up gives its connection that timeout as its deadline rather than the give-up
+	// 20 s in. The child's setup is the connect alone, as main's row gave its window to the connect
+	// alone: the parent starts the server, under its own deadline, before it runs the child. The
+	// connect has 18 s of the 20: a dial begun later than nats.go's default timeout (2 s) before
+	// the give-up gives its connection that timeout as its deadline rather than the give-up
 	// (giveUpDialer.Dial), so a connect that returns that late fails the child naming it. The
 	// publish and flush past the give-up then have the 30 s before go test's timeout panics.
 	pastGiveUpDeadline = 50 * time.Second
@@ -39,21 +40,25 @@ var pastGiveUpDone = regexp.MustCompile(`published and flushed \S+ past the shar
 // Connect at the give-up, the last 30 s of every test binary: nats.go closes a connection with no
 // reconnect on that read's i/o timeout, and every later publish and flush on it fails. Main's
 // TestAConnectionAWaitMadeKeepsWorkingPastTheWaitsEnd held the same of main's wait. The row runs as
-// its own child, whose short deadline brings the give-up within its reach.
+// its own child, whose short deadline brings the give-up within its reach. The parent starts the
+// server and hands the child its URL, so a server whose start is slow on a loaded machine costs the
+// parent time and not the child's 18 s, which the connect alone spends.
 //
 // The parent waits only for the child, which go test's own alarm ends at pastGiveUpDeadline at the
 // latest. In the child, nothing the row picks bounds the publish or the flush: the publish appends
 // its few bytes to the connection's buffer and writes nothing itself, and the flush waits for the
 // server's answer at most nats.go's own 10 s (Conn.Flush, nats.go v1.55.0 nats.go:6162-6164),
 // inside the 30 s left before the child's alarm. The writes of nats.go's flusher are a few bytes
-// to a socket the server's relay in this process reads, so none of them waits.
+// to a socket the server's relay in the parent reads, which runs while the parent waits, so none
+// of them waits.
 func TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp(t *testing.T) {
-	if os.Getenv(pastGiveUpChildEnv) != "" {
-		publishPastTheGiveUp(t)
+	if uri := os.Getenv(pastGiveUpChildEnv); uri != "" {
+		publishPastTheGiveUp(t, uri)
 		return
 	}
+	_, uri := Start(t)
 	child := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.v", "-test.timeout="+pastGiveUpDeadline.String())
-	child.Env = append(os.Environ(), pastGiveUpChildEnv+"=1")
+	child.Env = append(os.Environ(), pastGiveUpChildEnv+"="+uri)
 	output, err := child.CombinedOutput()
 	if err != nil || !pastGiveUpDone.Match(output) {
 		t.Fatalf("the child's connection did not publish and flush past the shared wait's give-up, before its %s deadline (%v):\n%s", pastGiveUpDeadline, err, output)
@@ -61,21 +66,21 @@ func TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp(t *testing.T) {
 }
 
 // publishPastTheGiveUp is the child of TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp: it
-// connects to a real server through Connect, waits for the shared wait's give-up to pass, then
-// publishes and flushes on the connection, and fails unless both succeed.
-func publishPastTheGiveUp(t *testing.T) {
+// connects through Connect to the real server the parent started at uri, waits for the shared
+// wait's give-up to pass, then publishes and flushes on the connection, and fails unless both
+// succeed.
+func publishPastTheGiveUp(t *testing.T, uri string) {
 	end, bounded := testwait.GiveUpAt(t)
 	if !bounded {
 		t.Fatal("the child runs with no deadline: no wait of its gives up, and its dial gives its connection no deadline")
 	}
-	_, uri := Start(t)
 	conn := Connect(t, uri)
 	t.Cleanup(conn.Close)
 	// Every dial of the connect began before the connect returned, and a dial begun more than
 	// nats.go's default timeout before the give-up gives its connection the give-up as its deadline
 	// (giveUpDialer.Dial): this connection's deadline was the give-up.
 	if connected := time.Now(); connected.Add(natsgo.DefaultTimeout).After(end) {
-		t.Fatalf("the connect returned at %s, less than nats.go's default timeout (%s) before the shared wait's give-up at %s: its dial may have given its connection that timeout as its deadline rather than the give-up, so the child's setup took too long for the row to hold anything", connected.Format(time.RFC3339Nano), natsgo.DefaultTimeout, end.Format(time.RFC3339Nano))
+		t.Fatalf("the connect returned at %s, less than nats.go's default timeout (%s) before the shared wait's give-up at %s: its dial may have given its connection that timeout as its deadline rather than the give-up, so the child's connect took too long for the row to hold anything", connected.Format(time.RFC3339Nano), natsgo.DefaultTimeout, end.Format(time.RFC3339Nano))
 	}
 	testwait.Eventually(giveUpPassed{t}, "the shared wait's give-up to pass", func() bool { return !time.Now().Before(end) })
 	if err := conn.Publish("past.the.give.up", []byte("x")); err != nil {
