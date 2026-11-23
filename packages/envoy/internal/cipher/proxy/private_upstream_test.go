@@ -396,6 +396,15 @@ func TestAnUpstreamAtACloudMetadataServerIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnUpstreamAtTheIPv4BroadcastAddressIsRefused: a destination whose name resolves to
+// 255.255.255.255 is refused and nothing is dialled, although every other request is refused it
+// (not global unicast) and the exception would otherwise take it: no one service has it.
+func TestAnUpstreamAtTheIPv4BroadcastAddressIsRefused(t *testing.T) {
+	at := netip.MustParseAddr("255.255.255.255")
+	r, standIn := newPrivateRig(t, at, []netip.Prefix{serviceRange})
+	writeRefusedAtConnect(t, r, standIn, at, "the IPv4 broadcast address, which the airlock never dials")
+}
+
 // TestAnUnreachableUpstreamIsNotNamedToTheCommand: a destination at an address the proxy may dial,
 // where nothing answers, fails the write 502 UPSTREAM_UNREACHABLE, whose words name the rule and
 // nothing of the dial: neither the destination's in-cluster name nor its address, nor the address

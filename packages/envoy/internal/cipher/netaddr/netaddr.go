@@ -42,14 +42,19 @@ func Host(host string) string {
 //     "The IMDS has two endpoints on an instance").
 var metadataServers = []netip.Addr{netip.MustParseAddr("fd20:ce::254"), netip.MustParseAddr("fd00:ec2::254")}
 
+// ipv4Broadcast is 255.255.255.255, the IPv4 limited broadcast address, which no one service has.
+// netip has no predicate of its own for it: it is only not global unicast.
+var ipv4Broadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+
 // DestinationRefusal answers why addr can be no address of the airlock's private destination
 // (BROKER_AIRLOCK_PRIVATE_UPSTREAM), whatever the cluster ranges say, or "" when it can be one: a
 // loopback or link-local address, unicast or multicast, where the broker's own pod and the node's
-// metadata server answer; an unspecified or multicast address, which is no one service; and a cloud
-// metadata server's IPv6 address (metadataServers). The answer completes "... resolves to". addr is
-// read as Canonical reads it. The proxy's check of every dial to the destination
-// (proxy.Server.upstreamAddresses) and config's start check of a destination URL that names an
-// address read this one answer, through proxy.PrivateUpstreamRefusal, so the two cannot disagree.
+// metadata server answer; an unspecified or multicast address, or the IPv4 broadcast address,
+// which is no one service; and a cloud metadata server's IPv6 address (metadataServers). The
+// answer completes "... resolves to". addr is read as Canonical reads it. The proxy's check of
+// every dial to the destination (proxy.Server.upstreamAddresses) and config's start check of a
+// destination URL that names an address read this one answer, through
+// proxy.PrivateUpstreamRefusal, so the two cannot disagree.
 func DestinationRefusal(addr netip.Addr) string {
 	addr = Canonical(addr)
 	switch {
@@ -57,6 +62,8 @@ func DestinationRefusal(addr netip.Addr) string {
 		return "a loopback or link-local address, which the airlock never dials"
 	case addr.IsUnspecified() || addr.IsMulticast():
 		return "an unspecified or multicast address, which the airlock never dials"
+	case addr == ipv4Broadcast:
+		return "the IPv4 broadcast address, which the airlock never dials"
 	}
 	for _, server := range metadataServers {
 		if addr == server {

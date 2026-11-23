@@ -790,12 +790,12 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 // URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
 // a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost
 // or a name under .localhost, with or without the root's trailing dot; a loopback, link-local,
-// unspecified or multicast address; a cloud metadata server's IPv6 address; an address the proxy
-// would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse the start, naming
-// the setting and the fault. No refusal quotes the URL's user, path, query or fragment, where a
-// credential can sit. A private address, one in 100.64.0.0/10, one inside the cluster ranges
-// though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the
-// local stack's stand-in of Dispatch, are read: each is an address the dial opens.
+// unspecified, multicast or the IPv4 broadcast address; a cloud metadata server's IPv6 address; an
+// address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse
+// the start, naming the setting and the fault. No refusal quotes the URL's user, path, query or
+// fragment, where a credential can sit. A private address, one in 100.64.0.0/10, one inside the
+// cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with
+// its port, the local stack's stand-in of Dispatch, are read: each is an address the dial opens.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
@@ -855,6 +855,7 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
 		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
 		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
+		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
 		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
 		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
 		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},

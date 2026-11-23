@@ -129,8 +129,9 @@ func (s *Server) upstreamAddresses(ctx context.Context) ([]netip.Addr, error) {
 // destination may open. The answer completes "... resolves to". addr must be one localRule refuses
 // - private, 100.64.0.0/10 or inside the cluster ranges - so the exception reaches no address the
 // proxy would tunnel to for a command; and it may be none netaddr.DestinationRefusal names -
-// loopback, link-local, unspecified, multicast or a cloud metadata server's IPv6 address - where the
-// broker's own pod and the node's metadata server answer and no destination of the broker's does.
+// loopback, link-local, unspecified, multicast, the IPv4 broadcast address or a cloud metadata
+// server's IPv6 address - where the broker's own pod and the node's metadata server answer, or no
+// one service does, and no destination of the broker's does.
 // It reads addr as netaddr.Canonical reads it. The dial (upstreamAddresses) reads it for each
 // address the destination's host resolves to, and config's start check reads it for a URL whose
 // host is an address, so the start takes no address literal the dial refuses.
