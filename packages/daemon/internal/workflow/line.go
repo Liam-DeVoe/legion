@@ -175,7 +175,7 @@ func (w Walk) completionRow(rows []record.PhaseRow, role claim.Role, entry int64
 // their places, and a step at the step the row ran (record.PhaseRow.StepPlace), so a report of a
 // role that stands at two steps is the report of the step whose run it is, whichever place the
 // task stands at now. A row of no step, one a new generation cleared or the release before wrote,
-// is the role's one row, at its place nearest where the task stands (record.RolePlace). ok is
+// is the role's one row, at its place nearest where the task stands (record.RunPlace). ok is
 // false for a row of another task, and for a step w's line no longer runs as reported with the
 // row's role there, as after a later version of the plan took it away. A walk with no plan rows
 // holds each phase once (PlaceOf).
@@ -191,10 +191,7 @@ func (w Walk) runPlace(row record.PhaseRow, reported phase.Phase) (record.TaskPl
 	case reported == phase.Merging:
 		return record.TaskPlace{Kind: record.PlaceMerge}, true
 	}
-	place := row.StepPlace
-	if row.StepTask == "" {
-		place = record.RolePlace(row.Role, w.Place, w.Steps)
-	}
+	place := record.RunPlace(row, w.Place, w.Steps)
 	if place < 1 || place > len(w.Steps) || w.Line[place-1] != reported || claim.Role(w.Steps[place-1].Role) != row.Role {
 		return record.TaskPlace{}, false
 	}
