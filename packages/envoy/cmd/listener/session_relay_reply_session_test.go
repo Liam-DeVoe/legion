@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -114,17 +116,59 @@ authorization {
 	return uri, listenerURI, listener
 }
 
-// requireStillPending fails the test unless sessionID's consumer still holds the message at seq for
-// an ack: one message pending and the ack floor below it.
+// requireStillPending waits until sessionID's consumer holds the message at seq for an ack - one
+// message pending and the ack floor below it - and fails the test at once when the ack floor
+// reaches seq, since the message was then acknowledged. A consumer with nothing pending or none at
+// all is waited past: a relay that restarts at the ack floor deletes the consumer and creates it
+// again there before it sends the message again (sessionRelays.relay). The wait gives up 30 s
+// before the test binary's deadline (testwait.UntilPolling).
 func requireStillPending(t *testing.T, consumers *bus.SessionConsumers, sessionID string, seq uint64) {
 	t.Helper()
-	info, err := consumers.Info(t.Context(), sessionID)
-	if err != nil {
-		t.Fatalf("read the consumer of %s: %v", sessionID, err)
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the consumer of %s to hold the frame at seq %d for an ack", sessionID, seq), func() (string, bool) {
+		info, found := readConsumerUntilTheDeadline(t, consumers, sessionID)
+		if !found {
+			return "no consumer", false
+		}
+		if info.AckFloor.Stream >= seq {
+			t.Fatalf("the consumer of %s has %d pending ack, ack floor %d; want the frame at seq %d still pending, acknowledged by nobody",
+				sessionID, info.NumAckPending, info.AckFloor.Stream, seq)
+		}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == 1
+	})
+}
+
+// readConsumerUntilTheDeadline reads sessionID's consumer as the server reports it, bounded by the
+// test binary's deadline less deadlineSpare, and fails the test when the read fails then. A read
+// whose context carries no deadline waits the bus's own 10 s (storedMessageWait in internal/bus,
+// through requestConfirmed), which a server that answers late outlasts. A consumer the server does
+// not hold is found false: the relay deletes and creates it again when it restarts.
+func readConsumerUntilTheDeadline(t *testing.T, consumers *bus.SessionConsumers, sessionID string) (*jetstream.ConsumerInfo, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, deadlineSpare))
+	defer cancel()
+	info, err := consumers.Info(ctx, sessionID)
+	if errors.Is(err, bus.ErrSessionConsumerNotFound) {
+		return nil, false
 	}
-	if info.NumAckPending != 1 || info.AckFloor.Stream >= seq {
-		t.Fatalf("the consumer of %s has %d pending ack, ack floor %d; want the frame at seq %d still pending, acknowledged by nobody",
-			sessionID, info.NumAckPending, info.AckFloor.Stream, seq)
+	if err != nil {
+		t.Fatalf("read the consumer of %s, waited for until %s before the test binary's deadline: %v", sessionID, deadlineSpare, err)
+	}
+	return info, true
+}
+
+// replyUntilTheDeadline is the stand-in's reply for one the row sends itself, its flush bounded by
+// the test binary's deadline less deadlineSpare in place of nats.go's 10 s (Conn.Flush): a server
+// that answers the flush late is waited for, and one that never does fails the test then. The
+// stand-in's own answers to its frames keep reply.
+func (s *sessionStandIn) replyUntilTheDeadline(t *testing.T, frame relayedFrame, word string) {
+	t.Helper()
+	if err := s.conn.Publish(frame.msg.Reply, []byte(word)); err != nil {
+		t.Fatalf("reply %s to a frame: %v", word, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, deadlineSpare))
+	defer cancel()
+	if err := s.conn.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flush the reply %s, waited for until %s before the test binary's deadline: %v", word, deadlineSpare, err)
 	}
 }
 
@@ -277,9 +321,15 @@ func publishUntilAcknowledged(t *testing.T, client *bus.Client, end time.Time, i
 // done acknowledges it.
 //
 // Each wait ends on its fact - a registration taken, a publish acknowledged, a frame received, a
-// refusal seen - bounded only by the test binary's deadline less deadlineSpare, so a server on a
-// loaded machine that answers late is not the row's failure, and one that never answers still
-// fails it, naming the wait. awaitAcked keeps its own 5 s.
+// reply flushed, a consumer read, a refusal seen - bounded only by the test binary's deadline less
+// deadlineSpare, so a server on a loaded machine that answers late is not the row's failure, and
+// one that never answers still fails it, naming the wait. awaitAcked keeps its own 5 s.
+//
+// A server that answers s2's receipt more than 3 s late makes the relay take s2 for unreachable
+// (relayReceiptWait): it pauses, forgets the tokens of the frames it sent, and restarts at the ack
+// floor, deleting and creating the consumer again and sending the frame again under a new token.
+// So the row forges on the newest frame s2 has received, forges again when a newer one comes, and
+// reads "acknowledged away" as the ack floor reaching the frame, never as nothing pending.
 //
 // On main the listener gave every frame a token from one counter shared by every session behind its
 // reply inbox (_INBOX.<inbox>.1, .2, ...) and the session grant let a session publish to every
@@ -317,62 +367,83 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 			t.Fatalf("a frame of %s carries reply subject %q, want %s.%s.<26-character token>", frame.session, frame.reply, inbox, frame.session)
 		}
 	}
-	token := heldFrame.msg.Reply[strings.LastIndex(heldFrame.msg.Reply, ".")+1:]
-	forged := inbox + "." + s1.id + "." + token
-	t.Logf("s1's own frame was answered on %s; s2's frame waits on %s; s1 forges %s", ownFrame.msg.Reply, heldFrame.msg.Reply, forged)
+	token := func(frame relayedFrame) string { return frame.msg.Reply[strings.LastIndex(frame.msg.Reply, ".")+1:] }
+	// newest drains the frames s2 has received since frame and returns the newest, whose token the
+	// relay holds now. A frame of an earlier run of the relay is the same message again.
+	newest := func(frame relayedFrame) relayedFrame {
+		for {
+			select {
+			case next := <-two.frames:
+				requireFrames(t, []relayedFrame{next}, held)
+				frame = next
+			default:
+				return frame
+			}
+		}
+	}
+	// acknowledgedAway fails the row at once when s2's consumer has acknowledged its frame: the ack
+	// floor at or past the frame. A consumer the relay is creating again is read as not yet.
+	acknowledgedAway := func(how string) {
+		if info, found := readConsumerUntilTheDeadline(t, consumers, s2.id); found && info.AckFloor.Stream >= heldFrame.seq {
+			t.Fatalf("s1's done %s acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
+				how, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
+		}
+	}
+	t.Logf("s1's own frame was answered on %s; s2's frame waits on %s", ownFrame.msg.Reply, heldFrame.msg.Reply)
 
-	// First forgery: s1's done on s2's own reply subject. The server refuses it under s1's grant;
-	// under a grant admitting every _INBOX. subject it reaches the relay as s2's own done and the
-	// frame is acknowledged away, which this wait names as soon as it sees it.
-	one.reply(heldFrame, relayReplyDone)
-	testwait.UntilPolling(t, 20*time.Millisecond, "the server to refuse s1's done on s2's reply subject "+heldFrame.msg.Reply, func() ([]string, bool) {
-		if refused := s1.refusals(); slices.Contains(refused, heldFrame.msg.Reply) {
+	// First forgery: s1's done on s2's own reply subject. The server refuses it under s1's grant,
+	// whatever the token; under a grant admitting every _INBOX. subject it reaches the relay as s2's
+	// own done and the frame is acknowledged away, which this wait names as soon as it sees it.
+	refusedSubject := heldFrame.msg.Reply
+	one.replyUntilTheDeadline(t, heldFrame, relayReplyDone)
+	testwait.UntilPolling(t, 20*time.Millisecond, "the server to refuse s1's done on s2's reply subject "+refusedSubject, func() ([]string, bool) {
+		if refused := s1.refusals(); slices.Contains(refused, refusedSubject) {
 			return refused, true
 		}
-		info, err := consumers.Info(t.Context(), s2.id)
-		if err != nil {
-			t.Fatalf("read the consumer of %s: %v", s2.id, err)
-		}
-		if info.NumAckPending == 0 || info.AckFloor.Stream >= heldFrame.seq {
-			t.Fatalf("s1's done on s2's reply subject %s acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
-				heldFrame.msg.Reply, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
-		}
+		acknowledgedAway("on s2's reply subject " + refusedSubject)
 		return s1.refusals(), false
 	})
-	// Second forgery: s1's done on its own reply prefix, which its grant admits, carrying s2's
-	// frame token. The relay refuses it and says so; a relay that took it would acknowledge s2's
-	// frame away, which this wait names as soon as it sees it.
-	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
+	// Second forgery: s1's done on its own reply prefix, which its grant admits, carrying the token
+	// of s2's newest frame. The relay refuses it and says so; a relay that took it would acknowledge
+	// s2's frame away, which this wait names as soon as it sees it. A frame that comes after the
+	// forgery is forged on again: the relay forgot the token the forgery carried.
+	forge := func(frame relayedFrame) string {
+		forged := frame.listener() + "." + s1.id + "." + token(frame)
+		one.replyUntilTheDeadline(t, relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
+		t.Logf("s1 forges %s on s2's frame %s", forged, frame.msg.Reply)
+		return forged
+	}
+	heldFrame = newest(heldFrame)
+	forged := forge(heldFrame)
 	refusedLine := []string{`"msg":"` + relayRefusedReplyLine + `"`, `"session_id":"` + s2.id + `"`, `"reply_session_id":"` + s1.id + `"`}
-	testwait.UntilPolling(t, 20*time.Millisecond, "the listener to log that it refused s1's done on "+forged, func() (string, bool) {
+	testwait.UntilPolling(t, 20*time.Millisecond, "the listener to log that it refused s1's done on its own prefix carrying s2's frame token", func() (string, bool) {
 		lines := strings.Split(listener.Output.String(), "\n")
 		if slices.ContainsFunc(lines, func(line string) bool {
 			return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
 		}) {
 			return "the refusal line", true
 		}
-		info, err := consumers.Info(t.Context(), s2.id)
-		if err != nil {
-			t.Fatalf("read the consumer of %s: %v", s2.id, err)
+		acknowledgedAway("on " + forged + ", its own prefix carrying s2's frame token,")
+		if next := newest(heldFrame); next.msg != heldFrame.msg {
+			heldFrame = next
+			forged = forge(heldFrame)
 		}
-		if info.NumAckPending == 0 || info.AckFloor.Stream >= heldFrame.seq {
-			t.Fatalf("s1's done on %s, its own prefix carrying s2's frame token, acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
-				forged, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
-		}
-		return fmt.Sprintf("no line with %v in the listener's %d lines of output", refusedLine, len(lines)), false
+		return fmt.Sprintf("no line with %v in the listener's %d lines of output; the last forgery %s", refusedLine, len(lines), forged), false
 	})
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
 	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
-	// frame it never wrote, and s2's own done, the control, acknowledges it.
+	// frame it never wrote, and s2's own done, the control, acknowledges it. The frames of the
+	// relay's earlier runs are dropped first, so the frame answered is this run's.
+	newest(heldFrame)
 	registerAsTheClientDoes(t, listener.port, consumerRegistration(s2.id, "epoch-2"))
 	again := two.collect(t, 1, testwait.Remaining(t, deadlineSpare))[0]
 	requireFrames(t, []relayedFrame{again}, held)
-	two.reply(again, relayReplyDone)
+	two.replyUntilTheDeadline(t, again, relayReplyDone)
 	awaitAcked(t, consumers, s2.id, heldFrame.seq)
 
-	if got := s1.refusals(); !slices.Equal(got, []string{heldFrame.msg.Reply}) {
-		t.Fatalf("the server refused s1 publishes to %v, want only s2's reply subject %s", got, heldFrame.msg.Reply)
+	if got := s1.refusals(); !slices.Equal(got, []string{refusedSubject}) {
+		t.Fatalf("the server refused s1 publishes to %v, want only s2's reply subject %s", got, refusedSubject)
 	}
 	if got := s2.refusals(); len(got) != 0 {
 		t.Fatalf("the server refused s2 publishes to %v, want none: its replies are under its own prefix", got)
