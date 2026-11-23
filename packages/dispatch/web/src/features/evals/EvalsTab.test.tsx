@@ -634,10 +634,11 @@ const stateRows: [string, () => Promise<void>][] = [
         return { ...item, definition: { ...item.definition, version } };
       };
       const { getEval } = renderTab();
-      const reads: PromiseWithResolvers<EvalDetailResponse>[] = [];
+      // Each detail read, held until the row answers it.
+      const reads: ((detail: EvalDetailResponse) => void)[] = [];
       getEval.mockImplementation(() => {
         const read = Promise.withResolvers<EvalDetailResponse>();
-        reads.push(read);
+        reads.push(read.resolve);
         return read.promise;
       });
       const socket = await openSocket();
@@ -647,7 +648,7 @@ const stateRows: [string, () => Promise<void>][] = [
       );
       const panel = screen.getByRole("dialog", { name: "deploy-frequency" });
       await waitFor(() => expect(reads).toHaveLength(1));
-      act(() => reads[0]?.resolve(detailOf("Deploys a day, as version 1 counts them.")));
+      act(() => reads[0]?.(detailOf("Deploys a day, as version 1 counts them.")));
       await waitFor(() =>
         expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
           "Deploys a day, as version 1 counts them."
@@ -662,7 +663,7 @@ const stateRows: [string, () => Promise<void>][] = [
           .getAllByRole("status")
           .map((line) => line.textContent)
       ).toContain("Reading the method…");
-      act(() => reads[1]?.resolve(detailOf("Deploys a day, as version 2 counts them.")));
+      act(() => reads[1]?.(detailOf("Deploys a day, as version 2 counts them.")));
       await waitFor(() =>
         expect(panel.querySelector("[data-method-text]")?.textContent).toBe(
           "Deploys a day, as version 2 counts them."
