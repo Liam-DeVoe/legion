@@ -10,7 +10,6 @@ import type {
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import { unstorableBytes } from "../dispatch-file-text";
 import type { DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -57,7 +56,6 @@ import {
 } from "./results";
 import {
   artifactTextCheck,
-  documentBytesRefusal,
   documentFileBytes,
   type StoredTextCheck,
   storedTextCheckFailed,
@@ -720,10 +718,12 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   const blank = content === undefined || goBlankPattern.test(content);
   // The file a path names, as its upload sends it (uploadedFile), under the type that upload
   // declares, which is what Dispatch reads for whether it stores the file as a Markdown document.
-  // Such a file is read once, here (documentFileBytes), and refused there, before anything is
-  // asked, past the bytes one document may hold and then for its first U+0000 or byte that is not
+  // Such a file is read here (documentFileBytes) and refused there, before anything is asked,
+  // past the bytes one document may hold and then for its first U+0000 or byte that is not
   // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about
-  // below are the bytes sent; any other file is not read here. The bytes AskGate's check read,
+  // below are the bytes sent; any other file is not read here. The CLI made that same check once
+  // the flags were read (`DispatchCommand.documentPathFields`), before anything that needs
+  // Dispatch, and this read checks the bytes it reads again. The bytes AskGate's check read,
   // where it read them, are the bytes the call checks and sends, copied once into a plain buffer
   // of their own, which a Blob takes.
   const file = path === undefined ? undefined : uploadedFile(resolvePath(input.cwd, path));
@@ -883,7 +883,12 @@ function endedSentence(text: string): string {
  * once more, as this step asks, and uploads unchecked if that gets no answer either; and a
  * `failed` text it refuses until Dispatch answers. A dry run that failed there would let an
  * AskGate older than DISPATCH_DRY_RUN_LOCAL, which runs the call after a failed dry run, post this
- * write unreviewed; AskGate now sets that variable, under which this step does not run.
+ * write unreviewed; AskGate now sets that variable, under which this step does not run. A text
+ * read from a file or stdin, and a Markdown `--path` file, reach this step, as they reach the call,
+ * only when `runDispatchCli` did not refuse them, as it refuses such a text past the bytes one
+ * document holds or holding a U+0000 or a byte that is not UTF-8 once the flags are read, before
+ * the argument check (`DispatchCommand.documentFileFields`, `documentPathFields`), whether or not
+ * DISPATCH_DRY_RUN_LOCAL is set. This step reads such a file again, and checks the bytes it reads.
  */
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
   const { tool, args, cwd, client, deadline, deadlineMs } = context;
@@ -948,16 +953,4 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
       ? uploadsUnchecked
       : "The call refuses the upload until Dispatch answers."
   );
-}
-
-/**
- * `dispatch artifact`'s refusal of bytes that are not UTF-8, read from a file or stdin for the
- * flag of `field` (`DispatchCommand.fileBytesRefusal`). `content` is the text of a Markdown
- * document, so its bytes are refused as a `--path` file of the same bytes is, in the upload's
- * order: the size first, then the first U+0000 or byte that is not UTF-8
- * (`documentBytesRefusal`). Any other field is refused at its first U+0000 or byte that is not
- * UTF-8, as every other command's field is (`unstorableBytes`).
- */
-export function artifactFileBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
-  return field === "content" ? documentBytesRefusal(field, bytes) : unstorableBytes(field, bytes);
 }

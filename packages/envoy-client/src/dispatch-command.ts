@@ -27,7 +27,9 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A file's or stdin's text is `io.readText`'s, which the `dispatch` entry reads as bytes that must
  * be UTF-8 (`readFileText`): bytes that are not refuse the command in Dispatch's own words (an
- * `unstorable` parse, which `runDispatchCli` refuses).
+ * `unstorable` parse, which `runDispatchCli` refuses). A call names each field a file or stdin set,
+ * with the text read there (`fileTexts`), which `runDispatchCli` holds to the rule of a Markdown
+ * document's bytes where the command's table entry says the field holds one.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
  * A flag of `PREFIXED_FLAGS` adds an item to an array of text behind a prefix, in argv order with
@@ -113,6 +115,11 @@ export type ParsedCommand =
       readonly tool: string;
       readonly args: Record<string, unknown>;
       readonly dryRun: boolean;
+      /** Each field a `--<field>-file` or `--<field>-json-file` flag set from a file or stdin,
+       *  with the text read there, in argv order. `runDispatchCli` refuses the bytes of a field
+       *  that holds a Markdown document's text (`DispatchCommand.documentFileFields`) as the
+       *  upload of a Markdown file of those bytes refuses them. */
+      readonly fileTexts: readonly { readonly field: string; readonly text: string }[];
     }
   | { readonly kind: "help"; readonly tool?: string }
   | {
@@ -126,8 +133,9 @@ export type ParsedCommand =
   | {
       /** A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store:
        *  `field` is the field the flag sets and `bytes` every byte it read, of the first such
-       *  flag. `runDispatchCli` refuses them in Dispatch's own words, which name the field. Any
-       *  other problem of the argv is a `refused` instead. */
+       *  flag. `runDispatchCli` refuses them in Dispatch's own words, which name the field, as a
+       *  Markdown document's bytes where the field holds one. Any other problem of the argv is a
+       *  `refused` instead. */
       readonly kind: "unstorable";
       readonly tool: string;
       readonly field: string;
@@ -465,6 +473,8 @@ export function parseCommand(
   let stdinFlag: string | undefined;
   // The field and the bytes of the first file or stdin a flag read whose bytes are not UTF-8.
   let unstorable: { readonly field: string; readonly bytes: Uint8Array } | undefined;
+  // Each field a file or stdin set, with the text read there, in argv order.
+  const fileTexts: { readonly field: string; readonly text: string }[] = [];
 
   const read = (flag: string, field: string, path: string): string | undefined => {
     if (path === STDIN) {
@@ -475,7 +485,9 @@ export function parseCommand(
       stdinFlag = flag;
     }
     try {
-      return io.readText(path);
+      const text = io.readText(path);
+      fileTexts.push({ field, text });
+      return text;
     } catch (error) {
       if (error instanceof NotUtf8Error) {
         // The field is claimed, as a field read whole is, so a field given twice is still refused
@@ -658,7 +670,7 @@ export function parseCommand(
       : { kind: "refused", tool, problems };
   }
   if (unstorable !== undefined) return { kind: "unstorable", tool, ...unstorable };
-  return { kind: "call", tool, args, dryRun };
+  return { kind: "call", tool, args, dryRun, fileTexts };
 }
 
 function appendedItem(

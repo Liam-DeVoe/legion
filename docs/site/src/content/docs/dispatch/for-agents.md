@@ -10,9 +10,13 @@ agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells i
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
 them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
-nothing. `dispatch artifact --dry-run` also asks Dispatch how it would store inline text, and
-refuses a text that Dispatch would store under another spelling, as the call does. When Dispatch
-cannot answer, the dry run says so on stderr and passes.
+nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
+1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
+`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (a path ending
+in `.md` or `.markdown`): once the flags are read, before the arguments are checked and before
+anything that needs Dispatch, so with Dispatch off too. For any other inline text the dry run asks
+Dispatch how it would store it, and refuses a text that Dispatch would store under another
+spelling, as the call does. When Dispatch cannot answer, the dry run says so on stderr and passes.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 

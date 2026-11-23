@@ -4,13 +4,15 @@
 // writer's byte; this read throws `NotUtf8Error` instead, which carries the bytes, and the command
 // refuses them in Dispatch's own words, its dry run and its call alike (`parseCommand`'s
 // `unstorable` parse, which `runDispatchCli` refuses). A byte order mark is kept, as U+FEFF, as the
-// lenient read kept it. The `dispatch` entry (`bin/dispatch.ts`) reads through `readFileText`, and
+// lenient read kept it, so the text it decodes gives back, encoded, the bytes it was read from
+// (`fileTextBytes`). The `dispatch` entry (`bin/dispatch.ts`) reads through `readFileText`, and
 // a test hands it stdin's bytes. Dispatch's refusal of bytes it cannot store (`unstorableBytes`)
 // names the first U+0000 or byte that is not UTF-8, whichever comes first, as Dispatch names it.
 import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const encoder = new TextEncoder();
 
 /** A byte as Dispatch's refusal writes it: `0x` and two upper-case hex digits (`%02X`). */
 function byteText(byte: number): string {
@@ -127,4 +129,10 @@ export function readFileText(
   readStdin: () => Uint8Array = () => readFileSync(0)
 ): string {
   return utf8Text(path === "-" ? readStdin() : readFileSync(path));
+}
+
+/** The bytes `readFileText` decoded `text` from: `text` in UTF-8. Encoding gives back every byte
+ *  read, since the strict decoder takes only UTF-8 and keeps a byte order mark as U+FEFF. */
+export function fileTextBytes(text: string): Uint8Array {
+  return encoder.encode(text);
 }

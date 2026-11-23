@@ -46,7 +46,10 @@ import { expect, test } from "./test";
  * refused alike in every combination of it, exit 1, the same stdout naming the row's code and
  * words, and nothing is stored. The file and stdin each hand the command the row's bytes, so a
  * refusal naming the byte (0xFF) is one the command made of that byte, and not of the U+FFFD a
- * lenient read would have stored in its place.
+ * lenient read would have stored in its place. The command refuses itself, the same way, a text
+ * from a file or stdin past the bytes one document holds or holding U+0000, which the route tests
+ * send inline too: its refusal holds the code and words Dispatch gives the same text, so those
+ * rows are expected as Dispatch's refusal of the upload.
  */
 
 /** One part of a row's text, as the Go comment above `textRefusalsFile` names the four. */

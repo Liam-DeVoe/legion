@@ -666,19 +666,20 @@ const omp = { DISPATCH_HOST: "omp", DISPATCH_SESSION_ID: "ses-1" };
 /** Runs `argv` as a dry run and then as a call, each reading files and stdin's bytes `stdin` as the
  *  `dispatch` entry reads them (`readFileText`), and expects the dry run to exit 1 printing
  *  `stdout` alone, the call to answer as the dry run did, and neither to send anything. `name`
- *  heads each failure's label. */
+ *  heads each failure's label. Each runs in `env`, Dispatch on unless a test turns it off. */
 async function refusedAlike(
   argv: readonly string[],
   stdin: Uint8Array,
   stdout: string,
-  name: string
+  name: string,
+  env: Record<string, string | undefined> = omp
 ): Promise<void> {
   const reader = { readText: (path: string) => readFileText(path, () => stdin) };
   const named = `${name}: ${argv.join(" ")}`;
   requests.length = 0;
-  const dry = await run([...argv, "--dry-run"], omp, "", reader);
+  const dry = await run([...argv, "--dry-run"], env, "", reader);
   expect(dry, named).toEqual({ code: 1, stdout, stderr: "" });
-  const call = await run(argv, omp, "", reader);
+  const call = await run(argv, env, "", reader);
   expect(call, named).toEqual(dry);
   expect(requests, named).toEqual([]);
 }
@@ -1555,16 +1556,27 @@ describe("the dispatch CLI", () => {
     }
   });
 
+  /** UTF-8 holding U+0000, and a text holding a byte that is not UTF-8, each refused at character
+   *  11: two rows of packages/envoy/internal/dispatch/api/testdata/text-refusals.json. */
+  const utf8WithNul = Buffer.from("# Notes\n\nA\u0000B\n");
+  const notUtf8Text = Buffer.concat([
+    Buffer.from("# Notes\n\nA"),
+    Buffer.from([0xff]),
+    Buffer.from("B\n"),
+  ]);
+
   // INFRA-4224 R3 (spec v27): for the same bytes, `dispatch artifact --content-file <file>`,
   // `--content-file -` (stdin) and a markdown `--path` file get the same refusal, in the order the
   // `--path` file's upload refuses it (`documentBytesRefusal`): the size first, then the first
-  // U+0000 or byte that is not UTF-8, whichever comes first in the bytes. Dispatch's words name the
-  // field the upload names: `content` for inline text, `file` for a `--path` file. The dry run and
-  // the call print the same stdout and exit 1, and neither sends anything. The three texts are the
-  // rows of packages/envoy/internal/dispatch/api/testdata/text-refusals.json whose `command` is
-  // ["inline"]. A markdown `--path` file of UTF-8 holding U+0000 is refused before the round trip
-  // too, and any other command's field at its first U+0000 or byte that is not UTF-8: a comment's
-  // body here.
+  // U+0000 or byte that is not UTF-8, whichever comes first in the bytes, whether or not the bytes
+  // are UTF-8. Dispatch's words name the field the upload names: `content` for inline text, `file`
+  // for a `--path` file. The dry run and the call print the same stdout and exit 1, and neither
+  // sends anything: no round trip is asked. The first three texts are the rows of
+  // packages/envoy/internal/dispatch/api/testdata/text-refusals.json whose `command` is
+  // ["inline"], and the fourth its row of UTF-8 holding U+0000. Any other command's field is no
+  // document: a comment's body is refused at its first U+0000 or byte that is not UTF-8 only for
+  // bytes that are not UTF-8, and its UTF-8 holding U+0000 the command does not refuse. The dry run
+  // passes it, and the call sends it to Dispatch as read, which answers it.
   test("an upload's bytes from --content-file, stdin or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
     const file = join(stateDir, "text");
     const nulFirst = Buffer.from([0x41, 0x00, 0x42, 0xff]);
@@ -1585,12 +1597,13 @@ describe("the dispatch CLI", () => {
       },
       {
         name: "a file holding a byte that is not UTF-8",
-        bytes: Buffer.concat([
-          Buffer.from("# Notes\n\nA"),
-          Buffer.from([0xff]),
-          Buffer.from("B\n"),
-        ]),
+        bytes: notUtf8Text,
         stdout: (field: string) => notUtf8(field, "0xFF", 11),
+      },
+      {
+        name: "UTF-8 holding U+0000",
+        bytes: utf8WithNul,
+        stdout: (field: string) => nul(field, 11),
       },
     ];
     const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
@@ -1608,19 +1621,75 @@ describe("the dispatch CLI", () => {
       );
     }
 
-    // A markdown --path file of UTF-8 holding U+0000 is refused before the round trip too. Inline,
-    // such text reaches the round trip, which refuses it in the same words under `content`.
-    writeFileSync(join(stateDir, "x.md"), "# Notes\n\nA\u0000B\n");
-    await refusedAlike(
-      [...upload, "--path", "x.md"],
-      Buffer.of(),
-      nul("file", 11),
-      "UTF-8 holding U+0000"
-    );
-
     writeFileSync(file, nulFirst);
     const comment = ["comment", "--issue", "DSP-1", "--body-file", file];
     await refusedAlike(comment, Buffer.of(), nul("body", 2), "a comment");
+
+    const body = "Looks good.\u0000\n";
+    writeFileSync(file, body);
+    for (const [path, stdin] of [
+      [file, Buffer.of()],
+      ["-", Buffer.from(body)],
+    ] as const) {
+      const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
+      const reader = { readText: (read: string) => readFileText(read, () => stdin) };
+      requests.length = 0;
+      const dry = await run([...argv, "--dry-run"], omp, "", reader);
+      expect(dry, path).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify({ issue: "DSP-1", body }, null, 2)}\n`,
+        stderr: "",
+      });
+      expect(requests, path).toEqual([]);
+      const call = await run(argv, omp, "", reader);
+      expect(call.code, call.stdout).toBe(0);
+      const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+      expect(posted?.body, path).toMatchObject({ body });
+    }
+  });
+
+  // INFRA-4224 R3: with Dispatch off (no Dispatch in the environment and no envoy.json), the dry
+  // run and the call refuse the same bytes from `--content-file <file>`, `--content-file -`
+  // (stdin) and a markdown `--path` file alike, as they do with Dispatch on: UTF-8 holding U+0000,
+  // a text of UTF-8 past the bytes one document holds, and bytes that are not UTF-8, each with
+  // exit 1 and the same stdout but for the field, and nothing on stderr. Each is refused once the
+  // flags are read, before anything that needs Dispatch, so the call is never refused for Dispatch
+  // being off; a file these checks pass is (the test of the dry run's warning with Dispatch off).
+  test("with Dispatch off an upload's bytes from --content-file, stdin or a markdown --path file are refused alike by the dry run and the call", async () => {
+    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
+    const file = join(stateDir, "text");
+    const texts = [
+      {
+        name: "UTF-8 holding U+0000",
+        bytes: utf8WithNul,
+        stdout: (field: string) => nul(field, 11),
+      },
+      {
+        name: "a text past the bytes one document holds",
+        bytes: Buffer.from(PAST_DOCUMENT_LIMIT),
+        stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
+      },
+      {
+        name: "a file holding a byte that is not UTF-8",
+        bytes: notUtf8Text,
+        stdout: (field: string) => notUtf8(field, "0xFF", 11),
+      },
+    ];
+    const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    for (const text of texts) {
+      writeFileSync(file, text.bytes);
+      writeFileSync(join(stateDir, "x.md"), text.bytes);
+      const inline = text.stdout("content");
+      await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, text.name, off);
+      await refusedAlike(UPLOAD, text.bytes, inline, text.name, off);
+      await refusedAlike(
+        [...upload, "--path", "x.md"],
+        Buffer.of(),
+        text.stdout("file"),
+        text.name,
+        off
+      );
+    }
   });
 
   // INFRA-4224: the call of a markdown --path file asks the file round trip about the bytes it
@@ -1829,9 +1898,10 @@ describe("the dispatch CLI", () => {
   });
 
   // A refusal every upload makes before its write, a NUL character here, holds under --force too:
-  // the dry run and the call each refuse it, inline from the round trip and a --path file before
-  // it asks, with the same stdout and exit 1, naming the field each upload names (`content`,
-  // `file`). This fake's upload stores what it is sent, so a call that reached it would pass.
+  // the dry run and the call each refuse it once the flags are read, before they ask anything,
+  // inline text read from stdin and a --path file alike, with the same stdout and exit 1, naming
+  // the field each upload names (`content`, `file`). This fake's round trip keeps the text and its
+  // upload stores what it is sent, so a call that reached either would pass.
   test("under --force an upload's refusal is still the call's: the dry run and the call refuse a NUL alike", async () => {
     const text = "# Notes\n\nA\u0000B\n";
     writeFileSync(join(stateDir, "nul.md"), text);
@@ -1840,20 +1910,11 @@ describe("the dispatch CLI", () => {
       [[...owner, "--content-file", "-"], text, "content"],
       [[...owner, "--path", "nul.md"], "", "file"],
     ] as const) {
-      const answer = {
-        code: "NUL_CHARACTER",
-        error: `${field} holds a NUL character (U+0000) at character 11, which Dispatch cannot store`,
-      };
-      roundTrip = () => textRefusal(answer, 400);
       requests.length = 0;
       const dry = await run([...argv, "--dry-run"], omp, stdin);
-      expect(dry, argv.join(" ")).toEqual({
-        code: 1,
-        stdout: `${answer.code}: ${answer.error}\n`,
-        stderr: "",
-      });
+      expect(dry, argv.join(" ")).toEqual({ code: 1, stdout: nul(field, 11), stderr: "" });
       expect(await run(argv, omp, stdin), argv.join(" ")).toEqual(dry);
-      if (field === "file") expect(requests, argv.join(" ")).toEqual([]);
+      expect(requests, argv.join(" ")).toEqual([]);
     }
   });
 

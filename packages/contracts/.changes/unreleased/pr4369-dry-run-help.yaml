@@ -3,22 +3,29 @@ custom:
   Issue: pr4369
 body: |-
   A Dispatch tool spec can carry `dryRunHelp`, the sentence its command's `--dry-run` help prints.
-  The `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store
-  inline text, and refuses a text that Dispatch would store under another spelling, but for typed
-  blocks' attributes in another order, which the call uploads in Dispatch's order, or that the
-  call refuses for the text alone; that for a Markdown file it refuses a file past the document
-  limit, and then one holding a NUL character or a byte that is not UTF-8, in the words of its
-  upload, and sends Dispatch the bytes of any other, refusing what Dispatch refuses of them but
-  never their spelling; that a text read from content-file or stdin whose bytes are not UTF-8 is
-  refused as a Markdown file of the same bytes is; and that with force it asks for none of a new
-  document's refusals and checks the spelling Dispatch answers as for any text, so under a name
-  the owner does not hold, which the call uploads as a new document, it passes with no warning a
-  text that upload then refuses for one of them. It also says that the dry run does not read
-  whether the owner holds the name, which the call reads only after it checks the text: a text the
-  check refuses is refused alike under a held name, and a text it passes the call without force
-  still refuses under a held name, though the dry run passes it. The spec's `force` description
-  says that the command checks the text first, so a text it refuses for the text alone gets that
-  refusal, not the refusal of a name the owner holds.
+  The `dispatch_artifact` spec's sentence says that before the dry run asks Dispatch anything, and
+  with Dispatch off too, it refuses a text past the document limit, and then one holding a NUL
+  character or a byte that is not UTF-8, whether it is read from content-file, from stdin or from
+  a Markdown file, in the order and words of a Markdown file's upload, once the flags are read,
+  before it checks the arguments and before anything that needs Dispatch, as the call does; that
+  it then asks Dispatch how it would store inline text, and refuses a text that Dispatch would
+  store under another spelling, but for typed blocks' attributes in another order, which the call
+  uploads in Dispatch's order, or that the call refuses for the text alone; that it sends Dispatch
+  the bytes of any other Markdown file, refusing what Dispatch refuses of them but never their
+  spelling;
+  that for a text it did not refuse before it asks, when Dispatch cannot answer, it says so on
+  stderr and passes; and that with force it asks for none of a new document's refusals and checks
+  the spelling Dispatch answers as for any text, so under a name the owner does not hold, which the
+  call uploads as a new document, it passes with no warning a text that upload then refuses for one
+  of them. It also says that the dry run does not read whether the owner holds the name, which the
+  call reads only after it checks the text: a text the check refuses is refused alike under a held
+  name, and a text it passes the call without force still refuses under a held name, though the
+  dry run passes it. The spec's description says that a text past the document limit, or holding a
+  NUL character or a byte that is not UTF-8, read from content-file, from stdin or from a Markdown
+  path file, is refused in that order once the flags are read, before the arguments are checked
+  and before anything that needs Dispatch, by the call and its dry run alike, with Dispatch on or
+  off. The spec's `force` description says that the command checks the text first, so a text it
+  refuses for the text alone gets that refusal, not the refusal of a name the owner holds.
   `MARKDOWN_DOCUMENT_MAX_BYTES` (1 MiB) and `MARKDOWN_DOCUMENT_TOO_LARGE` are the most bytes of
   markdown one document may hold and the text of Dispatch's `413 CAP_EXCEEDED` for an upload past
   it, generated into Go for the server. `TEXT_REFUSAL_HEADER` (`Dispatch-Text-Refusal`) is the

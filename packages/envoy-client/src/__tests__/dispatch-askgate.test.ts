@@ -600,6 +600,9 @@ describe("AskGate at the dispatch CLI", () => {
 
   test("an issue with a spec and a markdown upload are gated", async () => {
     writeRecord();
+    // The command reads and checks a Markdown --path file once the flags are read, before
+    // AskGate's gate, so the file is there for the gate to be what refuses the upload.
+    writeFileSync(join(stateDir, "notes.markdown"), "# Notes\n");
     for (const [argv, command] of [
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],

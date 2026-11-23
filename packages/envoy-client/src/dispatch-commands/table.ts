@@ -23,7 +23,6 @@ import {
 import {
   artifactCommand,
   artifactDryRun,
-  artifactFileBytesRefusal,
   docEditCommand,
   docReadCommand,
   planApproveCommand,
@@ -65,10 +64,17 @@ export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdi
  * One command, and whether running it resolves this call's origin. `origin: "none"` is a command
  * that answers on the session's context alone, so no subprocess runs for it; every other command
  * is handed the context `commandContext` builds. `dryRun` is the command's dry-run step, when it
- * has one. `fileBytesRefusal` is the command's own refusal of bytes that are not UTF-8, read from
- * a file or stdin for the flag of `field`, when it has one. `runDispatchCli` refuses such bytes
- * with it, and, for a command that has none, at their first U+0000 or byte that is not UTF-8
- * (`unstorableBytes`).
+ * has one. `documentFileFields` are the command's fields that hold a Markdown document's text,
+ * when it has any. Read from a file or stdin, such a field's bytes are refused by `runDispatchCli`
+ * as the upload of a Markdown file of the same bytes refuses them, the size first, then the first
+ * U+0000 or byte that is not UTF-8 (`documentBytesRefusal`), whether or not they are UTF-8. Any
+ * other field read from a file or stdin is no document, and is refused only for bytes that are not
+ * UTF-8, at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`).
+ * `documentPathFields` are the command's fields whose value names a local file it uploads, when it
+ * has any: `runDispatchCli` reads such a file that Dispatch stores as a Markdown document as the
+ * upload reads it, and refuses it as the upload does (`documentFileBytes`). Both checks run once
+ * the flags are read, before the arguments are checked and before anything that needs Dispatch,
+ * in the call and its dry run alike.
  */
 export type DispatchCommand = (
   | {
@@ -81,7 +87,8 @@ export type DispatchCommand = (
     }
 ) & {
   readonly dryRun?: DispatchDryRunStep;
-  readonly fileBytesRefusal?: (field: string, bytes: Uint8Array) => Error | undefined;
+  readonly documentFileFields?: readonly string[];
+  readonly documentPathFields?: readonly string[];
 };
 
 /** A command that acts for the session: it is handed the context whose origin was resolved. */
@@ -123,10 +130,13 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
+  // `content` is the text `dispatch artifact` stores as a Markdown document, and `path` names the
+  // file it uploads, which it stores as one when the file is Markdown.
   dispatch_artifact: {
     ...acting(artifactCommand),
     dryRun: artifactDryRun,
-    fileBytesRefusal: artifactFileBytesRefusal,
+    documentFileFields: ["content"],
+    documentPathFields: ["path"],
   },
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),

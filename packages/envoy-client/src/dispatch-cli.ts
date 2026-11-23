@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import {
   askgateState,
   bytesDigest,
@@ -18,6 +19,11 @@ import {
 } from "./dispatch-command";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
+import {
+  documentBytesRefusal,
+  documentFileBytes,
+  uploadedFile,
+} from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -27,7 +33,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { unstorableBytes } from "./dispatch-file-text";
+import { fileTextBytes, unstorableBytes } from "./dispatch-file-text";
 import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
@@ -78,9 +84,9 @@ export interface DispatchCliIo {
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
  *  refusal), or text this CLI refuses in Dispatch's own refusal before it asks (a file or stdin
- *  holding a byte that is not UTF-8, a document past the bytes one holds, or a Markdown `--path`
- *  file holding U+0000); any other argument this CLI refuses before any request is USAGE, whether
- *  the argv named a command or not. */
+ *  holding a byte that is not UTF-8, or a document's text past the bytes one holds or holding
+ *  U+0000, read from a file or stdin or from a Markdown `--path` file); any other argument this
+ *  CLI refuses before any request is USAGE, whether the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -340,18 +346,49 @@ export async function runDispatchCli(
           parsed.tool
         );
   }
+  // The local checks of a text alone run here, once the flags are read: before the arguments are
+  // checked and before anything that needs Dispatch (its configuration, the refusal of a Dispatch
+  // that is off, any client), so the dry run and the call refuse a text from this one step alike,
+  // with Dispatch on or off, in Dispatch's own refusal and with its exit code, and send nothing.
+  // Text a flag read from a file or stdin is refused by the rule of its field. A field the
+  // command's table entry says holds a Markdown document's text
+  // (`DispatchCommand.documentFileFields`) is refused as the upload of a Markdown `--path` file of
+  // the same bytes refuses it, the size first, then the first U+0000 or byte that is not UTF-8
+  // (`documentBytesRefusal`), whether or not the bytes are UTF-8: a text the strict read decoded is
+  // checked in the bytes it was read from (`fileTextBytes`). Any other field is no document, so it
+  // is refused only for bytes that are not UTF-8 (an `unstorable` parse), at their first U+0000 or
+  // byte that is not UTF-8 (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which
+  // answers it. Bytes that are not UTF-8 hold such a byte, so each finds a refusal. A field the
+  // table entry says names a local file the command uploads (`DispatchCommand.documentPathFields`)
+  // has its file read as the upload reads it (`documentFileBytes`), which reads only a file
+  // Dispatch stores as a Markdown document and refuses it in the same order: past the bytes one
+  // document holds by its size, then by the bytes read, then at the first U+0000 or byte that is
+  // not UTF-8. Such a file it cannot read is refused here too, with the read's own error and exit
+  // 1, as the call and the dry run's step would refuse it. The call and the dry run's step read
+  // such a file again, and check the bytes they read.
+  const command = dispatchCommands[parsed.tool as DispatchToolName];
+  const documentFields = command?.documentFileFields ?? [];
   if (parsed.kind === "unstorable") {
-    // A file or stdin a flag read holds bytes that are not UTF-8, which Dispatch cannot store: the
-    // dry run and the call refuse them here alike, before either sends anything, with Dispatch's
-    // own refusal and its exit code. A command that refuses them by a rule of its own declares it
-    // (`DispatchCommand.fileBytesRefusal`); for any other they are refused at their first U+0000
-    // or byte that is not UTF-8 (`unstorableBytes`). Bytes that are not UTF-8 hold such a byte, so
-    // each finds a refusal.
     const { tool, field, bytes } = parsed;
-    const refusal = (
-      dispatchCommands[tool as DispatchToolName]?.fileBytesRefusal ?? unstorableBytes
-    )(field, bytes);
+    const refusal = (documentFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
+      field,
+      bytes
+    );
     return refuse(messageFor(refusal), REFUSED, tool);
+  }
+  for (const { field, text } of parsed.fileTexts) {
+    if (!documentFields.includes(field)) continue;
+    const refusal = documentBytesRefusal(field, fileTextBytes(text));
+    if (refusal !== undefined) return refuse(messageFor(refusal), REFUSED, parsed.tool);
+  }
+  for (const field of command?.documentPathFields ?? []) {
+    const path = parsed.args[field];
+    if (typeof path !== "string") continue;
+    try {
+      await documentFileBytes(uploadedFile(resolvePath(io.cwd, path)));
+    } catch (error) {
+      return refuse(messageFor(error), REFUSED, parsed.tool);
+    }
   }
 
   const hostName = ledgerHost();
@@ -416,7 +453,7 @@ export async function runDispatchCli(
     // (AskGate's own read). Nothing else the call reads (this session's state, Dispatch's other
     // answers) is read here. Every line besides a refusal goes to stderr, so the standard output
     // of a dry run that passes is the JSON alone.
-    const step = dispatchCommands[parsed.tool as DispatchToolName]?.dryRun;
+    const step = command?.dryRun;
     if (step !== undefined && env.DISPATCH_DRY_RUN_LOCAL !== "1") {
       const deadlineMs = io.dryRunDeadlineMs ?? DRY_RUN_DEADLINE_MS;
       const deadline = AbortSignal.timeout(deadlineMs);

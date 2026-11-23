@@ -305,8 +305,10 @@ type roundTripReplaced struct {
 // --content-file or on stdin, in Dispatch's own code and in words holding the row's words - bytes
 // that are not UTF-8, which no JSON string carries, and which the command reads as bytes, refused
 // as a Markdown --path file of the same bytes is, the size first, then the first U+0000 or byte
-// that is not UTF-8. The end-to-end spec runs those ways too; the route tests read command for
-// nothing but its check here.
+// that is not UTF-8. The command refuses itself, in the same code and words, any other text from a
+// --content-file or on stdin past the bytes or holding U+0000, which the route tests send inline,
+// so command leaves those rows out. The end-to-end spec runs those ways too; the route tests read
+// command for nothing but its check here.
 //
 // scope is a fact of the tests, which they sort the rows by; Dispatch's answers carry no scope.
 // It is "upload" where every upload of the text refuses it with the row's status, code and words,

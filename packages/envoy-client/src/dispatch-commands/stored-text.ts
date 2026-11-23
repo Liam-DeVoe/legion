@@ -3,8 +3,9 @@
 // another spelling, read from the store's own parse and render. `dispatch artifact` and its dry run
 // both make it, chosen by one function (`artifactTextCheck`, which `artifactCommand` and
 // `artifactDryRun` in documents.ts call), so the two answer alike. A document's bytes, a `--path`
-// file's or inline text's that are not UTF-8, are refused in the upload's order, their size first
-// and then the first U+0000 or byte that is not UTF-8, by one function (`documentBytesRefusal`).
+// file's or those of inline text read from a file or stdin, are refused in the upload's order,
+// their size first and then the first U+0000 or byte that is not UTF-8, by one function
+// (`documentBytesRefusal`).
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
@@ -114,9 +115,10 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
  * bytes that order passes: first the size (`documentTooLarge`), and then the first U+0000 or
  * byte that is not UTF-8, whichever comes first (`unstorableBytes`), in Dispatch's own code,
  * words and count, under `field`. `field` is the field the upload names: `file` for a `--path`
- * file (`documentFileBytes`), `content` for inline text a flag read from a file or stdin whose
- * bytes are not UTF-8 (`artifactFileBytesRefusal`). Both call this, so the same bytes get the same
- * refusal but for the field, whichever way they are given.
+ * file (`documentFileBytes`), `content` for inline text a flag read from a file or stdin, which
+ * `runDispatchCli` refuses once the flags are read (`DispatchCommand.documentFileFields`), UTF-8
+ * or not. Both call this, so the same bytes get the same refusal but for the field, whichever way
+ * they are given.
  */
 export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
   return documentTooLarge(bytes) ?? unstorableBytes(field, bytes);
@@ -148,6 +150,9 @@ export function uploadedFile(local: string): BunFile {
  * by `documentBytesRefusal`, which refuses bytes past that size, from a file whose size could not
  * be read or that grew since, and then the first U+0000 or byte that is not UTF-8 in them. So such
  * a file is refused in Dispatch's own words before anything is asked, as its upload refuses it.
+ * `runDispatchCli` makes this check once the flags are read, before anything that needs Dispatch
+ * (`DispatchCommand.documentPathFields`), and the call and the dry run's step make it again on the
+ * bytes they read.
  */
 export async function documentFileBytes(
   file: BunFile,
