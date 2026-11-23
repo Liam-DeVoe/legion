@@ -542,6 +542,12 @@ type PullRequestOpened struct {
 	Number  int
 	Branch  string
 	HeadSHA string
+	// HeadRepo is the repository the pull request's head branch lives in, as GitHub names it
+	// (head.repo.full_name; the listener's head_repo): Repo itself for a branch of the repository,
+	// another for a fork's, and empty when GitHub no longer has it (a deleted fork) or the source
+	// read none. The workflow records a pull request only when this is Repo, since anyone may open a
+	// fork's pull request and name its head an issue's branch or a task's.
+	HeadRepo string
 	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
 	// base.ref), empty from a listener that predates the field; the workflow records it so a push
 	// onto that branch finds the pull request again (record.PullRequest.Base).
@@ -568,7 +574,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(), Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
@@ -1217,9 +1223,10 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
-// AgentUnnamed for a version in which a fresh agent would need the name of its role that another
-// agent of the plan holds from an earlier version, refused before anything is written),
+// (RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an issue that ran before
+// Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
+// its role that another agent of the plan holds from an earlier version, refused before anything
+// is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1841,9 +1848,10 @@ type Refusal struct {
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
 // the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
-// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), or
-// one whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
-// order, so a reader of the sentence alone reads every cause.
+// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), one
+// that moves the base of a running or held task (StartedTaskBaseMoved), or one whose agent this
+// release cannot name (AgentUnnamed). The message holds every reason in its order, so a reader of
+// the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1873,6 +1881,18 @@ func HeldTaskChanged(task, at string) plan.Refusal {
 func NeedOfMergingTask(task, merging, at string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
 		"task %s needs task %s, which stands at its %s, where the work of the issue merges. This release of Legion does not carry it out yet.", task, merging, at)}
+}
+
+// StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the
+// base of task, the branch its pull request is based on (the workflow reads it from the plan), from
+// base to next while task has started and is not stopped: it is running or held. The task started
+// on base, and its later steps would be told next, which no start of it made: a version that adds
+// the first task that needs the task that merges moves that task's base to its join branch, and one
+// that removes the one task that needed a task moves its base to the default branch. Its owner
+// stops it first.
+func StartedTaskBaseMoved(task, base, next string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
+		"task %s has started on the base %s, and this version would base it on %s: stop it with stop_task before you change its base.", task, base, next)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,

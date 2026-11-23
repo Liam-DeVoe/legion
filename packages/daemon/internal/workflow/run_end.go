@@ -219,11 +219,11 @@ func (e *Engine) joinAgain(ctx context.Context, tx pgx.Tx, keys []string) error 
 			if err != nil {
 				return err
 			}
-			view, w, err := e.view(ctx, tx, *now, id)
+			s, err := e.ScopeOf(ctx, tx, *now, id)
 			if err != nil {
 				return err
 			}
-			if err := e.startAfterWait(ctx, tx, view, w, "workflow: the join of a step's task is queued again at its issue's generation",
+			if err := e.startAfterWait(ctx, tx, s, "workflow: the join of a step's task is queued again at its issue's generation",
 				"generation", now.Generation); err != nil {
 				return err
 			}
@@ -249,28 +249,29 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // (Walk.StartReason), the task is told why, and its entry counts as a move back, as that start's own
 // would have had it waited for nothing (restartTask, transition). said is the log line, which names
 // the issue, the task, its place and role, and args.
-func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk, said string, args ...any) error {
+func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
+	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
 	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequestOfTask(ctx, tx, view.Key, w.Task)
+	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return err
 	}
 	reason := w.StartReason
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
 		"reason", reason}, args...)...)
-	return e.start(ctx, tx, view, w, role, func(at Standing) string {
+	return e.start(ctx, tx, s, role, func(at Standing) string {
 		return task(view, at, record.PhaseRow{}, pr, reason)
 	}, reason != "")
 }
 
 // agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for
 // its agent, the one that waited longest first: by the moment its wait began, then by task id.
-// None for a plan of one task, or none.
+// None for no plan; a plan of one task has no step of another task to wait behind, so none either.
 func agentWaiters(stored *record.StoredPlan) []string {
-	if stored == nil || len(stored.Tasks) <= 1 {
+	if stored == nil {
 		return nil
 	}
 	var waiting []record.PlanTask
@@ -296,10 +297,11 @@ func (e *Engine) handOn(ctx context.Context, tx pgx.Tx, key, id string) error {
 	if err != nil || issue == nil {
 		return err
 	}
-	view, w, err := e.view(ctx, tx, *issue, id)
+	s, err := e.ScopeOf(ctx, tx, *issue, id)
 	if err != nil {
 		return err
 	}
+	w := s.walk
 	agent := w.AgentAt(w.Place)
 	if w.State != record.TaskRunning || w.Wait != record.StepWaitAgent || agent == "" {
 		return nil
@@ -307,7 +309,7 @@ func (e *Engine) handOn(ctx context.Context, tx pgx.Tx, key, id string) error {
 	if _, busy := issue.StepOfAgent(agent); busy {
 		return nil
 	}
-	return e.startAfterWait(ctx, tx, view, w, "workflow: a freed agent starts the step that waited for it", "agent", agent)
+	return e.startAfterWait(ctx, tx, s, "workflow: a freed agent starts the step that waited for it", "agent", agent)
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
@@ -443,16 +445,14 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		}
 		// The run's own walk, at its generation, names the phase its place is the step of, so the
 		// end is written for the step of that run's plan, whichever run the issue stands in now:
-		// the walk of the run's task, read on the copy of the issue read for it (viewOn).
+		// the walk of the run's task, read on its scope (scopeOrNoPlan).
 		stood.Generation, stood.Hold = row.Generation, nil
 		ranPlan, err := e.store.Plan(ctx, tx, stood.Key, stood.Generation)
 		if err != nil {
 			return err
 		}
-		stood, w, onPlan, err := viewOn(stood, ranPlan, row.Place.Task)
-		if err != nil {
-			return err
-		}
+		ran, onPlan := scopeOrNoPlan(stood, ranPlan, row.Place.Task)
+		stood, w := ran.issue, ran.walk
 		stood.Hold = nil
 		var onWalk bool
 		if onPlan {
@@ -518,10 +518,8 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if err != nil {
 		return false, err
 	}
-	view, w, onPlan, err := viewOn(*now, stored, run.place.Task)
-	if err != nil {
-		return false, err
-	}
+	s, onPlan := scopeOrNoPlan(*now, stored, run.place.Task)
+	view, w := s.issue, s.walk
 	if !onPlan {
 		return true, nil
 	}
@@ -544,17 +542,13 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	return !canLand, err
 }
 
-// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether issue, as read reads its
-// tree, stands in an open run that no start of this release counted, and that run: issue, the copy
-// of the issue read for one of its tasks where its plan holds several (viewsOf), stands in a step
-// whose runs are recorded on the walk of its run (standingStep), the end rule does not hold that
-// run over (runOver), its tree is not the operator's, which runs no step of the workflow
+// uncountedRunOpen is the boot's answer (OpenUncountedRuns) to whether s's copy, as read reads its
+// tree, stands in an open run that no start of this release counted, and that run: the copy stands
+// in a step whose runs are recorded on the walk of its task (standingStep), the end rule does not
+// hold that run over (runOver), its tree is not the operator's, which runs no step of the workflow
 // (record.OperatorHoldsTree), and its generation started a run (generationStarted).
-func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, issue record.Issue, read issueReader) (runAt, bool, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return runAt{}, false, err
-	}
+func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, runs *factRuns, s TaskScope, read issueReader) (runAt, bool, error) {
+	issue, w := s.issue, s.walk
 	step, ok := standingStep(w, issue)
 	if !ok {
 		return runAt{}, false, nil

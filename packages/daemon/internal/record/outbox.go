@@ -36,17 +36,22 @@ const (
 	OutboxKindWorkspaceRemove  OutboxKind = "workspace_remove"
 	OutboxKindIssueBranch      OutboxKind = "issue_branch"
 	OutboxKindTaskBranch       OutboxKind = "task_branch"
-	// OutboxKindTaskPullRequestsClose closes the open pull requests of the other tasks of an issue
-	// once the pull request of the task that merges has merged (TaskPullRequestsClose).
+	// OutboxKindTaskPullRequestsClose closes open pull requests of tasks of an issue: those of the
+	// other tasks once the pull request of the task that merges has merged, that of a task a later
+	// version of the plan removed, and those of an earlier run at the first step of a run started
+	// again (TaskPullRequestsClose).
 	OutboxKindTaskPullRequestsClose OutboxKind = "task_pull_requests_close"
-	OutboxKindCheckWake             OutboxKind = "check_wake"
-	OutboxKindCheckLook             OutboxKind = "check_look"
-	OutboxKindCheckBound            OutboxKind = "check_bound"
-	OutboxKindRoleMessage           OutboxKind = "role_message"
-	OutboxKindHookPrompt            OutboxKind = "hook_prompt"
-	OutboxKindUpdateAsk             OutboxKind = "update_ask"
-	OutboxKindIssueBundle           OutboxKind = "issue_bundle"
-	OutboxKindIssueRelease          OutboxKind = "issue_release"
+	// OutboxKindTaskCopyRemove removes the working copy of a task that a later version of the
+	// plan removed (TaskCopyRemove).
+	OutboxKindTaskCopyRemove OutboxKind = "task_copy_remove"
+	OutboxKindCheckWake      OutboxKind = "check_wake"
+	OutboxKindCheckLook      OutboxKind = "check_look"
+	OutboxKindCheckBound     OutboxKind = "check_bound"
+	OutboxKindRoleMessage    OutboxKind = "role_message"
+	OutboxKindHookPrompt     OutboxKind = "hook_prompt"
+	OutboxKindUpdateAsk      OutboxKind = "update_ask"
+	OutboxKindIssueBundle    OutboxKind = "issue_bundle"
+	OutboxKindIssueRelease   OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
@@ -127,7 +132,7 @@ const (
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -1595,14 +1600,17 @@ type TaskBranch struct {
 
 func (TaskBranch) OutboxKind() OutboxKind { return OutboxKindTaskBranch }
 
-// TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of the other
-// tasks of the row's issue, with Comment on each before its close: GitHub leaves the pull request of
-// a task that does not merge open once the work it holds merged in the pull request of the task that
-// merges. A pull request GitHub shows closed already is done, so a row that runs again closes
-// nothing more.
+// TaskPullRequestsClose closes, as the implement App, each pull request Numbers names, of tasks of
+// the row's issue, with Comment on each before its close: GitHub leaves the pull request of a task
+// that does not merge open once the work it holds merged in the pull request of the task that
+// merges, and leaves the pull request of a task a later version of the plan removed open too; and
+// the first step of a run that is not carried closes each open pull request of an earlier run that
+// no task of its plan holds (the workflow's closeEarlierPullRequests). A pull request GitHub shows
+// closed already is done, so a row that runs again closes nothing more.
 type TaskPullRequestsClose struct {
-	// Generation is the issue generation the pull requests were recorded at. A row of an earlier
-	// generation finishes without acting.
+	// Generation is the issue generation that queued the row: the one the pull requests were
+	// recorded at, or the run started again that closes those of an earlier run. A row of a
+	// generation the issue has left finishes without acting.
 	Generation uint64 `json:"generation"`
 	// Numbers is the number of each pull request the row closes, in the order it closes them.
 	Numbers []int `json:"numbers"`
@@ -1611,6 +1619,25 @@ type TaskPullRequestsClose struct {
 }
 
 func (TaskPullRequestsClose) OutboxKind() OutboxKind { return OutboxKindTaskPullRequestsClose }
+
+// TaskCopyRemove removes the working copy of a task that a later version of the plan of the row's
+// issue removed: the jj workspace on the task's branch beside the issue's own working copy, on the
+// daemon's host (the workspace package's Name and Location). It runs on the lifecycle lane, one at
+// a time with the issue's starts, its stops and its workspace's removal. Branch is the branch the
+// removed task held, and never the issue's own: the task that holds that branch works in the
+// issue's own working copy, which only the issue's removal takes (WorkspaceRemove). The record
+// gives a branch name to one task of the issue (Postgres.AssignTaskBranch), so a task the version
+// adds back takes a branch, and a working copy, of its own.
+type TaskCopyRemove struct {
+	// Generation is the issue generation of the version that removed the task.
+	Generation uint64 `json:"generation"`
+	// Task is the id of the task the version removed, as the plan's rows named it.
+	Task string `json:"task"`
+	// Branch is the branch the removed task held (PlanTask.BranchOf).
+	Branch string `json:"branch"`
+}
+
+func (TaskCopyRemove) OutboxKind() OutboxKind { return OutboxKindTaskCopyRemove }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
@@ -2206,6 +2233,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindTaskCopyRemove:
+		value := TaskCopyRemove{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2350,6 +2383,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case TaskPullRequestsClose:
 		if len(value.Numbers) == 0 || value.Comment == "" {
 			return fmt.Errorf("a close of a task's pull requests requires each pull request it closes and the comment it writes on them")
+		}
+	case TaskCopyRemove:
+		if value.Generation == 0 || value.Task == "" {
+			return fmt.Errorf("a task copy's removal names the task the plan removed and the generation of that plan")
+		}
+		if of, slug, ok := claim.BranchTask(value.Branch); !ok || of != issue || slug == "" {
+			return fmt.Errorf("a task copy's removal names the branch of a task of its issue other than the issue's own; %q is not one of %s", value.Branch, issue)
 		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {

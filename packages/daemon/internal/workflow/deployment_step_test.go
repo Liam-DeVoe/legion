@@ -101,14 +101,10 @@ func TestADeploymentRoleOfAnyTypeStartsAndReports(t *testing.T) {
 				t.Fatalf("the starts of the %s = %+v, want one, of step", tc.role, starts)
 			}
 
-			implementerStarts := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
+			implementersBefore := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
 			stepReports(t, pool, engine, root.Key, tc.role, "fail", "The check found a gap.", "", 0)
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
-			starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
-			if len(starts) != implementerStarts+1 {
-				t.Fatalf("the implementer's starts after the fail = %d, want one more than %d", len(starts), implementerStarts)
-			}
-			told := starts[len(starts)-1].Task
+			told := returnStartOf(t, pool, root.Key, claim.RoleImplementer, implementersBefore).Task
 			if says := " Step 2 (" + string(tc.role) + ") reported: fail. The check found a gap."; !strings.Contains(told, says) {
 				t.Fatalf("the implementer's task = %q, want it to say %q", told, says)
 			}
@@ -420,7 +416,11 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	}
 	var got claim.Token
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		got, err = engine.startAgent(ctx, tx, issue, phase.Step)
+		s, err := firstScope(ctx, tx, engine, issue)
+		if err != nil {
+			return err
+		}
+		got, err = engine.startAgent(ctx, tx, s, phase.Step)
 		return err
 	})
 	if got != want {

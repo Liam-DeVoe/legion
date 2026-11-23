@@ -61,7 +61,7 @@ type factRecorder struct {
 }
 
 // toldCompletion is one call of the completion route's hook: the issue, and the task of the plan
-// whose step completed ("" for a plan of one task, or none).
+// whose step completed ("" for an issue with no plan rows).
 type toldCompletion struct {
 	issue, task string
 }

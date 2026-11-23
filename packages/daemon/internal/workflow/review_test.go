@@ -473,7 +473,7 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 		{name: "a review", fact: intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "commented", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: "a note"}, want: true},
 		{name: "a push to the base", fact: intake.BasePush{Repo: "sjawhar/legion", Branch: "main", After: "base-2"}, want: true},
-		{name: "a reopen", fact: intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main",
+		{name: "a reopen", fact: intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadRepo: "sjawhar/legion",
 			HeadSHA: headOne, Reopened: true, UpdatedAt: time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)}, want: true},
 		{name: "GitHub's own answer", fact: intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked}, want: false},
@@ -1079,7 +1079,7 @@ func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	for i, fact := range []intake.Fact{
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("approved", headOne)},
-		intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne},
+		intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, HeadRepo: "sjawhar/legion"},
 		intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: headOne, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 3}},
 			Generation: 3, Snapshot: "green-again", Failing: []string{}},
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("redelivered", headOne)},

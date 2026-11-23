@@ -142,7 +142,11 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
@@ -187,7 +191,11 @@ func TestAStepOfASecondTaskNamesItsOwnWorkingCopy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
 	})
 	hasPrefix(t, "resumed implementer", lastStart(t, pool, root.Key, claim.RoleImplementer),
 		"Continue root. Issue: LEGION-208. Phase: implementing."+working+" Task: a. Step 1 of 2: implementer.")
@@ -330,7 +338,11 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				if err != nil {
 					return err
 				}
-				return tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
+				s, err := firstScope(ctx, tx, tc.engine, *issue)
+				if err != nil {
+					return err
+				}
+				return tc.engine.StartPromotedWorker(ctx, tx, s, claim.RoleTester)
 			})
 
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
@@ -349,7 +361,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 // no need. e's first step names its one need in the singular, and its steps line, and its retro's,
 // ends with Legion's retro and merge. a, which needs nothing, is told no need and the line of a
 // task that does not merge. A step of a plan of one task is told the text it was told before tasks
-// had needs. Each composition is the engine's: the walk of the task as Engine.view reads it from
+// had needs. Each composition is the engine's: the walk of the task as Engine.ScopeOf reads it from
 // the plan rows, with the task's place set, through standingPart.
 //
 // The fault it catches is the agent of a task that does not merge told that Legion runs a retro
@@ -401,15 +413,15 @@ func TestTheFirstStepOfATaskWithNeedsNamesThem(t *testing.T) {
 }
 
 // stepLines is the daemon's lines of the task of the agent of task of key's plan at place, in the
-// phase that place derives (issuePhaseOf), as the engine composes them (standingPart) on the walk
-// of the task as Engine.view reads it, with the task running at place.
+// phase that place derives (issuePhaseOf), as the engine composes them (standingPart) on the scope
+// of the task as Engine.ScopeOf reads it, with the task running at place.
 func stepLines(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string, place record.TaskPlace) string {
 	t.Helper()
 	var lines string
-	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, view record.Issue, w Walk) error {
-		w.State, w.Place = record.TaskRunning, place
-		view.Phase = issuePhaseOf(w, place, record.TaskRunning)
-		at, err := engine.standingPart(ctx, tx, view, w)
+	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+		s.walk.State, s.walk.Place = record.TaskRunning, place
+		s.issue.Phase = issuePhaseOf(s.walk, place, record.TaskRunning)
+		at, err := engine.standingPart(ctx, tx, s)
 		lines = at.lines
 		return err
 	})

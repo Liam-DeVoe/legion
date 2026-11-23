@@ -387,7 +387,7 @@ func (g *reviewRangeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `[]`)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, pull.number, branch, pull.head)
+		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, pull.number, branch, pull.head, parts[0]+"/"+parts[1])
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)

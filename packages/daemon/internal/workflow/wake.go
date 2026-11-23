@@ -536,12 +536,3 @@ func OpenStepsOf(issue record.Issue) []record.RunningStep {
 	}
 	return open
 }
-
-// IssueAtStep is issue as a reader that gives step its work reads it: the issue standing at the
-// phase step runs as, so what the reader queues for the step names that phase, and two steps of
-// one issue at two phases are two starts rather than one start of the issue's phase. For an
-// issue whose one task runs, that is the issue's own phase.
-func IssueAtStep(issue record.Issue, step record.RunningStep) record.Issue {
-	issue.Phase = step.Phase
-	return issue
-}

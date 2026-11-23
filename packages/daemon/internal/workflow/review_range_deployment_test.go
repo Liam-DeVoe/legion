@@ -167,7 +167,11 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 			pool, engine, child := resetCritic(t)
 			if tc.promoted {
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.StartPromotedWorker(ctx, tx, child, "critic")
+					s, err := firstScope(ctx, tx, engine, child)
+					if err != nil {
+						return err
+					}
+					return engine.StartPromotedWorker(ctx, tx, s, "critic")
 				})
 				row := roleRowOf(t, pool, engine, child.Key, "critic")
 				if row.Entry != resetEntry+1 || strings.Contains(row.EntryTask, reviewround.CommitLabel) {

@@ -400,7 +400,7 @@ func (r *stepRecordsRig) merge() {
 	r.github.merged(r.number)
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number), "merged": "true",
-		"merge_commit_sha": "merge-" + stepRecordsHead, "head_sha": stepRecordsHead, "base_ref": "main", "head_ref": "legion/" + r.key,
+		"merge_commit_sha": "merge-" + stepRecordsHead, "head_sha": stepRecordsHead, "base_ref": "main", "head_ref": "legion/" + r.key, "head_repo": liveRepo,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -1162,6 +1162,6 @@ func (p stepRecordsPull) answer() string {
 	if p.merged {
 		state, merged, mergeable = "closed", true, "unknown"
 	}
-	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead)
+	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, liveRepo)
 }

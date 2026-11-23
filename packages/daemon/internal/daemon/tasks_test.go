@@ -2,22 +2,27 @@
 // Dispatch of this package's tests, the fake runtime, and a fake GitHub whose refs, commits and
 // pull requests are a real bare git repository's (tasksGitHub), so each branch the daemon makes
 // for a task, each join of a task's needs and each pull request an implementer opens is one git
-// can read. The owner of one issue gives it a plan of several tasks and opens its gate; the test
-// plays each agent of each step, task by task, and reads where each task stands from the store.
-// Beside them, the issues of one task that the release before several tasks left mid-walk, booted
-// on that release's store (acrossIssue).
+// can read. Each task's working copy is made for real, a jj workspace of one clone of that
+// repository, when a step's task adopts it (tasksCopies). The owner of one issue gives it a plan of
+// several tasks and opens its gate; the test plays each agent of each step, task by task, and reads
+// where each task stands from the store. Beside them, the issues of one task that the release
+// before several tasks left mid-walk, booted on that release's store (acrossIssue).
 package daemon
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,15 +33,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // examplePlan is the example plan of several tasks in the form this release takes, each need the
@@ -79,6 +89,56 @@ Check the whole change.
 // fails.
 func TestTheExamplePlanRunsItsTasksAtOneTime(t *testing.T) {
 	r := newTasksRig(t)
+	r.walkExamplePlan()
+	r.onePod(claim.RoleImplementer, claim.RoleReviewer, claim.RolePlanner, claim.RoleTester)
+}
+
+// Each task of the example plan works in its own working copy, from its join. The walk is the
+// example plan's (walkExamplePlan): each step's task names the working copy of its own task, which
+// the runtime's adoption makes for real (tasksCopies), and each implementer commits in the
+// directory its task names and pushes its task's branch. a and b, which run at one time, work in two
+// directories: the issue's own, on legion/<KEY>, and the one of legion/<KEY>.b beside it. c starts
+// from b's work; d starts from the join of a's and c's, so the last commit of each is an ancestor
+// of the commit d's working copy started at; and e starts from d's, so the last commit of every
+// other task is an ancestor of e's start. Every launch is in the issue's one pod, and the issue
+// merges.
+//
+// The fault: a task whose working copy starts without the work of a task it needs, or two tasks
+// that run at one time in one directory. Its controls are run by hand. As the approved check states
+// it: examplePlan with the needs of c taken out (d then needs b too, so the plan keeps its one task
+// whose work merges): c starts at the gate beside a and b, before b is done, and the check that c
+// waits fails. The executor's join of a task's needs that merges its first need alone: d's start
+// lacks c's last commit, e's lacks b's and c's, and the ancestor checks fail. The adoption that
+// names no branch: no working copy of b is made, and the check of the directory b's implementer is
+// told fails.
+func TestEachTaskOfTheExamplePlanWorksInItsOwnCopyFromItsJoin(t *testing.T) {
+	r := newTasksRig(t)
+	r.walkExamplePlan()
+	issue, b := claim.IssueBranch(r.key), r.branchOf("b")
+	if a := r.branchOf("a"); a != issue {
+		t.Fatalf("task a's branch is %s, want the issue's own, %s", a, issue)
+	}
+	dirs := r.copies.made()
+	if dirs[issue] == "" || dirs[b] == "" || dirs[issue] == dirs[b] {
+		t.Fatalf("the working copies of a and b, made at their adoption, are %q and %q, want two directories", dirs[issue], dirs[b])
+	}
+	for _, task := range []struct {
+		id    string
+		needs []string
+	}{{"c", []string{"b"}}, {"d", []string{"a", "c"}}, {"e", []string{"a", "b", "c", "d"}}} {
+		for _, need := range task.needs {
+			if !r.copies.ancestor(r.lasts[need], r.starts[task.id]) {
+				t.Errorf("task %s's working copy started at %s, which does not hold %s's last commit %s", task.id, r.starts[task.id], need, r.lasts[need])
+			}
+		}
+	}
+	r.onePod(claim.RoleImplementer, claim.RoleReviewer, claim.RolePlanner, claim.RoleTester)
+}
+
+// walkExamplePlan gives the issue examplePlan and walks it to its merge, as
+// TestTheExamplePlanRunsItsTasksAtOneTime says.
+func (r *tasksRig) walkExamplePlan() {
+	r.t.Helper()
 	r.givePlanText(examplePlan)
 	r.firstStep()
 	r.waitAt("a", 1)
@@ -116,7 +176,6 @@ func TestTheExamplePlanRunsItsTasksAtOneTime(t *testing.T) {
 	r.implementStep("e", "main")
 	r.testStep("e")
 	r.retroAndMerge("e")
-	r.onePod(claim.RoleImplementer, claim.RoleReviewer, claim.RolePlanner, claim.RoleTester)
 }
 
 // agentsPlan is two tasks, x and y, that need nothing and whose first steps are of one key, k, and
@@ -162,13 +221,106 @@ func TestTheAgentsOfTasksWithOneLastTask(t *testing.T) {
 	r.onePod(claim.RoleImplementer)
 }
 
+// conflictPlan is two tasks, a and c, that need nothing and change one line of one file, x.txt;
+// the task d that needs both, in that order; and the task e that needs d, so d does not merge and
+// its pull request is based on its join branch. Each need is written as examplePlan's.
+const conflictPlan = `:::plan_task{#a steps="implementer:i reviewer:r"}
+Change the parser of the widget.
+:::
+
+:::plan_task{#c steps="implementer:i reviewer:r"}
+Move the readers of the store.
+:::
+
+:::plan_task{#d needs="%[1]sa %[1]sc" steps="implementer:i reviewer:r"}
+Join the parser and the store.
+:::
+
+:::plan_task{#e needs="%[1]sd" steps="implementer:i tester:t"}
+Check the whole change.
+:::
+`
+
+// A join that conflicts is repaired by the first step of the task that needs it. a and c each
+// change the one line of x.txt that main holds, so GitHub refuses the merge of c into d's join
+// branch, which the join makes at a's head. d's first step's task tells its agent how to repair
+// that join, and the agent does what it says in d's working copy, which the adoption made
+// (repairAndWork): the join branch then holds a's and c's last commits and x.txt with both lines,
+// no conflict marker, and d's own work starts from that join.
+//
+// The fault: a task whose first step is not told to repair its join starts without the work of the
+// need whose merge conflicted. The control is a mutation of the release's code, run by hand:
+// workflow's joinToRepair answering nothing, so the agent, which acts on that text alone, repairs
+// no join, and the check that d's join branch holds c's last commit fails.
+func TestAJoinThatConflictsIsRepairedByTheFirstStep(t *testing.T) {
+	r := newTasksRig(t)
+	r.gh.repo.Commit(t, "main", map[string]string{"x.txt": "line 1\n"}, "the file a and c change")
+	r.givePlanText(conflictPlan)
+	r.firstStep()
+	r.waitAt("a", 1)
+	r.waitAgent("c", 1)
+	r.implementWith("a", "main", r.changeX("a"))
+	r.waitAt("c", 1)
+	r.reviewStep("a")
+	r.waitDone("a")
+	r.implementWith("c", "main", r.changeX("c"))
+	r.reviewStep("c")
+	r.waitDone("c")
+	r.waitAt("d", 1)
+
+	d := r.branchOf("d")
+	r.implementWith("d", d+claim.JoinBranchSuffix, r.repairAndWork)
+	join := r.gh.repo.Head(t, d+claim.JoinBranchSuffix)
+	for _, need := range []string{"a", "c"} {
+		if !r.copies.ancestor(r.lasts[need], join) {
+			t.Errorf("d's join branch stands at %s, which does not hold %s's last commit %s", join, need, r.lasts[need])
+		}
+	}
+	if x := r.copies.show(join, "x.txt"); x != resolvedX {
+		t.Errorf("x.txt on d's join branch = %q, want the line of each need with no conflict marker, %q", x, resolvedX)
+	}
+	if !r.copies.ancestor(join, r.starts["d"]) {
+		t.Errorf("d's own work started from %s, which does not hold its join branch's head %s", r.starts["d"], join)
+	}
+	if x := r.copies.show(r.lasts["d"], "x.txt"); x != resolvedX {
+		t.Errorf("x.txt on d's branch = %q, want the repaired join's %q", x, resolvedX)
+	}
+}
+
+// changeX is the work of task's implementer in conflictPlan: the line of x.txt changed to its own.
+func (r *tasksRig) changeX(task string) func(told, dir, branch string) (string, string) {
+	return func(_, dir, branch string) (string, string) {
+		return r.copies.commit(dir, branch, task, map[string]string{"x.txt": "from " + task + "\n"})
+	}
+}
+
+// repairAndWork is the work of d's implementer in conflictPlan, which acts on what its task, told,
+// says of the join of its needs and on nothing else: where the task tells jj commands, it runs each
+// in d's working copy dir (taskCopy.follow), repairing x.txt with the line of each need
+// (resolvedX). Its own work, d.txt, is then described and pushed on d's branch (taskCopy.work). It
+// answers the commit its own work started from and the one it pushed.
+func (r *tasksRig) repairAndWork(told, dir, branch string) (string, string) {
+	r.t.Helper()
+	d := taskCopy{t: r.t, run: fixturegit.Isolated(r.t, r.copies.home), dir: dir}
+	if jjCommand.MatchString(told) {
+		d.follow(told, map[string]string{"x.txt": resolvedX})
+	}
+	start := d.jj("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	d.work(branch, map[string]string{"d.txt": "the work of task d\n"}, "the work of task d")
+	return start, r.gh.repo.Head(r.t, branch)
+}
+
 // tasksRig is the whole daemon with one issue at admitted whose owner gives it a plan of several
-// tasks (ownerStepsRig), over the fake GitHub of a real repository (gh), and the pull request each
-// task's implementer opened, by task.
+// tasks (ownerStepsRig), over the fake GitHub of a real repository (gh), with the working copy of
+// each task made for real when a step's task adopts it (copies); and, by task, the pull request its
+// implementer opened, the commit its working copy started at, and the last commit it pushed.
 type tasksRig struct {
 	*ownerStepsRig
-	gh    *tasksGitHub
-	pulls map[string]int
+	gh     *tasksGitHub
+	copies *tasksCopies
+	pulls  map[string]int
+	starts map[string]string
+	lasts  map[string]string
 }
 
 // newTasksRig is newTasksRigWith for one issue over the package's broker and a Dispatch of this
@@ -187,6 +339,24 @@ func newTasksRig(t *testing.T) *tasksRig {
 // that counts.
 func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, titles ...string) *tasksRig {
 	t.Helper()
+	// The daemon's own log, the one a run names (liveDaemonLogEnv) or one of the test's own, is
+	// printed when the test fails.
+	logPath := os.Getenv(liveDaemonLogEnv)
+	if logPath == "" {
+		logPath = filepath.Join(t.TempDir(), "daemon.log")
+		t.Setenv(liveDaemonLogEnv, logPath)
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		written, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Logf("read the daemon's log %s: %v", logPath, err)
+			return
+		}
+		t.Logf("the daemon's log:\n%s", written)
+	})
 	gh := newTasksGitHub(t)
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
@@ -201,7 +371,7 @@ func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, t
 	// read of this rig's GitHub goes to gh.
 	r := &tasksRig{ownerStepsRig: &ownerStepsRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: dispatch,
 		github: &stepRecordsGitHub{t: t, url: gh.url}, claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)},
-		specs: map[string]string{}}, gh: gh, pulls: map[string]int{}}
+		specs: map[string]string{}}, gh: gh, pulls: map[string]int{}, starts: map[string]string{}, lasts: map[string]string{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -226,6 +396,7 @@ func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, t
 		r.seedAdmitted(created.Rank, created.LastSeq)
 	}
 	r.boot()
+	r.copies = newTasksCopies(r)
 	for _, issue := range r.issues {
 		r.on(issue.key)
 		r.worker(claim.RoleArchitect)
@@ -341,12 +512,25 @@ func (r *tasksRig) branchOf(task string) string {
 // copy, its branch.
 func (r *tasksRig) takeFor(role claim.Role, task string) *stepClaimant {
 	r.t.Helper()
+	c, _, _ := r.takeIn(role, task)
+	return c
+}
+
+// workingCopyLine is the working copy line of a task of a plan of several tasks (workflow's
+// WorkingCopy): its branch, then its directory, which holds no space.
+var workingCopyLine = regexp.MustCompile(` Working copy: branch (\S+), directory (\S+)\.(\s|$)`)
+
+// takeIn is takeFor that answers the directory of the working copy the task names too, and the
+// task's whole text.
+func (r *tasksRig) takeIn(role claim.Role, task string) (*stepClaimant, string, string) {
+	r.t.Helper()
 	c := r.worker(role)
 	prompt := c.take()
-	if line := " Working copy: branch " + r.branchOf(task) + ","; !strings.Contains(prompt.Message, line) {
-		r.t.Fatalf("the %s's task = %q, want task %s's, naming its working copy %q", role, prompt.Message, task, line)
+	line := workingCopyLine.FindStringSubmatch(prompt.Message)
+	if branch := r.branchOf(task); line == nil || line[1] != branch {
+		r.t.Fatalf("the %s's task = %q, want task %s's, naming its working copy on %s and its directory", role, prompt.Message, task, branch)
 	}
-	return c
+	return c, line[2], prompt.Message
 }
 
 // done ends c's step: its handoff record of word (none for word ""), its completion req, which the
@@ -368,17 +552,32 @@ func (r *tasksRig) planStep(task string) {
 	r.done(r.takeFor(claim.RolePlanner, task), "plan", api.HandoffCompleteRequest{Summary: "planned " + task})
 }
 
-// implementStep is the implementer's step of task: it commits the task's work on the task's
-// branch, opens the task's pull request against base and completes at that commit; the task then
-// stands at its next step.
+// implementStep is the implementer's step of task: in the working copy its task names, which the
+// adoption of that task made (tasksCopies), it commits the task's work, a file of its own, and
+// pushes the task's branch, opens the task's pull request against base and completes at that
+// commit; the task then stands at its next step. The commit the working copy started at, and the
+// one it pushed, are the task's start and last.
 func (r *tasksRig) implementStep(task, base string) {
 	r.t.Helper()
-	c := r.takeFor(claim.RoleImplementer, task)
+	r.implementWith(task, base, func(_, dir, branch string) (string, string) {
+		return r.copies.commit(dir, branch, task, map[string]string{task + ".txt": "the work of task " + task + "\n"})
+	})
+}
+
+// implementWith is implementStep whose work is work: what the implementer does in the working copy
+// dir of branch, as the text of its task, told, says, answering the commit its work started at and
+// the one it pushed on branch.
+func (r *tasksRig) implementWith(task, base string, work func(told, dir, branch string) (start, last string)) {
+	r.t.Helper()
+	c, dir, told := r.takeIn(claim.RoleImplementer, task)
 	branch := r.branchOf(task)
+	if made := r.copies.made()[branch]; made != dir {
+		r.t.Fatalf("task %s's implementer is told the working copy %s, want %s, the one its adoption made", task, dir, made)
+	}
 	at := r.rows()[task].position
-	head := r.gh.repo.Commit(r.t, branch, map[string]string{task + ".txt": "the work of task " + task + "\n"}, "the work of task "+task)
+	r.starts[task], r.lasts[task] = work(told, dir, branch)
 	r.pulls[task] = r.gh.open(branch, base)
-	r.done(c, "implement", api.HandoffCompleteRequest{Summary: "implemented " + task, Commit: head})
+	r.done(c, "implement", api.HandoffCompleteRequest{Summary: "implemented " + task, Commit: r.lasts[task]})
 	r.waitTask(task, fmt.Sprintf("past its step %d", at), func(row tasksRow) bool { return row.position != at || row.state != string(record.TaskRunning) })
 }
 
@@ -426,7 +625,7 @@ func (r *tasksRig) retroAndMerge(task string) {
 	r.gh.merged(number)
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
-		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch,
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch, "head_repo": liveRepo,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -458,15 +657,205 @@ func (r *tasksRig) onePod(roles ...claim.Role) {
 	}
 }
 
+// tasksCopies makes, for real, the working copy each step's task names when the runtime adopts it
+// for that task's branch (fake.Runtime.OnAdopt), as a pod's shim makes it: the issue's own once
+// (workspace.Provision), and each task's beside it (workspace.ProvisionTask), under the daemon's
+// state directory, so each is the directory the task text names (engineWorkspaceDir). They are
+// workspaces of one shared clone of the fake GitHub's repository, which its provisioning reaches by
+// the repository's path in place of GitHub's URL (tasksCopyRunner). An agent's commit in one, and
+// its push of its task's branch to that repository, are plain git under the copies' own home
+// (commit).
+type tasksCopies struct {
+	t *testing.T
+	// keys is each issue of the rig, whose working copies are made.
+	keys     []string
+	stateDir string
+	origin   string
+	home     string
+	run      workspace.Runner
+	mu       sync.Mutex
+	// dirs is the working copy made for each branch, by branch.
+	dirs map[string]string
+}
+
+// newTasksCopies makes the working copies of r's issues at each adoption from now on. The hook is
+// set on the booted runtime before any step starts; the fake's own lock, taken by the read of its
+// calls after the write, orders the write before the adoption's read under that lock.
+func newTasksCopies(r *tasksRig) *tasksCopies {
+	t := r.t
+	t.Helper()
+	home := t.TempDir()
+	repo := ghrepo.MustParse(liveRepo)
+	c := &tasksCopies{t: t, stateDir: r.cfg.StateDir, origin: r.gh.repo.Dir(), home: home, dirs: map[string]string{},
+		run: tasksCopyRunner{runner: workspace.NewRunner(workspace.CommandTimeout, tasksCopyTools(t)), github: workspace.GitHubURL(repo),
+			origin: r.gh.repo.Dir(), env: append(fixtureenv.Home(home), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid")}}
+	for _, issue := range r.issues {
+		c.keys = append(c.keys, issue.key)
+	}
+	r.rt.OnAdopt = func(loc runtime.Locator, _ runtime.GitIdentity, branch string) error {
+		return c.adopt(loc.Claim, branch)
+	}
+	_ = r.rt.Calls()
+	return c
+}
+
+// adopt makes the working copy of branch where none is made yet, for the claim token that adopts
+// it: its issue's own first, which the working copy of each task's branch is a workspace beside.
+// The issue is the branch's, or, for an adoption that names no branch, the one of the rig's issues
+// the claim's token names (claim.NewToken: the issue's key lower-cased, then its role).
+func (c *tasksCopies) adopt(token claim.Token, branch string) error {
+	key, _, ok := claim.BranchTask(branch)
+	for _, issue := range c.keys {
+		if !ok && strings.Contains(string(token), "-"+strings.ToLower(issue)+"-") {
+			key = issue
+		}
+	}
+	if key == "" {
+		c.t.Errorf("the adoption of %s by %s names no issue of the rig", branch, token)
+		return fmt.Errorf("no issue of the rig adopts %q", branch)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctx := context.Background()
+	log := func(line string) { c.t.Logf("provisioning logged: %s", line) }
+	issue := claim.IssueBranch(key)
+	if c.dirs[issue] == "" {
+		working, err := workspace.Provision(ctx, c.run, workspace.Request{StateDir: c.stateDir, Repo: ghrepo.MustParse(liveRepo), Issue: key,
+			DefaultBranch: "main", CredentialHelper: workspace.GitHubCredentialHelper, Log: log,
+			Source: workspace.FromGitHub(func() (string, error) { return "test-installation-token", nil }, c.stateDir)})
+		if err != nil {
+			c.t.Errorf("provision the working copy of %s at its adoption for %s: %v", key, branch, err)
+			return err
+		}
+		c.dirs[issue] = working.Dir
+	}
+	if branch == "" || c.dirs[branch] != "" {
+		return nil
+	}
+	working, err := workspace.ProvisionTask(ctx, c.run, c.dirs[issue], branch, log)
+	if err != nil {
+		c.t.Errorf("provision the working copy of %s at its adoption: %v", branch, err)
+		return err
+	}
+	c.dirs[branch] = working.Dir
+	return nil
+}
+
+// made is the working copy each adoption made, by branch.
+func (c *tasksCopies) made() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.dirs)
+}
+
+// commit is an agent's work on task in the working copy dir: files (path to content), committed on
+// the commit the working copy stands at and pushed as branch to the repository. Nothing else is
+// staged: the working copy is a checkout of its branch. It answers the commit the working copy
+// started at and the one it pushed.
+func (c *tasksCopies) commit(dir, branch, task string, files map[string]string) (start, last string) {
+	c.t.Helper()
+	git := fixturegit.Isolated(c.t, c.home)
+	start = git.Run(dir, "git", "rev-parse", "HEAD")
+	paths := slices.Sorted(maps.Keys(files))
+	for _, path := range paths {
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(files[path]), 0o600); err != nil {
+			c.t.Fatal(err)
+		}
+	}
+	git.Run(dir, append([]string{"git", "add", "--"}, paths...)...)
+	if staged := git.Run(dir, "git", "diff", "--cached", "--name-only"); staged != strings.Join(paths, "\n") {
+		c.t.Fatalf("the working copy %s of task %s stages %q, want its own files alone, %q", dir, task, staged, paths)
+	}
+	git.Run(dir, "git", "commit", "--quiet", "-m", "the work of task "+task)
+	last = git.Run(dir, "git", "rev-parse", "HEAD")
+	git.Run(dir, "git", "push", "--quiet", c.origin, "HEAD:refs/heads/"+branch)
+	return start, last
+}
+
+// show is path as commit holds it in the repository.
+func (c *tasksCopies) show(commit, path string) string {
+	c.t.Helper()
+	return fixturegit.Isolated(c.t, c.home).Raw(c.origin, "git", "show", commit+":"+path)
+}
+
+// ancestor says whether commit is an ancestor of, or is, of in the repository.
+func (c *tasksCopies) ancestor(commit, of string) bool {
+	c.t.Helper()
+	if commit == "" || of == "" {
+		c.t.Fatalf("ask whether %q is an ancestor of %q: a task has no such commit", commit, of)
+	}
+	check := exec.Command("git", "-C", c.origin, "merge-base", "--is-ancestor", commit, of)
+	check.Env = fixtureenv.Isolated(c.home)
+	output, err := check.CombinedOutput()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return true
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return false
+	}
+	c.t.Fatalf("git merge-base --is-ancestor %s %s: %v\n%s", commit, of, err, output)
+	return false
+}
+
+// tasksCopyRunner runs provisioning's commands through the production runner with the real git
+// and jj, under the copies' own home, with GitHub's URL of the repository replaced by the path of
+// the fake GitHub's repository, so the shared clone's origin is that repository and nothing reaches
+// a network.
+type tasksCopyRunner struct {
+	runner         workspace.Runner
+	github, origin string
+	env            []string
+}
+
+func (r tasksCopyRunner) Timeout() time.Duration { return r.runner.Timeout() }
+
+func (r tasksCopyRunner) Run(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+	command.Argv = slices.Clone(command.Argv)
+	for i, arg := range command.Argv {
+		if arg == r.github {
+			command.Argv[i] = r.origin
+		}
+	}
+	command.Env = append(slices.Clone(r.env), command.Env...)
+	return r.runner.Run(ctx, command)
+}
+
+// tasksCopyTools are the git and jj provisioning starts, each a wrapper that adds git's file
+// transport to whatever allow-list the runner set, since provisioning reaches a remote over https
+// alone and the repository here is a path.
+func tasksCopyTools(t *testing.T) map[string]string {
+	t.Helper()
+	tools := map[string]string{}
+	dir := t.TempDir()
+	for _, tool := range []string{"git", "jj"} {
+		path, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("the working copies of the tasks are made with a real %s: %v", tool, err)
+		}
+		wrapper := filepath.Join(dir, tool)
+		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		tools[tool] = wrapper
+	}
+	return tools
+}
+
 // tasksGitHub is GitHub's REST API over one real repository, liveRepo (githubtest.GitRepository):
 // its branches, the joins of its branches and its pull requests are the repository's, each pull
 // request clean until GitHub merges it (merged), the person of the reviews has write access, and a
 // GraphQL root knows no pull request. Every other route is a 404, so nothing reaches github.com.
+// Each pull request's number is the repository's plus offset, a number of the run's own: the tests
+// of the package share one database, where the daemon finds a pull request by its repository and
+// number, so two tests that each numbered theirs from 1 would read each other's.
 type tasksGitHub struct {
-	t    *testing.T
-	repo *githubtest.GitRepo
-	url  string
-	mu   sync.Mutex
+	t      *testing.T
+	repo   *githubtest.GitRepo
+	url    string
+	offset int
+	mu     sync.Mutex
 	// merges is each pull request GitHub merged, by number.
 	merges map[int]bool
 }
@@ -474,7 +863,11 @@ type tasksGitHub struct {
 func newTasksGitHub(t *testing.T) *tasksGitHub {
 	t.Helper()
 	owner, name, _ := strings.Cut(liveRepo, "/")
-	g := &tasksGitHub{t: t, repo: githubtest.GitRepository(t, owner, name, "main"), merges: map[int]bool{}}
+	offset, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &tasksGitHub{t: t, repo: githubtest.GitRepository(t, owner, name, "main"), offset: 1000 + 10*int(offset), merges: map[int]bool{}}
 	prefix := "/repos/" + liveRepo
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, ofRepository := strings.CutPrefix(r.URL.Path, prefix)
@@ -487,6 +880,8 @@ func newTasksGitHub(t *testing.T) *tasksGitHub {
 			_, _ = io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && ofRepository && (rest == "/pulls" || strings.HasPrefix(rest, "/pulls/")):
 			g.readPulls(w, r)
+		case r.Method == http.MethodPost && ofRepository && rest == "/pulls":
+			g.openPull(w, r)
 		case g.repo.Handler(w, r):
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -496,10 +891,46 @@ func newTasksGitHub(t *testing.T) *tasksGitHub {
 	return g
 }
 
-// readPulls answers a read of one pull request or of a list as the repository answers it, each
-// open one mergeable and clean, and each GitHub merged closed and merged, left out of a list of
-// the open ones.
+// numbered is pull as the repository answers it, with its number and its page the run's own
+// (offset).
+func (g *tasksGitHub) numbered(pull map[string]any) map[string]any {
+	number, _ := pull["number"].(float64)
+	pull["number"] = int(number) + g.offset
+	pull["html_url"] = fmt.Sprintf("https://github.com/%s/pull/%d", liveRepo, int(number)+g.offset)
+	return pull
+}
+
+// openPull answers an open of a pull request as the repository answers it, numbered.
+func (g *tasksGitHub) openPull(w http.ResponseWriter, r *http.Request) {
+	recorded := httptest.NewRecorder()
+	g.repo.Handler(recorded, r)
+	if recorded.Code != http.StatusCreated {
+		w.WriteHeader(recorded.Code)
+		_, _ = w.Write(recorded.Body.Bytes())
+		return
+	}
+	var pull map[string]any
+	if err := json.Unmarshal(recorded.Body.Bytes(), &pull); err != nil {
+		g.t.Errorf("decode the repository's opened pull request: %v", err)
+	}
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(g.numbered(pull))
+}
+
+// readPulls answers a read of one pull request or of a list as the repository answers it,
+// numbered, each open one mergeable and clean, and each GitHub merged closed and merged, left out
+// of a list of the open ones.
 func (g *tasksGitHub) readPulls(w http.ResponseWriter, r *http.Request) {
+	if number, one := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo+"/pulls/"); one {
+		n, err := strconv.Atoi(number)
+		if err != nil || n <= g.offset {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+			return
+		}
+		r = r.Clone(r.Context())
+		r.URL.Path, r.URL.RawPath = fmt.Sprintf("/repos/%s/pulls/%d", liveRepo, n-g.offset), ""
+	}
 	recorded := httptest.NewRecorder()
 	g.repo.Handler(recorded, r)
 	if recorded.Code != http.StatusOK {
@@ -510,9 +941,9 @@ func (g *tasksGitHub) readPulls(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	shape := func(pull map[string]any) map[string]any {
-		number, _ := pull["number"].(float64)
+		pull = g.numbered(pull)
 		pull["updated_at"] = "2026-11-22T00:00:00Z"
-		if g.merges[int(number)] {
+		if g.merges[pull["number"].(int)] {
 			head, _ := pull["head"].(map[string]any)
 			pull["state"], pull["merged"], pull["mergeable"], pull["mergeable_state"] = "closed", true, true, "unknown"
 			pull["merge_commit_sha"] = fmt.Sprintf("merge-%v", head["sha"])

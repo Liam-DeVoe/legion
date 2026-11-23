@@ -47,7 +47,11 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the table test's move"); err != nil {
+			s, err := firstScope(ctx, tx, engine, issue)
+			if err != nil {
+				return err
+			}
+			if err := engine.transition(ctx, tx, s, row.Trigger, target, record.PhaseRow{}, pr, "the table test's move"); err != nil {
 				return err
 			}
 			runs, err := factRunsOf(ctx)

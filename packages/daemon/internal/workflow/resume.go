@@ -82,7 +82,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		return intake.Result{}, err
 	}
 	for _, owner := range owners.suspended {
-		issue, held := owner.issue, owner.run.Claim
+		issue, held := owner.scope.issue, owner.run.Claim
 		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, issue.Phase) {
 			continue
 		}
@@ -107,12 +107,14 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
 // suspended (suspendedPhaseOwners), with what a start of it is weighed against and built from:
-// the issue; its tree root, which StartFor and OwedEntry read; the role that works the phase;
-// the claim of the agent that works that role's step (Engine.workerClaim), which is the role's own
-// token on an issue with no plan rows; and that claim's queued rows and state at the issue's
-// generation, whose Claim is never nil.
+// the scope of the owner's step's task (ScopeOfStep), whose copy of the issue is the issue every
+// reader of the owner reads, and on which the start the boot gives the claim is built; its tree
+// root, which StartFor and OwedEntry read; the role that works the phase; the claim of the agent
+// that works that role's step (Engine.workerClaim), which is the role's own token on an issue with
+// no plan rows; and that claim's queued rows and state at the issue's generation, whose Claim is
+// never nil.
 type suspendedOwner struct {
-	issue record.Issue
+	scope TaskScope
 	root  record.Issue
 	role  claim.Role
 	token claim.Token
@@ -202,8 +204,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		// Each running step's worker is an owner of its own, read at the phase its step runs as
-		// (IssueAtStep), and one claim that works two of them is answered once.
+		// Each running step's worker is an owner of its own, read on the copy of the issue its step
+		// is given its work on (StepCopy), and one claim that works two of them is answered once.
 		seen := map[claim.Token]bool{}
 		for _, step := range steps {
 			token, err := e.workerClaim(ctx, tx, issue, step.Role)
@@ -221,7 +223,11 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 			if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
 				continue
 			}
-			owners.suspended = append(owners.suspended, suspendedOwner{issue: IssueAtStep(issue, step), root: root, role: step.Role, token: token, run: run})
+			standing, err := ScopeOfStep(ctx, e.store, tx, issue, step)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			owners.suspended = append(owners.suspended, suspendedOwner{scope: standing, root: root, role: step.Role, token: token, run: run})
 		}
 	}
 	return owners, nil
@@ -250,13 +256,13 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // the resume task's start sets it here.
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
-		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
+		return true, e.sendOwedEntry(ctx, tx, owner.scope, owner.role, row, startMarks{ruleResume: true})
 	}
-	resume, err := e.ResumeTask(ctx, tx, owner.issue)
+	resume, err := e.ResumeTask(ctx, tx, owner.scope)
 	if err != nil {
 		return false, err
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	return false, e.started(ctx, tx, owner.scope, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
@@ -283,14 +289,15 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 			}
 			continue
 		}
-		issue, err := e.issueOfPullRequest(ctx, tx, *pr)
-		if err != nil || issue == nil || !awaitsMerge(*issue) {
+		scope, err := e.issueOfPullRequest(ctx, tx, *pr)
+		if err != nil || scope == nil || !awaitsMerge(scope.issue) {
 			if err != nil {
 				return err
 			}
 			continue
 		}
-		waiting, err := e.closeMerged(ctx, tx, *issue, pr)
+		issue := &scope.issue
+		waiting, err := e.closeMerged(ctx, tx, *scope, pr)
 		if err != nil {
 			return err
 		}

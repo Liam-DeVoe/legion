@@ -801,11 +801,14 @@ type ClaimView struct {
 	// (fenceOutcome), so its adoption of the working copy or its prompt frame may be running
 	// right now. The claim still reads ready or idle meanwhile, because the turn that prompt asks
 	// for has not started — but the agent is about to be in one, and the adoption the prompt goes
-	// behind is already rewriting the working copy the issue's roles share. So a reader deciding
-	// who may adopt that working copy counts a send in flight as a turn (the daemon's
-	// claimInTurn, supervise's Deps.IssueInTurn): two roles of one issue that each read the other
-	// as idle would otherwise adopt it at the same moment (dispatch://INFRA-314).
+	// behind is already rewriting the working copy it works (Copy). So a reader deciding who may
+	// adopt that working copy counts a send in flight as a turn (the daemon's claimInTurn,
+	// supervise's Deps.IssueInTurn): two roles that each read the other as idle would otherwise
+	// adopt it at the same moment (dispatch://INFRA-314).
 	SendInFlight bool
+	// Copy is the working copy the claim's agent works in its turn, or in the turn its send in
+	// flight starts (workingCopy), which is the one a turn holds the adoptions of.
+	Copy WorkingCopy
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
 	// because none of its readers may wait on the decision in flight, which is the whole reason
@@ -815,6 +818,17 @@ type ClaimView struct {
 	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
 	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
+}
+
+// WorkingCopy is the working copy a claim's agent works in its turn, or in the turn its send in
+// flight starts (ClaimView.Copy). It is Known where that turn is a phase task's, whose adoption
+// takes the working copy of its task's branch, Branch (Delivery.Branch, "" for the issue's own);
+// every other turn — a message, a notice, an operator's task, a turn of the agent's own, a turn
+// whose task a newer one has replaced since — is of no known working copy, and may work any of the
+// issue's.
+type WorkingCopy struct {
+	Branch string
+	Known  bool
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -970,15 +984,18 @@ type Deps struct {
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
 	// IssueInTurn names a claim of issue other than except whose agent is in a turn now, or is
-	// about to be, and reports whether there is one. The roles of an issue work one jj workspace,
-	// so the adoption a phase task makes of its working copy is not a private act: one run while
-	// another role is in a turn moves that role's worker onto a commit of this role's
-	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). The daemon
-	// answers it from the state its machines publish — a claim is StateWorking from its turn's
-	// start to its turn's end, and carries a send in flight from the moment its own prompt and
-	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
-	// any decision in flight (Machine.View). nil holds no delivery back.
-	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
+	// about to be, in the working copy of branch (Delivery.Branch, "" for the issue's own), and
+	// reports whether there is one. The roles that work one working copy share one jj workspace,
+	// so the adoption a phase task makes of it is not a private act: one run while another role is
+	// in a turn there moves that role's worker onto a commit of this role's
+	// (dispatch://INFRA-714), and a task that would adopt waits instead (sendPending). A turn in
+	// another task's working copy holds nothing of it. The daemon answers it from the state its
+	// machines publish — a claim is StateWorking from its turn's start to its turn's end, carries
+	// a send in flight from the moment its own prompt and that prompt's adoption go out
+	// (ClaimView.SendInFlight), and names the working copy that turn works where it knows it
+	// (ClaimView.Copy) — which is read without waiting on any decision in flight (Machine.View).
+	// nil holds no delivery back.
+	IssueInTurn func(issue string, except claim.Token, branch string) (claim.Token, bool)
 	// PhaseHolds says whether d, a delivery queued for c, is still the work of c's issue: the
 	// workflow enqueues a task for the phase and run its issue was in, and at the phase step, which
 	// every role a deployment defines runs as, for the step of c's role, and the outbox refuses to
@@ -2347,12 +2364,29 @@ func (m *Machine) current() Claim {
 	return c
 }
 
+// workingCopy is the working copy the claim's agent works now (WorkingCopy): that of the phase
+// task its send in flight carries, or of the phase task whose turn it is in, which that turn
+// confirmed (confirm) and which goes when the turn ends; and none known for any other send or
+// turn, among them a turn whose task a newer one replaced, which leaves the claim working on an
+// unconfirmed task. The caller holds mu.
+func (m *Machine) workingCopy() WorkingCopy {
+	p := m.claim.Pending
+	if p == nil || !m.adopts(*p) {
+		return WorkingCopy{}
+	}
+	sending := m.send != nil && m.send.id == p.ID
+	if sending || (m.send == nil && m.claim.State == StateWorking && !p.ConfirmedAt.IsZero()) {
+		return WorkingCopy{Branch: p.Branch, Known: true}
+	}
+	return WorkingCopy{}
+}
+
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
 // pacing holds over it, if any: a fresh value each time, since the view is read without mu. A
 // launch the project pause's gate holds is no such wake: it has no moment to run and waits in no
 // pacing (wake.pause), so it is published as none. The caller holds mu.
 func (m *Machine) publish() {
-	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}
+	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil, Copy: m.workingCopy()}
 	if m.wake != nil && m.wake.pause == 0 {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
 	}

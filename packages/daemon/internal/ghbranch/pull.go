@@ -39,7 +39,7 @@ func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.
 	case err == nil:
 		return opened.Number, nil
 	case errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && strings.Contains(answer.Body, "A pull request already exists"):
-		open, ok, err := github.OpenPullRequestOn(ctx, repo.Owner(), head)
+		open, ok, err := github.OpenPullRequestOn(ctx, repo, head)
 		if err != nil {
 			return 0, failed(err)
 		}

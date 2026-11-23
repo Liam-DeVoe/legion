@@ -641,6 +641,9 @@ func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Iss
 // architect in the same shape (rootArchitectOf).
 type phaseWorker struct {
 	issue record.Issue
+	// scope is the scope of the step's task (workflow.ScopeOfStepOn), issue its copy; a root's own
+	// architect holds none.
+	scope workflow.TaskScope
 	root  record.Issue
 	role  claim.Role
 	token claim.Token
@@ -677,17 +680,21 @@ type phaseWorker struct {
 //
 // An issue whose key yields no claim token has no run to read, so it is passed over rather
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
-// ReconcileAwaiting). A claim that works two of the issue's steps is one candidate.
+// ReconcileAwaiting). A claim that works two of the issue's steps is one candidate. Each
+// candidate's issue is the copy its step is given its work on (workflow.ScopeOfStepOn), read on the
+// issue's plan from plans, the caller's one batched read of the plans of its candidates
+// (workerPlans), so the start a repair composes for the step of one task of a plan of several is
+// that task's, and a candidate costs no statement of its own.
 func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map[string]record.Issue,
-	facts record.LineFacts, entries map[record.PhaseRole]record.PhaseEntry,
-) []phaseWorker {
+	facts record.LineFacts, entries map[record.PhaseRole]record.PhaseEntry, plans map[string]*record.StoredPlan,
+) ([]phaseWorker, error) {
 	steps := workflow.OpenStepsOf(issue)
 	if len(steps) == 0 || !record.AtWork(issue, facts.Gates[issue.Tree]) {
-		return nil
+		return nil, nil
 	}
 	root, rooted := byKey[issue.Tree]
 	if !rooted || root.Lingers() {
-		return nil
+		return nil, nil
 	}
 	var workers []phaseWorker
 	for _, step := range steps {
@@ -695,15 +702,42 @@ func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map
 		if err != nil || slices.ContainsFunc(workers, func(worker phaseWorker) bool { return worker.token == token }) {
 			continue
 		}
-		workers = append(workers, phaseWorker{issue: workflow.IssueAtStep(issue, step), root: root, role: step.Role, token: token})
+		standing, err := workflow.ScopeOfStepOn(issue, plans[issue.Key], step)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, phaseWorker{issue: standing.Issue(), scope: standing, root: root, role: step.Role, token: token})
 	}
-	return workers
+	return workers, nil
+}
+
+// workerPlans is the plan of every issue of issues that phaseWorkersOf can select — an issue with
+// a step that takes work, read with the issue (workflow.OpenStepsOf) — by key, read in one batch
+// (record.Store.PlansOf) and with no statement where there is none: the plans each candidate's
+// copy is read on (workflow.ScopeOfStepOn). Every issue the selection can take is read, so an issue
+// with no entry has no plan rows.
+func (a *Admission) workerPlans(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[string]*record.StoredPlan, error) {
+	var working []record.Issue
+	for _, issue := range issues {
+		if len(workflow.OpenStepsOf(issue)) > 0 {
+			working = append(working, issue)
+		}
+	}
+	if len(working) == 0 {
+		return nil, nil
+	}
+	plans, err := a.store.PlansOf(ctx, tx, working)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues with phase workers: %w", len(working), err)
+	}
+	return plans, nil
 }
 
 // phaseWorkers is, of candidates, every one phaseWorkersOf selects, with that role's run: the
 // candidates of the tick's silent list (silentWorkers). The phases rows the claims are read from
-// are one batched read (workerEntries) and the runs one batched record.RoleRuns call, never a
-// call per candidate, because a tick runs over the whole project.
+// are one batched read (workerEntries), the plans the copies are read on another (workerPlans) and
+// the runs one batched record.RoleRuns call, never a call per candidate, because a tick runs over
+// the whole project.
 func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []record.Issue,
 	byKey map[string]record.Issue, facts record.LineFacts,
 ) ([]phaseWorker, map[claim.Token]record.RoleRun, error) {
@@ -715,10 +749,18 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	if err != nil {
 		return nil, nil, err
 	}
+	plans, err := a.workerPlans(ctx, tx, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
 	var workers []phaseWorker
 	var keys []record.RoleRunKey
 	for _, issue := range candidates {
-		for _, worker := range a.phaseWorkersOf(project, issue, byKey, facts, entries) {
+		selected, err := a.phaseWorkersOf(project, issue, byKey, facts, entries, plans)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, worker := range selected {
 			workers = append(workers, worker)
 			keys = append(keys, record.RoleRunKey{Token: worker.token, Issue: issue.Key, Role: worker.role, Generation: issue.Generation})
 		}
@@ -2615,13 +2657,13 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	// comeBack is one claim of a member the promotion brings back: the member's phase owner, which
 	// the promotion starts on its phase's work, or another stored claim, which comes back on a start
-	// that names it and carries no task. An owner's view is the copy of the member read for the task
-	// of its step (workflow's PromotedView), the member itself where its plan holds one task or none.
+	// that names it and carries no task. An owner's scope is the scope of the task of its step
+	// (workflow's PromotedScope), whose copy stands in that task's phase.
 	type comeBack struct {
 		role  claim.Role
 		token claim.Token
 		owner bool
-		view  record.Issue
+		scope workflow.TaskScope
 	}
 	type midPhaseMember struct {
 		issue record.Issue
@@ -2680,15 +2722,15 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// the step the member stands in, which can be a keyed agent on a step of another role. Its
 		// token's refusal stays the fact's, as it was: the step's own role is the member's work
 		// rather than a session brought back. A claim that works two of the steps is started once.
-		// Each is read on the copy of the member for its step's task (PromotedView), since a member
-		// whose plan holds several tasks has no one walk, and each task stands in a phase of its own.
+		// Each is read on the scope of its step's task (PromotedScope), since each task stands in a
+		// phase of its own.
 		ownerTokens := map[claim.Token]bool{}
 		for _, owner := range owners {
-			view, err := a.engine.PromotedView(ctx, tx, member, owner)
+			scope, err := a.engine.PromotedScope(ctx, tx, member, owner)
 			if err != nil {
 				return err
 			}
-			token, err := a.engine.PromotedWorkerClaim(ctx, tx, view, owner)
+			token, err := a.engine.PromotedWorkerClaim(scope, owner)
 			if err != nil {
 				return err
 			}
@@ -2696,7 +2738,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				continue
 			}
 			ownerTokens[token] = true
-			standing.claims = append(standing.claims, comeBack{role: owner, token: token, owner: true, view: view})
+			standing.claims = append(standing.claims, comeBack{role: owner, token: token, owner: true, scope: scope})
 			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: owner, Generation: member.Generation})
 		}
 		// Every other stored claim of the member comes back with the tree, on a start that names it
@@ -2760,10 +2802,10 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				continue
 			}
 			run := runs[held.token]
-			if !workflow.StartFor(run, root, member.Generation, held.view.Phase) {
+			if !workflow.StartFor(run, root, member.Generation, held.scope.Issue().Phase) {
 				continue
 			}
-			if err := a.engine.StartPromotedWorker(ctx, tx, held.view, held.role); err != nil {
+			if err := a.engine.StartPromotedWorker(ctx, tx, held.scope, held.role); err != nil {
 				return err
 			}
 		}
@@ -2813,6 +2855,9 @@ func roleOrder(role claim.Role) int {
 // package's, and the one question another package asks of it is OwesEntryWork's yes or no.
 type owedEntryRole struct {
 	Issue record.Issue
+	// Scope is the scope of the role's step's task, whose work the pass sends (SendOwedEntry); none
+	// for a root's own architect.
+	Scope workflow.TaskScope
 	Role  claim.Role
 	Row   record.PhaseRow
 	Send  entrySend
@@ -2969,7 +3014,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // them.
 //
 // The whole selection asks the same statements whatever number of slots the project holds,
-// which is what every fact of the project pays (the statements this fact asks): the two batched
+// which is what every fact of the project pays (the statements this fact asks): the three batched
 // reads of readSlotHolders, and, for the rare holder that is owed something, that holder's own
 // reads — the architect's reach, and the phases row whose work is sent. It answers the reading
 // beside the selection, since the stall reading the pass makes after its sends reads the same
@@ -3034,13 +3079,14 @@ type slotReading struct {
 //
 // It reads over at most the cap's worth of slotted issues, the handful past their review and the
 // roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
-// read rather than a read per candidate, and one batched read
+// read rather than a read per candidate, one batched read
 // of the phase entry each holder's row names with the moment it was raised
-// (record.Store.PhaseEntries), the zero entry where the record holds no row of that role. Both
-// are one statement for the whole pass: every root's architect of the domain is weighed beside
-// its phase's worker on every fact of the project, and a statement a candidate is hundreds of
-// round trips a fact for a project running hundreds of trees
-// (TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
+// (record.Store.PhaseEntries), the zero entry where the record holds no row of that role, and one
+// batched read of the plans of the holders with a step that takes work (workerPlans), which each
+// phase worker's copy is read on. Each asks as many statements whatever the number of candidates:
+// every root's architect of the domain is weighed beside its phase's worker on every fact of the
+// project, and a statement a candidate is hundreds of round trips a fact for a project running
+// hundreds of trees (TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
 func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
 ) (slotReading, error) {
@@ -3108,15 +3154,27 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		return read, nil
 	}
 	weighed := make([]string, 0, len(candidates))
+	var working []record.Issue
 	for _, c := range candidates {
 		weighed = append(weighed, c.issue.Key)
+		if !c.architectOnly {
+			working = append(working, c.issue)
+		}
 	}
 	if read.entries, err = a.store.PhaseEntries(ctx, tx, weighed); err != nil {
 		return slotReading{}, fmt.Errorf("read the phase entries of %d slot holders: %w", len(weighed), err)
 	}
+	plans, err := a.workerPlans(ctx, tx, working)
+	if err != nil {
+		return slotReading{}, err
+	}
 	for _, c := range candidates {
 		if !c.architectOnly {
-			for _, worker := range a.phaseWorkersOf(project, c.issue, byKey, facts, read.entries) {
+			selected, err := a.phaseWorkersOf(project, c.issue, byKey, facts, read.entries, plans)
+			if err != nil {
+				return slotReading{}, err
+			}
+			for _, worker := range selected {
 				hold(worker, c.admittedAt)
 			}
 		}
@@ -3216,7 +3274,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
 		row := record.PhaseRowOf(rows, held.role)
-		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Send: send, Given: workflow.GivenEntry(run)})
+		owed = append(owed, owedEntryRole{Issue: held.issue, Scope: held.scope, Role: held.role, Row: row, Send: send, Given: workflow.GivenEntry(run)})
 	}
 	return owed, nil
 }
@@ -3374,7 +3432,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			startedArchitect(role.Issue.Key)
 			intake.OnCommit(ctx, behind)
 		case sendPhaseEntry:
-			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+			if err := a.engine.SendOwedEntry(ctx, tx, role.Scope, role.Role, role.Row); err != nil {
 				return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 			}
 			intake.OnCommit(ctx, behind)

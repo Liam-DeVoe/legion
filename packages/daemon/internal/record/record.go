@@ -390,6 +390,22 @@ const HoldTaskStopped HoldReason = "task-stopped"
 // slot): the retro starts once the last of them has left.
 const HoldForChildren HoldReason = "children"
 
+// TaskStanding is where an issue stands for one task alone, whose place's phase is at and whose
+// state is state: at itself, and for a held task held from at for its hold's reason (reason,
+// PlanTask.HoldReason), or for a stopped task held from at for its stop (HoldTaskStopped). It is
+// the one reading of a task's standing: the workflow's copy of an issue read for one task stands
+// in it, the derivation of an issue's phase from its tasks ranks it, and the completion route's
+// position of a task reads it.
+func TaskStanding(at phase.Phase, state TaskState, reason HoldReason) (phase.Phase, *Hold) {
+	switch state {
+	case TaskHeld:
+		return phase.Held, &Hold{From: at, Reason: reason}
+	case TaskStopped:
+		return phase.Held, &Hold{From: at, Reason: HoldTaskStopped}
+	}
+	return at, nil
+}
+
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
@@ -2049,12 +2065,16 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// EarlierRunOf says whether an earlier run of issue ran a step: a phases row of a role other
+	// than the architect's, which a new generation keeps. A run's first step asks it.
+	EarlierRunOf(ctx context.Context, tx pgx.Tx, issue Issue) (bool, error)
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
-	// MergePullRequest is the pull request of the task of issue that merges: the one task of the
-	// plan at the issue's generation that no task needs (plan.Sinks), or task "" where the issue
-	// has no plan rows at its generation; nil where that task has none.
+	// MergePullRequest is the pull request of the task of issue that merges: the task of the plan
+	// at the issue's generation that merges (StoredPlan.MergingTask), or task "" where the issue
+	// has no plan rows at its generation; nil where that task has none, and where the plan holds no
+	// task that merges.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
 	// by branch.
@@ -2077,6 +2097,9 @@ type Store interface {
 	// PutPullRequest writes pr as the pull request of its issue's branch pr.Branch, in place of the
 	// row the record holds for that branch; pr.Task is read and never written (PullRequest.Task).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
+	// DeletePullRequest deletes the row of issue's pull request on branch, the table's key; a branch
+	// the record holds no row for deletes nothing.
+	DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
@@ -2282,6 +2305,10 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlansOf is the plan of each of issues at the issue's own generation, by key, as Plan reads
+	// one, in as many statements whatever the number of issues; an issue whose generation has no
+	// plan rows has no entry.
+	PlansOf(ctx context.Context, tx pgx.Tx, issues []Issue) (map[string]*StoredPlan, error)
 	// PlanStepsOf is every plan_steps row of issue, of every generation, each with the name of its
 	// agent, ordered by generation, task and place: the earlier rows NameAgents names a version's
 	// agents from.
@@ -2298,8 +2325,8 @@ type Store interface {
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands,
 	// with its branch and the needs whose join conflicted, and every name from gave a task; without,
-	// each task waiting at no act with its counts at 0 and no branch. It writes nothing where from
-	// has no plan rows.
+	// each task waiting at no act with its counts at 0 and no branch, the names from gave staying
+	// given to the issue (AssignTaskBranch). It writes nothing where from has no plan rows.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
 	// DeletePlan deletes the plan of issue at generation from its three tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
@@ -2333,11 +2360,18 @@ type Store interface {
 	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
 	// the moment it began, then by task id), "" where no step waits for it.
 	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)
-	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch
-	// for the first task of the generation to start, else the first give of the task's slug that
-	// the generation has given no task, even one a later version removed. The generation's task
-	// rows are locked first, so two starts at one time never take one name.
+	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch,
+	// else the first give of the task's slug, that no generation of the issue has given, even to a
+	// task a later version removed (RecordBranchGiven among them); the one task of a plan of one
+	// takes the issue's own branch whatever an earlier generation gave. The generation's task rows
+	// are locked first, so two starts at one time never take one name.
 	AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (string, error)
+	// RecordBranchGiven records branch among the names generation of issue gave, so no task of the
+	// issue takes it again: the branch of a pull request of an earlier run whose row is deleted.
+	RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error
+	// BranchGiven says whether generation of issue gave branch: to a task of it, as the branch of
+	// a pull request of an earlier run, or with the run a hand-over carried.
+	BranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) (bool, error)
 	// SetJoinConflicts writes the needs of task whose merge GitHub refused as a conflict, into the
 	// branch the join of its needs is made on, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
@@ -2566,6 +2600,10 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
+	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
+	// stopped task's step may still run.
+	StepStopQueued(ctx context.Context, tx pgx.Tx, issue string, before int64) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)

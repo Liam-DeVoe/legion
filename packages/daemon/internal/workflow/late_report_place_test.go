@@ -84,7 +84,11 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				refusal, err = engine.lateReport(ctx, tx, *issue, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
+				s, err := firstScope(ctx, tx, engine, *issue)
+				if err != nil {
+					return err
+				}
+				refusal, err = engine.lateReport(ctx, tx, s, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
 					phase.Step, stoppedStepReported)
 				return err
 			})

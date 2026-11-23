@@ -236,16 +236,19 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	// The ready claim's role works one of the issue's steps that take work (OpenStepsOf): each
-	// running step is given its task, at the phase it runs as (IssueAtStep), whichever phase the
-	// issue stands in.
+	// running step is given its task on the scope of its step's task (ScopeOfStep), at the phase it
+	// runs as, whichever phase the issue stands in.
 	role := fact.Role
 	open := OpenStepsOf(*issue)
 	at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role })
 	if at < 0 {
 		return nil
 	}
-	standing := IssueAtStep(*issue, open[at])
-	issue = &standing
+	scope, err := ScopeOfStep(ctx, e.store, tx, *issue, open[at])
+	if err != nil {
+		return err
+	}
+	issue = &scope.issue
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil || root.Lingers() {
 		return err
@@ -274,19 +277,25 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	if OwedEntry(run, *root, row.Entry) {
-		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+		if err := e.SendOwedEntry(ctx, tx, scope, role, row); err != nil {
 			return err
 		}
 		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
-	resume, err := e.ResumeTask(ctx, tx, *issue)
+	resume, err := e.ResumeTask(ctx, tx, scope)
 	if err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
+	// The level claim's resume is enqueued directly (StartOrOwe says why), built by the one builder
+	// of a phase worker's start (startRequest), so it names the claim of the step's agent as every
+	// other start of the step does.
+	request, err := e.startRequest(scope, role, resume, 0, startMarks{resumeTask: true})
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, request); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",

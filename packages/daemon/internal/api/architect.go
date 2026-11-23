@@ -1466,9 +1466,9 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 }
 
 // taskOfAgent is the task of the plan of issue key whose step the agent of token runs
-// (record.Issue.StepOfAgent), read in a snapshot of its own: "" for a plan of one task, an issue
-// with no plan rows and an issue the record does not hold, whose move is the issue's as before,
-// and for an agent that runs no step, whose move the workflow refuses.
+// (record.Issue.StepOfAgent), read in a snapshot of its own, for a plan of any count of tasks: ""
+// for an issue with no plan rows and an issue the record does not hold, whose move is the issue's
+// as before, and for an agent that runs no step, whose move the workflow refuses.
 func (s *server) taskOfAgent(ctx context.Context, key string, token claim.Token) (string, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -1480,7 +1480,7 @@ func (s *server) taskOfAgent(ctx context.Context, key string, token claim.Token)
 		return "", err
 	}
 	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
-	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+	if err != nil || stored == nil {
 		return "", err
 	}
 	_, agent, _ := token.Cut()

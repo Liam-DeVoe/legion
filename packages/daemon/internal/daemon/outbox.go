@@ -940,6 +940,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.releaseIssue(ctx, row, value)
 	case record.WorkspaceRemove:
 		return r.removeWorkspace(ctx, row, value)
+	case record.TaskCopyRemove:
+		return r.removeTaskCopy(ctx, row, value)
 	case record.RoleMessage:
 		return r.roleMessage(ctx, row, value)
 	case record.GatedStepsPublish:
@@ -4502,313 +4504,14 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
 }
 
-// branchClient is the client a write of one of issue's branches is made with, and the repository
-// it writes: the repository GitHub holds the one the issue's record names under now (serving), as
-// the implement App for that repository's owner, the App of the roles that write an issue's
-// branches (appauth.AppRoleFor) and the one workspace provisioning clones with. Each write is a
-// REST call, so a tree recorded before a transfer gets its branches on the repository as GitHub
-// holds it today rather than a write to an owner whose installation has lost it.
-func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubrest.Client, ghrepo.Repository, error) {
-	recorded, err := issue.Repository()
-	if err != nil {
-		return githubrest.Client{}, ghrepo.Repository{}, err
-	}
-	repo := r.repositories.serving(recorded)
-	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
-	if err != nil {
-		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
-	}
-	return github, repo, nil
-}
-
-// taskBranch makes the GitHub branch of the row's task (record.PlanTask.BranchOf) start from the
-// joined work of the tasks it needs, the work its first step starts on. A task that needs none
-// starts at the default branch the issue's record names; one that needs some starts at the head of
-// its first need's branch, in the order of its needs. A task whose pull request is based on its join
-// branch (record.StoredPlan.BaseOf: a task with several needs that does not merge) joins them there
-// rather than on its branch, which then starts at the join branch's head, so its pull request shows
-// its own work alone. Each need is then merged into the branch the join is made on in that order
-// (ghbranch.Merge), whether the row created the branch or GitHub had it: a branch GitHub has keeps
-// its head, so the row joins each need whose head the branch does not hold, and GitHub answers a
-// need the branch holds with nothing to merge, which moves no ref, so a row that runs
-// again changes nothing. Each start of the task queues the row (workflow's startTaskCopy, at the
-// start of every step), the first and a start again, so a need a later version gave a stopped task
-// is joined into its branch when it starts again. A merge GitHub refuses as a conflict is no
-// refusal: the branch stands on the needs that joined. A task none of whose steps implements then
-// gets its pull request from Legion, where its branch holds work its base lacks
-// (openTaskPullRequest), since no step of it opens one. Once its merges end, the end of the join is
-// applied as a fact (intake.TaskJoined, joined) at the row's own generation, naming the branch,
-// the needs it joined, each need GitHub refused as a conflict and whether the join branch merged
-// into the task's branch (joinBranch): the workflow writes those on the task, for its first step to
-// repair, and starts the step that waits for that join, and changes
-// nothing where the task no longer waits for it, a task a stop and a later version changed while
-// the row joined, whose start again queued a join of its own, or a run a re-admission carried to
-// the next generation, whose join the settle of that re-admission queued again there (workflow's
-// joinAgain). A row of a task its plan no longer holds, of a generation the issue has left, or of a
-// tree that lingers finishes without acting, as issueBranch's does.
-func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload record.TaskBranch) error {
-	issue, err := r.issue(ctx, row.Issue)
-	if err != nil {
-		return err
-	}
-	if payload.Generation != issue.Generation {
-		r.log.Info("outbox task branch serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-			"task", payload.Task, "generation", payload.Generation, "current", issue.Generation)
-		return nil
-	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return err
-	}
-	if root != nil && root.Lingers() {
-		r.log.Info("outbox task branch of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
-			"task", payload.Task, "tree", issue.Tree)
-		return nil
-	}
-	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		stored, err = r.records.Plan(ctx, tx, issue.Key, payload.Generation)
-		return err
-	}); err != nil {
-		return fmt.Errorf("read the plan of %s for the branch of its task %s: %w", issue.Key, payload.Task, err)
-	}
-	task, ok := planTaskOf(stored, payload.Task)
-	if !ok {
-		r.log.Info("outbox task branch of a task the plan no longer holds; finished without acting", "row", row.ID, "issue", issue.Key,
-			"task", payload.Task, "generation", payload.Generation)
-		return nil
-	}
-	needs := make([]record.PlanTask, 0, len(task.Needs))
-	for _, id := range task.Needs {
-		need, ok := planTaskOf(stored, id)
-		if !ok {
-			return fmt.Errorf("make the branch of task %s of %s: it needs %s, which its plan holds no task of", task.Task, issue.Key, id)
-		}
-		needs = append(needs, need)
-	}
-	branch := task.BranchOf(issue.Key)
-	base, join := stored.BaseOf(issue, task.Task)
-	onto := branch
-	if join {
-		onto = base
-	}
-	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, needs)
-	var missing *needBranchMissing
-	if errors.As(err, &missing) {
-		return r.joinCannotEnd(ctx, row, issue, task, missing)
-	}
-	if err != nil {
-		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
-	}
-	if !stored.Implements(task.Task) {
-		if err := r.openTaskPullRequest(ctx, issue, task.Task, branch, base); err != nil {
-			return fmt.Errorf("open the pull request of task %s of %s, which no step of it implements: %w", task.Task, issue.Key, err)
-		}
-	}
-	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: payload.Generation, Task: task.Task, Branch: branch, Needs: task.Needs,
-		Conflicts: conflicts, Unmerged: unmerged})
-}
-
-// openTaskPullRequest opens the pull request of task of issue, on branch against base, as
-// branchClient makes each write of a branch, within branchRowTimeout: the pull request of a task
-// none of whose steps implements, which no step opens. It is opened once the join leaves branch
-// holding a commit base lacks (githubrest.Comparison.AheadBy above 0, whatever the compare's
-// status: ahead, or diverged once base moved on after the task's needs started), with the title
-// `<KEY>: <task id>` and a body holding the line `Dispatch: <KEY>`, as an implementer's does. A
-// branch that holds nothing base lacks gets none, and a pull request open on branch already is kept
-// (ghbranch.OpenPullRequest), so a row that runs again opens none.
-func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, task, branch, base string) error {
-	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
-	defer cancel()
-	github, repo, err := r.branchClient(ctx, issue)
-	if err != nil {
-		return err
-	}
-	comparison, err := github.Compare(ctx, base, branch)
-	if err != nil {
-		return fmt.Errorf("compare %s with %s on %s: %w", branch, base, repo, err)
-	}
-	if comparison.AheadBy <= 0 {
-		return nil
-	}
-	body := fmt.Sprintf("No step of task %s of %s implements, so Legion opened this pull request for the work its branch holds.\n\nDispatch: %s",
-		task, issue.Key, issue.Key)
-	_, err = ghbranch.OpenPullRequest(ctx, github, repo, branch, base, fmt.Sprintf("%s: %s", issue.Key, task), body)
-	return err
-}
-
-// closeTaskPullRequests closes each pull request the row names, of the other tasks of the row's
-// issue, as branchClient makes each write of a branch (the implement App), within branchRowTimeout:
-// the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
-// request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
-// short and that runs again on its backoff, closes only those still open. A row of a generation the
-// issue has left finishes without acting.
-func (r *outbox) closeTaskPullRequests(ctx context.Context, row record.OutboxRow, payload record.TaskPullRequestsClose) error {
-	issue, err := r.issue(ctx, row.Issue)
-	if err != nil {
-		return err
-	}
-	if payload.Generation != issue.Generation {
-		r.log.Info("outbox close of task pull requests serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-			"generation", payload.Generation, "current", issue.Generation)
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
-	defer cancel()
-	github, repo, err := r.branchClient(ctx, issue)
-	if err != nil {
-		return err
-	}
-	for _, number := range payload.Numbers {
-		closed, err := ghbranch.ClosePullRequest(ctx, github, repo, number, payload.Comment)
-		if err != nil {
-			return fmt.Errorf("close the pull request #%d of another task of %s: %w", number, issue.Key, err)
-		}
-		if closed {
-			r.log.Info("outbox closed the pull request of another task of the issue", "row", row.ID, "issue", issue.Key, "pullRequest", number)
-		}
-	}
-	return nil
-}
-
-// joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's
-// handlers, which start the step that waits for it, under an id of the issue, the generation, the
-// task and the row, so a row that runs again applies one fact. A fact that fails fails the row,
-// which joins again on its backoff and finds each need joined.
-func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.TaskJoined) error {
-	id := fmt.Sprintf("task-joined:%s:%d:%s:%d", fact.Issue, fact.Generation, fact.Task, row.ID)
-	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
-		return fmt.Errorf("apply the end of the join of task %s of %s: %w", fact.Task, fact.Issue, err)
-	}
-	return nil
-}
-
-// joinBranch makes onto, the branch the join of needs is made on, on GitHub at the head of the first
-// of needs, or at the issue's default branch where it needs none, unless GitHub has it, and merges
-// each of needs into it in order, with the message `<KEY>: join the work of task <id>`, as
-// branchClient makes each write of a branch, within branchRowTimeout. Where onto is not branch, the
-// task's join branch, branch is then made at onto's head, unless GitHub has it, and onto is merged
-// into it, so a branch GitHub has, with the task's own work on it, takes what its needs did since.
-// It answers the id of each need whose merge into onto GitHub refused as a conflict, nil for none,
-// which the task's first step repairs on onto, and whether GitHub refused the merge of onto into
-// branch as a conflict (unmerged), which only the task's own work on branch makes and which that
-// step repairs on branch: two facts, since the first step repairs each on another branch, and a
-// repair on branch of a need's conflict would show that need's work in the task's pull request,
-// which is based on onto. GitHub's 404 for a need's branch, to the read of the first need's head or
-// to a merge of a need, is a *needBranchMissing naming that need.
-func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, needs []record.PlanTask) (conflicts []string, unmerged bool, err error) {
-	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
-	defer cancel()
-	github, repo, err := r.branchClient(ctx, issue)
-	if err != nil {
-		return nil, false, err
-	}
-	base := issue.DefaultBranch
-	if len(needs) > 0 {
-		base = needs[0].BranchOf(issue.Key)
-	}
-	if err := ghbranch.Create(ctx, github, repo, onto, base); err != nil {
-		if len(needs) > 0 && githubAnswered(err, http.StatusNotFound) {
-			return nil, false, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
-		}
-		return nil, false, err
-	}
-	for _, need := range needs {
-		head := need.BranchOf(issue.Key)
-		joined, err := ghbranch.Merge(ctx, github, repo, onto, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
-		if err != nil {
-			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
-				return nil, false, &needBranchMissing{need: need.Task, branch: head, err: err}
-			}
-			return nil, false, err
-		}
-		if joined == ghbranch.MergeConflict {
-			conflicts = append(conflicts, need.Task)
-		}
-	}
-	if onto == branch {
-		return conflicts, false, nil
-	}
-	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
-		return nil, false, err
-	}
-	ids := make([]string, 0, len(needs))
-	for _, need := range needs {
-		ids = append(ids, need.Task)
-	}
-	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(ids, ", ")))
-	if err != nil {
-		return nil, false, err
-	}
-	return conflicts, joined == ghbranch.MergeConflict, nil
-}
-
-// needBranchMissing is a join that cannot end: GitHub has no branch, branch, of the need need, so
-// the row waits for that branch on its backoff (joinCannotEnd).
-type needBranchMissing struct {
-	need, branch string
-	err          error
-}
-
-func (e *needBranchMissing) Error() string {
-	return fmt.Sprintf("GitHub has no branch %s of the need %s: %v", e.branch, e.need, e.err)
-}
-
-func (e *needBranchMissing) Unwrap() error { return e.err }
-
-// githubAnswered says whether err carries GitHub's answer of status (a *githubrest.Answer).
-func githubAnswered(err error, status int) bool {
-	var answer *githubrest.Answer
-	return errors.As(err, &answer) && answer.Status == status
-}
-
-// mergeBaseMissing says whether err is GitHub's 404 to a merge whose base, not its head, it lacks
-// ("Base does not exist"): the task's own branch, which names no need.
-func mergeBaseMissing(err error) bool {
-	var answer *githubrest.Answer
-	return errors.As(err, &answer) && strings.Contains(answer.Body, "Base does not exist")
-}
-
-// taskJoinToldPrefix begins the last error of a task_branch row whose join cannot end once its
-// task's owner is told (joinCannotEnd), the one record that the notice was written, so the row's
-// next 404 tells nobody again; a try that fails for another cause between two such answers
-// replaces the last error, and the next 404 tells again.
-const taskJoinToldPrefix = "the owner is told: "
-
-// joinCannotEnd is the failure of the row of task of issue whose join waits for missing, a need's
-// branch GitHub does not have: the row tries again on its backoff, the task's first step keeps its
-// wait for the join, and at the row's first such answer the issue's architect, the task's owner, is
-// told once, in a task-join-failed notice that names the task, the need and the branch.
-func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, missing *needBranchMissing) error {
-	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s of its need %s", task.Task, issue.Key, missing.branch, missing.need)
-	if !strings.HasPrefix(row.LastError, taskJoinToldPrefix) {
-		notice := record.Notice{Kind: "task-join-failed", Role: claim.RoleArchitect, Reason: words + ". Push that branch again, or stop the task with stop_task."}
-		if err := r.enqueueNotice(ctx, issue.Key, notice.Kind, notice); err != nil {
-			return err
-		}
-	}
-	return fmt.Errorf("%s%s: %w", taskJoinToldPrefix, words, missing.err)
-}
-
-// planTaskOf is the task of stored whose id is id, and whether it holds one: a nil plan holds none.
-func planTaskOf(stored *record.StoredPlan, id string) (record.PlanTask, bool) {
-	if stored == nil {
-		return record.PlanTask{}, false
-	}
-	for _, task := range stored.Tasks {
-		if task.Task == id {
-			return task, true
-		}
-	}
-	return record.PlanTask{}, false
-}
-
-// removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
-// removal belongs to the tree whose linger queued it and to that linger's root generation: an issue
-// adopted into another tree since (workflow.Engine.Adopt) works in its new tree, and a tree
-// re-admitted since runs in the workspace again, so either row finishes without acting. A row
-// queued by an earlier release names no tree and is fenced by its linger alone, against the
-// issue's current tree.
+// removeWorkspace removes the workspace of the row's issue once its tree's linger expired: the
+// working copy of each task of the issue beside the issue's own (workspace.TaskCopies), whichever
+// generation made it, then the issue's own, since nothing of the issue runs in any of them once
+// the close has retired every claim. The removal belongs to the tree whose linger queued it and to
+// that linger's root generation: an issue adopted into another tree since (workflow.Engine.Adopt)
+// works in its new tree, and a tree re-admitted since runs in the workspace again, so either row
+// finishes without acting. A row queued by an earlier release names no tree and is fenced by its
+// linger alone, against the issue's current tree.
 func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payload record.WorkspaceRemove) error {
 	if r.supervisor == nil {
 		return errors.New("workspace removal has no claim supervisor")
@@ -4867,9 +4570,115 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	defer issueTurn.Unlock()
 	store, releaseStore := r.provisions.stores.take(working.Clone)
 	defer releaseStore()
+	copies, err := workspace.TaskCopies(working)
+	if err != nil {
+		return fmt.Errorf("remove workspace for %s: %w", row.Issue, err)
+	}
+	for _, taskCopy := range copies {
+		if err := r.remove(ctx, taskCopy, store); err != nil {
+			return fmt.Errorf("remove the working copy %s of a task of %s: %w", taskCopy.Dir, row.Issue, err)
+		}
+	}
 	if err := r.remove(ctx, working, store); err != nil {
 		return fmt.Errorf("remove workspace for %s: %w", row.Issue, err)
 	}
+	return nil
+}
+
+// removeTaskCopy removes the working copy of a task that a later version of the plan of the row's
+// issue removed (record.TaskCopyRemove): the jj workspace on the task's branch beside the issue's
+// own working copy on the daemon's host (workspace.Name, workspace.Location), and nothing else.
+// Five fences come first.
+//
+// A runtime that provisions each claim's workspace in its pod made the copy on the issue's pod
+// disk, which the daemon does not reach: the row finishes without acting, as removeWorkspace does,
+// and the copy goes with that disk, which the restore of a released pod's work does not carry to
+// the next pod (savedWorkspaceBundle).
+//
+// A task of the plan the issue runs now that holds the branch (record.PlanTask.BranchOf) works in
+// that copy. The record gives a task's name once in all the issue's generations
+// (record.Store.AssignTaskBranch), but a record of a release before gave a later generation's
+// tasks the names an earlier one gave, so the row reads the plan, and finishes without acting where
+// a task holds the branch.
+//
+// The process of the removed task's step may still work in the copy: the row waits while a
+// step_stop row queued before it, the stop of that step (workflow's stopTask), is still in the
+// outbox (record.Store.StepStopQueued), since a lifecycle row that backs off holds none of its
+// issue's later rows back. It waits too while a claim of the issue that is not retired holds a
+// pending delivery on the branch (supervise.Delivery.Branch): its turn works in the copy, and its
+// send adopts the copy, which makes it again where it is gone.
+//
+// The removal takes the issue's turn, then the clone's store lock, which a pane's shim takes
+// across processes while it makes a task's working copy (workspace.CloneLock), as removeWorkspace
+// takes them. A copy that is not there is removed as nothing (workspace.Remove).
+func (r *outbox) removeTaskCopy(ctx context.Context, row record.OutboxRow, payload record.TaskCopyRemove) error {
+	if r.supervisor == nil {
+		return errors.New("the removal of a task's working copy has no claim supervisor")
+	}
+	if r.podsProvision() {
+		r.log.Info("outbox removal of a task's working copy on a pod's disk, which the daemon does not reach; finished without acting",
+			"row", row.ID, "issue", row.Issue, "task", payload.Task, "branch", payload.Branch)
+		return nil
+	}
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	var stored *record.StoredPlan
+	var stopping bool
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		if stored, err = r.records.Plan(ctx, tx, issue.Key, issue.Generation); err != nil {
+			return err
+		}
+		stopping, err = r.records.StepStopQueued(ctx, tx, issue.Key, row.ID)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the plan of %s for the removal of task %s's working copy: %w", issue.Key, payload.Task, err)
+	}
+	if stored != nil {
+		if at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.BranchOf(issue.Key) == payload.Branch }); at >= 0 {
+			r.log.Info("outbox removal of a task's working copy whose branch a task of the plan holds; finished without acting", "row", row.ID,
+				"issue", issue.Key, "task", payload.Task, "branch", payload.Branch, "holder", stored.Tasks[at].Task, "generation", issue.Generation)
+			return nil
+		}
+	}
+	if stopping {
+		return wait.Errorf("the removal of task %s's working copy of %s waits for the stop of the step a stopped task ran, which is still queued", payload.Task, issue.Key)
+	}
+	for _, machine := range r.claimsOfIssue(row.Issue) {
+		if held := machine.Claim(); held.State != supervise.StateRetired && held.Pending != nil && held.Pending.Branch == payload.Branch {
+			return wait.Errorf("the removal of task %s's working copy of %s waits for claim %s (%s), whose delivery %s is on %s",
+				payload.Task, issue.Key, held.Token, held.State, held.Pending.ID, payload.Branch)
+		}
+	}
+	repo, err := issue.Repository()
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	name, err := workspace.Name(payload.Branch)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	working, err := workspace.Location(r.stateDir, repo, row.Issue)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	taskCopy, err := workspace.Location(r.stateDir, repo, name)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	issueTurn, releaseIssue := r.provisions.issues.take(working.Dir)
+	defer releaseIssue()
+	issueTurn.Lock()
+	defer issueTurn.Unlock()
+	store, releaseStore := r.provisions.stores.take(taskCopy.Clone)
+	defer releaseStore()
+	if err := r.remove(ctx, taskCopy, store); err != nil {
+		return fmt.Errorf("remove the working copy %s of task %s of %s: %w", taskCopy.Dir, payload.Task, issue.Key, err)
+	}
+	r.log.Info("outbox removed the working copy of a task the plan removed", "row", row.ID, "issue", issue.Key, "task", payload.Task,
+		"branch", payload.Branch, "dir", taskCopy.Dir)
 	return nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -29,10 +28,11 @@ const issueRead = 30 * time.Second
 // it shows, as the webhook would have: the head GitHub holds it at (followHead, and the pushes that
 // reached it), whether that head can be merged into its base and GitHub's own merge state
 // (applyMergeability), and a deciding review the daemon has not recorded (readReviews), in that
-// order. The task is the one a completion names (handedOffRead.task), and "" reads the task the
-// record judges (judgedTask). A task whose record holds no open pull request is looked up by its
-// branch instead (openPullRequestOn), and the opened its webhook would have carried is applied
-// first, so the reads that follow judge the pull request that leaves.
+// order. The task is the one a completion names, or the one an open pull request is of at the
+// start (taskRead.task), and "" reads the task the record judges (judgedTask). A task whose record
+// holds no open pull request is looked up by its branch instead (openPullRequestOn), and the
+// opened its webhook would have carried is applied first, so the reads that follow judge the pull
+// request that leaves.
 //
 // It is the backstop for a webhook that never arrived: GitHub can fail to deliver one, and
 // Dispatch's redelivery sweep gives up after five attempts, which leaves the record holding a head,
@@ -132,8 +132,8 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key, task string
 	// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
 		"repo", repo, "pullRequest", pull.Number, "issue", key, "branch", branch, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
-	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
+	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(),
+		Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
 	eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)
@@ -180,14 +180,15 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, recorded issueRecords
 // issueRecords is what the reads of an issue's pull requests read of its record, in one
 // transaction (issueRecord): the issue, nil where it is not recorded; the task of its plan at its
 // generation whose pull request the per-issue read judges, its branch (record.PlanTask.BranchOf)
-// and whether it has one (judgedTask); its implementer's handoff commit; and each pull request of
-// the issue, by task (record.Store.TaskPullRequests).
+// and whether it has one (judgedTask); whether the issue has plan rows at its generation; its
+// implementer's handoff commit; and each pull request of the issue, by task
+// (record.Store.TaskPullRequests).
 type issueRecords struct {
 	issue   *record.Issue
 	task    string
 	branch  string
 	judged  bool
-	several bool
+	planned bool
 	handoff string
 	prs     []record.PullRequest
 }
@@ -217,37 +218,35 @@ func (r issueRecords) find(match func(record.PullRequest) bool) *record.PullRequ
 	return nil
 }
 
-// implementing says whether the task the per-issue read judges stands in implementing: the issue
-// does, for an issue whose plan holds one task or none, and one of the issue's running steps of
-// that task does (record.Issue.RunningAt), for one whose plan holds several.
+// implementing says whether the task the per-issue read judges stands in implementing: for an issue
+// whose plan holds any count of tasks, one among them, a running step of that task stands there
+// unheld (record.Issue.RunningAt), and a held task, which waits on its owner, does not; for an issue
+// with no plan rows, the issue does.
 func (r issueRecords) implementing() bool {
-	if !r.several {
+	if !r.planned {
 		return r.issue.Phase == phase.Implementing
 	}
-	return slices.ContainsFunc(r.issue.RunningAt(phase.Implementing), func(step record.RunningStep) bool { return step.Task == r.task })
+	return slices.ContainsFunc(r.issue.RunningAt(phase.Implementing), func(step record.RunningStep) bool { return step.Task == r.task && !step.Held })
 }
 
 // judgedTask is the task of stored, the plan of the issue keyed key at its generation, whose pull
-// request the per-issue read judges, and whether it has one: the one task of a plan of one, the
-// issue's own work for one with no plan rows (the zero task, on the issue's branch), and for a plan
-// of several the task named, which a completion names (handoffCompleted), else the task whose step
-// the issue's implementer runs or ran last (implementer's record.PhaseRow.StepTask): none where the
-// plan holds no such task.
+// request the per-issue read judges, and whether it has one, for a plan of any count of tasks, one
+// among them: the task named, which a completion names (handoffCompleted), else the task whose step
+// the issue's implementer runs or ran last (implementer's record.PhaseRow.StepTask), else, for an
+// implementer's row raised before the plan, which names no step, the task that merges
+// (record.StoredPlan.MergingTask): none where the plan holds no such task. An issue with no plan
+// rows judges its own work, the zero task, on the issue's branch.
 func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named string) (record.PlanTask, bool) {
-	switch {
-	case stored == nil:
+	if stored == nil {
 		return record.PlanTask{}, true
-	case len(stored.Tasks) == 1:
-		return stored.Tasks[0], true
 	}
 	if named == "" {
 		named = implementer.StepTask
 	}
-	at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == named })
-	if at < 0 {
-		return record.PlanTask{}, false
+	if named == "" {
+		named, _ = stored.MergingTask()
 	}
-	return stored.Tasks[at], true
+	return stored.TaskOf(named)
 }
 
 // issueRecord is key's records as the reads of its pull requests read them (issueRecords), in one
@@ -272,8 +271,7 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 		}
 		implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 		task, judged := judgedTask(stored, implementer, named)
-		read.task, read.branch, read.judged, read.handoff = task.Task, task.BranchOf(key), judged, implementer.HandoffCommit
-		read.several = stored != nil && len(stored.Tasks) > 1
+		read.task, read.branch, read.judged, read.planned, read.handoff = task.Task, task.BranchOf(key), judged, stored != nil, implementer.HandoffCommit
 		read.prs, err = records.TaskPullRequests(ctx, tx, key)
 		return err
 	}); err != nil {
@@ -282,14 +280,14 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 	return read, nil
 }
 
-// readIssuesAtStart reads the pull request of each issue in the workflow once as the runtime starts
-// (readIssuePullRequest): every issue with an open pull request recorded, and every issue whose
-// implementer completed with none open or merged recorded, which is the pull request this read
-// looks up by the branch. It is what covers a daemon that was down while GitHub made the
-// deliveries nothing redelivers. A read that fails is logged and the boot goes on, since the
-// issue's next handoff reads the same pull request; GitHub's rate limit ends the start read there,
-// because every read after it on the same installation meets the same limit, and the panes share
-// it.
+// readIssuesAtStart reads the pull request of each task of each issue in the workflow once as the
+// runtime starts (readIssuePullRequest): every open pull request recorded, each as its own task's,
+// and the pull request of every issue whose implementer completed with none open or merged
+// recorded, which this read looks up by the branch of the task the record judges. It is what
+// covers a daemon that was down while GitHub made the deliveries nothing redelivers. A read that
+// fails is logged and the boot goes on, since the task's next handoff reads the same pull request;
+// GitHub's rate limit ends the start read there, because every read after it on the same
+// installation meets the same limit, and the panes share it.
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
 // `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
@@ -299,41 +297,43 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 // the whole reason: no rule of classify.MergeStateReadOwed is read for it, and a read that answers
 // a state queues nothing.
 func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
-	issues, err := w.issuesInWorkflow(ctx)
+	reads, err := w.issuesInWorkflow(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.log.Warn("list the issues to read the pull request of as the daemon starts", "error", err)
 		}
 		return
 	}
-	for _, issue := range issues {
+	for _, read := range reads {
 		if ctx.Err() != nil {
 			return
 		}
-		computing, err := w.readIssuePullRequest(ctx, issue, "")
+		computing, err := w.readIssuePullRequest(ctx, read.issue, read.task)
 		if err == nil {
 			if computing {
-				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", issue)
-				w.queueMergeState(issue)
+				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", read.issue, "task", read.task)
+				w.queueMergeState(read.issue)
 			}
 			continue
 		}
 		var answer *githubrest.Answer
 		if errors.As(err, &answer) && answer.RateLimited {
 			w.log.Error("read an issue's pull request as the daemon starts: GitHub's rate limit; the start reads no more issues, and each issue's next handoff reads it",
-				"issue", issue, "error", err)
+				"issue", read.issue, "task", read.task, "error", err)
 			return
 		}
-		w.log.Warn("read an issue's pull request as the daemon starts; the issue's next handoff reads it", "issue", issue, "error", err)
+		w.log.Warn("read an issue's pull request as the daemon starts; the issue's next handoff reads it", "issue", read.issue, "task", read.task, "error", err)
 	}
 }
 
-// issuesInWorkflow is every issue of the project the per-issue read has something to read for, by
-// key: those with an open pull request recorded, and those whose implementer completed with none
-// open or merged recorded (record.Store.HandedOffWithoutOpenOrMergedPullRequest), whose pull
-// request GitHub may hold open with its opened lost. An issue with neither - one still being
+// issuesInWorkflow is every read of a task's pull request the start makes (taskRead), in the order
+// of their issues and then their tasks: the task of each open pull request recorded
+// (record.PullRequest.Task), so each task's open pull request is read, and, for each issue whose
+// implementer completed with none open or merged recorded
+// (record.Store.HandedOffWithoutOpenOrMergedPullRequest), whose pull request GitHub may hold open
+// with its opened lost, the task the record judges (""). An issue with neither - one still being
 // planned - has no pull request to read, and costs no GitHub call.
-func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]string, error) {
+func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]taskRead, error) {
 	var open []record.PullRequest
 	var waiting []record.HandedOff
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -346,28 +346,34 @@ func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]string, error
 	}); err != nil {
 		return nil, err
 	}
-	keys := map[string]bool{}
+	reads := make([]taskRead, 0, len(open)+len(waiting))
 	for _, pr := range open {
-		keys[pr.Issue] = true
+		reads = append(reads, taskRead{issue: pr.Issue, task: pr.Task})
 	}
 	for _, handedOff := range waiting {
-		keys[handedOff.Issue.Key] = true
+		reads = append(reads, taskRead{issue: handedOff.Issue.Key})
 	}
-	return slices.Sorted(maps.Keys(keys)), nil
+	slices.SortFunc(reads, compareTaskReads)
+	return slices.Compact(reads), nil
 }
 
-// handedOffRead is one read a completion asks for (handoffCompleted): the issue, and the task of
-// its plan whose step completed, "" for an issue whose plan holds one task or none.
-type handedOffRead struct {
+// taskRead is one read of the pull request of one task of an issue: one a completion asks for
+// (handoffCompleted), naming the task of its plan whose step completed, or one the start makes
+// (issuesInWorkflow), naming the task of an open pull request; "" for an issue with no plan rows,
+// and for a read of the task the record judges (judgedTask).
+type taskRead struct {
 	issue, task string
+}
+
+// compareTaskReads orders reads by their issues and then their tasks.
+func compareTaskReads(a, b taskRead) int {
+	return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.task, b.task))
 }
 
 // newHandedOffSet is the queue of the reads completions ask for (workflowRuntime.handedOff), taken
 // in the order of their issues and then their tasks.
-func newHandedOffSet() *wakeSet[handedOffRead] {
-	return newWakeSetBy(func(a, b handedOffRead) int {
-		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.task, b.task))
-	})
+func newHandedOffSet() *wakeSet[taskRead] {
+	return newWakeSetBy(compareTaskReads)
 }
 
 // handoffCompleted queues the read of the pull request of task, the task of issue's plan whose step
@@ -377,7 +383,7 @@ func newHandedOffSet() *wakeSet[handedOffRead] {
 // agent without waiting for GitHub, and the read runs on the runtime's own goroutine, outside the
 // completion's transaction.
 func (w *workflowRuntime) handoffCompleted(issue, task string) {
-	w.handedOff.add(handedOffRead{issue: issue, task: task})
+	w.handedOff.add(taskRead{issue: issue, task: task})
 }
 
 // readHandedOff makes each read handoffCompleted queued, until ctx ends: each wake takes every read

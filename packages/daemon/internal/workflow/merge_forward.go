@@ -100,14 +100,15 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return nil
 }
 
-// mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
-// the move has put issue in the phase it now stands in and written that phase's start
+// mergeForwardOnEntry is what a move does with the merge forward of the pull request of s's task
+// once the move has put its copy in the phase it now stands in and written that phase's start
 // (transition), from being the phase the move left. The pull request is read again in the
-// transaction, since the copy a transition is handed can be none, or one read before the
-// transaction's other writes.
+// transaction (taskPullRequest), since the copy a transition is handed can be none, or one read
+// before the transaction's other writes.
 //
-//   - A move into implementing drops the record's merge forward (clearMergeForward): the
-//     implementer works the head there, and a head it pushes is read for a conflict of its own.
+//   - A move into implementing drops the record's merge forward of the task's pull request
+//     (clearTaskMergeForward): the implementer works the head there, and a head it pushes is read
+//     for a conflict of its own.
 //   - At a head the record holds in a confirmed conflict (classify.ConflictRound), a move into
 //     accepting, retro or merging asks for the merge forward for record.ConflictMergeNext: the
 //     merge comes next, and GitHub merges no head that conflicts with its base. This is where an
@@ -120,11 +121,12 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //
 // mergeForward asks once for each head, so a move at a head already asked of in a phase past
 // implementing - an ask in reviewing, then the round's end into accepting - asks nothing more.
-func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
+func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, s TaskScope, from phase.Phase) error {
+	issue := s.issue
 	if issue.Phase == phase.Implementing {
-		return e.clearMergeForward(ctx, tx, issue)
+		return e.clearTaskMergeForward(ctx, tx, s)
 	}
-	pr, err := e.pullRequestOf(ctx, tx, issue)
+	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
 		return err
 	}
@@ -139,27 +141,35 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	return nil
 }
 
-// clearMergeForward drops the merge forward the record holds for issue's pull request
-// (record.PullRequest.MergeForward), on a move into implementing (mergeForwardOnEntry) and when
-// the issue leaves the workflow (leave): the ask, its landing and the review it asked for are of
-// a stretch of work that is over, and a later conflict is asked about afresh. A copy of the issue
-// read for one task (view) drops its task's own; the issue itself drops each of its pull
-// requests' (record.Store.TaskPullRequests), since its leave ends the work of every task. A record
-// that holds none is not written.
-func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	var prs []record.PullRequest
-	if issue.ViewTask != "" {
-		pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, issue.ViewTask)
-		if err != nil || pr == nil {
-			return err
-		}
-		prs = []record.PullRequest{*pr}
-	} else {
-		var err error
-		if prs, err = e.store.TaskPullRequests(ctx, tx, issue.Key); err != nil {
-			return err
-		}
+// clearTaskMergeForward drops the merge forward the record holds for the pull request of s's task
+// (record.PullRequest.MergeForward, taskPullRequest), on a move into implementing
+// (mergeForwardOnEntry): the ask, its landing and the review it asked for are of a stretch of work
+// that is over, and a later conflict is asked about afresh. A run with no plan rows drops each of
+// its pull requests' (clearMergeForwards). A record that holds none is not written.
+func (e *Engine) clearTaskMergeForward(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+	if !s.Planned() {
+		return e.clearMergeForwards(ctx, tx, s.issue)
 	}
+	pr, err := e.taskPullRequest(ctx, tx, s)
+	if err != nil || pr == nil {
+		return err
+	}
+	return e.clearMergeForwardsOf(ctx, tx, []record.PullRequest{*pr})
+}
+
+// clearMergeForwards drops the merge forward of each pull request of issue
+// (record.Store.TaskPullRequests) when the issue leaves the workflow (leave), since its leave ends
+// the work of every task, and on a move into implementing of a run with no plan rows.
+func (e *Engine) clearMergeForwards(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	return e.clearMergeForwardsOf(ctx, tx, prs)
+}
+
+// clearMergeForwardsOf drops the merge forward of each of prs that holds one.
+func (e *Engine) clearMergeForwardsOf(ctx context.Context, tx pgx.Tx, prs []record.PullRequest) error {
 	for _, pr := range prs {
 		if pr.MergeForward == nil {
 			continue
@@ -194,7 +204,8 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue record.
 // head they merge. The architect and the implementer are told nothing: the architect's checks-red
 // notice already said the merge was asked for, and the implementer pushed it. A tree that lingers
 // (record.TreeLingers, where every role is suspended) records and tells nothing.
-func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
+func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) error {
+	issue, w := s.issue, s.walk
 	asked := pr.MergeForward
 	if asked == nil || asked.Landed != "" || asked.Head == pr.HeadSHA {
 		return nil
@@ -203,10 +214,6 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	at := record.StandsAt(issue)
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
 	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
 	var recipients []roleRecipient
 	for _, step := range issue.RunningAt(at) {

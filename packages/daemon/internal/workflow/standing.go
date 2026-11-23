@@ -97,12 +97,13 @@ func ownersText(text string) string {
 // review step, and each reads the runs of the steps and their reports from Dispatch
 // (`dispatch steps`), which keeps every run, the failed ones too.
 //
-// The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
-// before it composes the task, and w is the walk of its run as the caller read it, after any move
+// The phase the worker starts in is the phase of s's copy, which each caller has put there before
+// it composes the task, and s's walk is the walk of its task as the caller read it, after any move
 // of its task (moveTask). A run with plan rows whose line holds no place in that phase is
 // refused: no start of such a run names one, and a task that named none would read as an issue
 // with no plan rows.
-func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
+func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope) (Standing, error) {
+	issue, w := s.issue, s.walk
 	var rows []record.PhaseRow
 	var told planTold
 	if place, _ := w.placeIn(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
@@ -114,7 +115,9 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if err != nil {
 			return Standing{}, err
 		}
-		told = planToldOf(issue, stored, w.Task)
+		if told, err = planToldOf(issue, stored, w.Task); err != nil {
+			return Standing{}, err
+		}
 	}
 	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told)
 }
@@ -139,28 +142,30 @@ type joinConflict struct {
 	task, branch string
 }
 
-// planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan.
-func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) planTold {
+// planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan. A task
+// or a need the plan does not hold is an error (record.StoredPlan.BaseOf).
+func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (planTold, error) {
 	if stored == nil {
-		return planTold{}
+		return planTold{}, nil
 	}
 	var told planTold
-	base, join := stored.BaseOf(issue, task)
+	base, join, err := stored.BaseOf(issue, task)
+	if err != nil {
+		return planTold{}, err
+	}
 	if base != issue.DefaultBranch {
 		told.base = base
 	}
 	if join {
 		told.join = base
 	}
-	byID := make(map[string]record.PlanTask, len(stored.Tasks))
-	for _, row := range stored.Tasks {
-		byID[row.Task] = row
+	of, _ := stored.TaskOf(task)
+	for _, need := range of.JoinConflicts {
+		row, _ := stored.TaskOf(need)
+		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: row.BranchOf(issue.Key)})
 	}
-	for _, need := range byID[task].JoinConflicts {
-		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: byID[need].BranchOf(issue.Key)})
-	}
-	told.unmerged = join && byID[task].JoinUnmerged
-	return told
+	told.unmerged = join && of.JoinUnmerged
+	return told, nil
 }
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its

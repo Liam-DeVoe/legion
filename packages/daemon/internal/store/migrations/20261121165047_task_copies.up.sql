@@ -4,7 +4,7 @@
 --
 -- plan_tasks.branch is the GitHub branch of the task (record.PlanTask.Branch), written once, when
 -- the task first starts (record's AssignTaskBranch): legion/<KEY> for the first task of the
--- generation to start, legion/<KEY>.<slug> for each other. '' reads as legion/<KEY>
+-- issue to start, legion/<KEY>.<slug> for each other. '' reads as legion/<KEY>
 -- (record.PlanTask.BranchOf), which is the branch of every task the upgrade finds, since no release
 -- before this one gave a task a branch of its own. plan_tasks.join_conflicts is the id of each need
 -- of the task whose merge GitHub refused as a conflict, into the branch the join is made on: the
@@ -21,9 +21,10 @@
 --
 -- plan_branches is each branch name a generation of an issue gave to one of its tasks. GitHub keeps
 -- a branch and its commits after the task that held it was stopped and a later version removed it,
--- so a name given is never given to another task of the generation, and the deleted task's row
--- cannot say it was given. Only AssignTaskBranch reads the table; it names no task, so a task's
--- branch has one place, plan_tasks.branch.
+-- and after the generation that gave it ended, so a name given is never given to another task of
+-- the issue, and the deleted task's row cannot say it was given. AssignTaskBranch reads the table,
+-- and so does the workflow where it records a pull request on the issue's own branch
+-- (BranchGiven); it names no task, so a task's branch has one place, plan_tasks.branch.
 --
 -- The outbox check is one list, so this migration names every kind, as 20261119003157 did: its
 -- twenty-nine kinds and task_branch. Its version stands above 20261119003157 on purpose, and above

@@ -195,7 +195,7 @@ func newIssueReadStandIn(t *testing.T, updated time.Time) *issueReadStandIn {
 	stand := &issueReadStandIn{read: map[string]int{}}
 	pull := func(number int, issue string) string {
 		return `{"number":` + strconv.Itoa(number) + `,"state":"open","html_url":"https://github.com/acme/widgets/pull/` + strconv.Itoa(number) + `",` +
-			`"body":"Dispatch: ` + issue + `","base":{"ref":"main"},"head":{"ref":"legion/` + issue + `","sha":"pushed"},` +
+			`"body":"Dispatch: ` + issue + `","base":{"ref":"main"},"head":{"ref":"legion/` + issue + `","sha":"pushed","repo":{"full_name":"acme/widgets"}},` +
 			`"updated_at":"` + updated.Format(time.RFC3339) + `","mergeable":true}`
 	}
 	stand.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

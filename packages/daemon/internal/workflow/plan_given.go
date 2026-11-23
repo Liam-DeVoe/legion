@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -70,7 +71,9 @@ type givenVersion struct {
 // version changes or removes must wait or be stopped: a running task is refused, and so is a held
 // task, one reason for each, and so is a task that is done or left the workflow. A version that
 // adds a need of the task that merges is refused while that task stands at its retro or its merge
-// or is done (needsOfMerging). A plan given in a lingering tree is refused too.
+// or is done (needsOfMerging). A version that moves the base of a task that has started and is not
+// stopped is refused too, so a task's later steps are never told a base its start did not make
+// (startedBasesMoved). A plan given in a lingering tree is refused too.
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
@@ -102,13 +105,15 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusal, nil
 		}
 		given.changed = plan.ChangedTasks(heldPlan(given.stored), fact.Plan)
+	}
+	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
+	if given.stored != nil {
 		var refused []plan.Refusal
 		for _, id := range given.changed {
-			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
-			if at < 0 {
+			task, ok := given.stored.TaskOf(id)
+			if !ok {
 				continue
 			}
-			task := given.stored.Tasks[at]
 			if refusal := intake.FinishedTask(fact.Issue, id, task.State, intake.ChangeOfTask); refusal != nil {
 				return givenVersion{}, refusal, nil
 			}
@@ -120,6 +125,13 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			}
 		}
 		refused = append(refused, needsOfMerging(given.stored, fact.Plan, given.changed)...)
+		if issue != nil {
+			moved, err := startedBasesMoved(*issue, given.stored, nextPlan(given.stored, given.version, given.tasks, given.steps), given.changed)
+			if err != nil {
+				return givenVersion{}, nil, err
+			}
+			refused = append(refused, moved...)
+		}
 		if len(refused) > 0 {
 			return givenVersion{}, intake.PlanRefused(refused), nil
 		}
@@ -130,7 +142,6 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusalUnless(err, refusedLingering(*issue, fmt.Sprintf("version %d of the owner's plan", fact.Plan.Version)).Refusal), err
 		}
 	}
-	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
 	earlier, err := e.store.PlanStepsOf(ctx, tx, fact.Issue)
 	if err != nil {
 		return givenVersion{}, nil, err
@@ -166,8 +177,9 @@ type writtenVersion struct {
 
 // writeVersion stores fact's version as the version in force, the rows versionRefusal built and
 // named (given): each task it leaves as it was keeps its steps and where it stands, each task it
-// changes takes the steps its block now names, and each task it removes is deleted. It answers what
-// it read of the version before.
+// changes takes the steps its block now names, and each task it removes is deleted, with the row of
+// its pull request, which is closed where it is open (closeRemovedPullRequests), and its working
+// copy is queued for removal (removeTaskCopies). It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
 	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
@@ -184,6 +196,14 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		}
 	}
 	if len(removed) > 0 {
+		if given.recorded {
+			if err := e.closeRemovedPullRequests(ctx, tx, fact, removed); err != nil {
+				return writtenVersion{}, err
+			}
+			if err := e.removeTaskCopies(ctx, tx, fact, given.stored, removed); err != nil {
+				return writtenVersion{}, err
+			}
+		}
 		if err := e.store.DeleteTasks(ctx, tx, fact.Issue, fact.Generation, removed); err != nil {
 			return writtenVersion{}, err
 		}
@@ -196,10 +216,74 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	return written, nil
 }
 
+// closeRemovedPullRequests deletes the row of the pull request of each task of fact's issue that
+// fact's version removes (removed), and queues the close of each such pull request that is open,
+// one row for each (record.TaskPullRequestsClose), with the comment `Task <id> was removed from
+// the plan.`, in the version's transaction: GitHub keeps a pull request open until someone closes
+// it. A row's task is read from its branch against the plan in force (record.PullRequest.Task), so
+// the rows are read before the removed tasks go (DeleteTasks). A row left behind would be no
+// task's, and one on the issue's own branch would read as the pull request of the task a version
+// leaves alone, which holds that branch before its start as the one task of a plan of one
+// (record.StoredPlan.TasksOfBranch), and as the issue's merge; so a closed or merged row goes too.
+// A task a later version adds back starts on a branch of its own (record.Store.AssignTaskBranch),
+// and no fact of the closed pull request finds a row. It runs for a version of the issue's own
+// generation alone (givenVersion.recorded): a row's task is read at that generation, and a plan
+// waiting at generation 0 has no task that started.
+func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
+	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
+	if err != nil {
+		return err
+	}
+	for _, pr := range prs {
+		if !slices.Contains(removed, pr.Task) {
+			continue
+		}
+		if pr.State == record.PullRequestOpen {
+			if err := e.enqueue(ctx, tx, fact.Issue, record.TaskPullRequestsClose{Generation: fact.Generation, Numbers: []int{pr.Number},
+				Comment: fmt.Sprintf("Task %s was removed from the plan.", pr.Task)}); err != nil {
+				return err
+			}
+		}
+		if err := e.store.DeletePullRequest(ctx, tx, fact.Issue, pr.Branch); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the pull request of a task the plan removed is deleted from the record, and closed where it was open",
+			"issue", fact.Issue, "task", pr.Task, "pullRequest", pr.Number, "branch", pr.Branch, "state", pr.State, "version", fact.Plan.Version)
+	}
+	return nil
+}
+
+// removeTaskCopies queues the removal of the working copy of each task of fact's issue that fact's
+// version removes (removed), one row for each (record.TaskCopyRemove), in the version's
+// transaction: the deletion of the task's rows (DeleteTasks) leaves the jj workspace on its branch
+// beside the issue's own working copy, and nothing else removes it, since the issue's own removal
+// takes the working copies on the daemon's host only once the issue's tree has closed (the
+// daemon's removeWorkspace). The branch is read from stored, the plan in force, before the tasks
+// go. A task that never started holds no branch and has no working copy, and the task that holds
+// the issue's own branch (record.PlanTask.BranchOf) works in the issue's own working copy, which
+// goes only with the issue: neither queues a row. A task a later version adds back takes a branch
+// of its own (record.Store.AssignTaskBranch), so no removal reaches its working copy. It runs for
+// a version of the issue's own generation alone (givenVersion.recorded), as the close of a removed
+// task's pull request does: a plan waiting at generation 0 has no task that started.
+func (e *Engine) removeTaskCopies(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, stored *record.StoredPlan, removed []string) error {
+	for _, task := range stored.Tasks {
+		branch := task.BranchOf(fact.Issue)
+		if !slices.Contains(removed, task.Task) || branch == claim.IssueBranch(fact.Issue) {
+			continue
+		}
+		if err := e.enqueue(ctx, tx, fact.Issue, record.TaskCopyRemove{Generation: fact.Generation, Task: task.Task, Branch: branch}); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the working copy of a task the plan removed is queued for removal",
+			"issue", fact.Issue, "task", task.Task, "branch", branch, "version", fact.Plan.Version)
+	}
+	return nil
+}
+
 // afterVersion is what a version written on a recorded issue starts. Where it changes the stopped
 // task of an issue held for that task, the stop ends: where the work of the stopped task ran, which
 // the place it stood at says (record.TaskPlace.Started), the task the plan now holds starts again
-// at its first step (restartTask), and its worker is told which version did it; a task stopped
+// at its first step (startAtFirstStep), and its worker is told which version did it; a task stopped
 // before its first step went out waits for that step again, as a task never stopped does
 // (waitForFirstStep). A version taken after the work started writes the run's plan node again,
 // whole (planNode): the start wrote it at the version then in force, and the node names the plan
@@ -214,12 +298,14 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if !written.started && !ends {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
+	// The plan's one task, on its scope (scopes).
+	scopes, err := e.scopes(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
+	s := scopes[0]
 	if written.started && recordsSteps(issue) {
-		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{w})); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, planNode(issue, []Walk{s.walk})); err != nil {
 			return err
 		}
 	}
@@ -228,15 +314,15 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	}
 	reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, strings.Join(written.stopped, ", "))
 	if !written.started {
-		return e.waitForFirstStep(ctx, tx, issue, w, reason)
+		return e.waitForFirstStep(ctx, tx, s, reason)
 	}
-	return e.restartTask(ctx, tx, issue, w, reason)
+	return e.startAtFirstStep(ctx, tx, s, reason)
 }
 
 // afterSeveral is afterVersion of a plan of several tasks. A version taken after the work started
 // writes the run's plan node again, whole, with each task the version holds (WritePlan), before
 // any task of it starts. Each stopped task the version changes ends its stop: once the work
-// started it starts again where its needs are done, or waits for them (restartTask on the copy of
+// started it starts again where its needs are done, or waits for them (startAtFirstStep on the
 // issue read for it), and then each task whose needs are done starts (startReady), a task the
 // version adds among them. Before the work starts each such task waits for its first step
 // (waitForFirstStep), and nothing starts and no node is written: the gate's opening writes the
@@ -256,15 +342,15 @@ func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		if err != nil {
 			return err
 		}
-		view, w, err := e.view(ctx, tx, *now, task)
+		s, err := e.ScopeOf(ctx, tx, *now, task)
 		if err != nil {
 			return err
 		}
 		reason := fmt.Sprintf("the owner gave version %d of the plan while task %s was stopped", fact.Plan.Version, task)
 		if !written.started {
-			err = e.waitForFirstStep(ctx, tx, view, w, reason)
+			err = e.waitForFirstStep(ctx, tx, s, reason)
 		} else {
-			err = e.restartTask(ctx, tx, view, w, reason)
+			err = e.startAtFirstStep(ctx, tx, s, reason)
 		}
 		if err != nil {
 			return err
@@ -334,17 +420,17 @@ func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
 }
 
 // needsOfMerging is one refusal (intake.NeedOfMergingTask) for each task next adds or changes
-// (changed) that needs the task of stored that merges (mergingTask) where that task stands at its
-// retro or its merge, or is done: the work of the issue merges there, and this release carries out
-// no need of it then. None while that task stands at a step or waits.
+// (changed) that needs the task of stored that merges (record.StoredPlan.MergingTask) where that
+// task stands at its retro or its merge, or is done: the work of the issue merges there, and this
+// release carries out no need of it then. None while that task stands at a step or waits.
 func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string) []plan.Refusal {
-	merging := mergingTask(stored)
-	at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == merging })
-	if merging == "" || at < 0 {
+	merging, merges := stored.MergingTask()
+	row, ok := stored.TaskOf(merging)
+	if !merges || !ok {
 		return nil
 	}
 	var stands string
-	switch row := stored.Tasks[at]; {
+	switch {
 	case row.Place.Kind == record.PlaceRetro:
 		stands = "retro"
 	case row.Place.Kind == record.PlaceMerge || row.State == record.TaskDone:
@@ -359,6 +445,65 @@ func needsOfMerging(stored *record.StoredPlan, next plan.Plan, changed []string)
 		}
 	}
 	return refused
+}
+
+// startedBasesMoved is one refusal (intake.StartedTaskBaseMoved) for each task of stored that has
+// started and is not stopped, running or held, whose base (record.StoredPlan.BaseOf) next, the plan
+// the version makes (nextPlan), moves. The task started on its base: its join, its branch and its
+// pull request stand on it, and its later steps would be told the base next gives (planToldOf),
+// which no start of the task made. A version moves the base of a task it leaves as it is where it
+// moves the merge: one that adds the first task that needs the task that merges, which then merges
+// no more and, with several needs, is based on its join branch; and one that removes the one task
+// that needed a task, which then merges, based on the default branch. A task that waits, and a
+// stopped task when it starts again, joins its needs on the base the plan gives at its start
+// (startTaskCopy), so neither is refused.
+//
+// Two tasks are left to the refusal that names them already, so no task is named twice: a task the
+// version changes (intake.RunningTaskChanged, intake.HeldTaskChanged), and the task that merges at
+// its retro or its merge, whose base only a need of it moves (needsOfMerging), where no stop lets
+// the version through. needsOfMerging is not a case of this rule: it also refuses a need of the
+// task that merges once it is done, and a need of one at its retro or its merge whose base the need
+// does not move (a task that needs none, or none of whose steps is of the type implementation,
+// based on the default branch either way). A plan that holds no task or no need a base reads is an
+// error (record.StoredPlan.BaseOf), which plan.Validate leaves no version to reach.
+func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next record.StoredPlan, changed []string) ([]plan.Refusal, error) {
+	var refused []plan.Refusal
+	for _, task := range stored.Tasks {
+		if task.State != record.TaskRunning && task.State != record.TaskHeld || slices.Contains(changed, task.Task) ||
+			task.Place.Kind == record.PlaceRetro || task.Place.Kind == record.PlaceMerge {
+			continue
+		}
+		base, _, err := stored.BaseOf(issue, task.Task)
+		if err != nil {
+			return nil, err
+		}
+		moved, _, err := next.BaseOf(issue, task.Task)
+		if err != nil {
+			return nil, fmt.Errorf("version %d of the plan of %s: %w", next.Version.Version, issue.Key, err)
+		}
+		if moved != base {
+			refused = append(refused, intake.StartedTaskBaseMoved(task.Task, base, moved))
+		}
+	}
+	return refused, nil
+}
+
+// nextPlan is the plan stored becomes once the rows of a version given over it (givenRows) are
+// written (record.Store.PutPlan): version, and each of tasks, with the branch stored holds for a
+// task the generation holds already, which the write keeps (a task new to the generation holds none
+// until its first start gives it one, record.Store.AssignTaskBranch), and the steps of each task.
+func nextPlan(stored *record.StoredPlan, version record.PlanVersion, tasks []record.PlanTask, steps []record.PlanStep) record.StoredPlan {
+	next := record.StoredPlan{Version: version, Tasks: make([]record.PlanTask, 0, len(tasks)), Steps: map[string][]record.PlanStep{}}
+	for _, task := range tasks {
+		if at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task.Task }); at >= 0 {
+			task.Branch = stored.Tasks[at].Branch
+		}
+		next.Tasks = append(next.Tasks, task)
+	}
+	for _, step := range steps {
+		next.Steps[step.Task] = append(next.Steps[step.Task], step)
+	}
+	return next
 }
 
 // heldPlan is the plan in force of stored as its owner's blocks gave it, which a later version is

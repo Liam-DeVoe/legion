@@ -121,7 +121,7 @@ func (rig *taskBranchRig) taskAt(t *testing.T, generation uint64, id string) rec
 	}); err != nil {
 		t.Fatalf("read the plan of %s at generation %d: %v", taskBranchIssue.Key, generation, err)
 	}
-	task, ok := planTaskOf(stored, id)
+	task, ok := stored.TaskOf(id)
 	if !ok {
 		t.Fatalf("the plan of %s at generation %d holds no task %s", taskBranchIssue.Key, generation, id)
 	}

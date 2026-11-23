@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -11,17 +13,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// startTaskCopy gives task of issue's plan its branch at a start of the task, in the transaction
+// startTaskCopy gives s's task its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
-// the generation to start, else the first give of the task's slug no task of the generation took),
-// and answers whether it queued the join of the task's needs. A task whose branch is not the
+// the generation to start where no earlier generation gave it, or the one task of a plan of one,
+// else the first give of the task's slug no generation of the issue gave), and answers whether it
+// queued the join of the task's needs. A task whose branch is not the
 // issue's own, or that needs other tasks, gets one task_branch row (record.TaskBranch), which makes
 // its branch on GitHub at the joined work of its needs and ends with the fact that starts its step
 // (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:
 // the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
 // start of every step (Engine.start), at each start of a task, the first and a start again. A task
 // the plan does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issue, task string) (bool, error) {
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
 		return false, err
@@ -31,9 +35,13 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return false, err
 	}
 	// AssignTaskBranch refused a task the plan does not hold, and holds the generation's task rows
-	// locked, each of which names a version of the plan (its foreign key): the plan holds the task.
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
-	if branch == claim.IssueBranch(issue.Key) && len(stored.Tasks[at].Needs) == 0 {
+	// locked, each of which names a version of the plan (its foreign key): the plan holds the task,
+	// and one that does not is an error.
+	row, ok := stored.TaskOf(task)
+	if !ok {
+		return false, fmt.Errorf("start the copy of task %s of %s: its plan holds no such task", task, issue.Key)
+	}
+	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
 	}
 	return true, e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
@@ -60,11 +68,10 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil || stored == nil {
 		return intake.Result{}, err
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == fact.Task })
-	if at < 0 {
+	joined, ok := stored.TaskOf(fact.Task)
+	if !ok {
 		return intake.Result{}, nil
 	}
-	joined := stored.Tasks[at]
 	if joined.State != record.TaskRunning || joined.StepWait != record.StepWaitJoin || joined.BranchOf(issue.Key) != fact.Branch ||
 		!slices.Equal(joined.Needs, fact.Needs) {
 		e.logOnCommit(ctx, "workflow: the end of a join the task's step does not wait for changes nothing", "issue", issue.Key, "task", fact.Task,
@@ -81,11 +88,11 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, fact.Task, record.StepWaitNone, nil); err != nil {
 		return intake.Result{}, err
 	}
-	view, w, err := e.view(ctx, tx, *issue, fact.Task)
+	s, err := e.ScopeOf(ctx, tx, *issue, fact.Task)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.startAfterWait(ctx, tx, view, w, "workflow: a task's join ended, and its step starts",
+	return intake.Result{}, e.startAfterWait(ctx, tx, s, "workflow: a task's join ended, and its step starts",
 		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
 }
 
@@ -108,11 +115,19 @@ func stepOfStart(issue record.Issue, start record.SuperviseRequest, worker claim
 
 // startBranch is the branch start names (record.SuperviseRequest.Branch): the branch of the task of
 // the step it starts (stepOfStart, record.PlanTask.BranchOf), and "" where that branch is the
-// issue's own, where the start starts no running step, and where the issue has no plan rows at its
-// generation, so each such start reads as every start did before tasks had branches of their own.
-// rows is the issue's phases rows. A start that names no claim reads the claim of its role's
-// worker only where a task of the plan holds a branch other than the issue's own: a plan whose
-// every task holds the issue's branch names none at any start, so its starts derive no claim.
+// issue's own and where the issue has no plan rows at its generation, so each such start reads as
+// every start did before tasks had branches of their own. rows is the issue's phases rows. A start
+// that names no claim reads the claim of its role's worker only where a task of the plan holds a
+// branch other than the issue's own: a plan whose every task holds the issue's branch names none at
+// any start, so its starts derive no claim.
+//
+// "" is the issue's own branch, never an unknown one. A start that serves no step names it too, as
+// before: one that names no phase (an architect's, a production check's look, a wake), and the
+// architect's, whose step, the owner's acceptance, works no task's working copy. A phase worker's
+// start whose step the plan does not run, where a task works on a branch of its own, is refused,
+// naming its claim and its phase: its branch is unknown, and the issue's own would be the branch of
+// another task, whose working copy its agent would adopt. So is a running step of a task the plan
+// does not hold, which the record's reading of a running step (record.RunningOf) never answers.
 func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, start record.SuperviseRequest, rows []record.PhaseRow) (string, error) {
 	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -134,13 +149,18 @@ func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue recor
 	}
 	step, ok := stepOfStart(issue, start, worker)
 	if !ok {
-		return "", nil
+		if start.Phase == "" || start.Role == claim.RoleArchitect {
+			return "", nil
+		}
+		return "", fmt.Errorf("the start of the %s of %s in %s: its claim %s runs no step of the plan, whose tasks work on branches of their own, so the branch of its step is unknown",
+			start.Role, issue.Key, start.Phase, cmp.Or(start.Claim, worker))
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == step.Task })
-	if at < 0 {
-		return "", nil
+	task, ok := stored.TaskOf(step.Task)
+	if !ok {
+		return "", fmt.Errorf("the start of the %s of %s in %s: its claim %s runs a step of task %s, which the plan does not hold, so the branch of its step is unknown",
+			start.Role, issue.Key, start.Phase, cmp.Or(start.Claim, worker), step.Task)
 	}
-	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != own {
+	if branch := task.BranchOf(issue.Key); branch != own {
 		return branch, nil
 	}
 	return "", nil

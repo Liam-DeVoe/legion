@@ -629,10 +629,17 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if starts := roleStartsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
 			t.Fatalf("the starts of the implementer = %+v, want one, of implementing at entry %d", starts, row.Entry)
 		}
-		// The start of a's step 1 takes the place of the planner's start the issue still owed
-		// (Store.EnqueueStart): the step of the removed task never starts.
-		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 0 {
-			t.Fatalf("the planner's starts after version 1 = %+v, want none: the task default is gone", planners)
+		// The start of a's step 1 names the claim of its own step's agent, the implementer's, so it
+		// takes the place of no start of another claim (Store.EnqueueStart): the planner's start
+		// the gate's opening wrote for the removed task, which names the planner's claim, stays
+		// queued at planning, a phase the issue has left, and the outbox's start finishes it
+		// without acting (record.Issue.HoldsQueued), so the step of the removed task never starts.
+		planner, err := claim.AgentToken("legion", key, "planner")
+		if err != nil {
+			t.Fatalf("the planner's claim: %v", err)
+		}
+		if planners := roleStartsOf(t, pool, key, claim.RolePlanner); len(planners) != 1 || planners[0].Claim != planner || planners[0].Phase != phase.Planning {
+			t.Fatalf("the planner's starts after version 1 = %+v, want the one the gate's opening wrote, of planning under the planner's claim %s", planners, planner)
 		}
 		if got := len(hookPrompts(t, pool)); got != prompts {
 			t.Fatalf("version 1 fired %d hook prompts, want none: no step failed", got-prompts)

@@ -119,7 +119,7 @@ func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.Cu
 			if err := e.oweCutoverMerger(ctx, tx, owner); err != nil {
 				return intake.Result{}, err
 			}
-			owed = append(owed, owner.issue.Key)
+			owed = append(owed, owner.scope.issue.Key)
 		}
 	}
 	msg := fmt.Sprintf("cutover merger repair: owed a start to %d mergers", len(owed))
@@ -134,7 +134,7 @@ func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.Cu
 // tree (suspendedPhaseOwners), is a merger the cutover left stopped, by the terms of its own that
 // cutoverMergerRepair states.
 func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) (bool, error) {
-	issue := owner.issue
+	issue := owner.scope.issue
 	if issue.Phase != phase.Merging || owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
 		return false, nil
 	}
@@ -159,7 +159,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 // cutover's message on the issue, and logs on commit the slot mark the queued start carries, read
 // back from the merger's queued rows, since the mark is StartOrOwe's to set.
 func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) error {
-	issue := owner.issue
+	issue := owner.scope.issue
 	if err := e.clearHandoff(ctx, tx, issue.Key, claim.RoleMerger); err != nil {
 		return err
 	}

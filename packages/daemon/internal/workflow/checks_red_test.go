@@ -298,7 +298,7 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 	applyRefusingNothing(t, pool, engine, settledAt("head", 1, "unit"))
 	applyRefusingNothing(t, pool, engine,
 		intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", UpdatedAt: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)},
-		intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
+		intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", HeadRepo: "sjawhar/legion",
 			UpdatedAt: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC), Reopened: true},
 		settledAt("head", 2, "unit"))
 

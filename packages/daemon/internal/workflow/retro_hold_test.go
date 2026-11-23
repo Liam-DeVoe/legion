@@ -45,7 +45,11 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
+		s, err := firstScope(ctx, tx, engine, *issue)
+		if err != nil {
+			return err
+		}
+		return engine.transition(ctx, tx, s, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
 	})
 
 }
@@ -97,8 +101,9 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 
 // A parent whose plan has no acceptance step passes its last step while an issue beneath it is in
 // the workflow. Its head proves its children's merged work, so Legion holds it before
-// its retro: issues.phase held, from retro for its children, at the retro's place, with no slot
-// and no retro started, its owner told once in a retro-held notice naming the child. The child's
+// its retro: issues.phase held, from retro for its children, its task held at the retro's place
+// for its children, with no slot and no retro started, its owner told once in a retro-held notice
+// naming the child. The child's
 // leave is the last one, so the hold ends, the parent stands in retro, its Dispatch status is
 // written retro, and the implementer starts the retro once, at a raised entry, with the task the
 // approval would have started it with. The control is the same parent with no child, which moves
@@ -149,8 +154,9 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForChildren}) {
 			t.Fatalf("LEGION-208 after the approval stands in %s with hold %+v, want held from retro for its children", held.Phase, held.Hold)
 		}
-		if task := taskOf(t, pool, engine, "LEGION-208"); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
-			t.Fatalf("task a after the approval is %s at %+v, want running at its retro", task.State, task.Place)
+		if task := taskOf(t, pool, engine, "LEGION-208"); task.State != record.TaskHeld || task.HoldReason != record.HoldForChildren ||
+			task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
+			t.Fatalf("task a after the approval is %s (hold reason %q) at %+v, want held at its retro for its children", task.State, task.HoldReason, task.Place)
 		}
 		if record.KeepsSlot(held) {
 			t.Fatal("the held parent keeps a slot, want none: its retro holds none, and its child may need the slot")
@@ -266,8 +272,9 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 // issue beneath it in the workflow, and a child enters the workflow beneath it after that. No
 // sign-off is left to refuse the parent while the child runs, and its head proves its children's
 // merged work, so the pass of its last step, the reviewer's approval, holds it before its retro:
-// issues.phase held, from retro for its children, its task at the retro's place, no retro
-// started, and its owner told once in a retro-held notice naming the child. The child's leave
+// issues.phase held, from retro for its children, its task held at the retro's place for its
+// children, no retro started, and its owner told once in a retro-held notice naming the child. The
+// child's leave
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
 // is its last step, which the sign-off moves into its retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
@@ -291,8 +298,9 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForChildren}) {
 			t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
 		}
-		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
-			t.Fatalf("task a after the approval is %s at %+v, want running at its retro", task.State, task.Place)
+		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskHeld || task.HoldReason != record.HoldForChildren ||
+			task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
+			t.Fatalf("task a after the approval is %s (hold reason %q) at %+v, want held at its retro for its children", task.State, task.HoldReason, task.Place)
 		}
 		if got := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(got) != 0 {
 			t.Fatalf("the approval wrote the retro's starts %+v, want none", got)
