@@ -12,7 +12,7 @@ Every issue you file carries one line in its spec, which triage reads to tell yo
 ## File a clear defect no tree owns
 
 A role writes a clear defect to you only when it found no tree that owns the code: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. A clear defect you find yourself goes to its owner as `findings.md` says, and you forward none; when no tree owns it, post its evidence on the report issue with `controller` as the role.
-File it only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue that no live tree owns gets the evidence as a comment), and no live tree's repository and component match. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the owner the finder writes to itself, or the reason the finder opens its ask.
+File it only when it is clear, in a repository both role GitHub Apps are installed on, no open issue tracks it (an open issue that no live tree owns gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`), and no live tree's repository and component match. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the owner the finder writes to itself, or the reason the finder opens its ask.
 The reply's form and the five steps are in `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect-no-tree-owns`: read them before every such defect.
 
 ## Follow it

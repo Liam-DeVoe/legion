@@ -50,7 +50,8 @@ import (
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
 // dispatch://INFRA-175's design news (20261119203047) stands above those four and is named here
 // the same way. It is the last of main's lists of outbox_kind_check: the upgrade applies it after
-// main's other kind lists, after 20261029120800 has deleted main's merge-lane rows, and it names every other kind
+// main's other kind lists, after 20261029120800 has deleted main's merge-lane rows, and it names
+// every other kind
 // main's daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds,
 // role_holders_publish, step_record, plan_record, conflict_confirm, merge_forward and
 // design_changes besides, which main's daemon never writes. This change's 20261119211852 is
@@ -110,7 +111,8 @@ import (
 // the reviewer's reviewed commit, the step records' three, the plan record's kind list
 // (20261117023932), the plan of an issue (20261117034837), dispatch://INFRA-1997's
 // 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
-// dispatch://INFRA-4374's 20261119003157, the design news and this change's 20261119211852: it names every kind the merge-queue
+// dispatch://INFRA-4374's 20261119003157, the design news and this change's 20261119211852: it
+// names every kind the merge-queue
 // list names and its own.
 // The kind list with the step record (20261117000528) is named here too: it stands above the
 // role-holders publication's and the reviewer's reviewed commit, and it restates
@@ -118,7 +120,8 @@ import (
 // (20261117023932), which stands above the step record's and restates its kinds with
 // plan_record. Both stand above every other version of the list that rewrites outbox_kind_check
 // but the conflict reads' 20261119003157, the design news and this change's 20261119211852, so an
-// upgrade applies them after all the others and before those three. The count of starts of each step (20261117004117) creates tables and a function of
+// upgrade applies them after all the others and before those three. The count of starts of each
+// step (20261117004117) creates tables and a function of
 // its own, and its roll forward (20261117064152) changes nothing on a database no rollback
 // touched; neither touches outbox_kind_check, nor do the reviewed commit and the commit statuses,
 // which each add a column at its default, nor the plan of an issue (20261117034837), which
@@ -139,7 +142,8 @@ import (
 // design_changes.
 // This change's kind list with the merge holds change (20261119211852) stands above every other
 // version of this list but main's 20261120012547, 20261120042902 and 20261120055717 and the
-// copy's applied sequence, 20261121170714, and it is the last of them to rewrite outbox_kind_check: it is now that
+// copy's applied sequence, 20261121170714, and it is the last of them to rewrite outbox_kind_check:
+// it is now that
 // constraint's last word, and it names every kind the design news's list names, step_record,
 // plan_record, conflict_confirm, merge_forward, phase_ended and design_changes among them, and
 // merge_holds_changed. A list there that left out a kind of main's newest lists would fail the
@@ -329,7 +333,7 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261119211852
 // rewrites outbox_kind_check over the rows main's daemon left. All three stand below main's
-// newest, 20261120055717, and the upgrade applies them all the same: Store.apply asks each
+// newest, 20261121170714, and the upgrade applies them all the same: Store.apply asks each
 // migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261119211852: true,
