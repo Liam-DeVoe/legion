@@ -62,6 +62,7 @@ import json
 import os
 import socketserver
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -73,6 +74,14 @@ RELEASE = {"id": 1, "tag_name": "v1", "name": "the draft's name", "body": "the d
            "html_url": "http://github.localhost/o/r/releases/tag/v1",
            "upload_url": "http://uploads.github.localhost/repos/o/r/releases/1/assets{?name,label}",
            "tarball_url": "t", "zipball_url": "z"}
+
+# Each request is answered on a thread of its own, and gh release view and edit send two requests
+# at once. A request reads the state and writes what it changes (the log, spent-until,
+# secondary-done) under this lock. Without it, both requests of a spent case could find
+# spent-until absent and both write it, and open(..., "w") empties the file before the write fills
+# it: one request could read it empty, stop on int(''), and close gh's connection with no answer
+# (gh: `Get "...": EOF`), so the helper saw no refusal to wait for.
+lock = threading.Lock()
 
 
 def read(name, default=""):
@@ -99,14 +108,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
         path = urllib.parse.urlsplit(self.path).path
-        now = time.time()
-        with open(os.path.join(state, "log"), "a") as log:
-            log.write(f"{now:.3f} {self.command} {path}\n")
-        if path != "/rate_limit" and read("spend-for") and not read("spent-until"):
-            with open(os.path.join(state, "spent-until"), "w") as handle:
-                handle.write(str(int(now) + int(read("spend-for"))))
-        spent_until = int(read("spent-until", "0"))
-        spent = now < spent_until or os.path.exists(os.path.join(state, "always-spent"))
+        with lock:
+            now = time.time()
+            with open(os.path.join(state, "log"), "a") as log:
+                log.write(f"{now:.3f} {self.command} {path}\n")
+            if path != "/rate_limit" and read("spend-for") and not read("spent-until"):
+                with open(os.path.join(state, "spent-until"), "w") as handle:
+                    handle.write(str(int(now) + int(read("spend-for"))))
+            spent_until = int(read("spent-until", "0"))
+            spent = now < spent_until or os.path.exists(os.path.join(state, "always-spent"))
+            secondary = read("secondary") if path != "/rate_limit" else ""
+            if secondary and read("secondary-done") and not os.path.exists(os.path.join(state, "secondary-always")):
+                secondary = ""
+            if secondary:
+                with open(os.path.join(state, "secondary-done"), "w") as handle:
+                    handle.write("1")
         if path == "/rate_limit":
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
                       "remaining": 0 if spent else 15000,
@@ -114,11 +130,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(float(read("rate-limit-delay", "0")))
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
-        elif (path != "/rate_limit" and read("secondary")
-              and (not read("secondary-done") or os.path.exists(os.path.join(state, "secondary-always")))):
-            with open(os.path.join(state, "secondary-done"), "w") as handle:
-                handle.write("1")
-            status, retry_after = read("secondary").split()
+        elif secondary:
+            status, retry_after = secondary.split()
             self.answer(int(status), {
                 "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
                 "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits",
@@ -160,8 +173,10 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
     # gh drops the slower of two requests it raced; the write into its closed socket is no fault.
+    # Any other error is the stand-in's own, and its traceback reaches the log beside the case.
     def handle_error(self, request, client_address):
-        pass
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
 
 
 with Server(("127.0.0.1", 0), Handler) as httpd:
