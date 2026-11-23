@@ -3656,7 +3656,10 @@ type HandoffRecordedEventPayload struct {
 // the merge's place, and Report the handoff its ending role named, each null where the run has
 // none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). StartCommit and EndCommit are the
+// commits the task's head was at when the run started and when it ended, and FixCheck, a step's
+// alone, the block id of the CI check a fix run fixes, each null where the record holds none
+// (PUT /api/v1/issues/{key}/steps/{id}/commits writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -3677,6 +3680,9 @@ type StepRecord struct {
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`
 	RatingReason *string    `json:"rating_reason"`
+	StartCommit  *string    `json:"start_commit"`
+	EndCommit    *string    `json:"end_commit"`
+	FixCheck     *string    `json:"fix_check"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -3730,7 +3736,8 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// that end is before that start), its count of step records of kind step that failed, and its
+// count of fixes, the step records that name a fix_check.
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -3741,6 +3748,7 @@ type FinishedIssue struct {
 	EndedAt         *time.Time   `json:"ended_at"`
 	DurationSeconds *int64       `json:"duration_seconds"`
 	FailedSteps     int          `json:"failed_steps"`
+	Fixes           int          `json:"fixes"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest

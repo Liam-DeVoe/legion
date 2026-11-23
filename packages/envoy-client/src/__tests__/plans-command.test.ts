@@ -70,6 +70,7 @@ const ratedOnce: FinishedIssue = {
   ended_at: "2026-11-16T12:00:00Z",
   duration_seconds: 5400,
   failed_steps: 1,
+  fixes: 0,
 };
 
 /** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
@@ -100,6 +101,7 @@ const unrated: FinishedIssue = {
   ended_at: "2026-11-15T07:57:05Z",
   duration_seconds: 3725,
   failed_steps: 0,
+  fixes: 0,
 };
 
 /** Three retros, so three ratings, in the order the retros ran: neither by score (4, 2, 5) nor by
@@ -148,6 +150,7 @@ const neverRan: FinishedIssue = {
   ended_at: null,
   duration_seconds: null,
   failed_steps: 0,
+  fixes: 0,
 };
 
 /** A finished issue whose time Dispatch cannot count: a plan and a rating, a start and an end,
@@ -200,6 +203,7 @@ const otherProject: FinishedIssue = {
   ended_at: "2026-11-13T16:40:00Z",
   duration_seconds: 9300,
   failed_steps: 3,
+  fixes: 0,
 };
 
 const config = {
