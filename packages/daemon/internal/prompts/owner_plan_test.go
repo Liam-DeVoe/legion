@@ -608,7 +608,7 @@ func TestSignOffMovesTheTaskToItsNextStepInTheRoleParts(t *testing.T) {
 }
 
 // `accepting`, `retro` and `merging` hold no slot wherever the task places the acceptance, so no
-// part says the review comes before them (record.PastReview reads the three phases, never the
+// part says the review comes before them (record.InSlotlessPhase reads the phase, never the
 // review's place). A parent is held before its retro wherever its last step is not the owner's
 // acceptance, and a planner's plan goes to the steps after it, whichever they are. What a merge
 // forward asks in those phases is TestTheMergeForwardPartsReadTheTasksOwnSteps's. Each part is read

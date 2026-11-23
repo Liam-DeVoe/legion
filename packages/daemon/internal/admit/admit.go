@@ -647,8 +647,8 @@ type phaseWorker struct {
 // an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
-// roots are read from and which the slot repair walks its slots and its issues past review
-// through.
+// roots are read from and which the slot repair walks its slots and its issues in accepting,
+// retro or merging through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -2839,7 +2839,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // among them.
 //
 // Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// in accepting, retro or merging (record.PastReview, the complement of the phases that keep a row), by key
+// in accepting, retro or merging (record.InSlotlessPhase, the complement of the phases that keep a row), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
@@ -3018,7 +3018,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	for _, issue := range issues {
-		if !record.PastReview(issue) || !record.InWorkflow(issue) {
+		if !record.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
 			continue
 		}
 		root, rooted := byKey[issue.Tree]

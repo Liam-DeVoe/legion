@@ -45,7 +45,7 @@ type heldFixture struct {
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
 // the test: an entry added to the table is given a fixture here. at_work is the one exception:
 // the issues that read it stand in accepting, retro or merging, which keep no slot, and are not
-// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkPastReview), and no
+// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkInSlotlessPhase), and no
 // fixture here builds the member of a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
