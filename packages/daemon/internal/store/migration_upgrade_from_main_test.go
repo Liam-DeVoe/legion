@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"regexp"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -75,9 +77,10 @@ import (
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and dispatch://INFRA-3320's 20261122154643, so an
-// upgrade of a database main migrated applies it just before those seven. It adds
-// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and
+// dispatch://INFRA-3320's 20261122154643, so an upgrade of a database main migrated applies it
+// just before those eight. It adds pull_requests.statuses at its default, the empty list, and it
+// touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -124,24 +127,30 @@ import (
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and INFRA-3320's 20261122154643: it names every kind the
-// plan-record list names and its own two, phase_ended among them. The same migration deletes the
-// queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
-// and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and
+// INFRA-3320's 20261122154643: it names every kind the plan-record list names and its own two,
+// phase_ended among them. The same migration deletes the queued phase_ended rows, the seeded one
+// below among them, and adds pull_requests.conflict_read and pull_requests.merge_forward, both
+// null on every row it finds.
 // The design news's list, applied after it, names those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and INFRA-3320's 20261122154643. It runs no statement, so
-// it changes nothing on a database main migrated, and it touches no outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, 20261121170714 and INFRA-3320's 20261122154643. It runs
+// no statement, so it changes nothing on a database main migrated, and it touches no
+// outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
-// dispatch://INFRA-4729's 20261120055717 and INFRA-3320's 20261122154643; it adds
+// dispatch://INFRA-4729's 20261120055717, 20261121170714 and INFRA-3320's 20261122154643; it adds
 // claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
 // outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these, the design news among them, and before INFRA-3320's
-// 20261122154643, and it touches no outbox_kind_check: it adds columns to dispatch_issues at their
-// defaults, an index on its parent, and a refill mark for each project the copy holds rows of.
+// is applied after all of these, the design news among them, and before 20261121170714 and
+// INFRA-3320's 20261122154643, and it touches no outbox_kind_check: it adds columns to
+// dispatch_issues at their defaults, an index on its parent, and a refill mark for each project
+// the copy holds rows of.
+// The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
+// these and before INFRA-3320's 20261122154643, and it touches no outbox_kind_check: it adds
+// dispatch_issues.applied_seq at its default, 0, on every row it finds.
 // INFRA-3320's kind list with the two basis seeds (20261122154643) stands above every other
 // version of this list and restates the design news's kinds with the two seeds, so an upgrade
 // applies it last of the kind lists and it is the last word of outbox_kind_check. It deletes
@@ -157,7 +166,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261114064234, 20261114232555, 20261115194357, 20261116144907, 20261116165926,
 	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117064152, 20261117112334,
 	20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717,
-	20261122154643,
+	20261121170714, 20261122154643,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -175,9 +184,10 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3320's 20261114064234, 20261114232555 and 20261122154643,
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
-// dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902 and
-// dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
+// dispatch://INFRA-4729's 20261120055717 and the copy's applied sequence, 20261121170714. That is
+// why the loop below holds the list rather than counting it, so that a version added above any of
+// them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -389,5 +399,145 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
 		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
+	}
+}
+
+// mainsAppliedSequence is main's newest migration at this branch's merge of main 77eac01e35d0: the
+// applied sequence of the copy of Dispatch's issues. dispatch://INFRA-3320's gate basis
+// (20261114064234) and phase awaiting_children (20261114232555) stand below it, and its kind list
+// with the two basis seeds (20261122154643), this branch's newest before that merge, above it.
+const mainsAppliedSequence = 20261121170714
+
+// At the merge of main 77eac01e35d0 each side has recorded a migration the other has not, and this
+// branch's daemon meets a database of either. One that main migrated holds main's applied sequence
+// (20261121170714) and none of INFRA-3320's three versions, two of which stand below it; one that
+// this branch's head before the merge (10e98a85ef53) migrated holds the three and lacks
+// 20261121170714, which stands below its newest, 20261122154643. Store.Migrate asks each embedded
+// migration whether its own version is recorded (apply) and never compares it with the newest, so
+// each upgrade applies the versions that database lacks, below its newest and above it alike, and
+// leaves every embedded version recorded once.
+//
+// Main's database holds an outbox row of each kind its own kind check admits, read off that check:
+// the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
+// main's daemon can queue that the list leaves out fails the upgrade. After it the outbox takes the
+// two basis seeds as well. This branch's database holds a row of the copy of Dispatch's issues as
+// the release before 20261121170714 writes one, and the upgrade gives it applied_seq at 0.
+//
+// Each database is built from the migrations numbered up to its own newest alone, so a migration
+// added after this test still finds the database that release left, and the upgrade applies it
+// too.
+func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	newest := 0
+	for _, migration := range all {
+		newest = max(newest, migration.Version)
+	}
+	queue := func(store *Store, kind string) error {
+		_, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
+		return err
+	}
+	for _, release := range []struct {
+		name string
+		// newest is the newest version the release embeds, and lacks each version numbered below
+		// it that its database never recorded.
+		newest int
+		lacks  []int
+		// seed writes the rows the release left before the upgrade, and check reads them after it.
+		seed, check func(t *testing.T, store *Store)
+	}{
+		{
+			name:   "main at 77eac01e35d0",
+			newest: mainsAppliedSequence,
+			lacks:  []int{20261114064234, 20261114232555},
+			seed: func(t *testing.T, store *Store) {
+				var check string
+				if err := store.pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
+					where conrelid = 'outbox'::regclass and conname = 'outbox_kind_check'`).Scan(&check); err != nil {
+					t.Fatalf("read the kind check main's database stands on: %v", err)
+				}
+				kinds := regexp.MustCompile(`'([a-z_]+)'::`).FindAllStringSubmatch(check, -1)
+				if len(kinds) == 0 {
+					t.Fatalf("the kind check main's database stands on names no kind: %s", check)
+				}
+				for _, kind := range kinds {
+					if err := queue(store, kind[1]); err != nil {
+						t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
+					}
+				}
+				t.Logf("main's database holds a row of each of the %d kinds its kind check admits", len(kinds))
+			},
+			check: func(t *testing.T, store *Store) {
+				for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
+					if err := queue(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+			},
+		},
+		{
+			name:   "this branch at 10e98a85ef53",
+			newest: 20261122154643,
+			lacks:  []int{mainsAppliedSequence},
+			seed: func(t *testing.T, store *Store) {
+				// The release before 20261121170714 names these columns and no other (record's
+				// PutDispatchIssue).
+				if _, err := store.pool.Exec(ctx, `insert into dispatch_issues (key, project, dispatch_seq, status, status_seq,
+					parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq)
+					values ('ACME-1', 'ACME', 5, 'todo', 5, null, 5, '{}', 5, '{legion}', 5, 'a0', 5)`); err != nil {
+					t.Fatalf("write a row of the copy of Dispatch's issues as this branch's daemon did: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const applied = `select row(key, dispatch_seq, applied_seq)::text from dispatch_issues order by key`
+				if got, want := rowsAsText(t, store, applied), []string{"(ACME-1,5,0)"}; !slices.Equal(got, want) {
+					t.Errorf("the copy after the upgrade (key, dispatch_seq, applied_seq) = %v, want %v: the row it held, at 0", got, want)
+				}
+			},
+		},
+	} {
+		t.Run(release.name, func(t *testing.T) {
+			store := emptyStore(t)
+			var migrated []migrations.Migration
+			later := 0
+			for _, migration := range all {
+				switch {
+				case slices.Contains(release.lacks, migration.Version):
+				case migration.Version <= release.newest:
+					migrated = append(migrated, migration)
+				default:
+					later++
+				}
+			}
+			if _, err := store.migrate(ctx, migrated); err != nil {
+				t.Fatalf("migrate the database as %s did: %v", release.name, err)
+			}
+			if version, err := store.SchemaVersion(ctx); err != nil || version != release.newest {
+				t.Fatalf("the database %s migrated reports version %d (%v), want its newest, %d", release.name, version, err, release.newest)
+			}
+			release.seed(t, store)
+
+			applied, err := store.Migrate(ctx)
+			if err != nil {
+				t.Fatalf("upgrade the database %s migrated: %v", release.name, err)
+			}
+			if want := len(release.lacks) + later; applied != want {
+				t.Errorf("the upgrade applied %d migrations, want %d: the %d below its newest it lacked, %v, and the %d numbered after it",
+					applied, want, len(release.lacks), release.lacks, later)
+			}
+			for _, migration := range all {
+				if recorded := timesRecorded(t, store, migration.Version); recorded != 1 {
+					t.Errorf("after the upgrade schema_version has %d rows for %s, want 1", recorded, migration.Name)
+				}
+			}
+			if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
+				t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
+			}
+			release.check(t, store)
+		})
 	}
 }
