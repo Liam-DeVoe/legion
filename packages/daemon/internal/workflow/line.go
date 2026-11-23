@@ -386,7 +386,7 @@ func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlac
 	if !w.Stored || !ok {
 		return record.TaskPlace{}, false
 	}
-	if _, defined := d.Roles[step.Role]; defined {
+	if d.Defines(step.Role) {
 		return record.TaskPlace{}, false
 	}
 	return place, true

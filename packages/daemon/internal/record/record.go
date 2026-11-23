@@ -1147,7 +1147,9 @@ const (
 // already is; testing, reviewing, accepting, retro and merging (in the default steps, every phase
 // after implementing up to the merge), which the issue keeps while the implementer merges
 // (dispatch://INFRA-4374 R1); and step, where a role the deployment defines runs, after the
-// implementer or before it (a step before it has no pull request, so nothing is asked there). An
+// implementer or before it: a step before it is asked a merge forward only when the issue holds an
+// open pull request there, as it does after a todo restarts the task or a later version of the
+// plan moves the step, and the merge forward asks nothing of an issue with none. An
 // issue that stands in none of them - admitted, awaiting_person or planning, where in the default
 // steps nothing is implemented yet, or out of the workflow - is asked for no merge forward,
 // wherever its task places the planner. They are also the phases a head move is read for a

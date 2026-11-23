@@ -56,7 +56,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	recipients := []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}
-	if worker := issue.RoleAt(at); at != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker) {
+	if worker, told := e.mergeForwardWorker(issue, at, record.MergeForwardHold); at != phase.Implementing && told {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	addressed, err := e.addressRoles(issue.Project, recipients, nil)
@@ -194,7 +194,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	}
 	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
 	var recipients []roleRecipient
-	if worker := issue.RoleAt(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
+	if worker, told := e.mergeForwardWorker(issue, at, record.MergeForwardLanded); told {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	if review {
@@ -224,6 +224,21 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	e.logOnCommit(ctx, "workflow: the merge forward landed", "issue", issue.Key, "tree", issue.Tree, "phase", at,
 		"pullRequest", pr.Number, "head", asked.Head, "landed", pr.HeadSHA)
 	return nil
+}
+
+// mergeForwardWorker is the role of the step issue stands at (at) that a merge forward's message
+// of step reaches (record.MergeForwardReaches), and false where none does: a phase whose role is
+// told nothing, and a step whose role the engine's deployment no longer defines. Such a role's
+// task is stopped (stopLostRole) and starts again only once the role is defined again, so a hold
+// or a landed message to it is no work of the issue's, and a message held for its released claim
+// would bring that claim back (the daemon's deliverHeld). The two messages a merge forward sends
+// the step's role, its hold (mergeForward) and its landed (mergeForwardLanded), both read it.
+func (e *Engine) mergeForwardWorker(issue record.Issue, at phase.Phase, step record.MergeForwardStep) (claim.Role, bool) {
+	worker := issue.RoleAt(at)
+	if !record.MergeForwardReaches(step, worker) || !claim.IsBuiltin(worker) && !e.cfg.Deployment.Defines(string(worker)) {
+		return "", false
+	}
+	return worker, true
 }
 
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
@@ -298,7 +313,7 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 }
 
 // mergedForwardRefusal is the completion fence of a merge forward (dispatch://INFRA-4374 R1): a
-// completion of testing, reviewing or retro whose commit is the head a merge forward was asked of,
+// completion of testing, reviewing, step or retro whose commit is the head a merge forward was asked of,
 // once that merge landed and the pull request stands at another head, reports work on code the
 // issue no longer stands on, and is refused with HANDOFF_HEAD_MERGED_FORWARD before anything is
 // recorded (handoff). The merge forward is the record's landed ask (record.MergeForward.Landed)
@@ -348,7 +363,7 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // It answers false where it does not refuse.
 func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
-	case phase.Testing, phase.Reviewing, phase.Retro:
+	case phase.Testing, phase.Reviewing, phase.Step, phase.Retro:
 	default:
 		return intake.Result{}, false
 	}
