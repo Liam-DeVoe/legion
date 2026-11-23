@@ -336,10 +336,14 @@ function NodeMenuItem({
           </a>
         )}
         {removalIsOffered(artifact) ? (
-          <RemoveDocument
-            artifact={artifact}
-            refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-          />
+          // Remove is drawn by today's control (`DocumentWayBack.tsx`), whose words are the
+          // page's own too (part N's R9): the box marks them so, and draws no box of its own.
+          <div className="contents" {...pageChrome}>
+            <RemoveDocument
+              artifact={artifact}
+              refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+            />
+          </div>
         ) : null}
       </div>
     </div>

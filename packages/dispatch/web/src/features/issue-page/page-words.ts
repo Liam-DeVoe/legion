@@ -508,6 +508,9 @@ export const EMPTY_STATE_LINES = freeze({
   document_missing: "This issue holds no document at this address.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
+  /** What the opened document's list of its versions says where none of them is named, until
+   *  the reader shows them all (part N's R2): today's version list's words. */
+  no_named_versions: "No named versions yet.",
   /** What the list of who worked the issue, in Details' People section, says where nobody has
    *  (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
   no_collaborators: "No one has worked this issue yet.",
@@ -693,6 +696,12 @@ export const ANSWER_LINES = freeze({
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What the opened document's comparison of two versions says while it reads their text,
+   *  which the reader asked for, when it could not, and of two files that hold the same bytes
+   *  (part N's R2): today's comparison's words. */
+  versions_loading: "Loading versions to compare…",
+  versions_unreadable: "Could not load versions to compare.",
+  versions_same: "The two versions are the same.",
   /** What the list of who worked the issue says while its read, which the reader opened, is
    *  out, and when it failed (`IssueCollaboratorList.tsx`): the Collaborators tab's words. */
   loading_collaborators: "Loading collaborators…",
@@ -715,6 +724,9 @@ export const ANSWER_LINES = freeze({
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
+  /** What the node menu's Remove says while its removal is out, which today's control draws
+   *  (`DocumentWayBack.tsx`) and the menu marks as the page's own words (part N's R9). */
+  saving_remove: "Removing…",
 } as const);
 
 /**
@@ -1193,6 +1205,21 @@ export const CONTROL_LABELS = freeze({
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
   hide_fields: "Hide fields",
+  /** The opened document's versions under its editor or picture (part N's R2), today's version
+   *  list's controls: the press that lists every version where the list shows the named ones,
+   *  and back; the comparison of any two versions, the name its region takes before the
+   *  document's own name ("Compare versions for notes.md"), the press that opens it and closes
+   *  it, and its two pickers, "From" and "To", each named after the document as well
+   *  ("Compare notes.md from"). */
+  show_all_versions: "Show all versions",
+  show_named_versions: "Show named versions",
+  compare_versions: "Compare versions",
+  compare_versions_for: "Compare versions for",
+  show_comparison: "Show comparison",
+  hide_comparison: "Hide comparison",
+  compare: "Compare",
+  compare_from: "From",
+  compare_to: "To",
   /** What a handoff's opened fields call the fields every Legion handoff record carries: the
    *  four `legion handoff write` stamps, the commit a file-backed role's work was done against
    *  (`head`), and each entry of its `proof`, counted from 1 (`HistoryHandoff.tsx`). Any other
@@ -1412,6 +1439,10 @@ export const FILE_WORDS = freeze({
    *  shows, before that version's number, its author and its day: "version 3 · alice · 5 Nov"
    *  (part N's R2). */
   version: "version",
+  /** The opened document's list of its versions (part N's R2): its heading, and the name its
+   *  region takes before the document's own name, "Versions for notes.md". */
+  versions: "Versions",
+  versions_for: "Versions for",
 } as const);
 
 /**
