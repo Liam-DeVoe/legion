@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -31,6 +31,7 @@ import {
   runReader,
   SameJobInput,
   SentenceInput,
+  skillFilePaths,
   skillFiles,
   TASKS_PER_LABEL,
 } from "./readers";
@@ -2276,20 +2277,40 @@ test("each control plants its finding and holds only when the answer names it", 
   expect(sentence.held({ found: [{ id: "s1", line: 3, quote: "q" }] }).held).toBe(false);
 });
 
-test("a skill's files: its .md files, SKILL.md first and the rest by path", () => {
+// Catches: a linked --old (its files symbolic links, as the arms take one) whose linked files the
+// listing leaves out, so the readers, build-cases --drop-navigation and the behaviour report's line
+// count other files than the arms read.
+test("a skill's files: every file at any depth, a symbolic link to a file among them, SKILL.md first and the rest by path; its .md files with their text", () => {
   const dir = path.join(scratch, "skill-files");
+  const elsewhere = path.join(scratch, "skill-files-elsewhere");
   for (const [file, text] of [
     ["references/b.md", "b\n"],
-    ["SKILL.md", "s\n"],
     ["LICENSE", "l\n"],
     ["references/a.md", "a\n"],
   ] as const) {
     mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
     writeFileSync(path.join(dir, file), text);
   }
+  mkdirSync(path.join(elsewhere, "linked"), { recursive: true });
+  writeFileSync(path.join(elsewhere, "skill.md"), "s\n");
+  writeFileSync(path.join(elsewhere, "c.md"), "c\n");
+  // SKILL.md a link to a file outside the directory, references/c.md a relative one; a link to a
+  // directory and a link that resolves nowhere are no files.
+  symlinkSync(path.join(elsewhere, "skill.md"), path.join(dir, "SKILL.md"));
+  symlinkSync("../../skill-files-elsewhere/c.md", path.join(dir, "references", "c.md"));
+  symlinkSync(path.join(elsewhere, "linked"), path.join(dir, "linked-dir"));
+  symlinkSync("missing.md", path.join(dir, "references", "gone.md"));
+  expect(skillFilePaths(dir)).toEqual([
+    "SKILL.md",
+    "LICENSE",
+    "references/a.md",
+    "references/b.md",
+    "references/c.md",
+  ]);
   expect(skillFiles(dir)).toEqual([
     { path: "SKILL.md", text: "s\n" },
     { path: "references/a.md", text: "a\n" },
     { path: "references/b.md", text: "b\n" },
+    { path: "references/c.md", text: "c\n" },
   ]);
 });

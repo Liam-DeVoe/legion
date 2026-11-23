@@ -71,7 +71,7 @@
  *       (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir>
  *       --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>)
  *       --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>]
- *       [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]
+ *       [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --old <dir> --copies <dir>
  *       --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
  *   bun scripts/skill-cuts/cli.ts build-tasks --config <file> --key-file <file> --skill <dir>
@@ -232,12 +232,15 @@
  * installed, context.ts's `installedCopies` of the capture's record under `--cache-dir`), and each
  * run records each answered round's reads (`skillReads`) and is judged on those rounds' read calls
  * and the reply after them. A written case's runs also answer, from the shared checkout of its
- * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only calls
- * (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads`, with `unanswered`
- * where a reply's read-only calls were not answered. A run whose reply after the last answered round still only reads skill
- * files gets no verdict and is run again, its reason beginning `reads-past-last-round`; each case's
- * line and `report` count such runs by arm, and a stage left unscreened by an arm with such runs
- * drops its case under that reason, with the counts. A capture made for a stage shows the case's
+ * repository at its commit under `--cache-dir` (`sharedCheckout`), at most 5 rounds of read-only
+ * calls (replay.ts's checkout rounds), recorded in `checkoutRounds` and `skillReads` (a read of a
+ * code file the pin may summarize answered with its whole text marked `wholeText`). A run whose
+ * reply after the last answered round still only reads skill files, or, in a written case, makes
+ * a read-only call the checkout answers in no form, gets no verdict and is run again, its reason
+ * beginning `reads-past-last-round` or `unanswered-read`; each case's line and `report` count such
+ * runs by arm, `report` by kind of case too beside the whole-text answers, and a stage left
+ * unscreened by an arm with such runs drops its case under `reads-past-last-round`, with the
+ * counts. A capture made for a stage shows the case's
  * session (capture.ts, "The harness strings"), whose head the capture reads once from its store
  * through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
  *
@@ -478,6 +481,7 @@ import {
   runControl,
   runReader,
   SameJobInput,
+  skillFilePaths,
   skillFiles,
 } from "./readers";
 import {
@@ -487,6 +491,8 @@ import {
   ReadsPastLastRound,
   type Replayed,
   replayInterleaved,
+  UNANSWERED_READ,
+  UnansweredRead,
 } from "./replay";
 import { main as resultsIndexMain } from "./results-index";
 import {
@@ -1960,13 +1966,15 @@ const SkillReadRecord = z.strictObject({
   isError: z.boolean(),
 });
 /** One read-only call a checkout round of a written case's replay answered from its checkout
- *  copy (replay.ts's `CheckoutRead`): its tool, its input (a bash call's command among it), and
- *  whether the answer is an error. */
+ *  copy (replay.ts's `CheckoutRead`): its tool, its input (a bash call's command among it),
+ *  whether the answer is an error, and whether a read was answered with the file's whole text in
+ *  place of the pin's summary (`wholeText`, absent otherwise). */
 const CheckoutReadRecord = z.strictObject({
   from: z.literal("checkout"),
   tool: z.string(),
   input: z.unknown(),
   isError: z.boolean(),
+  wholeText: z.literal(true).optional(),
 });
 
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
@@ -1996,10 +2004,12 @@ const Run = z.strictObject({
     .nullable()
     .optional(),
   /** Why the reply that ended the run, every call of it read-only, was not answered from the
-   *  checkout copy (replay.ts's `Replayed.unanswered`); absent otherwise. */
+   *  checkout copy, in a run made before such a run got no verdict (its reason now begins
+   *  UNANSWERED_READ); absent otherwise. */
   unanswered: z.string().optional(),
   /** The step's content (each answered round's calls, then the reply after them, which for a run
-   *  that read past the last round is the reply it ended on), or null when the replay failed. */
+   *  that read past the last round, or made a call the checkout answers in no form, is the reply
+   *  it ended on), or null when the replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
   replaySpent: z.array(SpentRecord),
   judgeSpent: z.array(SpentRecord),
@@ -2047,6 +2057,14 @@ const Texts = z.strictObject({
 });
 type Texts = z.infer<typeof Texts>;
 
+/** A written case's shared checkout as a stage records it (`StageResult.checkout`) and its marker
+ *  begins (`CheckoutMarker`). */
+const SharedCheckout = z.strictObject({
+  git: z.boolean(),
+  depth: z.int().positive().nullable(),
+  removedLinks: z.array(z.string()),
+});
+
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and of `--new` or `--ours` it ran with, `compared` the arm
  *  the old text was compared with (a stage that records none was run with `--new`, before it was
@@ -2077,13 +2095,7 @@ const StageResult = z.strictObject({
   usd: z.number(),
   runner: z.string().optional(),
   confirmFlagged: z.literal(true).optional(),
-  checkout: z
-    .strictObject({
-      git: z.boolean(),
-      depth: z.int().positive().nullable(),
-      removedLinks: z.array(z.string()),
-    })
-    .optional(),
+  checkout: SharedCheckout.optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -2755,8 +2767,9 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
  *  capture's record and the cache (context.ts's `installedCopies`), and, for a written case,
  *  `checkout`, the copy of its checkout its read-only calls are answered from; then every reply
  *  judged blind under `seed`. A replay that fails is a run with no verdict, and so is one whose
- *  reply after the last answered round still only reads (replay.ts's ReadsPastLastRound: its
- *  reason begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the
+ *  reply after the last answered round still only reads, or makes a read-only call the checkout
+ *  answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason begins
+ *  READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply and spend); one the
  *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
  *  their arm, in the order they were sent. */
 async function runRound(
@@ -2812,9 +2825,12 @@ async function runRound(
         budgetSpent = true;
         continue;
       }
-      // A run whose reply after the last answered round still only reads keeps what it read and
-      // spent.
-      const past = outcome.reason instanceof ReadsPastLastRound ? outcome.reason : undefined;
+      // A run whose reply after the last answered round still only reads, or makes a read-only
+      // call the checkout answers in no form, keeps what it read and spent.
+      const past =
+        outcome.reason instanceof ReadsPastLastRound || outcome.reason instanceof UnansweredRead
+          ? outcome.reason
+          : undefined;
       runs.push({
         ...base,
         run: next(),
@@ -2845,7 +2861,6 @@ async function runRound(
       skillRounds: step.rounds,
       checkoutRounds: step.checkoutRounds,
       skillReads: step.reads.map((each) => [...each]),
-      ...(step.unanswered === undefined ? {} : { unanswered: step.unanswered }),
       reply: step.step.message.content,
       replaySpent: step.usage,
       judgeSpent: [...judgement.spent],
@@ -2972,7 +2987,7 @@ async function runStage(
     const { repo, commit, root, cwd } = c.checkout;
     try {
       const shared = await sharedCheckout(r, repo, commit);
-      checkout = { dir: shared.dir, root, cwd, git: shared.marker.git };
+      checkout = { dir: shared.dir, root, cwd, git: shared.marker.git, answers: new Map() };
       const { git, depth, removedLinks } = shared.marker;
       save({ ...state, checkout: { git, depth, removedLinks } });
     } catch (error) {
@@ -3041,10 +3056,7 @@ async function runGit(args: readonly string[]): Promise<{ code: number; stderr: 
  *  whether it is a git checkout (else GitHub's tarball of the commit, with why the git one failed),
  *  the depth of its history, the symbolic links removed from it, and the seconds and the bytes its
  *  making took. */
-const CheckoutMarker = z.strictObject({
-  git: z.boolean(),
-  depth: z.int().positive().nullable(),
-  removedLinks: z.array(z.string()),
+const CheckoutMarker = SharedCheckout.extend({
   seconds: z.number().nonnegative(),
   bytes: z.int().nonnegative(),
   why: z.string().optional(),
@@ -3502,20 +3514,21 @@ function stageVerdict(stage: Stage, passes: Passes<Stage>, compared: Compared): 
 }
 
 /** Each arm of `stage`, the old text compared with `compared` (score.ts's `stageArms`), with how
- *  many of `runs`, a stage's runs, got no verdict because the reply after the last answered round
- *  still only read skill files, or, in a written case, still only made read-only calls its
- *  checkout copy answers (replay.ts's ReadsPastLastRound, whose reason begins
- *  READS_PAST_LAST_ROUND). */
+ *  many of `runs`, a stage's runs, got no verdict for the reads of a reply, the reason beginning
+ *  `reason`: READS_PAST_LAST_ROUND, the reply after the last answered round still only read skill
+ *  files, or, in a written case, still only made read-only calls its checkout copy answers
+ *  (replay.ts's ReadsPastLastRound); or UNANSWERED_READ, a written case's reply made a read-only
+ *  call its checkout copy answers in no form (UnansweredRead). */
 function readsPast(
   runs: readonly Run[],
   stage: Stage,
-  compared: Compared
+  compared: Compared,
+  reason: string = READS_PAST_LAST_ROUND
 ): { arm: ArmName; count: number }[] {
   return stageArms(stage, compared).map((arm) => ({
     arm,
     count: runs.filter(
-      (run) =>
-        run.arm === arm && run.verdict === null && run.reason.startsWith(READS_PAST_LAST_ROUND)
+      (run) => run.arm === arm && run.verdict === null && run.reason.startsWith(reason)
     ).length,
   }));
 }
@@ -3527,27 +3540,44 @@ function armCounts(counts: readonly { arm: ArmName; count: number }[]): string {
 
 /** Why a case whose `stage` is unscreened is dropped, from the stage's `runs` (the old text
  *  compared with `compared`): each arm that lacks its judged runs after its extra runs, with how
- *  many of its runs read skill files past the last answered round, when it has one or more such
- *  runs; then every arm's count of them. Undefined when no arm that lacks its runs has one: the
- *  stage is then unscreened, as before. */
+ *  many of its runs still only read after the last answered round (skill files, or read-only
+ *  calls a written case's checkout answers) and how many made a read-only call the checkout
+ *  answers in no form, when it has one or more such runs; then every arm's count of them.
+ *  Undefined when no arm that lacks its runs has one: the stage is then unscreened, as before. */
 function readsPastDrop(runs: readonly Run[], stage: Stage, compared: Compared): string | undefined {
   const past = readsPast(runs, stage, compared);
-  const short = past.flatMap(({ arm, count }) => {
+  const unanswered = readsPast(runs, stage, compared, UNANSWERED_READ);
+  const short = past.flatMap(({ arm, count }, index) => {
+    const missed = unanswered[index]?.count ?? 0;
     const own = runs.filter((run) => run.arm === arm);
     const judged = own.filter((run) => run.verdict !== null).length;
-    return judged < STAGE_RUNS[stage] && count > 0
-      ? [
-          `the ${arm} arm has ${judged} of its ${STAGE_RUNS[stage]} judged runs after ${own.length} runs, ${count} of which still only read after the last answered round (skill files, or read-only calls a written case's checkout answers)`,
-        ]
-      : [];
+    if (judged >= STAGE_RUNS[stage] || count + missed === 0) return [];
+    const which = [
+      ...(count > 0
+        ? [
+            `${count} of which still only read after the last answered round (skill files, or read-only calls a written case's checkout answers)`,
+          ]
+        : []),
+      ...(missed > 0
+        ? [`${missed} of which made a read-only call the checkout answers in no form`]
+        : []),
+    ];
+    return [
+      `the ${arm} arm has ${judged} of its ${STAGE_RUNS[stage]} judged runs after ${own.length} runs, ${which.join(", ")}`,
+    ];
   });
   if (short.length === 0) return undefined;
-  return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)})`;
+  const missedWords = unanswered.some(({ count }) => count > 0)
+    ? `; runs with a read-only call the checkout answers in no form: ${armCounts(unanswered)}`
+    : "";
+  return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)}${missedWords})`;
 }
 
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
  *  they say, by the compared arm the stage records, and how many runs got no verdict, those that
- *  read skill files past the last answered round counted by arm. */
+ *  still only read after the last answered round (skill files, or read-only calls a written
+ *  case's checkout answers) and those that made a read-only call the checkout answers in no form
+ *  counted by arm. */
 function stageLine(
   caseId: string,
   stage: Stage,
@@ -3558,10 +3588,11 @@ function stageLine(
   const compared = recordedArm(state);
   const outcome = stageOutcome(state.runs, caseId, stage, compared);
   const unjudged = state.runs.filter((run) => run.verdict === null).length;
-  const past = readsPast(state.runs, stage, compared);
-  const pastWords = past.some(({ count }) => count > 0)
-    ? `; ${READS_PAST_LAST_ROUND}: ${armCounts(past)}`
-    : "";
+  const reasonWords = [READS_PAST_LAST_ROUND, UNANSWERED_READ].flatMap((reason) => {
+    const counts = readsPast(state.runs, stage, compared, reason);
+    return counts.some(({ count }) => count > 0) ? [`; ${reason}: ${armCounts(counts)}`] : [];
+  });
+  const pastWords = reasonWords.join("");
   const extra = unjudged === 0 ? "" : ` (${unjudged} runs with no verdict, run again${pastWords})`;
   switch (outcome.state) {
     case "counted": {
@@ -4053,9 +4084,7 @@ function stepSkillReads(c: Case, old: string, files: readonly string[]): string[
  *  flagged and confirmed losses. A description beside the registered rule, which it does not
  *  change. */
 function stepReadsLine(b: Behaviour, score: SkillScore, old: string): string {
-  const files = readdirSync(old, { recursive: true, encoding: "utf8" }).filter(
-    (file) => file !== "SKILL.md" && isFile(path.join(old, file))
-  );
+  const files = skillFilePaths(old).filter((file) => file !== "SKILL.md");
   const screened = score.cases.filter(
     (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
   );
@@ -4362,6 +4391,30 @@ function reportCommand(
   });
   lines.push(
     `${READS_PAST_LAST_ROUND}: the runs whose reply after the last of ${MAX_SKILL_ROUNDS} answered rounds of skill reads, or of ${MAX_CHECKOUT_ROUNDS} rounds of a written case's read-only calls answered from its checkout, still only read, which get no verdict and are run again, by stage and arm: ${pastByStage.join("; ")}`
+  );
+  // By kind of case, the runs with no verdict for the reads of a reply, by reason, and the reads
+  // answered with a file's whole text in place of the pin's summary: a written case's checkout
+  // rounds show the arms what a session's agent may not have seen.
+  const byKindOfCase = CaseKind.options.map((kind) => {
+    const runs = b.cases
+      .filter((c) => caseKind(c) === kind)
+      .flatMap((c) => {
+        const result = results.get(c.id);
+        if (result === undefined) return [];
+        return [
+          ...Stage.options.flatMap((stage) => result.stages[stage]?.runs ?? []),
+          ...(result.earlierConfirms ?? []).flatMap((each) => each.runs),
+        ];
+      });
+    const rerun = (reason: string) =>
+      runs.filter((run) => run.verdict === null && run.reason.startsWith(reason)).length;
+    const whole = runs
+      .flatMap((run) => (run.skillReads ?? []).flat())
+      .filter((read) => read.from === "checkout" && read.wholeText === true).length;
+    return `${kind}: ${rerun(READS_PAST_LAST_ROUND)} ${READS_PAST_LAST_ROUND}, ${rerun(UNANSWERED_READ)} ${UNANSWERED_READ}, ${whole} reads answered with the file's whole text in place of the pin's summary`;
+  });
+  lines.push(
+    `runs with no verdict, run again, and reads answered whole, by kind of case: ${byKindOfCase.join("; ")}`
   );
   const pooled = score.cases.flatMap(({ caseId, confirm }) =>
     confirm?.state === "counted" && confirm.pooled !== undefined
@@ -4928,7 +4981,7 @@ const USAGE = [
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
   "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]",
-  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",

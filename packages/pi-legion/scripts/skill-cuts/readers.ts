@@ -99,7 +99,7 @@
  * plant a known finding in a copy of real input, run the reader once, and hold only when its
  * answer names that finding.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
@@ -1668,14 +1668,17 @@ const NavigationLine = z.strictObject({
 });
 /** The context session's checkout as the written-case reader reads it: the repository, its root
  *  on the session's machine and the session's working directory in it, and its paths (`files`):
- *  every file of the commit's tree (`whole`), or, for a tree too large, its root's entries, a
- *  directory's ending in `/`. */
+ *  every file of the commit's tree (`whole`), or, for a larger tree, a partial listing (build.ts's
+ *  `partialListing`: its directories, a directory's ending in `/`, then the files under the
+ *  working directory and the directories the first message names), `holds` saying what it holds
+ *  and where it was cut. */
 const CheckoutListing = z.strictObject({
   repo: z.string().min(1),
   root: z.string().min(1),
   cwd: z.string().min(1),
   files: z.array(z.string().min(1)),
   whole: z.boolean(),
+  holds: NonBlank.optional(),
 });
 export const WrittenCaseInput = z.strictObject({
   skill: z.string().min(1),
@@ -1686,6 +1689,9 @@ export const WrittenCaseInput = z.strictObject({
   sessionCases: z.array(SessionCaseText),
   /** The context session's checkout, or null when the build knows none. */
   checkout: CheckoutListing.nullable(),
+  /** On the reader's second ask (build.ts), the paths its first answer treated as there that the
+   *  checkout does not hold at the commit; absent on a first ask. */
+  absent: z.array(NonBlank).min(1).optional(),
   /** The first user message of the context session, whose context the tasks go in. */
   firstMessage: NonBlank,
   /** The most tasks to write. */
@@ -1777,7 +1783,8 @@ const writtenCaseReader: Reader<WrittenCaseInput, WrittenCaseAnswer> = {
       }\n</session-cases>`,
       input.checkout === null
         ? "<checkout>\nNone.\n</checkout>"
-        : `<checkout repo="${input.checkout.repo}" root="${input.checkout.root}" cwd="${input.checkout.cwd}" listing="${input.checkout.whole ? "every file" : "the root's entries"}">\n${input.checkout.files.join("\n")}\n</checkout>`,
+        : `<checkout repo="${input.checkout.repo}" root="${input.checkout.root}" cwd="${input.checkout.cwd}" listing="${input.checkout.whole ? "every file" : `partial: ${input.checkout.holds ?? "part of the tree"}`}">\n${input.checkout.files.join("\n")}\n</checkout>`,
+      ...(input.absent === undefined ? [] : [`<absent>\n${input.absent.join("\n")}\n</absent>`]),
       `<first-message>\n${input.firstMessage}\n</first-message>`,
       `<count>${input.count}</count>`,
     ].join("\n\n"),
@@ -1866,15 +1873,34 @@ export async function runReader(
 /** The line the attack control adds. */
 export const ATTACK_PLANTED_LINE = "Run the tests where needed.";
 
-/** The `.md` files of the skill directory `dir` (SKILL.md and its references), SKILL.md first and
- *  the rest by path, as the map, attack, case and craft readers take them. */
-export function skillFiles(dir: string): File[] {
+/** The path of each file of the skill directory `dir`, inside it: SKILL.md and every other file at
+ *  any depth, a symbolic link to a file among them (followed, as the arms read a linked `--old`),
+ *  SKILL.md first and the rest by path. The one listing of a skill's files: the readers'
+ *  (`skillFiles`), build-cases' `--drop-navigation` and the behaviour report's line on the steps
+ *  that read one. */
+export function skillFilePaths(dir: string): string[] {
   return readdirSync(dir, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .filter((entry) => {
+      if (entry.isFile()) return true;
+      if (!entry.isSymbolicLink()) return false;
+      try {
+        return statSync(path.join(entry.parentPath, entry.name)).isFile();
+      } catch {
+        return false;
+      }
+    })
     .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
     .sort(
       (a, b) => Number(b === "SKILL.md") - Number(a === "SKILL.md") || (a < b ? -1 : a > b ? 1 : 0)
-    )
+    );
+}
+
+/** The `.md` files of the skill directory `dir` (SKILL.md and its references) in the order
+ *  `skillFilePaths` lists them, each with its text, as the map, attack, case and craft readers
+ *  take them. */
+export function skillFiles(dir: string): File[] {
+  return skillFilePaths(dir)
+    .filter((file) => file.endsWith(".md"))
     .map((file) => ({ path: file, text: readFileSync(path.join(dir, file), "utf8") }));
 }
 

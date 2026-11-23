@@ -10,7 +10,8 @@
  * and with no `-i` and no `w`, `W` or `e` command, `nl`, `stat`, `file` without `-C`, `tree`
  * without `-o`, or `git` (with at most the global options `-C <dir>`, `--no-pager` and `-P`) whose
  * subcommand is one of READ_ONLY_GIT (`log`, `show`, `diff`, `status`, `grep`, `ls-files`, `blame`)
- * with no `--output`, `-O`, `--open-files-in-pager` or `--ext-diff`. A redirection to a file makes
+ * with no `--output`, `-O`, `--open-files-in-pager`, `--ext-diff` or `--no-index` (with which `git
+ * diff` reads files outside the repository). A redirection to a file makes
  * the call not read-only (a redirection to `/dev/null`, a copy of one stream into another such as
  * `2>&1`, and a read of a file with `<` are none). So do a command substitution (`$(…)`), a
  * backtick, a process substitution, a variable assignment, a subshell or group, a command run in
@@ -21,8 +22,8 @@
  * directory, and the session's checkout root and working directory it stands for), as the pinned
  * Oh My Pi (the tag v18.18.6-sami.20261119-162325 of cybermonklabs/oh-my-pi) gives it at its
  * default settings, every path of the session's (the copy's own never shows), or says why it does
- * not (`Unanswered`). A call the copy cannot answer so is not answered: the reply is then the
- * judged step.
+ * not (`Unanswered`). A call the copy answers in no form gives the run no verdict (replay.ts's
+ * UnansweredRead): the run is made again, never judged on that call.
  *
  * **Confinement.** The calls are the model's, run on this machine, so none may read a file outside
  * the copy. cli.ts removes from each shared checkout, as it makes it, every symbolic link that resolves
@@ -38,14 +39,22 @@
  *   against the session's working directory) to a file under the checkout's root, in the form
  *   arms.ts writes a whole read by path (`pathAnswer`, its rows as the arm's reads by path show
  *   them), or Oh My Pi's not-found result `Path '<path>' not found` for a file the copy lacks. A
- *   file that is no prose is answered so too where the pin shows it whole: a UTF-8 text file of
- *   fewer than 100 lines (newlines and one more) that is no notebook, SVG or document markit
- *   converts; the pin may summarize one of 100 lines or more (read.ts lines 2519-2533,
- *   read-summary.ts's `trySummarize`, `read.summarize.minTotalLines` 100: a code file whose
- *   tree-sitter parse elides a body), which the runner cannot tell, so it is not answered. Not
- *   answered either: a read with a selector (the pin's range form widens a range to its brackets,
- *   read.ts lines 2940-3040, which the runner does not rebuild), of a directory, outside the root,
- *   under `~` or `.git`, and a file the arms refuse for another reason (`pathFormFault`).
+ *   file that is no prose is answered so too: a UTF-8 text file that is no notebook, SVG or
+ *   document markit converts. The pin may summarize one of 100 lines or more (newlines and one
+ *   more; read.ts lines 2519-2533, read-summary.ts's `trySummarize`,
+ *   `read.summarize.minTotalLines` 100: a code file whose tree-sitter parse elides a body), which
+ *   the runner cannot rebuild: such a file is answered unsummarized in place of the summary, the
+ *   same in every arm, and the answer says so (`CheckoutAnswer.wholeText`, which the run records).
+ *   A file of more than 300 lines is answered as the pin pages it unsummarized (`read.defaultLimit`
+ *   300): its first 300 lines, then `[<n> more lines in file. Use :301 to continue]`. A read with
+ *   one line range (arms.ts's `readRange`: `:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`) is answered with
+ *   the lines of its range in the pin's range form (arms.ts's `pathRangeAnswer`: the hashline line,
+ *   a line before the range and three after it, then `[<n> more lines in file. Use :<next> to
+ *   continue]`); where the pin widens a range of a code file to the brackets of the blocks it
+ *   cuts, the lines alone. Not answered: a read with another selector (`:raw`, a list, `:-N`, …),
+ *   of a directory, outside the root, under `~` or `.git`, a range past the file's end, and a file
+ *   the arms refuse for another reason (`pathFormFault`: not UTF-8 text, a git conflict block, a
+ *   page past the bytes a read shows).
  * - `grep` (keys `pattern`, `path`, `case`, `gitignore`, `skip` of 0 or null, `i`): GrepTool's
  *   output (packages/coding-agent/src/tools/grep.ts lines 651-1316): each match line `*<n>:<line>`
  *   and each context line ` <n>:<line>` (`|` in place of `:` in a session that shows no hashline
@@ -93,14 +102,14 @@
  */
 import { readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
-import { type PathRows, pathAnswer, shownPath, snapshotTag } from "./arms";
-import { resolvedReadPath } from "./cases";
+import { fileTag, type PathRows, pathAnswer, pathRangeAnswer, readRange, shownPath } from "./arms";
+import { insideRoot, resolvedReadPath, textLines } from "./cases";
 import { eachChunk, timeLimit } from "./common";
 
 /** The tools whose every call is read-only. */
 export const READ_ONLY_TOOLS = ["read", "grep", "glob", "find", "ls"] as const;
 /** The programs a read-only `bash` call's commands may run (see the file's header). */
-export const READ_ONLY_PROGRAMS = [
+const READ_ONLY_PROGRAMS = [
   "cd",
   "cat",
   "head",
@@ -118,15 +127,7 @@ export const READ_ONLY_PROGRAMS = [
   "git",
 ] as const;
 /** The git subcommands a read-only `bash` call may run. */
-export const READ_ONLY_GIT = [
-  "log",
-  "show",
-  "diff",
-  "status",
-  "grep",
-  "ls-files",
-  "blame",
-] as const;
+const READ_ONLY_GIT = ["log", "show", "diff", "status", "grep", "ls-files", "blame"] as const;
 /** The actions of `find` that run a command or write a file. */
 const FIND_ACTIONS: Readonly<Record<string, true>> = {
   "-exec": true,
@@ -388,18 +389,25 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
 /** A copy of a written case's checkout: `dir`, the copy on this machine; `root`, the checkout's
  *  directory on the session's machine (cases.ts's `checkout.root`); `cwd`, the session's working
  *  directory, inside `root`; `git`, whether the copy is a git checkout at the commit, whose history
- *  git commands read (else GitHub's tarball of the commit, which holds none). */
+ *  git commands read (else GitHub's tarball of the commit, which holds none); `answers`, the
+ *  answers given so far to its `read`, `grep` and `glob` calls, by tool, rows and input (the copy
+ *  is read-only once made, so each such answer depends on those alone; a `bash` answer is not
+ *  kept, its wall time being its own run's), which one stage's runs share (cli.ts); absent, none
+ *  is kept. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
   readonly cwd: string;
   readonly git: boolean;
+  readonly answers?: Map<string, CheckoutAnswer | Unanswered>;
 }
 
-/** A call's answer: the text the tool gives, and whether it is an error. */
+/** A call's answer: the text the tool gives, whether it is an error, and, for a read of a file the
+ *  pin may show summarized, that it was given whole in place of the summary (`wholeText`). */
 export interface CheckoutAnswer {
   readonly text: string;
   readonly isError: boolean;
+  readonly wholeText?: true;
 }
 
 /** Why a call is not answered. */
@@ -408,7 +416,7 @@ export interface Unanswered {
 }
 
 /** The longest a `bash` call's command may run in the copy before it is ended, unanswered. */
-export const BASH_TIME_LIMIT_MS = 30_000;
+const BASH_TIME_LIMIT_MS = 30_000;
 /** The bytes and the characters of a line a bash or grep output may hold to be answered whole:
  *  Oh My Pi elides an output past its spill threshold (`tools.artifactSpillThreshold`, 50 KB) and
  *  cuts a line past `tools.outputMaxColumns` (768), grep's lines past DEFAULT_MAX_COLUMN (512). */
@@ -448,13 +456,6 @@ function otherKeys(input: Record<string, unknown>, keys: readonly string[]): str
     : `its options ${other.join(", ")} are none the copy answers`;
 }
 
-/** The path inside the checkout of the session's absolute path `full`, "" for the root itself,
- *  or undefined when it is outside the root. */
-function insideRoot(copy: CheckoutCopy, full: string): string | undefined {
-  if (full === copy.root) return "";
-  return full.startsWith(`${copy.root}/`) ? full.slice(copy.root.length + 1) : undefined;
-}
-
 /** The path Oh My Pi's search tools show for the session's absolute path `full`: relative to the
  *  working directory when under it (`.` for it), else absolute (path-utils.ts lines 512-531). */
 function relativeToCwd(copy: CheckoutCopy, full: string): string {
@@ -476,7 +477,7 @@ function searchTarget(
     return { why: `its path ${target} holds a selector` };
   }
   const full = resolvedReadPath(target, { cwd: copy.cwd });
-  const inside = full === undefined ? undefined : insideRoot(copy, full);
+  const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
     return { why: `its path ${target} is outside the session's checkout ${copy.root}` };
   }
@@ -496,13 +497,18 @@ function readAnswer(
   if (other !== undefined) return { why: other };
   const target = input.path;
   if (typeof target !== "string") return { why: "it names no path" };
-  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
+  const ranged = readRange(target);
+  if (ranged !== undefined && ranged.range === undefined) {
     return {
-      why: `${target} is a read of a directory, or with a selector, whose range form the runner does not rebuild`,
+      why: `${target} has the selector :${ranged.selector}, of a form the runner does not rebuild (it rebuilds one line range: :N-M, :N+K, :N)`,
     };
   }
-  const full = resolvedReadPath(target, { cwd: copy.cwd });
-  const inside = full === undefined ? undefined : insideRoot(copy, full);
+  const read = ranged?.path ?? target;
+  if (read.endsWith("/")) {
+    return { why: `${target} is a read of a directory, whose listing the runner does not rebuild` };
+  }
+  const full = resolvedReadPath(read, { cwd: copy.cwd });
+  const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined || inside === "") {
     return { why: `${target} is no file of the session's checkout ${copy.root}` };
   }
@@ -515,16 +521,28 @@ function readAnswer(
   if (statSync(path.join(copy.dir, inside), { throwIfNoEntry: false })?.isDirectory()) {
     return { why: `${target} is a directory, whose listing the runner does not rebuild` };
   }
+  const shown = shownPath(read, full, { cwd: copy.cwd });
+  if (ranged?.range !== undefined) {
+    const answer = pathRangeAnswer(copy.dir, {
+      file: inside,
+      target: read,
+      shown,
+      rows,
+      ...ranged.range,
+    });
+    return typeof answer === "string" ? { why: `${target}: ${answer}` } : answer;
+  }
   const answer = pathAnswer(copy.dir, {
     file: inside,
     target,
     source: full,
-    shown: shownPath(target, full, { cwd: copy.cwd }),
+    shown,
     rows,
-    text: true,
+    checkoutRead: true,
   });
   if (typeof answer === "string") return { why: answer };
-  return { text: answer.text, isError: answer.isError };
+  const { text, isError, wholeText } = answer;
+  return wholeText === true ? { text, isError, wholeText } : { text, isError };
 }
 
 /** Whether the file or directory `inside` of the copy, or the nearest of its parents that is
@@ -539,7 +557,7 @@ function leavesCopy(copy: CheckoutCopy, inside: string): boolean {
       if (at === copy.dir || at === path.dirname(at)) return false;
       continue;
     }
-    return resolved !== real && !resolved.startsWith(`${real}/`);
+    return insideRoot(real, resolved) === undefined;
   }
 }
 
@@ -565,7 +583,7 @@ export function removeOutsideLinks(dir: string): string[] {
       } catch {
         target = undefined;
       }
-      if (target !== undefined && (target === real || target.startsWith(`${real}/`))) continue;
+      if (target !== undefined && insideRoot(real, target) !== undefined) continue;
       rmSync(path.join(dir, child), { force: true });
       removed.push(child);
     }
@@ -649,12 +667,6 @@ function pathTreeEvents(
   return events;
 }
 
-/** Oh My Pi's snapshot tag of a file's text as a read or a grep shows it (arms.ts's
- *  `snapshotTag`, of the text less a leading byte order mark, each CRLF or CR as LF). */
-function fileTag(text: string): string {
-  return snapshotTag((text.startsWith("\uFEFF") ? text.slice(1) : text).replace(/\r\n?/g, "\n"));
-}
-
 /** The `grep` call's answer (see the file's header). */
 function grepAnswer(
   copy: CheckoutCopy,
@@ -699,8 +711,7 @@ function grepAnswer(
       continue;
     }
     const text = bytes.toString("utf8");
-    const lines = text.split("\n");
-    if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+    const lines = textLines(text);
     const matches = lines.flatMap((line, index) => (regex.test(line) ? [index + 1] : []));
     if (matches.length === 0) continue;
     if (matches.length > cap)
@@ -725,11 +736,12 @@ function grepAnswer(
     }
     const full = file === "" ? copy.root : `${copy.root}/${file}`;
     sections.push({ shown: relativeToCwd(copy, full), tag: fileTag(text), lines: out });
+    // One file past the page decides it: the rest of the checkout is not read.
+    if (isDirectory && sections.length > GREP_FILE_LIMIT) {
+      return { why: `matches in more than the ${GREP_FILE_LIMIT} files one page of grep shows` };
+    }
   }
   if (sections.length === 0) return { text: "No matches found", isError: false };
-  if (isDirectory && sections.length > GREP_FILE_LIMIT) {
-    return { why: `matches in more than the ${GREP_FILE_LIMIT} files one page of grep shows` };
-  }
   const model: string[] = [];
   if (isDirectory) {
     const byShown = new Map(sections.map((section) => [section.shown, section]));
@@ -802,6 +814,17 @@ function globAnswer(
   return { text: lines.join("\n"), isError: false };
 }
 
+/** The path an option word `word` names, as `escapes` reads it: a word that is no option is its
+ *  own path; an option's is its value after its `=`, else from its first `/` or `~`, else none
+ *  (""). */
+function optionValue(word: string): string {
+  if (!word.startsWith("-")) return word;
+  const equals = word.indexOf("=");
+  if (equals >= 0) return word.slice(equals + 1);
+  const slash = word.search(/[/~]/);
+  return slash < 0 ? "" : word.slice(slash);
+}
+
 /** Why the words of `commands`, run from the working directory `cwd`, may reach a file outside the
  *  session's checkout, or undefined: a word with a `$` or a brace expansion, whose expansion the
  *  runner does not follow; a word under `~`; one naming `.git` (whose config names the checkout's
@@ -821,27 +844,20 @@ function escapes(
       if (word.includes("$") || /\{[^}]*(,|\.\.)[^}]*\}/.test(word)) {
         return `${word} expands, and the runner does not check where its expansion leads`;
       }
-      const slash = word.search(/[/~]/);
-      const value = !word.startsWith("-")
-        ? word
-        : word.includes("=")
-          ? word.slice(word.indexOf("=") + 1)
-          : slash < 0
-            ? ""
-            : word.slice(slash);
+      const value = optionValue(word);
       if (value === "" || value === "/dev/null") continue;
       if (value.startsWith("~")) return `${word} is under ~, outside the session's checkout`;
       if (value.split("/").includes(".git")) return `${word} names .git`;
       const fulls = value.startsWith("/")
         ? [path.posix.normalize(value)]
         : cwds.map((at) => path.posix.resolve(at, value));
-      if (fulls.some((full) => insideRoot(copy, full) === undefined)) {
+      if (fulls.some((full) => insideRoot(copy.root, full) === undefined)) {
         return `${word} is outside the session's checkout ${copy.root}`;
       }
     }
     const target = program === "cd" ? args.find((arg) => !arg.startsWith("-")) : undefined;
     if (target !== undefined) {
-      cwds = [...cwds, ...cwds.map((at) => path.posix.resolve(at, target))];
+      cwds = [...new Set([...cwds, ...cwds.map((at) => path.posix.resolve(at, target))])];
     }
   }
   return undefined;
@@ -867,7 +883,7 @@ async function bashAnswer(
   let cwd = copy.cwd;
   if (typeof input.cwd === "string") {
     const resolved = resolvedReadPath(input.cwd, { cwd: copy.cwd });
-    if (resolved === undefined || insideRoot(copy, resolved) === undefined) {
+    if (resolved === undefined || insideRoot(copy.root, resolved) === undefined) {
       return { why: `its working directory ${input.cwd} is outside the session's checkout` };
     }
     cwd = resolved;
@@ -875,7 +891,7 @@ async function bashAnswer(
   const leads = escapes(copy, cwd, commands);
   if (leads !== undefined) return { why: leads };
   const real = realpathSync(copy.dir);
-  const localCwd = path.join(real, insideRoot(copy, cwd) ?? "");
+  const localCwd = path.join(real, insideRoot(copy.root, cwd) ?? "");
   if (!statSync(localCwd, { throwIfNoEntry: false })?.isDirectory()) {
     return { why: `its working directory ${cwd} is no directory of the checkout` };
   }
@@ -936,8 +952,27 @@ async function bashAnswer(
   return { text: lines.join("\n"), isError: exitCode !== 0 };
 }
 
+/** The answer to the `read`, `grep` or `glob` call `name` with `fields` from `copy` (see the
+ *  file's header), its reads by path shown as `rows`, or why it is not answered. */
+function fileAnswer(
+  copy: CheckoutCopy,
+  name: "read" | "grep" | "glob",
+  fields: Record<string, unknown>,
+  rows: PathRows
+): CheckoutAnswer | Unanswered {
+  switch (name) {
+    case "read":
+      return readAnswer(copy, fields, rows);
+    case "grep":
+      return grepAnswer(copy, fields, rows);
+    case "glob":
+      return globAnswer(copy, fields);
+  }
+}
+
 /** The answer to the read-only call `name` with `input` from `copy` (see the file's header), its
- *  reads by path shown as `rows`, or why it is not answered. */
+ *  reads by path shown as `rows`, or why it is not answered. A `read`, `grep` or `glob` answer is
+ *  kept in `copy.answers` and given again to the same call. */
 export async function answerCall(
   copy: CheckoutCopy,
   name: string | undefined,
@@ -948,18 +983,14 @@ export async function answerCall(
     return { why: "its input is no object" };
   }
   const fields = input as Record<string, unknown>;
-  switch (name) {
-    case "read":
-      return readAnswer(copy, fields, rows);
-    case "grep":
-      return grepAnswer(copy, fields, rows);
-    case "glob":
-      return globAnswer(copy, fields);
-    case "bash":
-      return bashAnswer(copy, fields);
-    default:
-      return {
-        why: `no capture declares a ${name} tool, so the runner rebuilds none of its forms`,
-      };
+  if (name === "read" || name === "grep" || name === "glob") {
+    const key = `${name}\0${rows}\0${JSON.stringify(fields)}`;
+    const held = copy.answers?.get(key);
+    if (held !== undefined) return held;
+    const answer = fileAnswer(copy, name, fields, rows);
+    copy.answers?.set(key, answer);
+    return answer;
   }
+  if (name === "bash") return bashAnswer(copy, fields);
+  return { why: `no capture declares a ${name} tool, so the runner rebuilds none of its forms` };
 }

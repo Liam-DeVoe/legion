@@ -184,8 +184,10 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   `skill://<skill>/<path>`, a whole read by path of the case's own copy (`pathCopy`; a relative or
   `~` path resolved against its `cwd` and `home` as Oh My Pi's read resolves it), or, for a case
   that names no copy, a read of a path that ends with the skill's installed directory and
-  `/<path>`, `<path>` a file of `--old`, as the arms tell a read of a file of the skill
-  (`cases.ts`'s `stepSkillFiles`); the arm with no skill, in the screen whatever is compared, fails
+  `/<path>`, `<path>` a file of `--old` (each file at any depth, a symbolic link to a file among
+  them, as `readers.ts`'s `skillFilePaths` lists them, the listing `--drop-navigation` reads too),
+  as the arms tell a read of a file of the skill (`cases.ts`'s `stepSkillFiles`); the arm with no
+  skill, in the screen whatever is compared, fails
   such a step whatever the skill's text teaches; a screened case whose arms the runner cannot
   build (`buildArm` throws) is named in it
   as `<id>: its reads cannot be told (<the first line of why>)` and counted in neither, and the
@@ -298,7 +300,16 @@ A reply whose every tool call reads a skill file is answered and sent again, in 
 (`function_call_output` items on the Responses route), at most 3 rounds (`MAX_SKILL_ROUNDS`). A
 skill file is a `skill://` read of any skill, a whole read by path of the cut's own copy, or a
 whole read by path of another skill the profile lists (a path that ends `/<name>/SKILL.md` or holds
-`skills/<name>/references/`, as `count.sql` places a read). The arm's skill is answered from the
+`skills/<name>/references/`, as `count.sql` places a read); a `skill://` read, or a read by path of
+the cut's own copy, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`; `arms.ts`'s
+`readRange`) is one too, in every run, session and written cases alike, answered with the lines of
+its range in Oh My Pi's range form: a `skill://` read under its `[Skill file: <path>]` line with
+no row numbers, as a whole one, a read by path as the checkout's ranged reads below, each with a
+line before the range (one that does not start at line 1) and three after it (one with an end),
+then `[<n> more lines in file. Use :<next> to continue]` when lines are left (`skillFileRange`,
+`pathRangeAnswer`); where the pin widens a range of a code file to the brackets of the blocks it
+cuts, the lines alone. A read with another selector (`:raw`, a list, `:-N`) is no skill read. The
+arm's skill is answered from the
 arm (in the arm of ours, our skill; a read of their skill there gets the unknown-skill text, "The
 arm of ours" below); another listed skill from the copy its capture installed
 (`<cache-dir>/skills/<key>`), the same text in every arm; a skill the arm does not install (the
@@ -338,8 +349,14 @@ and then the shallow boundary, and `git status` shows a detached HEAD (the sessi
 known) and each link removed as deleted; git runs with `GIT_OPTIONAL_LOCKS=0`, so `git status`
 writes no index there. The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
-case's reads by path show them, or `Path '<path>' not found`; a file that is no prose only below
-100 lines (Oh My Pi may summarize a longer one), and no notebook, SVG or document; `grep` and
+case's reads by path show them, or `Path '<path>' not found`; a file that is no prose too (no
+notebook, SVG or document), and one of 100 lines or more, which Oh My Pi may show summarized,
+unsummarized in place of the summary, the same in every arm, its round's record saying so
+(`"wholeText": true`: unsummarized text in place of a summary); a file of more than 300 lines as
+Oh My Pi pages it unsummarized (`read.defaultLimit`): its first 300 lines, then `[<n> more lines
+in file. Use :301 to continue]`; a read with one line range with the lines of its range (the hashline line,
+a line before and three after, then `[<n> more lines in file. Use :<next> to continue]`; the
+lines alone where the pin widens a code file's range to its brackets); `grep` and
 `glob` in their tools' forms (one line of context before a match, three after; `glob`'s paths in
 path order, since a checkout keeps no times of change); `bash` run in the checkout, its working
 directory and the checkout's root mapped between the session's paths and the runner's, its output
@@ -350,15 +367,23 @@ with no link out of it left, `cat` of a link, `grep -R`, `rg --follow`, `find -L
 `grep` or `glob` whose target resolves outside the copy is not answered, nor is a `bash` command a
 word of which may lead outside it: a `$` or brace expansion, a path under `~`, a word naming
 `.git`, an absolute path off the checkout's root, a relative one that leaves the root from any
-directory a `cd` before it may have moved to, or an option's attached path that does. A call the
-copy does not answer so (a read with a selector or of a directory, a path outside the checkout or
-under `~`, an output Oh My Pi's minimizer would rewrite, a `find` or `ls` tool, a run past its
-time) is not answered: the reply is the judged step, and the run records why (`unanswered`). The
-judged step is each answered round's calls, then the act; a reply after round 5 still all
-read-only calls the copy answers gets no verdict and is run again (`reads-past-last-round`). Each
-run records its checkout rounds (`checkoutRounds`) and, in `skillReads`, each round's answers: a
-checkout one as `{"from": "checkout", "tool", "input", "isError"}`, its input naming the path,
-the pattern or the command.
+directory a `cd` before it may have moved to, or an option's attached path that does. A reply one
+of whose read-only calls the copy answers in no form (a read with another selector or of a
+directory, a path outside the checkout or under `~`, a git command where the copy is the tarball,
+an output Oh My Pi's minimizer would rewrite, a `find` or `ls` tool, a run past its time) gets no
+verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
+why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
+an arm that cannot finish for such runs and those that read past round 5 drops its case as
+`reads-past-last-round`, its reason counting each kind). The judged step is each answered round's
+calls, then the act; a reply after round 5 still all read-only calls the copy answers gets no
+verdict and is run again (`reads-past-last-round`). A session case's read-only calls are its
+judged step, as before. Each run records its checkout rounds (`checkoutRounds`) and, in
+`skillReads`, each round's answers: a checkout one as `{"from": "checkout", "tool", "input",
+"isError"}` (and `"wholeText": true` for a whole-text answer), its input naming the path, the
+pattern or the command. Each report counts, by kind of case, the runs run again for each reason
+and the whole-text answers: `runs with no verdict, run again, and reads answered whole, by kind of
+case: session: <n> reads-past-last-round, <n> unanswered-read, <n> reads answered with the file's
+whole text in place of the pin's summary; written: …`.
 
 #### Read-only calls
 
@@ -371,7 +396,8 @@ command, joined only by pipes, `&&`, `||`, `;` or line ends, is `cd`, `cat`, `he
 `-fprintf` or `-fls`), `grep`, `rg` (without `--pre`), `wc`, `sed -n` (without `-i`, or a `w`,
 `W` or `e` command), `nl`, `stat`, `file` (without `-C`), `tree` (without `-o`), or `git` (with at
 most `-C <dir>`, `--no-pager` or `-P` before it) `log`, `show`, `diff`, `status`, `grep`,
-`ls-files` or `blame` (without `--output`, `-O`, `--open-files-in-pager` or `--ext-diff`), with no
+`ls-files` or `blame` (without `--output`, `-O`, `--open-files-in-pager`, `--ext-diff` or
+`--no-index`, with which `git diff` reads files outside the repository), with no
 redirection to a file (`/dev/null`, a copy of one stream into another such as `2>&1`, and an
 input `<` are allowed). A command substitution, a backtick, a process substitution, a variable
 assignment, a subshell or `{ }` group, a background `&`, a heredoc, a comment, a program named by
@@ -1192,7 +1218,7 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
   --count <count dir> --written <n> \
   (--context-session <store>:<hash> | --sessions <sessions.jsonl> --seed <n>) --out <cases.jsonl> \
   [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... \
-  [--budget-usd <n>] [--drop-navigation]
+  [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -1733,8 +1759,16 @@ of a skill's old text against its new text needs) gives no case whose line is a 
 a line whose only instruction that the step can show is to read or open a file of the skill. The
 arm with no skill does not have that file, so it fails such a step whatever the skill's text
 teaches. The `navigation` reader (`prompts/navigation.md`, the audit's model and settings) reads
-each line the `case` reader proposes, its file's path and the path of each file of `--old`, and
-answers `{"navigation": true|false, "reason": "..."}`. This is the only rule that drops a step for
+each line the `case` reader proposes, its file's path and the path of each file of `--old` (each
+file at any depth, a symbolic link to a file among them, as `readers.ts`'s `skillFilePaths` lists
+them), and answers `{"navigation": true|false, "reason": "..."}`. It judges each line once in a
+build (one process), by its file and number: every session that proposes the line, and every
+written task under it, takes that one verdict (a reader at temperature 1 could otherwise call a
+line navigation for one session and not for another, and keep a case under a line the summary
+lists), and its spend is counted once, in a session's `readerUsd` on the session whose proposal
+made the call. The verdicts live in the process: a build that goes on from a stopped run starts
+with none, so a line asked before the stop and again after it is judged again. This is the only
+rule that drops a step for
 a read: a step that reads a file of the skill under a line that is not a navigation line stays a
 case (a step under "Read `references/scope.md` and resolve the reviewed diff" is one). In the
 session form, a step under a navigation line gives no case, and the files it read are the files of
@@ -1767,8 +1801,9 @@ lines are none and its counts 0. With the flag, the last line printed adds `<n> 
 <n> navigation lines (<n> with a replacement case, <n> without) (--drop-navigation)`. In the
 `--written` form, the `written-case` reader is given the navigation lines of the session build
 (the `navigation.lines` of the summary beside `--session-cases`, `<session-cases>.summary.json`;
-none when there is no such file), so a task's history reads the files those lines send the agent
-to before its step (below); a file there that is no build-cases summary naming its navigation
+none when there is no such file), so it knows which lines only send the agent to a file of the
+skill: a task's history is still the task and the skill's read alone (below), and the agent reads
+any such file itself in the run; a file there that is no build-cases summary naming its navigation
 lines is refused (exit 2). A task whose line the `navigation` reader calls navigation is dropped
 (`written-navigation`), before its restatement check, with no replacement; a task whose following
 step reads a file of the skill under another line is not dropped for that read; and its summary's
@@ -1817,8 +1852,13 @@ session it is asked of: it reads the base text (`--old`, each line numbered), th
 of the session build (`<navigation>`: with `--drop-navigation`, those of the summary beside
 `--session-cases`, as above; else none), each session case of `--session-cases` (its real step and
 its criterion; none when the flag is not given), the context session's checkout (`<checkout>`: its
-repository, root and working directory, and every path of the commit's tree, or its root's
-entries for a tree of more than 2,000 paths or one GitHub cuts short; `None.` when the build knows
+repository, root and working directory, and every file of the commit's tree; for a tree of more
+than 2,000 paths, or one GitHub cuts short, a partial listing (`build.ts`'s `partialListing`): the
+tree's directories, shallowest first, at most 5,000, then the files under each directory the
+session's first message names (a word of it that is such a directory, from the root or the working
+directory, or a path under one) and under the working directory, at most 3,000, its `listing`
+saying what it holds and where each part was cut (and that GitHub cut the tree short, where it
+did), the prompt telling the reader the list may be partial; `None.` when the build knows
 no checkout) and its first user message, and writes at most n tasks in which a line of the skill
 (of any file of it, none of the navigation lines) decides the agent's act once it has read the
 skill and looked at what the act needs; or `{"tasks": [], "material": {"why": …}}` when the
@@ -1832,7 +1872,12 @@ refused, exit 2, when it is none); the summary records its path and SHA-256
 (`inputs.writtenAnswer`) and `tasksFrom`, and every check below runs on it as on the reader's. A
 task one of whose `existing` paths the checkout does not hold at the commit (or any, where the
 build knows no checkout) is dropped as `written-missing-path`, naming the path; a path it asks to
-create is never checked. Each task gives a case whose `messages` are the task as the user's message,
+create is never checked. When every task of the reader's answer is dropped so, the reader is asked
+once more, the same input with `<absent>` naming each such path as absent from the checkout at the
+commit (one retry, its spend counted with the readers'); its tasks are decided as the first
+answer's, numbered on after them. The summary records the retry (`retry: {"absent", "tasksWritten"}`,
+or `null`) and each task's answer (`tasks[].answer`: 1 or 2), and the last line printed says the
+reader was asked twice. A `--written-answer` gets no retry. Each task gives a case whose `messages` are the task as the user's message,
 an assistant call `read skill://<skill>` and its result, and nothing else: the base text's
 `SKILL.md`, answered as the arms answer a history read, in the directory the context session's
 first read of the skill showed (for a read by path, the directory of the copy it read: the path

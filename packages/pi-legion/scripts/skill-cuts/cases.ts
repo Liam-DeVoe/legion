@@ -204,7 +204,7 @@ export const Case = z.strictObject({
       cwd: AbsoluteDir,
     })
     .refine(
-      (checkout) => checkout.cwd === checkout.root || checkout.cwd.startsWith(`${checkout.root}/`),
+      (checkout) => insideRoot(checkout.root, checkout.cwd) !== undefined,
       "names a working directory outside the checkout's root"
     )
     .optional(),
@@ -300,6 +300,13 @@ export function resolvedReadPath(
   }
   if (path.posix.isAbsolute(read)) return read;
   return where.cwd === undefined ? undefined : path.posix.resolve(where.cwd, read);
+}
+
+/** The path inside the directory `root` of the absolute path `full`, "" for `root` itself, or
+ *  undefined when it is outside `root` (both as given: neither is normalized or resolved). */
+export function insideRoot(root: string, full: string): string | undefined {
+  if (full === root) return "";
+  return full.startsWith(`${root}/`) ? full.slice(root.length + 1) : undefined;
 }
 
 /** The file of the case's own copy of its skill (`pathCopy`) that a `read` of the path `target`

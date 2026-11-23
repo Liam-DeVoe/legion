@@ -2529,6 +2529,22 @@ describe("behaviour: written cases and the report's descriptions", () => {
     expect(none.stdout.split("\n")).toContain(
       "cases whose real step reads a file of the skill other than SKILL.md, which the arm with no skill does not have, so it fails them by construction: none of 3 screened; the 3 screened cases with no such read: 3 informative, 3 flagged, 2 confirmed losses (a description beside the registered rule, which it does not change)"
     );
+
+    // An --old whose reference is a symbolic link to a file outside it, as the arms take one: the
+    // line counts it as a file of the skill, as build-cases --drop-navigation lists it (one
+    // listing, readers.ts's skillFilePaths; build.test.ts, "lists the files of an --old whose
+    // files are symbolic links").
+    reading({
+      c04: "skill://alpha/references/x.md",
+      c05: `${installed}/references/x.md`,
+    });
+    const outside = path.join(s.dir, "x-outside.md");
+    writeFileSync(outside, f1File(4));
+    rmSync(path.join(s.old, "references", "x.md"));
+    symlinkSync(outside, path.join(s.old, "references", "x.md"));
+    const linked = await cli(report(s));
+    expect({ code: linked.code, stderr: linked.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(linked.stdout.split("\n")).toContain(line);
   }, 60_000);
 
   // Catches: a report that stops at one case whose arms buildArm refuses, or counts that case
@@ -5062,5 +5078,88 @@ describe("behaviour: a replay's reads of skill files", () => {
     );
     expect(answered.join("\n")).not.toContain(secret);
     expect(readFileSync(caseResultFile(s.out, "w00"), "utf8")).not.toContain(secret);
+  }, 120_000);
+
+  // Catches: a written case judged on a reply one of whose read-only calls its checkout answers in
+  // no form (a step every arm takes alike, whatever the skill says), a run so made again with no
+  // word of why, and a report that does not count those runs, or the reads answered with a file's
+  // whole text in place of the pin's summary, by kind of case.
+  test("a written case's run whose reply makes a read-only call the checkout answers in no form gets no verdict and runs again; the report counts those runs and the whole-text answers by kind of case", async () => {
+    const base = scenario("checkout-unanswered", LOSS_SKILL(), [{ id: "c04" }]);
+    const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
+    const { repos, commit } = gitRepository(base.dir, { "src/big.py": big });
+    const written: Case = {
+      ...makeWrittenCase("w00"),
+      checkout: { repo: "acme/proj", commit, root: "/work/acme/proj", cwd: "/work/acme/proj" },
+    };
+    const cases = [...base.cases, written];
+    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const s = { ...base, cases, markers: new Map([...base.markers, ["w00", ""] as const]) };
+    recordCaptures(s, ["old", "new", "none"]);
+    // w00's first two runs read /etc/hostname, outside the checkout, which the copy answers in no
+    // form; each later one reads src/big.py, a code file of 120 lines, answered whole; and acts
+    // once that answer is in its body.
+    let looks = 0;
+    answer = (body) => {
+      if (isJudgement(body) || !JSON.stringify(body.messages).includes("Case w00")) {
+        return behaviourStandIn(body);
+      }
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      const answered = (block: { tool_use_id?: unknown }) =>
+        String(block?.tool_use_id).startsWith("toolu_odd_");
+      if (Array.isArray(last) && last.some(answered)) {
+        return behaviourStandIn(body);
+      }
+      looks += 1;
+      return sseResponse(
+        messageSse({
+          id: `msg_odd_${looks}`,
+          model: "claude-sonnet-5-5",
+          content: [
+            {
+              type: "tool_use",
+              id: `toolu_odd_${looks}`,
+              name: "read",
+              input: { path: looks <= 2 ? "/etc/hostname" : "src/big.py" },
+            },
+          ],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    const ran = await cli(
+      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
+    );
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const runs = result(s.out, "w00").stages.screen?.runs ?? [];
+    expect(runs).toHaveLength(3 * SCREEN_RUNS + 2);
+    const unjudged = runs.filter((run) => run.verdict === null);
+    expect(unjudged.map((run) => run.reason)).toEqual([
+      expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
+      expect.stringMatching(/^unanswered-read: read \{"path":"\/etc\/hostname"\}: /),
+    ]);
+    expect(unjudged.map((run) => run.reply)).toEqual([
+      [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
+      [expect.objectContaining({ name: "read", input: { path: "/etc/hostname" } })],
+    ]);
+    for (const run of runs.filter((each) => each.verdict !== null)) {
+      expect(run.skillReads).toEqual([
+        [
+          {
+            from: "checkout",
+            tool: "read",
+            input: { path: "src/big.py" },
+            isError: false,
+            wholeText: true,
+          },
+        ],
+      ]);
+    }
+    expect(ran.stdout).toContain("(2 runs with no verdict, run again; unanswered-read: ");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")).toContain(
+      `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 unanswered-read, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 unanswered-read, ${3 * SCREEN_RUNS} reads answered with the file's whole text in place of the pin's summary`
+    );
   }, 120_000);
 });

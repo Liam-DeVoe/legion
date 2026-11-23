@@ -29,6 +29,8 @@ import {
   replayInterleaved,
   replayOnce,
   sendOrder,
+  UNANSWERED_READ,
+  UnansweredRead,
   withCacheBreakpoint,
 } from "./replay";
 
@@ -457,7 +459,7 @@ function jsonReply(content: Record<string, unknown>[], stop: string): Response {
 
 // Catches: a reply's read of the skill by its path on disk taken for the judged step, so an arm
 // is judged while it still loads the skill, or answered with one text in every arm.
-test("answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a selector is the judged step", async () => {
+test("answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a line range with the lines of its range; another selector is the judged step", async () => {
   const pathCopy = { dir: COPY, shownDir: SHOWN, rows: "hashline" as const };
   const old: Arm = {
     ...armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
@@ -507,12 +509,33 @@ test("answers a reply's whole read by path of the cut's own copy by arm, and a r
     expect(JSON.stringify(bodies)).not.toContain(arm.skillDir ?? "no directory");
   }
 
+  // A line range of the copy is answered with its lines in the range form; :raw is not.
   const ranged = { ...call, input: { path: `${COPY}/SKILL.md:1-5` } };
-  const { gateway, bodies } = world(() => jsonReply([ranged], "tool_use"));
+  const lines = SKILL_MD.replace(/\n$/, "").split("\n");
+  const rows = lines
+    .slice(0, 8)
+    .map((line, index) => `${index + 1}:${line}`)
+    .join("\n");
+  const { gateway, bodies } = scripted([[ranged], [ACT]]);
   const replayed = await replayOnce({ ...BODY, stream: false }, old, gateway);
-  expect(bodies).toHaveLength(1);
-  expect(replayed.rounds).toBe(0);
-  expect(replayed.step.message.content).toEqual([ranged]);
+  expect(replayed.rounds).toBe(1);
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_path",
+        `[${SHOWN}/SKILL.md#${snapshotTag(SKILL_MD)}]\n${rows}\n\n[${lines.length - 8} more lines in file. Use :9 to continue]`,
+        false
+      ),
+    ],
+  });
+  expect(replayed.step.message.content).toEqual([ranged, ACT]);
+  const raw = { ...call, input: { path: `${COPY}/SKILL.md:raw` } };
+  const judged = await replayOnce({ ...BODY, stream: false }, old, scripted([[raw]]).gateway);
+  expect({ rounds: judged.rounds, step: judged.step.message.content }).toEqual({
+    rounds: 0,
+    step: [raw],
+  });
 });
 
 /** Beta's SKILL.md: a made-up skill of the profile, which sends the agent to alpha. */
@@ -629,6 +652,57 @@ test("a reply that reads another installed skill is answered from its installed 
     rounds: 0,
     step: [beta, bash],
   });
+});
+
+// Catches: a reply whose only call reads a range of a skill file judged as the step (2 of 220 runs
+// of a control screen, `skill://<skill>/references/reports.md:1-90`), while the agent still loads
+// the skill, so every arm fails it alike.
+test("a skill:// read with a line range, of another installed skill or the case's own, is answered with those lines in Oh My Pi's range form, and the run goes on to the act", async () => {
+  const copies = betaCopy();
+  const betaDir = copies[0]?.dir ?? "";
+  const betaX = Array.from({ length: 10 }, (_, n) => `Beta line ${n + 1}.\n`).join("");
+  mkdirSync(path.join(betaDir, "references"), { recursive: true });
+  writeFileSync(path.join(betaDir, "references", "x.md"), betaX);
+  const beta = readCall("toolu_beta", "skill://beta/references/x.md:2-3");
+  const alpha = readCall("toolu_alpha", "skill://alpha:2-2");
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  const { gateway, bodies } = scripted([[beta, alpha], [ACT]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { copies });
+  const betaLines = betaX.replace(/\n$/, "").split("\n");
+  const alphaLines = SKILL_MD.replace(/\n$/, "").split("\n");
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      // Lines 2 and 3, a line before and three after: lines 1 to 6, then the count of the rest.
+      toolResult(
+        "toolu_beta",
+        `[Skill file: ${BETA_INSTALLED}/references/x.md]\n${betaLines.slice(0, 6).join("\n")}\n\n[4 more lines in file. Use :7 to continue]`,
+        false
+      ),
+      toolResult(
+        "toolu_alpha",
+        `[Skill file: ${INSTALLED}/SKILL.md]\n${alphaLines.slice(0, 5).join("\n")}\n\n[${alphaLines.length - 5} more lines in file. Use :6 to continue]`,
+        false
+      ),
+    ],
+  });
+  expect(replayed.reads).toEqual([
+    [
+      { skill: "beta", file: "references/x.md", by: "skill", from: "copy", isError: false },
+      { skill: "alpha", file: "SKILL.md", by: "skill", from: "arm", isError: false },
+    ],
+  ]);
+  expect(replayed.step.message.content).toEqual([beta, alpha, ACT]);
+  // In the arm with no skill, the case's skill read with a range gets the unknown-skill text.
+  const none = await replayOnce(
+    { ...BODY, stream: false },
+    noneArm(),
+    scripted([[alpha], [ACT]]).gateway,
+    { copies }
+  );
+  expect(none.reads).toEqual([
+    [{ skill: "alpha", file: "SKILL.md", by: "skill", from: "absent", isError: true }],
+  ]);
 });
 
 // Catches: a whole read by path of another installed skill's SKILL.md taken for the judged step.
@@ -1372,12 +1446,23 @@ test("in ours, a reply's whole read by path of the cut's own copy is answered fr
 const SESSION_ROOT = "/work/acme/proj";
 const APP_PY = "import os\n\ndef main():\n    return os.getcwd()\n";
 const GUIDE_MD = "# Guide\n\nRun the app.\n";
+/** A code file of 120 lines, which the pinned Oh My Pi may show summarized (100 lines or more). */
+const BIG_PY = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
 
-/** A copy of the made-up checkout of acme/proj: src/app.py and docs/guide.md, in a directory of
- *  its own, and the session's root and working directory it stands for. */
-function checkoutCopy(): { dir: string; root: string; cwd: string; git: boolean } {
+/** A copy of the made-up checkout of acme/proj: src/app.py and docs/guide.md, and `more`, in a
+ *  directory of its own, and the session's root and working directory it stands for. */
+function checkoutCopy(more: Record<string, string> = {}): {
+  dir: string;
+  root: string;
+  cwd: string;
+  git: boolean;
+} {
   const dir = path.join(scratch, `checkout-${Math.random()}`);
-  for (const [file, text] of Object.entries({ "src/app.py": APP_PY, "docs/guide.md": GUIDE_MD })) {
+  for (const [file, text] of Object.entries({
+    "src/app.py": APP_PY,
+    "docs/guide.md": GUIDE_MD,
+    ...more,
+  })) {
     mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
     writeFileSync(path.join(dir, file), text);
   }
@@ -1444,21 +1529,67 @@ test("a written case's reply whose calls all read is answered from a copy of its
     })),
   ]);
   expect(replayed.step.message.content).toEqual([...INSPECTION, WRITE_ACT]);
+});
 
-  // A call the copy does not answer (a read with a selector, a command of no read-only program)
-  // makes the reply the judged step, and the run says why.
-  const ranged = toolCall("toolu_ranged", "read", { path: "src/app.py:1-2" });
-  const judged = await replayOnce(
-    { ...BODY, stream: false },
-    arm,
-    scripted([[INSPECTION[0] as ContentBlock, ranged]]).gateway,
-    { checkout: copy }
-  );
-  expect({ checkoutRounds: judged.checkoutRounds, step: judged.step.message.content }).toEqual({
-    checkoutRounds: 0,
-    step: [INSPECTION[0], ranged],
+// Catches: a written case's read of a code file the pin may summarize, or a ranged read, left
+// unanswered (the defect: such a run was judged on that read), or a whole-text answer the run does
+// not record, so the report cannot say how often the arms saw a text the pin would have cut.
+test("a written case's read of a code file of 100 lines or more is answered with its whole text and recorded so, and a ranged read with the lines of its range", async () => {
+  const copy = checkoutCopy({ "src/big.py": BIG_PY });
+  const arm = armWith("old", { "SKILL.md": SKILL_MD });
+  const whole = toolCall("toolu_whole", "read", { path: "src/big.py" });
+  const ranged = toolCall("toolu_ranged", "read", { path: "src/big.py:10-12" });
+  const { gateway, bodies } = scripted([[whole, ranged], [WRITE_ACT]]);
+  const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, { checkout: copy });
+  const lines = BIG_PY.replace(/\n$/, "").split("\n");
+  const rows = (from: number, to: number) =>
+    lines
+      .slice(from - 1, to)
+      .map((line, index) => `${from + index}:${line}`)
+      .join("\n");
+  const header = `[src/big.py#${snapshotTag(BIG_PY)}]`;
+  expect(bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult("toolu_whole", `${header}\n${rows(1, 120)}`, false),
+      // Lines 10 to 12 with the pin's context, a line before and three after.
+      toolResult(
+        "toolu_ranged",
+        `${header}\n${rows(9, 15)}\n\n[105 more lines in file. Use :16 to continue]`,
+        false
+      ),
+    ],
   });
-  expect(judged.unanswered).toContain("src/app.py:1-2");
+  expect(replayed.reads).toEqual([
+    [
+      { from: "checkout", tool: "read", input: whole.input, isError: false, wholeText: true },
+      { from: "checkout", tool: "read", input: ranged.input, isError: false },
+    ],
+  ]);
+  expect(replayed.step.message.content).toEqual([whole, ranged, WRITE_ACT]);
+});
+
+// Catches: a written case judged on a reply one of whose read-only calls the copy answers in no
+// form, a step every arm takes alike whatever the skill says.
+test("a written case's reply one of whose read-only calls the copy answers in no form gets no verdict, as unanswered-read, naming the call and why", async () => {
+  const copy = checkoutCopy();
+  const log = toolCall("toolu_log", "bash", { command: "git log --oneline" });
+  const failed = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    scripted([[INSPECTION[0] as ContentBlock, log]]).gateway,
+    { checkout: copy }
+  ).then(
+    () => "judged",
+    (error: unknown) => error
+  );
+  if (!(failed instanceof UnansweredRead)) throw new Error(`not refused: ${String(failed)}`);
+  expect(failed.message).toStartWith(`${UNANSWERED_READ}: bash {"command":"git log --oneline"}: `);
+  expect(failed.message).toContain("GitHub's tarball of the commit, which holds no history");
+  expect({
+    checkoutRounds: failed.replayed.checkoutRounds,
+    step: failed.replayed.step.message.content,
+  }).toEqual({ checkoutRounds: 0, step: [INSPECTION[0], log] });
 });
 
 // Catches: a session case's reply answered from a checkout, which a session case has none of.
@@ -1475,6 +1606,18 @@ test("a session case's reply whose calls all read files of the project is the ju
     checkoutRounds: 0,
   });
   expect(replayed.step.message.content).toEqual(INSPECTION);
+  // A ranged read, and a git command, are the judged step too: no read of a session case's is
+  // answered from a checkout, so none is left unanswered.
+  const other = [
+    toolCall("toolu_ranged", "read", { path: "src/app.py:1-2" }),
+    toolCall("toolu_log", "bash", { command: "git log --oneline" }),
+  ];
+  const judged = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    scripted([other]).gateway
+  );
+  expect(judged.step.message.content).toEqual(other);
 });
 
 // Catches: a written case's run that reads on and on judged on a read, or answered without end.

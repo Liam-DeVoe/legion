@@ -18,7 +18,8 @@
  *       (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir>
  *       --count <count dir> --written <n> (--context-session <store>:<hash> | --sessions <file>
  *       --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>]
- *       [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]
+ *       [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>]
+ *       [--budget-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -418,7 +419,13 @@
  * reader's following step (or `--written-answer`'s), which the audit
  * must call `follows` (else `written-not-followed`), in a task the restate reader finds no
  * statement of the line in (else `written-restates`) and whose `existing` paths the checkout holds
- * at the commit (else `written-missing-path`); its `source.kind` `written`. A context session
+ * at the commit (else `written-missing-path`); its `source.kind` `written`. The reader is given
+ * every file of the checkout's tree, or, for a tree past CHECKOUT_LIST_PATHS or one GitHub cuts
+ * short, a partial listing (`partialListing`: its directories, then the files under the
+ * directories the first message names and under the working directory, each part capped); when
+ * every task of its answer is dropped as `written-missing-path`, it is asked once more with those
+ * paths named absent (`<absent>`), and the summary records the retry (`retry`); a
+ * `--written-answer` is not asked again. A context session
  * whose work the reader finds is on the skill's own text is passed over as `skill-as-material`
  * (`chooseContext`). The context
  * session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build given both
@@ -430,7 +437,9 @@
  * navigation line: a line whose only instruction a step could show is to read or open a file of
  * the skill. The arm with no skill lacks that file, so it fails such a step whatever the skill's
  * text teaches. The `navigation` reader (given the line, its file and the path of each file of
- * `--old`) judges each line the case reader proposes, and that is the only rule that drops a step
+ * `--old`, readers.ts's `skillFilePaths`) judges each line the case reader proposes, once a line in
+ * a build (`navigationVerdict`: every session and written task under the line takes that one
+ * verdict), and that is the only rule that drops a step
  * for a read: a step that reads a file of the skill under a line that is not a navigation line
  * stays a case. In the session form, a step under a navigation line gives no case; its
  * replacement may. The files that step read, as cases.ts's `stepSkillFiles` tells them (the
@@ -576,7 +585,14 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, installedDirOf, pathFormFault, readResult } from "./arms";
+import {
+  type Arm,
+  type ArmName,
+  installedDirIn,
+  installedDirOf,
+  pathFormFault,
+  readResult,
+} from "./arms";
 import {
   type InstallersRow,
   type ManifestsRow,
@@ -598,6 +614,7 @@ import { armPromptBlocks, type SavedHead, sessionHeads } from "./capture";
 import {
   Case,
   caseKind,
+  insideRoot,
   listedName,
   loadCases,
   Profile,
@@ -704,6 +721,7 @@ import {
   ReaderFailed,
   RestateAnswer,
   runReader,
+  skillFilePaths,
   skillFiles,
   TASKS_PER_LABEL,
   TasksAnswer,
@@ -1792,6 +1810,9 @@ function readText(read: SkillRead, message: SessionMessage | undefined): string 
     : pathReadText(message);
 }
 
+/** The arms whose text a read by path is checked against (`pathFormIn`). */
+type TextArm = Extract<ArmName, "old" | "new" | "ours">;
+
 /** Why the arms do not answer a whole read by path of one of `files` (paths inside the cut's copy)
  *  in Oh My Pi's form from the old text, the new or ours (arms.ts's `pathFormFault`), or
  *  undefined: the arm whose text it is, its directory and the fault. With no new text (a
@@ -1802,10 +1823,8 @@ function readText(read: SkillRead, message: SessionMessage | undefined): string 
 export function pathFormIn(
   files: readonly string[],
   texts: { readonly old: string; readonly new?: string | undefined; readonly ours?: string }
-):
-  | { readonly arm: "old" | "new" | "ours"; readonly dir: string; readonly fault: string }
-  | undefined {
-  const arms: (readonly ["old" | "new" | "ours", string])[] = [
+): { readonly arm: TextArm; readonly dir: string; readonly fault: string } | undefined {
+  const arms: (readonly [TextArm, string])[] = [
     ["old", texts.old],
     ...(texts.new === undefined ? [] : [["new", texts.new] as const]),
     ...(texts.ours === undefined ? [] : [["ours", texts.ours] as const]),
@@ -2741,24 +2760,17 @@ export class GithubReads {
   }
 
   /** The paths of `repo` at `commit` a written task may treat as there (`build-cases --written`):
-   *  every file and directory of the commit's tree, from one read of it, when GitHub gives it
-   *  whole (`whole`); else its root's entries, a directory's ending in `/`, and `whole` false, a
-   *  path then looked up alone (`holds`). */
+   *  every file and directory of the commit's tree, a directory's ending in `/`, from one read of
+   *  it, and whether GitHub gave it whole (`whole`); a tree it cuts short gives the entries it did
+   *  give, `whole` false, and a path is then looked up alone (`holds`). */
   async checkoutPaths(
     repo: string,
     commit: string
   ): Promise<{ readonly paths: readonly string[]; readonly whole: boolean }> {
     const { entries, truncated } = await this.treeAnswer(repo, commit, true);
-    if (!truncated) {
-      return {
-        paths: entries.map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path)),
-        whole: true,
-      };
-    }
-    const root = await this.level(repo, commit, "");
     return {
-      paths: root.map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path)),
-      whole: false,
+      paths: entries.map((entry) => (entry.type === "tree" ? `${entry.path}/` : entry.path)),
+      whole: !truncated,
     };
   }
 
@@ -5727,18 +5739,6 @@ function mustBeFile(file: string, what: string): void {
     throw new Refused(`${what} ${file} is not a file`);
 }
 
-/** The path of each file of the skill directory `dir`, inside it (SKILL.md and every other file,
- *  at any depth), SKILL.md first and the rest by path: the files `--drop-navigation` tells a read
- *  of. */
-function skillPaths(dir: string): string[] {
-  return readdirSync(dir, { recursive: true, withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
-    .sort(
-      (a, b) => Number(b === "SKILL.md") - Number(a === "SKILL.md") || (a < b ? -1 : a > b ? 1 : 0)
-    );
-}
-
 /** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
  *  name when it gives none) and description. Refuses a directory with no SKILL.md. */
 function taskSkill(dir: string): { name: string; description: string } {
@@ -5845,8 +5845,11 @@ interface CaseRun {
   readonly new: string | undefined;
   /** The skill's base files (`--old`). */
   readonly files: readonly { readonly path: string; readonly text: string }[];
-  /** The path of each file of `--old` (`skillPaths`). */
+  /** The path of each file of `--old` (readers.ts's `skillFilePaths`). */
   readonly skillPaths: readonly string[];
+  /** The `navigation` reader's verdict on each base line asked of it so far, by the line's file
+   *  and number (`navigationVerdict`): one verdict per line in the build. */
+  readonly navigation: Map<string, Promise<NavigationAnswer>>;
   /** `--drop-navigation`: a step under a navigation line gives no case; its replacement may. */
   readonly dropNavigation: boolean;
   readonly copies: Copies;
@@ -5912,12 +5915,44 @@ function baseLineNumber(
 }
 
 /**
- * Whether the `navigation` reader calls the line of the case reader's proposal `proposal` a
- * navigation line, one whose only instruction a step could show is to read or open a file of the
- * skill: its pass, with no replacement yet, when it does; undefined when it does not, or when the
- * line is no line of the base text, which the case's checks drop unread (`line-not-in-base`); the
- * drop when the reader fails. Adds the reader's dollars to `record`, and throws NotNeeded before
- * its call once `session.stopped` is set.
+ * The `navigation` reader's verdict on the base line `line` (its file, its number there and its
+ * text), whether it is a navigation line, one whose only instruction a step could show is to read
+ * or open a file of the skill: one verdict per line in a build, by its file and number, asked once
+ * (`readOnce` on `run.navigation`) and shared by every session and written task that asks of it,
+ * while the call is made or after, so no two of them take different verdicts of one line. The
+ * call's dollars, or a failed call's, go once to `record`, the asker's that made the call, when
+ * one is given. Rejects as the reader does (BudgetSpent, ReaderFailed, a schema fault).
+ */
+function navigationVerdict(
+  run: CaseRun,
+  line: { readonly file: string; readonly number: number; readonly text: string },
+  record?: { readerUsd: number }
+): Promise<NavigationAnswer> {
+  return readOnce(run.navigation, `${line.file}\0${line.number}`, async () => {
+    try {
+      const result = await runReader(
+        "navigation",
+        { line: line.text, file: line.file, files: run.skillPaths },
+        run.gateway
+      );
+      if (record !== undefined) record.readerUsd += usdOf(result.spent);
+      return NavigationAnswer.parse(result.answer);
+    } catch (error) {
+      if (record !== undefined && error instanceof ReaderFailed) {
+        record.readerUsd += usdOf(error.spent);
+      }
+      throw error;
+    }
+  });
+}
+
+/**
+ * Whether the line of the case reader's proposal `proposal` is a navigation line, as the
+ * `navigation` reader's one verdict on it in the build says (`navigationVerdict`): its pass, with
+ * no replacement yet, when it is; undefined when it is not, or when the line is no line of the
+ * base text, which the case's checks drop unread (`line-not-in-base`); the drop when the reader
+ * fails. A call this proposal makes adds its dollars to `record`; throws NotNeeded before asking
+ * once `session.stopped` is set.
  */
 async function navigationOf(
   run: CaseRun,
@@ -5928,22 +5963,15 @@ async function navigationOf(
   const number = baseLineNumber(run.files, proposal.line);
   if (number === 0) return undefined;
   if (session.stopped) throw new NotNeeded();
+  const { file, text } = proposal.line;
   let judged: NavigationAnswer;
   try {
-    const result = await runReader(
-      "navigation",
-      { line: proposal.line.text, file: proposal.line.file, files: run.skillPaths },
-      run.gateway
-    );
-    record.readerUsd += usdOf(result.spent);
-    judged = NavigationAnswer.parse(result.answer);
+    judged = await navigationVerdict(run, { file, number, text }, record);
   } catch (error) {
     if (error instanceof BudgetSpent) throw error;
-    if (error instanceof ReaderFailed) record.readerUsd += usdOf(error.spent);
     return { drop: "navigation-failed", detail: messageFor(error) };
   }
   if (!judged.navigation) return undefined;
-  const { file, text } = proposal.line;
   const messageIndex = proposal.step.messageIndex;
   return { messageIndex, file, number, text, reason: judged.reason, replacement: null };
 }
@@ -6630,11 +6658,10 @@ async function caseOf(
         // the cut's copy the first source read by path before the step read), or, with no such
         // copy, a read at the installed directory of the first of the session's skill reads
         // before it whose header shows one (else `/skills/<skill>`, as the arms take it).
-        const installedDir =
-          reads
-            .filter((read) => read.index < stepIndex)
-            .map((read) => installedDirOf(read.header, read.file))
-            .find((dir) => dir !== undefined) ?? path.posix.join("/skills", run.skill);
+        const installedDir = installedDirIn(
+          run.skill,
+          reads.filter((read) => read.index < stepIndex)
+        );
         const copyDir = byPath.find(
           (read) => read.ok && read.kind === "source" && read.index < stepIndex
         )?.dir;
@@ -6741,7 +6768,7 @@ async function caseOf(
   const file = run.files.find((each) => each.path === answer.line.file);
   const wanted = answer.line.text.trim();
   const baseLines = file === undefined ? [] : textLines(file.text);
-  const lineNumber = baseLineNumber(run.files, answer.line);
+  const lineNumber = baseLines.findIndex((line) => line.trim() === wanted) + 1;
   if (file === undefined || lineNumber === 0) {
     return drop("line-not-in-base", `${answer.line.file}: ${JSON.stringify(answer.line.text)}`);
   }
@@ -7644,9 +7671,11 @@ async function chooseContext(
     return { chosen: made, tasks: answer.tasks, how: "--context-session", passed: [] };
   }
   const passed: PassedSession[] = [];
+  const sayPassed = (place: string, store: string, hash: string, why: string) =>
+    io.out(`build-cases: context session ${place}, ${store} ${hash}: passed over (${why})\n`);
   const passOver = (store: string, hash: string, why: string, place: string) => {
     passed.push({ store, hash, why });
-    io.out(`build-cases: context session ${place}, ${store} ${hash}: passed over (${why})\n`);
+    sayPassed(place, store, hash, why);
   };
   // The candidates on a model the gateway does not serve that give written cases, in order: each
   // one's place in `passed`, what pulls it again, and the first one's context.
@@ -7728,9 +7757,7 @@ async function chooseContext(
     }
     const why = `${material}: ${answer.material.why}`;
     passed[each.at] = { store: each.store.name, hash: each.hash, why };
-    io.out(
-      `build-cases: context session ${each.place}, ${each.store.name} ${each.hash}: passed over (${why})\n`
-    );
+    sayPassed(each.place, each.store.name, each.hash, why);
     rmSync(each.spool, { force: true });
   }
   throw new Error(
@@ -7750,9 +7777,83 @@ function writtenCheckout(profile: Profile, cwd: string | undefined): Case["check
   return root === "" ? undefined : { repo: repo.repo, commit: repo.commit, root, cwd };
 }
 
-/** The most paths of a checkout's tree the written-case reader is given: a larger tree is given
- *  by its root's entries. */
+/** The most paths of a checkout's tree the written-case reader is given whole: a larger tree, or
+ *  one GitHub cuts short, is given by a partial listing (`partialListing`), its directories at most
+ *  CHECKOUT_LIST_DIRS and its files at most CHECKOUT_LIST_FILES. */
 const CHECKOUT_LIST_PATHS = 2_000;
+const CHECKOUT_LIST_DIRS = 5_000;
+const CHECKOUT_LIST_FILES = 3_000;
+
+/** The directories of a checkout's tree (paths of `dirs`, each without its `/`) that `message`, a
+ *  session's first user message, names: each word of it, its quotes and closing marks taken off,
+ *  that is such a directory from the checkout's root or from the working directory `cwdPath` (its
+ *  path in the checkout, "" for the root), or that names a path under one (its nearest such
+ *  parent), in the order the message names them, each once. */
+function namedDirs(message: string, dirs: ReadonlySet<string>, cwdPath: string): string[] {
+  const named: string[] = [];
+  for (const raw of message.split(/[\s`'"()[\]<>,;]+/)) {
+    const word = raw
+      .replace(/^\.\//, "")
+      .replace(/[.:!?]+$/, "")
+      .replace(/\/+$/, "");
+    if (word === "" || word.startsWith("/") || word.split("/").includes("..")) continue;
+    for (const start of cwdPath === "" ? [word] : [`${cwdPath}/${word}`, word]) {
+      let at = start;
+      while (at !== "" && !dirs.has(at)) at = at.includes("/") ? path.posix.dirname(at) : "";
+      if (at === "" || at === "." || at === cwdPath) continue;
+      if (!named.includes(at)) named.push(at);
+      break;
+    }
+  }
+  return named;
+}
+
+/** The partial listing the written-case reader is given of a checkout's tree too large to list
+ *  whole: `listed`, the tree's paths (a directory's ending in `/`), `whole` false when GitHub cut
+ *  the tree short; `cwdPath`, the session's working directory in the checkout ("" for the root);
+ *  `message`, its first user message. Its paths: the tree's directories, the shallowest first and
+ *  then by path, at most CHECKOUT_LIST_DIRS; then the files under each directory the message
+ *  names (`namedDirs`, where its task will work) and under the working directory, in that order
+ *  and each place's by path, each once, at most CHECKOUT_LIST_FILES. `holds` says in words what it holds and where each part was
+ *  cut, for the reader's prompt. */
+export function partialListing(
+  listed: readonly string[],
+  whole: boolean,
+  cwdPath: string,
+  message: string
+): { readonly files: string[]; readonly holds: string } {
+  const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const dirs = listed
+    .filter((each) => each.endsWith("/"))
+    .map((each) => each.slice(0, -1))
+    .sort((a, b) => a.split("/").length - b.split("/").length || byPath(a, b));
+  const named = namedDirs(message, new Set(dirs), cwdPath);
+  const places = [...named, cwdPath];
+  const under = (place: string, file: string) => place === "" || file.startsWith(`${place}/`);
+  const fileList = listed.filter((each) => !each.endsWith("/"));
+  const placed = new Set<string>();
+  for (const place of places) {
+    for (const file of fileList.filter((each) => under(place, each)).sort(byPath)) {
+      placed.add(file);
+    }
+  }
+  const files = [...placed];
+  const shownDirs = dirs.slice(0, CHECKOUT_LIST_DIRS);
+  const shownFiles = files.slice(0, CHECKOUT_LIST_FILES);
+  const counted = (shown: number, all: number) =>
+    `${shown} of ${all}${shown < all ? ", the rest cut" : ""}`;
+  const where = [
+    ...(named.length === 0 ? [] : [`${named.join(", ")}, which the first message names,`]),
+    `the working directory${cwdPath === "" ? ", the checkout's root" : ` ${cwdPath}`}`,
+  ].join(" and under ");
+  const cut = whole
+    ? ""
+    : `; GitHub cut the tree short at ${listed.length} paths, so both parts may lack paths past them`;
+  return {
+    files: [...shownDirs.map((dir) => `${dir}/`), ...shownFiles],
+    holds: `the tree's directories, shallowest first (${counted(shownDirs.length, dirs.length)}), then the files under ${where} (${counted(shownFiles.length, files.length)})${cut}`,
+  };
+}
 
 /** The served model with the most reading sessions over `counts` (models files, their sessions
  *  summed by model), a tie going to the lower name in string order; undefined when none is
@@ -7801,8 +7902,7 @@ function writtenMessage(
   };
 }
 
-/** The id of a written case's read call of the skill; its read of the nth file of the task's
- *  `reads` (from 1) is `<WRITTEN_READ>_<n>`. */
+/** The id of a written case's read call of the skill. */
 const WRITTEN_READ = "written_read";
 
 /** The navigation lines the session build of the skill found (the `navigation.lines` of the
@@ -7828,11 +7928,13 @@ function sessionNavigation(casesFile: string): WrittenCaseInput["navigation"] {
  * most reading sessions of the skill (`--reading-models`), else over the skills of `--model-pool`.
  * The written-case reader reads the base text, under `--drop-navigation` the navigation lines of
  * the session build (`sessionNavigation`), the session cases of `--session-cases` and the context
- * session's first user message once, and writes at most n tasks. Each task gives a case whose
- * messages are the task, a read of `skill://<skill>` and its result, then a read of
- * `skill://<skill>/<path>` and its result for each file of the task's `reads` (each from `--old`,
- * as arms.ts answers a history read, at the directory the context session's first read of the
- * skill showed, or, for a first read by path, the directory of the copy it read), unless the
+ * session's first user message, once for each context session asked, and writes at most n tasks.
+ * Each task gives a case whose
+ * messages are the task, a read of `skill://<skill>` and its result (from `--old`, as arms.ts
+ * answers a history read, at the directory the context session's first read of the skill showed,
+ * or, for a first read by path, the directory of the copy it read), and nothing else: the agent
+ * reads any other file of the skill itself in the run. A task is dropped when the navigation
+ * reader calls its line navigation (`written-navigation`, under `--drop-navigation`), when the
  * restate reader finds the line stated in the task (`written-restates`)
  * or the audit does not call the task's following step `follows` (`written-not-followed`). The
  * peak memory is read after each task decided, and above RUN_MEMORY_LIMIT_BYTES no task after it
@@ -7934,8 +8036,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
     }
   }
-  // Under --drop-navigation, the navigation lines the session build found: a task's history reads
-  // the files they send the agent to before its step. Without the flag, none.
+  // Under --drop-navigation, the navigation lines the session build found, so the written-case
+  // reader knows which lines only send the agent to a file of the skill (a task's history is still
+  // the task and the skill's read alone). Without the flag, none.
   const navigation =
     values["drop-navigation"] === true && casesFile !== undefined
       ? sessionNavigation(casesFile)
@@ -7944,7 +8047,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
   // A written-case answer given in a file (`--written-answer`), checked as the reader's would be,
   // in place of the reader's call.
   const answerFile = values["written-answer"];
-  let givenAnswer: { readonly answer: WrittenCaseAnswer; readonly sha256: string } | undefined;
+  let givenAnswer:
+    | { readonly path: string; readonly answer: WrittenCaseAnswer; readonly sha256: string }
+    | undefined;
   if (answerFile !== undefined) {
     mustBeFile(answerFile, "--written-answer");
     const text = readFileSync(answerFile, "utf8");
@@ -7960,7 +8065,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         `--written-answer ${answerFile} is no written-case answer: ${schemaFaults(parsed.error, "the answer")}`
       );
     }
-    givenAnswer = { answer: parsed.data, sha256: sha256(text) };
+    givenAnswer = { path: answerFile, answer: parsed.data, sha256: sha256(text) };
   }
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const run: CaseRun = {
@@ -7970,7 +8075,8 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     old: given.old,
     new: undefined,
     files,
-    skillPaths: skillPaths(given.old),
+    skillPaths: skillFilePaths(given.old),
+    navigation: new Map(),
     dropNavigation: values["drop-navigation"] === true,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),
@@ -8011,9 +8117,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     modelPool: poolFiles,
     dropNavigation: run.dropNavigation,
     writtenAnswer:
-      answerFile === undefined || givenAnswer === undefined
-        ? null
-        : { path: answerFile, sha256: givenAnswer.sha256 },
+      givenAnswer === undefined ? null : { path: givenAnswer.path, sha256: givenAnswer.sha256 },
   };
 
   const spools = spoolDir(given.out, io);
@@ -8036,14 +8140,17 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           checkout.repo,
           checkout.commit
         );
-        const held = new Set<string>();
-        for (const each of listed) {
-          const parts = each.replace(/\/$/, "").split("/");
-          for (let n = 1; n <= parts.length; n++) held.add(parts.slice(0, n).join("/"));
-        }
+        // A whole tree lists each directory as an entry of its own (`tree`, ending in `/`); a tree
+        // that is not whole is never looked up here (`existingPaths` asks GitHub of each path).
+        const held = new Set(whole ? listed.map((each) => each.replace(/\/$/, "")) : []);
         return { paths: listed, whole, held };
       });
-    const ask = async (context: WrittenContext): Promise<WrittenCaseAnswer> => {
+    /** The written-case reader's answer for `context` (or `--written-answer`'s), the paths of
+     *  `absent` named as absent from its checkout on a second ask. */
+    const askReader = async (
+      context: WrittenContext,
+      absent: readonly string[]
+    ): Promise<WrittenCaseAnswer> => {
       const firstUser = context.t.items.findIndex((item) => item.slim.role === "user");
       const firstMessage = firstUser < 0 ? "" : messageText(context.t.message(firstUser)).trim();
       if (firstMessage === "") {
@@ -8054,17 +8161,19 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       if (givenAnswer !== undefined) return givenAnswer.answer;
       let checkout: WrittenCaseInput["checkout"] = null;
       if (context.checkout !== undefined) {
+        const { repo, root, cwd } = context.checkout;
         const { paths: listed, whole } = await listingOf(context.checkout);
-        const small = whole && listed.length <= CHECKOUT_LIST_PATHS;
-        checkout = {
-          repo: context.checkout.repo,
-          root: context.checkout.root,
-          cwd: context.checkout.cwd,
-          files: small
-            ? listed.filter((each) => !each.endsWith("/"))
-            : listed.filter((each) => !each.replace(/\/$/, "").includes("/")),
-          whole: small,
-        };
+        // A tree past CHECKOUT_LIST_PATHS, or cut short, is given by a partial listing.
+        checkout =
+          whole && listed.length <= CHECKOUT_LIST_PATHS
+            ? { repo, root, cwd, files: listed.filter((each) => !each.endsWith("/")), whole }
+            : {
+                repo,
+                root,
+                cwd,
+                ...partialListing(listed, whole, insideRoot(root, cwd) ?? "", firstMessage),
+                whole: false,
+              };
       }
       try {
         const result = await runReader(
@@ -8078,6 +8187,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
               criterion: c.criterion,
             })),
             checkout,
+            ...(absent.length === 0 ? {} : { absent }),
             firstMessage: cut(firstMessage, MESSAGE_CHARS),
             count,
           },
@@ -8089,6 +8199,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         throw new Error(`the written-case reader: ${messageFor(error)}`);
       }
     };
+    const ask = (context: WrittenContext) => askReader(context, []);
     let picked: ChosenContext;
     try {
       picked = await chooseContext(run, contextGiven, order, paths, spools, io, ask);
@@ -8101,7 +8212,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     }
     const { chosen, how, passed, tasks } = picked;
     const tasksFrom =
-      answerFile === undefined ? "the written-case reader" : `--written-answer ${answerFile}`;
+      givenAnswer === undefined
+        ? "the written-case reader"
+        : `--written-answer ${givenAnswer.path}`;
     const contextPathHash = pathHash(chosen.filePath);
     const contextName = `${chosen.store.name}:${chosen.hash}`;
     io.out(`build-cases: the context session is ${contextName} (${how})\n`);
@@ -8131,30 +8244,26 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
     }
     /** Why `task` treats as already there a path the context session's checkout does not hold at
-     *  its commit; else, for each path it names, the evidence item of it. */
+     *  its commit, and that path as the task names it; else, for each path it names, the evidence
+     *  item of it. */
     const existingPaths = async (
       task: WrittenCaseAnswer["tasks"][number]
-    ): Promise<{ missing: string } | { items: Evidence[] }> => {
+    ): Promise<{ missing: string; path: string } | { items: Evidence[] }> => {
       const items: Evidence[] = [];
       const checkout = chosen.checkout;
       for (const named of task.existing) {
         if (checkout === undefined) {
           return {
             missing: `it treats ${named} as there, and the build knows no checkout of the context session (no session repository, or no working directory in it)`,
+            path: named,
           };
         }
         const full = resolvedReadPath(named, { cwd: checkout.cwd });
-        const inside =
-          full === undefined
-            ? undefined
-            : full === checkout.root
-              ? ""
-              : full.startsWith(`${checkout.root}/`)
-                ? full.slice(checkout.root.length + 1)
-                : undefined;
+        const inside = full === undefined ? undefined : insideRoot(checkout.root, full);
         if (inside === undefined) {
           return {
             missing: `it treats ${named} as there, outside the checkout of ${checkout.repo} at ${checkout.root}`,
+            path: named,
           };
         }
         if (inside !== "") {
@@ -8165,6 +8274,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
           if (!held) {
             return {
               missing: `it treats ${named} as there, and ${checkout.repo} at ${checkout.commit} holds no ${inside}`,
+              path: named,
             };
           }
         }
@@ -8204,20 +8314,22 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       profileSkills: [],
     };
     const template = chosen.t.message(first.call);
-    /** The read call `id` of the skill's file `file` (`skill://<skill>` for SKILL.md, else
-     *  `skill://<skill>/<file>`) and its result: that file of `--old` in the installed directory. */
-    const readOf = (file: string, id: string): SessionMessage[] => {
-      const url = file === "SKILL.md" ? target : `${target}/${file}`;
-      return [
-        {
-          ...(template.role === "assistant" ? structuredClone(template) : { role: "assistant" }),
-          content: [{ type: "toolCall", id, name: "read", arguments: { path: url } }],
-          stopReason: "toolUse",
-        },
-        readResult(oldArm, { file, target: url, shown: path.posix.join(installedDir, file) }, id),
-      ];
-    };
-    const skillRead = readOf("SKILL.md", WRITTEN_READ);
+    // The read call of the skill (`skill://<skill>`) and its result: its SKILL.md of `--old` in the
+    // installed directory.
+    const skillRead: SessionMessage[] = [
+      {
+        ...(template.role === "assistant" ? structuredClone(template) : { role: "assistant" }),
+        content: [
+          { type: "toolCall", id: WRITTEN_READ, name: "read", arguments: { path: target } },
+        ],
+        stopReason: "toolUse",
+      },
+      readResult(
+        oldArm,
+        { file: "SKILL.md", target, shown: path.posix.join(installedDir, "SKILL.md") },
+        WRITTEN_READ
+      ),
+    ];
     const navigationWords = navigation
       .map((line) => `${line.file}:${line.number} ${JSON.stringify(line.text)}`)
       .join("; ");
@@ -8246,15 +8358,21 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     let budgetStop: string | undefined;
     let memoryStop: string | undefined;
     const peak = new BuildPeak(io);
-    /** Decides task `n` (from 0) of the written-case reader's: its case, or its drop. Returns
-     *  false when the budget stops it first (`budgetStop`). */
+    /** Each path a task treated as there that the checkout does not hold, as the task named it
+     *  (`written-missing-path`), each once. */
+    const missingPaths = new Set<string>();
+    /** Decides task `number` (from 1, counted over both answers) of the written-case reader's
+     *  answer `answer` (1, or 2 for its second ask), of `of` tasks so far: its case, or its drop.
+     *  Returns false when the budget stops it first (`budgetStop`). */
     const decide = async (
-      n: number,
-      task: WrittenCaseAnswer["tasks"][number]
+      number: number,
+      answer: 1 | 2,
+      task: WrittenCaseAnswer["tasks"][number],
+      of: number
     ): Promise<boolean> => {
-      const number = n + 1;
       const record: Record<string, unknown> = {
         task: number,
+        answer,
         line: task.line,
         existing: task.existing,
       };
@@ -8262,15 +8380,14 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       const dropTask = (reason: DropReason, detail: string) => {
         Object.assign(record, { outcome: "dropped", reason, detail });
         drops[reason] = (drops[reason] ?? 0) + 1;
-        io.out(
-          `build-cases: written task ${number} of ${tasks.length}: dropped (${reason}) ${detail}\n`
-        );
+        io.out(`build-cases: written task ${number} of ${of}: dropped (${reason}) ${detail}\n`);
       };
       const file = files.find((each) => each.path === task.line.file);
       if (file === undefined) throw new Error(`no base file ${task.line.file}`);
       // A task that treats as there a path the checkout does not hold is no task of the checkout.
       const existing = await existingPaths(task);
       if ("missing" in existing) {
+        missingPaths.add(existing.path);
         dropTask("written-missing-path", existing.missing);
         return true;
       }
@@ -8286,7 +8403,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         criterion: task.criterion,
       });
       const { messages, realStep, violatingStep, criterion } = secrets.value;
-      // Every read result: the skill's, then each of the task's reads.
+      // Every read result: the skill's, the history's one.
       const skillReads = messages.flatMap((message, index) =>
         message.role === "toolResult" ? [index] : []
       );
@@ -8294,12 +8411,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       // the agent to a file of the skill gives no case, and nothing replaces it.
       if (run.dropNavigation) {
         try {
-          const result = await runReader(
-            "navigation",
-            { line: task.line.text, file: task.line.file, files: run.skillPaths },
-            run.gateway
-          );
-          const judged = NavigationAnswer.parse(result.answer);
+          const judged = await navigationVerdict(run, task.line);
           if (judged.navigation) {
             navigationLines.push({ ...task.line, replacement: null });
             dropTask(
@@ -8439,14 +8551,48 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       });
       built.push(c);
       Object.assign(record, { outcome: `case ${id}` });
-      io.out(`build-cases: written task ${number} of ${tasks.length}: case ${id}\n`);
+      io.out(`build-cases: written task ${number} of ${of}: case ${id}\n`);
       return true;
     };
-    // The peak memory, after each task decided: above the limit no task after it is read.
-    for (const [n, task] of tasks.entries()) {
-      if (!(await decide(n, task))) break;
-      memoryStop = peak.stop("task");
-      if (memoryStop !== undefined) break;
+    /** Decides each of `answerTasks`, the tasks of answer `answer`, numbered on from `from`; false
+     *  when the budget or the memory stop ends it (`budgetStop`, `memoryStop`). */
+    const decideAll = async (
+      answer: 1 | 2,
+      answerTasks: readonly WrittenCaseAnswer["tasks"][number][],
+      from: number
+    ): Promise<boolean> => {
+      const of = from + answerTasks.length;
+      for (const [n, task] of answerTasks.entries()) {
+        if (!(await decide(from + n + 1, answer, task, of))) return false;
+        // The peak memory, after each task decided: above the limit no task after it is read.
+        memoryStop = peak.stop("task");
+        if (memoryStop !== undefined) return false;
+      }
+      return true;
+    };
+    // When every task of the reader's answer treats a path the checkout lacks as there, the reader
+    // is asked once more, those paths named as absent from it; `--written-answer` is not asked.
+    let retry: { readonly absent: string[]; readonly tasksWritten: number } | null = null;
+    let written = tasks.length;
+    if (
+      (await decideAll(1, tasks, 0)) &&
+      givenAnswer === undefined &&
+      tasks.length > 0 &&
+      records.every((record) => record.reason === "written-missing-path")
+    ) {
+      const absent = [...missingPaths];
+      io.out(
+        `build-cases: every written task treats a path the checkout lacks as there (${absent.join(", ")}); the written-case reader is asked once more, those paths named as absent\n`
+      );
+      try {
+        const again = await askReader(chosen, absent);
+        retry = { absent, tasksWritten: again.tasks.length };
+        written += again.tasks.length;
+        await decideAll(2, again.tasks, tasks.length);
+      } catch (error) {
+        if (!(error instanceof BudgetSpent)) throw error;
+        budgetStop = stopped();
+      }
     }
     const stop = budgetStop ?? memoryStop;
 
@@ -8470,6 +8616,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         context: chosen.context,
         sessionCases: sessionCases.length,
         tasksWritten: tasks.length,
+        retry,
         tasksFrom,
         tasks: records,
         casesBuilt: built.length,
@@ -8484,7 +8631,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     // The file must load as the behaviour commands load it.
     loadCases(given.out, given.old);
     io.out(
-      `build-cases: ${built.length} written cases of ${tasks.length} tasks, $${run.gateway.spend().usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
+      `build-cases: ${built.length} written cases of ${written} tasks${retry === null ? "" : " (the reader asked twice)"}, $${run.gateway.spend().usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
     );
     if (stop !== undefined) {
       io.err(`build-cases: stopped: ${stop}`);
@@ -8862,7 +9009,8 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     old: given.old,
     new: newDir,
     files,
-    skillPaths: skillPaths(given.old),
+    skillPaths: skillFilePaths(given.old),
+    navigation: new Map(),
     dropNavigation: inputs.dropNavigation === true,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),

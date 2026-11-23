@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "no
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { snapshotTag } from "./arms";
 import { answerCall, READ_ONLY_TOOLS, readOnlyCall, removeOutsideLinks } from "./checkout";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
@@ -97,6 +98,79 @@ test("removeOutsideLinks removes each link that resolves outside the copy or now
       answer: { why: expect.stringContaining(why) },
     });
   }
+});
+
+// Catches: a read of a code file the pin may summarize, or a ranged read, left unanswered (a run
+// then judged on that read), a range answered past the lines the pin shows, or a read with another
+// selector answered in a form the runner does not rebuild.
+test("a read of a code file of 100 lines or more is answered unsummarized and marked so, one past 300 lines with its first 300 and the count of the rest; a ranged read with the lines of its range, a line before and three after, and the pin's count of the lines left; any other selector is not answered", async () => {
+  const dir = path.join(scratch, "ranges");
+  mkdirSync(path.join(dir, "src"), { recursive: true });
+  mkdirSync(path.join(dir, "docs"), { recursive: true });
+  const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
+  writeFileSync(path.join(dir, "src", "big.py"), big);
+  writeFileSync(path.join(dir, "docs", "guide.md"), "# Guide\n\nRun the app.\n");
+  const copy = { dir, root: ROOT, cwd: ROOT, git: false, answers: new Map() };
+  const lines = big.replace(/\n$/, "").split("\n");
+  const rows = (from: number, to: number) =>
+    lines
+      .slice(from - 1, to)
+      .map((line, index) => `${from + index}:${line}`)
+      .join("\n");
+  const header = `[src/big.py#${snapshotTag(big)}]`;
+  const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
+  expect(await read("src/big.py")).toEqual({
+    text: `${header}\n${rows(1, 120)}`,
+    isError: false,
+    wholeText: true,
+  });
+  // A file past 300 lines, paged as the pin pages it unsummarized.
+  const long = Array.from({ length: 350 }, (_, n) => `y${n + 1} = ${n + 1}\n`).join("");
+  writeFileSync(path.join(dir, "src", "long.py"), long);
+  const longRows = long
+    .split("\n")
+    .slice(0, 300)
+    .map((line, index) => `${index + 1}:${line}`)
+    .join("\n");
+  expect(await read("src/long.py")).toEqual({
+    text: `[src/long.py#${snapshotTag(long)}]\n${longRows}\n\n[50 more lines in file. Use :301 to continue]`,
+    isError: false,
+    wholeText: true,
+  });
+  for (const [target, text] of [
+    [
+      "src/big.py:10-12",
+      `${header}\n${rows(9, 15)}\n\n[105 more lines in file. Use :16 to continue]`,
+    ],
+    ["src/big.py:5+2", `${header}\n${rows(4, 9)}\n\n[111 more lines in file. Use :10 to continue]`],
+    ["src/big.py:1..2", `${header}\n${rows(1, 5)}\n\n[115 more lines in file. Use :6 to continue]`],
+    [`${ROOT}/src/big.py:119-120`, `[src/big.py#${snapshotTag(big)}]\n${rows(118, 120)}`],
+    // From line 2 on: no trailing context, and the rest of the file.
+    [
+      "docs/guide.md:2",
+      `[docs/guide.md#${snapshotTag("# Guide\n\nRun the app.\n")}]\n1:# Guide\n2:\n3:Run the app.`,
+    ],
+  ] as const) {
+    expect({ target, answer: await read(target) }).toEqual({
+      target,
+      answer: { text, isError: false },
+    });
+  }
+  for (const target of [
+    "src/big.py:raw",
+    "src/big.py:1-2,5-6",
+    "src/big.py:-5",
+    "src/big.py:200",
+  ]) {
+    expect({ target, answer: await read(target) }).toEqual({
+      target,
+      answer: { why: expect.stringContaining(target) },
+    });
+  }
+  // A read, grep or glob answer is kept on the copy and given again; a bash answer is not kept.
+  await answerCall(copy, "bash", { command: "cat docs/guide.md" }, "hashline");
+  expect([...copy.answers.keys()].every((key) => key.startsWith("read\0hashline\0"))).toBe(true);
+  expect(copy.answers.size).toBe(11);
 });
 
 // Catches: an inspection step counted as an act, or an act (a write, a commit, a command run

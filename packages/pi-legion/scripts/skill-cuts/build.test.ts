@@ -1,6 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -20,6 +27,7 @@ import {
   ListingMeasure,
   main,
   messageOf,
+  partialListing,
   pullTranscript,
   RESTATE_WINDOWS,
   readTranscript,
@@ -1177,10 +1185,10 @@ const WRITTEN_TASKS = [
     },
   },
 ];
-/** The stand-in written-case reader's one task where `<navigation>` names a line: its history reads
- *  references/x.md after the skill, and X_LINE, a line of that file, decides the step after that
- *  read. */
-const WRITTEN_READS_TASK = {
+/** The stand-in written-case reader's one task where `<navigation>` names a line: its line,
+ *  X_LINE, is a line of references/x.md, and its history is the task and the skill's read alone
+ *  (the agent reads references/x.md itself in the run). */
+const WRITTEN_REFERENCE_TASK = {
   task: "Write the alpha report of the fixture project with each step's result.",
   existing: [] as string[],
   line: { file: "references/x.md", number: 3, text: X_LINE },
@@ -1194,6 +1202,9 @@ const WRITTEN_READS_TASK = {
     toolCalls: [{ name: "write", arguments: { path: "report.md", content: "done\ndone" } }],
   },
 };
+
+/** A test acme/proj's commit SHA does not hold, which its branch did. */
+const PROJ_FARM = "tools/tests/test_farm.py";
 
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
@@ -1214,8 +1225,27 @@ function readerAnswer(body: {
         material: { why: "The session rewrites alpha's SKILL.md (its first message)." },
       });
     }
+    // A dev-box session in a checkout of acme/proj: tasks that each treat a test the commit lacks
+    // as there, until the request names that test as absent from the checkout.
+    if (user.includes('root="/home/dev/src/proj" cwd="/home/dev/src/proj"')) {
+      return JSON.stringify({
+        tasks: user.includes(`<absent>\n${PROJ_FARM}\n</absent>`)
+          ? [
+              {
+                ...WRITTEN_TASK,
+                task: "Add the farm's first test, as CLAUDE.md asks.",
+                existing: ["CLAUDE.md"],
+              },
+            ]
+          : [1, 2].map((n) => ({
+              ...WRITTEN_TASK,
+              task: `Make ${PROJ_FARM} pass again (${n}).`,
+              existing: [PROJ_FARM],
+            })),
+      });
+    }
     if (user.includes("<navigation>\n<line ")) {
-      return JSON.stringify({ tasks: [WRITTEN_READS_TASK] });
+      return JSON.stringify({ tasks: [WRITTEN_REFERENCE_TASK] });
     }
     const count = Number(/<count>(\d+)<\/count>/.exec(user)?.[1] ?? "1");
     return JSON.stringify({ tasks: WRITTEN_TASKS.slice(0, count) });
@@ -4760,8 +4790,12 @@ test("build-cases --written --drop-navigation drops a task whose line the naviga
   expect(kept?.realStep.content).toContainEqual(
     expect.objectContaining({ name: "read", arguments: { path: "skill://alpha/references/x.md" } })
   );
-  // The navigation reader read every task's line, before its restatement check.
-  expect(usersOf(requests, NAVIGATION_PROMPT)).toHaveLength(5);
+  // The navigation reader judged each task's line once, before its restatement check: tasks 1, 2,
+  // 3 and 5 share SKILL.md's line 9, and take its one verdict.
+  expect(usersOf(requests, NAVIGATION_PROMPT)).toEqual([
+    `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nSKILL.md\n</file>\n\n<line>\n${LINE}\n</line>`,
+    `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nSKILL.md\n</file>\n\n<line>\n${NAVIGATION_LINE}\n</line>`,
+  ]);
   expect(usersOf(requests, RESTATE_PROMPT)).toHaveLength(4);
 }, 60_000);
 
@@ -4801,7 +4835,7 @@ test("build-cases --written --drop-navigation gives the written-case reader the 
   expect(c?.messages).toHaveLength(3);
   expect(c?.messages[0]).toEqual({
     role: "user",
-    content: [{ type: "text", text: WRITTEN_READS_TASK.task }],
+    content: [{ type: "text", text: WRITTEN_REFERENCE_TASK.task }],
   });
   expect(c?.messages[1]).toMatchObject({
     role: "assistant",
@@ -4816,7 +4850,7 @@ test("build-cases --written --drop-navigation gives the written-case reader the 
   expect([c?.baseFile, c?.line, c?.criterion]).toEqual([
     "references/x.md",
     { text: X_LINE, lineNumber: 3, lineCount: 3 },
-    WRITTEN_READS_TASK.criterion,
+    WRITTEN_REFERENCE_TASK.criterion,
   ]);
   expect((c?.evidence ?? []).some((each) => each.item.includes(" reads skill://"))).toBe(false);
 
@@ -4830,7 +4864,7 @@ test("build-cases --written --drop-navigation gives the written-case reader the 
   expect(restate?.includes('<message index="2"')).toBe(false);
   const left = "[tool result: read]\n[the text of a file of the skill, left out]";
   expect(usersOf(requests, AUDIT_PROMPT)).toEqual([
-    `<line>\n${X_LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_READS_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n${left}\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_READS_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`,
+    `<line>\n${X_LINE}\n</line>\n\n<before>\n[user]\n${WRITTEN_REFERENCE_TASK.task}\n\n[assistant]\n[tool call: read] {"path":"skill://alpha"}\n\n${left}\n</before>\n\n<step>\n[tool call: write] ${JSON.stringify(WRITTEN_REFERENCE_TASK.followingStep.toolCalls[0]?.arguments)}\n</step>`,
   ]);
   const summary = summaryOf<WrittenSummary>(out);
   expect(summary.tasks.map((each) => [each.task, each.outcome, each.existing])).toEqual([
@@ -4903,6 +4937,137 @@ test("build-cases --written --written-answer drops a task that treats a missing 
   expect(items).toContain(`written case: task 2 of --written-answer ${answer}`);
   expect(items).toContain("written case: treats CLAUDE.md as there");
   expect(items).toContain(`written case: checkout acme/proj at ${SHA}`);
+}, 60_000);
+
+// Catches: a written-case reader given only the root's entries of a large checkout, so it cannot see
+// what exists where it will work (the defect: all 8 tasks of a build on a tree of 115,950 paths were
+// dropped written-missing-path).
+test("partialListing gives a large tree's directories, shallowest first, then the files under each directory the first message names and under the working directory, each part cut at its cap and said so", () => {
+  const data = Array.from({ length: 2_100 }, (_, n) => `data/f${String(n).padStart(4, "0")}.json`);
+  const listed = [
+    "README.md",
+    "proj/",
+    "proj/src/",
+    "proj/src/app.py",
+    "proj/README.md",
+    "tools/",
+    "tools/farm/",
+    "tools/farm/gen.py",
+    "tools/farm/README.md",
+    "other/",
+    "other/deep/",
+    "other/deep/x.py",
+    "data/",
+    ...data,
+  ];
+  const message = "Fix the farm's batch script, tools/farm/gen-batch.py, and run it.";
+  expect(partialListing(listed, true, "proj", message)).toEqual({
+    files: [
+      "data/",
+      "other/",
+      "proj/",
+      "tools/",
+      "other/deep/",
+      "proj/src/",
+      "tools/farm/",
+      "tools/farm/README.md",
+      "tools/farm/gen.py",
+      "proj/README.md",
+      "proj/src/app.py",
+    ],
+    holds:
+      "the tree's directories, shallowest first (7 of 7), then the files under tools/farm, which the first message names, and under the working directory proj (4 of 4)",
+  });
+  // Past the caps, and from a tree GitHub cut short: each part cut, and the listing says so.
+  const dirs = Array.from({ length: 5_100 }, (_, n) => `d${String(n).padStart(4, "0")}/`);
+  const files = Array.from({ length: 3_100 }, (_, n) => `f${String(n).padStart(4, "0")}.txt`);
+  const cut = partialListing([...dirs, ...files], false, "", "Tidy the repository.");
+  expect(cut.files).toEqual([...dirs.slice(0, 5_000), ...files.slice(0, 3_000)]);
+  expect(cut.holds).toBe(
+    "the tree's directories, shallowest first (5000 of 5100, the rest cut), then the files under the working directory, the checkout's root (3000 of 3100, the rest cut); GitHub cut the tree short at 8200 paths, so both parts may lack paths past them"
+  );
+});
+
+// Catches: a written build whose every task treats a path the commit lacks as there (the context
+// session worked on a branch where it exists), with no second answer that knows it is absent; or
+// a --written-answer asked again.
+test("build-cases --written asks the written-case reader once more when every task of its answer treats a missing path as there, naming those paths as absent, and keeps the second answer's tasks; the summary records the retry and both answers' outcomes; a --written-answer gets no retry", async () => {
+  const out = path.join(scratch, "written-retry", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("proj-devbox"))}`;
+  const from = recorder.requests.length;
+  expect(await main(writtenArgs(out, "--context-session", context), io([]))).toBe(EXIT.ok);
+  const asked = usersOf(recorder.requests.slice(from), WRITTEN_PROMPT);
+  expect(asked).toHaveLength(2);
+  expect(asked[0]).not.toContain("<absent>");
+  expect(asked[1]).toContain(
+    `</checkout>\n\n<absent>\n${PROJ_FARM}\n</absent>\n\n<first-message>\n`
+  );
+  const summary = summaryOf<{
+    retry: unknown;
+    tasksWritten: number;
+    tasks: { task: number; answer: number; outcome: string; reason?: string }[];
+  }>(out);
+  const id = `skills-1-${pathHash(sessionPath("proj-devbox")).slice(0, 12)}-w3`;
+  expect(
+    summary.tasks.map((each) => [each.task, each.answer, each.outcome, each.reason ?? null])
+  ).toEqual([
+    [1, 1, "dropped", "written-missing-path"],
+    [2, 1, "dropped", "written-missing-path"],
+    [3, 2, `case ${id}`, null],
+  ]);
+  expect({ written: summary.tasksWritten, retry: summary.retry }).toEqual({
+    written: 2,
+    retry: { absent: [PROJ_FARM], tasksWritten: 1 },
+  });
+  expect(loadCases(out, old).map((each) => each.id)).toEqual([id]);
+
+  // The same tasks given in a file are not asked again.
+  const answer = writtenAnswerFile(
+    "written-retry-answer",
+    [1, 2].map((n) => ({
+      ...WRITTEN_TASK,
+      task: `Make ${PROJ_FARM} pass again (${n}).`,
+      existing: [PROJ_FARM],
+    }))
+  );
+  const given = path.join(scratch, "written-retry-given", "cases.jsonl");
+  const before = recorder.requests.length;
+  const args = writtenArgs(given, "--context-session", context, "--written-answer", answer);
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  expect(usersOf(recorder.requests.slice(before), WRITTEN_PROMPT)).toEqual([]);
+  expect(summaryOf<{ retry: unknown }>(given).retry).toBeNull();
+}, 60_000);
+
+// Catches: a build that lists the files of a linked --old (its files symbolic links, as the arms
+// take one) other than the behaviour report's line does (cli.test.ts, "report names the screened
+// cases whose real step reads a file"), so its navigation reader, its written-case reader and the
+// check of its answer miss a file the report counts.
+test("build-cases --written --drop-navigation lists the files of an --old whose files are symbolic links, as the behaviour report does: the navigation reader reads both, and the task under a line of the linked reference is a case", async () => {
+  const linked = path.join(setupDir, "old-linked", "alpha");
+  mkdirSync(path.join(linked, "references"), { recursive: true });
+  symlinkSync(path.join(old, "SKILL.md"), path.join(linked, "SKILL.md"));
+  symlinkSync(path.join(old, "references", "x.md"), path.join(linked, "references", "x.md"));
+  const out = path.join(scratch, "written-linked", "cases.jsonl");
+  const context = `store_a:${fileHash(sessionPath("good"))}`;
+  const answer = writtenAnswerFile("written-linked", [WRITTEN_REFERENCE_TASK]);
+  const args = writtenArgs(
+    out,
+    "--context-session",
+    context,
+    "--written-answer",
+    answer,
+    "--drop-navigation"
+  );
+  args[args.indexOf("--old") + 1] = linked;
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(await main(args, io(printed))).toBe(EXIT.ok);
+  expect(usersOf(recorder.requests.slice(from), NAVIGATION_PROMPT)).toEqual([
+    `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nreferences/x.md\n</file>\n\n<line>\n${X_LINE}\n</line>`,
+  ]);
+  expect(loadCases(out, linked).map((each) => [each.baseFile, each.line.text])).toEqual([
+    ["references/x.md", X_LINE],
+  ]);
 }, 60_000);
 
 // Catches: written tasks taken from a session whose work is on the skill's own text, which tests
@@ -5487,6 +5652,7 @@ interface NavigationSummary {
     detail?: string;
     windows?: number;
     navigation?: unknown[];
+    readerUsd: number;
   }[];
   readerSpend: Summary["readerSpend"];
 }
@@ -5714,6 +5880,25 @@ describe("build-cases --drop-navigation", () => {
     expect(printed.unreplaced?.at(-1)).toContain(
       "3 steps dropped for 1 navigation line (0 with a replacement case, 3 without) (--drop-navigation)"
     );
+  });
+
+  // Catches: a line judged once per proposal, which a reader at temperature 1 may call navigation
+  // in one session and not in another, so that a case stands under a line the summary lists as a
+  // navigation line.
+  test("with --drop-navigation, sessions that propose the same line take one navigation reader call and its one verdict, its spend counted once", () => {
+    // nav-skill-md, nav-nothing and nav-line each propose SKILL.md's line 8 first.
+    for (const name of ["nav-skill-md", "nav-nothing", "nav-line"]) {
+      expect(recordOf(unreplaced, name)?.navigation).toEqual([
+        expect.objectContaining({ file: "SKILL.md", number: 8, reason: NAVIGATION_REASON }),
+      ]);
+    }
+    expect(usersOf(requests.unreplaced ?? [], NAVIGATION_PROMPT)).toEqual([
+      `<files>\nSKILL.md\nreferences/x.md\n</files>\n\n<file>\nSKILL.md\n</file>\n\n<line>\n${NAVIGATION_LINE}\n</line>`,
+    ]);
+    // The sessions' reader dollars sum to the build's: the one call is counted on one session.
+    const summary = summaryOf<NavigationSummary>(unreplaced);
+    const sessionsUsd = summary.sessions.reduce((total, each) => total + each.readerUsd, 0);
+    expect(sessionsUsd).toBeCloseTo(summary.readerSpend.usd, 9);
   });
 
   test("without --drop-navigation, the same sessions give today's cases, navigation lines and reads of references/x.md among them; no navigation reader is called, and nothing is counted", () => {

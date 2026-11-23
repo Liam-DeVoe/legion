@@ -7,12 +7,13 @@ effort: high
 ---
 You write tasks for a behaviour test of a coding agent's skill. In each task, one line of the skill decides the act the agent takes once it has read the skill and looked at what that act needs.
 
-The user message holds six parts:
+The user message holds six parts, and a seventh on a second ask:
 
 - `<skill>`: the skill's files, each line as `<number>: <line>`.
 - `<navigation>`: the lines of the skill that only send the agent to a file of the skill, which the cases from real sessions found: each line as `<line file="..." number="...">`. It says `None.` when there are none.
 - `<session-cases>`: the cases already taken from real sessions that read the skill: each case's real step and its criterion. It says `None.` when there are none.
-- `<checkout>`: the repository the session's working directory is a checkout of, at the session's commit: its `repo`, its `root` on the session's machine, the working directory `cwd`, and its paths, one a line from the root (every file when `listing` is `every file`; else only the root's entries, a directory's ending in `/`). It says `None.` when the session has no checkout the test knows.
+- `<checkout>`: the repository the session's working directory is a checkout of, at the session's commit: its `repo`, its `root` on the session's machine, the working directory `cwd`, and its paths, one a line from the root, a directory's ending in `/`. When `listing` is `every file`, it lists every file. Else the tree is too large to list whole and the list is partial: `listing` says what it holds (the tree's directories, shallowest first, then the files under the working directory and under each directory `<first-message>` names) and where each part was cut. A path a partial list lacks may still be in the checkout, but name as existing only a path it shows. It says `None.` when the session has no checkout the test knows.
+- `<absent>` (a second ask only): paths a first answer named as existing that the checkout does not hold at the session's commit. The session may have worked on a branch where they exist; at this commit they do not. Name none of them as existing, and write tasks on paths `<checkout>` shows.
 - `<first-message>`: the first user message of a real session that read the skill. Your tasks go in that session's context: the same project, working directory, tools and other skills.
 - `<count>`: the most tasks you may write.
 

@@ -286,6 +286,12 @@ export interface Arm {
   readonly skillDirs?: Readonly<Record<string, string>>;
 }
 
+/** How a new read by path shows its rows in `arm`: as a new read of the case's own copy does
+ *  (`pathCopy.rows`), else as the case's session shows them (`pathRows`), else hashline. */
+export function newReadRows(arm: Pick<Arm, "pathCopy" | "pathRows">): PathRows {
+  return arm.pathCopy?.rows ?? arm.pathRows ?? "hashline";
+}
+
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
  * top. `new` is given with `--new`, and `ours`, with its name, with `--ours`. */
 export interface ArmDirs {
@@ -340,6 +346,34 @@ function armFile(dir: string, file: string): { full: string; stats: Stats | unde
  * at the arm's `installedDir`: the header and the text, or the not-found text with `isError`. */
 export function skillFile(arm: Arm, file: string): { text: string; isError: boolean } {
   return answer(arm, file, path.join(arm.installedDir, file));
+}
+
+/** The answer to a `skill://` read of `file` (a path inside a skill's directory) with the line
+ *  range `range` from the skill directory `dir`, shown at `shown` (`skillRangeText`), or the
+ *  not-found text with `isError`; undefined for a range past the file's end. */
+function rangeAnswer(
+  dir: string,
+  file: string,
+  shown: string,
+  range: { readonly first: number; readonly last: number | undefined }
+): { text: string; isError: boolean } | undefined {
+  const { full, stats } = armFile(dir, file);
+  if (stats === undefined) return { text: `File not found: ${shown}`, isError: true };
+  if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
+  const text = skillRangeText(readFileSync(full, "utf8"), shown, range);
+  return text === undefined ? undefined : { text, isError: false };
+}
+
+/** The answer to a new `skill://` read of `file` with the line range `range` from the arm's files,
+ *  at the arm's `installedDir` (`rangeAnswer`); for `none`, the unknown-skill result; undefined
+ *  for a range past the file's end. */
+export function skillFileRange(
+  arm: Arm,
+  file: string,
+  range: { readonly first: number; readonly last: number | undefined }
+): { text: string; isError: boolean } | undefined {
+  if (arm.skillDir === undefined) return unknownSkill(arm, arm.skill);
+  return rangeAnswer(arm.skillDir, file, path.join(arm.installedDir, file), range);
 }
 
 /** A read result of the case's messages answered from the arm's files at `shown`: F1's shape of a
@@ -403,6 +437,11 @@ const OWN_FORM_FILE = /\.(ipynb|svg|pdf|docx|pptx|xlsx|epub)$/i;
  *  (`read.summarize.minTotalLines`, settings.ts lines 241-245; read-summary.ts's `trySummarize`
  *  counts a file's newlines and one more, `countTextLines`). */
 const SUMMARY_MIN_LINES = 100;
+/** The lines a read with a line range shows around it (`RANGE_LEADING_CONTEXT_LINES` and
+ *  `RANGE_TRAILING_CONTEXT_LINES`, read-format.ts lines 287-288 at the pin): one before a range
+ *  that does not start at line 1, and three after a range with an end. */
+const RANGE_BEFORE = 1;
+const RANGE_AFTER = 3;
 
 /** A line that opens a git conflict block, as Oh My Pi's scanConflictLines finds one
  *  (packages/coding-agent/src/tools/conflict-detect.ts at the pin). */
@@ -429,45 +468,67 @@ export function snapshotTag(text: string): string {
   return (Bun.hash.xxHash32(kept, 0) & 0xffff).toString(16).toUpperCase().padStart(4, "0");
 }
 
+/** Oh My Pi's snapshot tag of a file's text `raw` as a read or a grep shows it: `snapshotTag` of
+ *  the text less a leading byte order mark, each CRLF or CR as LF. */
+export function fileTag(raw: string): string {
+  return snapshotTag((raw.startsWith("\uFEFF") ? raw.slice(1) : raw).replace(/\r\n?/g, "\n"));
+}
+
 /** A read by path, answered: its text, whether it failed, and the tool's record. replay.ts answers
- *  a written case's read of a file of its checkout copy so (checkout.ts). */
+ *  a written case's read of a file of its checkout copy so (checkout.ts), where `wholeText` marks a
+ *  file the pin may show summarized answered with its whole text (`pathPage`). */
 export interface PathAnswer {
   readonly text: string;
   readonly isError: boolean;
   readonly details: Record<string, unknown>;
+  readonly wholeText?: true;
+}
+
+/** The row of line `n` of a read by path, `line` as shown, in a session that shows its rows as
+ *  `rows`: `<n>:<line>`, `<n>|<line>`, or the line alone. */
+function pathRow(n: number, line: string, rows: PathRows): string {
+  if (rows === "hashline") return `${n}:${line}`;
+  return rows === "numbered" ? `${n}|${line}` : line;
 }
 
 /** A file's text as a whole read by path shows it: the decoded text, its lines (a final newline
- *  ends the last one), each line as shown (at most READ_COLUMNS characters, then `…`), and the
- *  first and last line cut so, or undefined when none is. */
+ *  ends the last one), each line shown (at most READ_COLUMNS characters, then `…`; the first
+ *  READ_LINES lines of a longer file, a checkout read only), the first and last line cut so, or
+ *  undefined when none is, how many lines of the file are left after those shown (`more`), and
+ *  whether it is a file the pin may show summarized, given unsummarized (`wholeText`, a checkout
+ *  read only). */
 interface PathPage {
   readonly raw: string;
   readonly lines: readonly string[];
   readonly shownLines: readonly string[];
   readonly cut: { readonly first: number; readonly last: number } | undefined;
+  readonly more: number;
+  readonly wholeText: boolean;
 }
 
 /** The page of `file` (a path inside the skill's directory) whose bytes are `bytes`, as a whole
  *  read by path shows it in a session that shows its rows as `rows`, or why Oh My Pi shows it in
- *  a form the arms do not rebuild (`pathFormFault`). With `text` (a written case's read of its
- *  checkout, checkout.ts), a file that is no prose is rebuilt too when the pin shows it whole: no
- *  file of OWN_FORM_FILE, and fewer than SUMMARY_MIN_LINES lines (read.ts lines 2519-2533 at the
- *  pin summarize one of more, where its parse elides a body). */
+ *  a form the arms do not rebuild (`pathFormFault`). With `checkoutRead` (a written case's read of
+ *  its checkout, checkout.ts), a file that is no prose is rebuilt too, but a file of OWN_FORM_FILE;
+ *  one of SUMMARY_MIN_LINES lines or more, which the pin may summarize (read.ts lines 2519-2533:
+ *  a code file whose parse elides a body, which the runner cannot rebuild), is given unsummarized
+ *  in place of that summary, `wholeText` set; and a file of more than READ_LINES lines is given as
+ *  the pin pages it unsummarized (read.defaultLimit, read.ts lines 2652-3030): its first
+ *  READ_LINES lines, then the count of the lines left (`more`). */
 function pathPage(
   file: string,
   bytes: Uint8Array,
   rows: PathRows,
-  text = false
+  checkoutRead = false
 ): PathPage | string {
+  let wholeText = false;
   if (!PROSE_FILE.test(file)) {
-    if (!text) {
+    if (!checkoutRead) {
       return `${file} is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild`;
     }
     if (OWN_FORM_FILE.test(file)) return `${file} is a file a read shows in a form of its own`;
     const newlines = bytes.reduce((count, byte) => (byte === 10 ? count + 1 : count), 0);
-    if (bytes.length > 0 && newlines + 1 >= SUMMARY_MIN_LINES) {
-      return `${file} is no prose file and counts ${newlines + 1} lines, from ${SUMMARY_MIN_LINES} of which a read may summarize it`;
-    }
+    wholeText = bytes.length > 0 && newlines + 1 >= SUMMARY_MIN_LINES;
   }
   if (bytes.includes(0) || !isUtf8(bytes)) return `${file} is not UTF-8 text`;
   // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
@@ -475,10 +536,11 @@ function pathPage(
   const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
   const lines = raw.split("\n");
   if (lines.length > 1 && lines.at(-1) === "") lines.pop();
-  if (lines.length > READ_LINES) {
+  if (lines.length > READ_LINES && !checkoutRead) {
     return `${file} has ${lines.length} lines, and a read by path shows ${READ_LINES}, then the end of each block past them`;
   }
-  const opener = lines.findIndex((line) => CONFLICT_OPENER.test(line));
+  const paged = lines.slice(0, READ_LINES);
+  const opener = paged.findIndex((line) => CONFLICT_OPENER.test(line));
   if (opener !== -1) {
     return `line ${opener + 1} of ${file} opens a git conflict block, which a read by path follows with a warning`;
   }
@@ -487,7 +549,7 @@ function pathPage(
   const shownLines: string[] = [];
   let cut: { first: number; last: number; firstBytes: number } | undefined;
   let spent = -1;
-  for (const [index, line] of lines.entries()) {
+  for (const [index, line] of paged.entries()) {
     const shown = line.length <= READ_COLUMNS ? line : `${line.slice(0, READ_COLUMNS)}…`;
     if (shown !== line) {
       cut = cut ?? { first: index + 1, last: index + 1, firstBytes: Buffer.byteLength(line) };
@@ -507,6 +569,8 @@ function pathPage(
     lines,
     shownLines,
     cut: cut === undefined ? undefined : { first: cut.first, last: cut.last },
+    more: lines.length - paged.length,
+    wholeText,
   };
 }
 
@@ -534,7 +598,7 @@ export function pathFormFault(
  *  header; read.ts lines 2320-3187 at the pin). Returns why the arms do not rebuild it instead
  *  when Oh My Pi shows the file in another form (`pathFormFault`, or a page it saves as an
  *  artifact). checkout.ts answers a read of a file of a written case's checkout copy with it,
- *  `skillDir` the copy, `file` the path inside it and `text` set (`pathPage`). */
+ *  `skillDir` the copy, `file` the path inside it and `checkoutRead` set (`pathPage`). */
 export function pathAnswer(
   skillDir: string | undefined,
   read: {
@@ -543,7 +607,7 @@ export function pathAnswer(
     source: string;
     shown: string;
     rows: PathRows;
-    text?: boolean;
+    checkoutRead?: boolean;
   }
 ): PathAnswer | string {
   const notFound = { text: `Path '${read.target}' not found`, isError: true, details: {} };
@@ -552,30 +616,27 @@ export function pathAnswer(
   if (stats === undefined) return notFound;
   if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
   const bytes = readFileSync(full);
-  const page = pathPage(read.file, bytes, read.rows, read.text === true);
+  const page = pathPage(read.file, bytes, read.rows, read.checkoutRead === true);
   if (typeof page === "string") return page;
-  const { raw, lines, shownLines, cut } = page;
-  const numbered = shownLines.map((line, index) =>
-    read.rows === "hashline"
-      ? `${index + 1}:${line}`
-      : read.rows === "numbered"
-        ? `${index + 1}|${line}`
-        : line
-  );
-  const hashed = (raw.startsWith("\uFEFF") ? raw.slice(1) : raw).replace(/\r\n?/g, "\n");
+  const { raw, lines, shownLines, cut, more } = page;
+  const numbered = shownLines.map((line, index) => pathRow(index + 1, line, read.rows));
   const shown =
     read.rows === "hashline"
-      ? `[${read.shown}#${snapshotTag(hashed)}]\n${numbered.join("\n")}`
+      ? `[${read.shown}#${fileTag(raw)}]\n${numbered.join("\n")}`
       : numbered.join("\n");
   if (Buffer.byteLength(shown) > SPILL_BYTES + INLINE_SLACK) {
     return `a read by path of ${read.file} is saved as an artifact`;
   }
+  // A paged file's count of the lines left, then the column note (read.ts lines 3022-3028, and
+  // its result builder's limits after them).
+  const left =
+    more === 0 ? "" : `\n\n[${more} more lines in file. Use :${shownLines.length + 1} to continue]`;
   const notice =
     cut === undefined
       ? ""
       : `\n\n[Some lines truncated to ${READ_COLUMNS} chars. Use :raw:${cut.first}-${cut.first} to read line ${cut.first} whole${cut.last > cut.first ? `; cut lines run to line ${cut.last}, each read the same way` : ""}]`;
   return {
-    text: `${shown}${notice}`,
+    text: `${shown}${left}${notice}`,
     isError: false,
     details: {
       totalLines: lines.length,
@@ -603,28 +664,172 @@ export function pathAnswer(
             }),
       },
     },
+    ...(page.wholeText ? { wholeText: true as const } : {}),
   };
 }
 
-/** The answer to a new read of `target` from the arm's files, when it is a whole read of a file
- *  of the cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`): Oh My
- *  Pi's result at the path read, its rows as the case's reads by path show them, or its not-found
- *  result. Undefined for any other read, a read of a directory of the copy, and a read of a file
- *  Oh My Pi shows in a form the arms do not rebuild (`pathFormFault`). */
+/** A read target's selector (the text after a `:` that follows its last `/`): the target less it,
+ *  the selector, and the lines it names when it is one line range of the pin's grammar
+ *  (read-selector.ts's `parseSel` and line-ranges.ts's `parseLineRanges` at the pin): `N-M` or
+ *  `N..M` (M not below N), `N+K` (K lines from N), and `N`, `N-` or `N..` (from line N to the
+ *  end), each number with an optional `L` before it, N from 1; `range` undefined for any other
+ *  selector (`raw`, a list, `-N`, `conflicts`, …). Undefined when the target holds no selector. */
+export function readRange(target: string):
+  | {
+      readonly path: string;
+      readonly selector: string;
+      readonly range?: { readonly first: number; readonly last: number | undefined };
+    }
+  | undefined {
+  const colon = target.indexOf(":", target.lastIndexOf("/") + 1);
+  if (colon < 0) return undefined;
+  const read = { path: target.slice(0, colon), selector: target.slice(colon + 1) };
+  const match = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i.exec(read.selector);
+  const first = Number(match?.[1] ?? 0);
+  const to = match?.[3] === undefined ? undefined : Number(match[3]);
+  if (match === null || first < 1) return read;
+  if (match[2] === "+")
+    return to === undefined || to < 1 ? read : { ...read, range: { first, last: first + to - 1 } };
+  if (to !== undefined && to < first) return read;
+  return { ...read, range: { first, last: to } };
+}
+
+/** The lines a read with the line range `first` to `last` (to the end when undefined) shows of a
+ *  text of `count` lines, at the pin, from index `start` to before `end`: RANGE_BEFORE line before
+ *  a range that does not start at line 1, RANGE_AFTER lines after a range with an end, and, for a
+ *  range with no end, `openLines` lines from `first`; and `collect`, the lines the pin collects
+ *  (its byte budget's measure). */
+function rangeWindow(
+  count: number,
+  first: number,
+  last: number | undefined,
+  openLines: number
+): { start: number; end: number; collect: number } {
+  const before = first > 1 ? RANGE_BEFORE : 0;
+  const collect = (last === undefined ? openLines : last - first + 1 + RANGE_AFTER) + before;
+  const start = first - 1 - before;
+  return { start, end: Math.min(count, start + collect), collect };
+}
+
+/**
+ * Oh My Pi's result for a read of `file` (a path inside `dir`: a written case's checkout copy, or an
+ * arm's directory of the cut's own copy) by the path `target` with a line range, its selector taken
+ * off: lines `first` to `last`, or from `first` on when `last` is undefined (`:N`, `:N-`), its
+ * hashline line naming `shown` and its rows shown as `rows` (read.ts lines 2598-3035 at the pin):
+ * the hashline line of the whole file (hashline rows), then the rows `rangeWindow` gives (at most
+ * READ_LINES lines from `first` of a range with no end), then `[<n> more lines in file. Use
+ * :<next> to continue]` when lines of the file are left after them; `Path '<target>' not found`
+ * for a file `dir` lacks. Where the pin widens a range of a code file to the brackets of the
+ * blocks it cuts (`buildLineEntriesWithBlockContext`), this answers the lines alone. Returns why it
+ * does not rebuild the read instead: a file of OWN_FORM_FILE, one that is no UTF-8 text, a range
+ * that starts past the file's end (the pin's notice of it is not rebuilt) or of more than
+ * READ_LINES lines, a shown line past READ_COLUMNS characters or one that opens a git conflict
+ * block (the pin adds a notice of either), and lines past the bytes the pin shows of the range.
+ */
+export function pathRangeAnswer(
+  dir: string,
+  read: {
+    file: string;
+    target: string;
+    shown: string;
+    rows: PathRows;
+    first: number;
+    last: number | undefined;
+  }
+): { readonly text: string; readonly isError: boolean } | string {
+  const { full, stats } = armFile(dir, read.file);
+  if (stats === undefined) return { text: `Path '${read.target}' not found`, isError: true };
+  if (!stats.isFile()) throw new Error(`${full} is not a file: a range is read of a file only`);
+  if (OWN_FORM_FILE.test(read.file))
+    return `${read.file} is a file a read shows in a form of its own`;
+  const bytes = readFileSync(full);
+  if (bytes.includes(0) || !isUtf8(bytes)) return `${read.file} is not UTF-8 text`;
+  const raw = bytes.toString("utf8");
+  const lines = raw.split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  if (read.first > lines.length) {
+    return `line ${read.first} is past the end of ${read.file} (${lines.length} lines), whose notice the runner does not rebuild`;
+  }
+  const wanted = read.last === undefined ? READ_LINES : read.last - read.first + 1;
+  if (wanted > READ_LINES) {
+    return `its range of ${wanted} lines passes the ${READ_LINES} a read shows at once`;
+  }
+  const { start, end, collect } = rangeWindow(lines.length, read.first, read.last, READ_LINES);
+  const window = lines.slice(start, end);
+  const cut = window.findIndex((line) => line.length > READ_COLUMNS);
+  if (cut >= 0) {
+    return `line ${start + cut + 1} of ${read.file} passes the ${READ_COLUMNS} characters a read shows`;
+  }
+  const opener = window.findIndex((line) => CONFLICT_OPENER.test(line));
+  if (opener >= 0) {
+    return `line ${start + opener + 1} of ${read.file} opens a git conflict block, which a read follows with a warning`;
+  }
+  // The bytes the pin lets the lines it collects take (read.ts lines 2656-2670).
+  const prefix = read.rows === "plain" ? 0 : String(start + collect).length + 1;
+  const budget = Math.min(
+    Math.max(SPILL_BYTES, collect * 512),
+    SPILL_BYTES - Math.min(collect * prefix, Math.floor(SPILL_BYTES / 2))
+  );
+  const spent = window.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, -1);
+  if (spent > budget) {
+    return `the lines of ${read.file} its range shows come to ${spent} bytes, past the ${budget} a read shows of them`;
+  }
+  const rows = window.map((line, index) => pathRow(start + index + 1, line, read.rows)).join("\n");
+  const header = read.rows === "hashline" ? `[${read.shown}#${fileTag(raw)}]\n` : "";
+  const left = lines.length - end;
+  const notice = left > 0 ? `\n\n[${left} more lines in file. Use :${end + 1} to continue]` : "";
+  return { text: `${header}${rows}${notice}`, isError: false };
+}
+
+/** Oh My Pi's text for a `skill://` read of the skill file `text` with a line range, `first` to
+ *  `last` (to the end when undefined), the file shown at `shown` (read.ts lines 2508-2517 and
+ *  2039-2045, read-format.ts's `buildInMemoryTextResult` at the pin): its `[Skill file: <shown>]`
+ *  line, then the lines `rangeWindow` gives (every line from `first` of a range with no end), as a
+ *  whole `skill://` read shows them (no row numbers), then `[<n> more lines in file. Use :<next>
+ *  to continue]` when a range with an end leaves lines after them; the lines alone where the pin
+ *  widens the range to the brackets of the blocks it cuts. Undefined for a range that starts past
+ *  the file's end, whose notice is not rebuilt. */
+function skillRangeText(
+  text: string,
+  shown: string,
+  range: { readonly first: number; readonly last: number | undefined }
+): string | undefined {
+  const lines = textLines(text);
+  if (range.first > lines.length) return undefined;
+  const { start, end } = rangeWindow(lines.length, range.first, range.last, lines.length);
+  const left = lines.length - end;
+  const notice =
+    range.last !== undefined && left > 0
+      ? `\n\n[${left} more lines in file. Use :${end + 1} to continue]`
+      : "";
+  return `${skillFileHeader(shown)}\n${lines.slice(start, end).join("\n")}${notice}`;
+}
+
+/** The answer to a new read of `target` from the arm's files, when it is a read of a file of the
+ *  cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`), whole or of
+ *  one line range (`readRange`): Oh My Pi's result at the path read (a range as
+ *  `pathRangeAnswer` gives it), its rows as the case's reads by path show them, or its not-found
+ *  result. Undefined for any other read (another selector among them), a read of a directory of
+ *  the copy, and a read of a file Oh My Pi shows in a form the arms do not rebuild
+ *  (`pathFormFault`, `pathRangeAnswer`'s faults). */
 export function pathFile(arm: Arm, target: string): { text: string; isError: boolean } | undefined {
   const copy = arm.pathCopy;
-  const file = pathReadFile(arm, target);
+  const ranged = readRange(target);
+  if (ranged !== undefined && ranged.range === undefined) return undefined;
+  const whole = ranged?.path ?? target;
+  const file = pathReadFile(arm, whole);
   if (copy === undefined || file === undefined) return undefined;
   if (arm.skillDir !== undefined && armFile(arm.skillDir, file).stats?.isDirectory()) {
     return undefined;
   }
-  const read = {
-    file,
-    target,
-    source: `${copy.dir}/${file}`,
-    shown: path.join(copy.shownDir, file),
-    rows: copy.rows,
-  };
+  const shown = path.join(copy.shownDir, file);
+  if (ranged?.range !== undefined) {
+    if (arm.skillDir === undefined) return { text: `Path '${whole}' not found`, isError: true };
+    const read = { file, target: whole, shown, rows: copy.rows, ...ranged.range };
+    const answer = pathRangeAnswer(arm.skillDir, read);
+    return typeof answer === "string" ? undefined : answer;
+  }
+  const read = { file, target, source: `${copy.dir}/${file}`, shown, rows: copy.rows };
   const answer = pathAnswer(arm.skillDir, read);
   return typeof answer === "string" ? undefined : { text: answer.text, isError: answer.isError };
 }
@@ -790,15 +995,17 @@ export function shownPath(
   return full;
 }
 
-/** A `skill://` read of `target` answered when it reads a file of a skill of `others`, the
- *  profile's skills other than the case's, or of a skill the profile does not list (see the
- *  file's header). Oh My Pi's resolver tries `<name>/<first part of the path>` before `<name>`,
- *  so the longest listed name is tried first. */
+/** A `skill://` read of `target` (its selector taken off) answered when it reads a file of a skill
+ *  of `others`, the profile's skills other than the case's, or of a skill the profile does not
+ *  list (see the file's header), whole or of the line range `range` (`rangeAnswer`; undefined for
+ *  a range past the file's end). Oh My Pi's resolver tries `<name>/<first part of the path>`
+ *  before `<name>`, so the longest listed name is tried first. */
 function otherSkillUrlRead(
   arm: Arm,
   copies: readonly SkillCopy[],
   others: readonly ProfileSkill[],
-  target: string
+  target: string,
+  range: { readonly first: number; readonly last: number | undefined } | undefined
 ): OtherSkillRead | undefined {
   for (const skill of others.toSorted((a, b) => listedName(b).length - listedName(a).length)) {
     const name = listedName(skill);
@@ -811,7 +1018,9 @@ function otherSkillUrlRead(
         ? arm.skillDirs[name]
         : undefined;
     const shown = path.join(shownDir ?? path.join(path.dirname(arm.installedDir), name), file);
-    return { skill: name, file, by: "skill", from, ...fileAnswer(dir, file, shown) };
+    const answer =
+      range === undefined ? fileAnswer(dir, file, shown) : rangeAnswer(dir, file, shown, range);
+    return answer === undefined ? undefined : { skill: name, file, by: "skill", from, ...answer };
   }
   const name = /^skill:\/\/([^/]+)/.exec(target)?.[1];
   const file = name === undefined || name.includes(":") ? undefined : skillReadFile(name, target);
@@ -861,7 +1070,7 @@ function otherSkillPathRead(
     target,
     source: full ?? target,
     shown: shownPath(target, full, where),
-    rows: arm.pathCopy?.rows ?? arm.pathRows ?? "hashline",
+    rows: newReadRows(arm),
   });
   if (typeof answer === "string") return undefined;
   return {
@@ -876,20 +1085,26 @@ function otherSkillPathRead(
 
 /** The answer to a new read of `target` when it reads a file of a skill other than the case's
  *  (see the file's header): a `skill://` read of a skill the profile lists from the copy
- *  `sourceOf` gives, at its installed directory; a `skill://` read of a skill it does not list
- *  with Oh My Pi's unknown-skill result; a whole read by path (`otherSkillPathRead`) in Oh My Pi's
- *  form at the path the session shows. Undefined for any other read: one of the case's skill, one
- *  with a selector, one of a directory, and one by path that names no skill of the profile or a
- *  file its copy lacks or shows in a form the arms do not rebuild (`pathFormFault`). Throws when
- *  the profile lists the skill and `copies` holds no copy of it (`sourceOf`). */
+ *  `sourceOf` gives, at its installed directory, whole or of one line range (`readRange`); a
+ *  `skill://` read of a skill it does not list with Oh My Pi's unknown-skill result; a whole read
+ *  by path (`otherSkillPathRead`) in Oh My Pi's form at the path the session shows. Undefined for
+ *  any other read: one of the case's skill, one with another selector, a read by path with any, one
+ *  of a directory, and one by path that names no skill of the profile or a file its copy lacks or
+ *  shows in a form the arms do not rebuild (`pathFormFault`). Throws when the profile lists the
+ *  skill and `copies` holds no copy of it (`sourceOf`). */
 export function otherSkillRead(
   arm: Arm,
   copies: readonly SkillCopy[],
   target: string
 ): OtherSkillRead | undefined {
-  if (skillReadFile(arm.skill, target) !== undefined) return undefined;
+  const ranged = readRange(target);
+  const whole = ranged?.path ?? target;
+  if (skillReadFile(arm.skill, whole) !== undefined) return undefined;
   const others = arm.profileSkills.filter((skill) => listedName(skill) !== arm.skill);
-  if (target.startsWith("skill://")) return otherSkillUrlRead(arm, copies, others, target);
+  if (whole.startsWith("skill://")) {
+    if (ranged !== undefined && ranged.range === undefined) return undefined;
+    return otherSkillUrlRead(arm, copies, others, whole, ranged?.range);
+  }
   if (URL_TARGET.test(target)) return undefined;
   return otherSkillPathRead(arm, copies, others, target);
 }
@@ -1492,6 +1707,19 @@ export function installedDirOf(header: string | undefined, file: string): string
   return header?.endsWith(`/${file}`) ? header.slice(0, -(file.length + 1)) : undefined;
 }
 
+/** The directory the arms show skill `skill` installed in, from its reads `reads` in order: the
+ *  first whose result header shows one (`installedDirOf`), else `/skills/<skill>`. */
+export function installedDirIn(
+  skill: string,
+  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
+): string {
+  for (const { file, header } of reads) {
+    const dir = installedDirOf(header, file);
+    if (dir !== undefined) return dir;
+  }
+  return path.join("/skills", skill);
+}
+
 /** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
  * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
  * replacing one there. Throws naming the case when a skillReads index is not a read of a file of
@@ -1526,14 +1754,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     }
   }
   // The installed directory: the first header's path less the file it read.
-  let installedDir = path.join("/skills", c.skill);
-  for (const { file, header } of reads.values()) {
-    const dir = installedDirOf(header, file);
-    if (dir !== undefined) {
-      installedDir = dir;
-      break;
-    }
-  }
+  const installedDir = installedDirIn(c.skill, reads.values());
 
   if (name === "ours") {
     if (dirs.ours === undefined) throw new Error(`case ${c.id}: the ours arm needs --ours`);

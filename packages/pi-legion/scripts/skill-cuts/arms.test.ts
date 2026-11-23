@@ -1375,16 +1375,16 @@ test("a whole read by path of the cut's own copy carries each arm's own text at 
   });
 });
 
-// Catches: an arm that rewrites a read the cut's copy does not answer whole: one with a line
-// range, one of another copy, or one of a case that names no copy.
-test("a read by path with a selector, one of another copy, and one of a case with no pathCopy stay as recorded", () => {
+// Catches: an arm that rewrites a read the cut's copy does not answer: one with a selector other
+// than one line range, one of another copy, or one of a case that names no copy.
+test("a read by path with a selector other than one line range, one of another copy, and one of a case with no pathCopy stay as recorded", () => {
   const { pathCopy: _, ...noCopy } = { ...pathCase, id: "c-no-copy", skillReads: [2, 4] };
   for (const name of ["old", "new", "minus", "twin", "none"] as const) {
     const each = pathArm(pathCase, name);
     for (const index of [11, 12, 13, 14]) {
       expect(each.messages).toContainEqual(pathMessages[index]);
     }
-    expect(pathFile(each, `${COPY}/SKILL.md:1-5`)).toBeUndefined();
+    expect(pathFile(each, `${COPY}/SKILL.md:raw`)).toBeUndefined();
     expect(pathFile(each, `${OTHER_COPY}/SKILL.md`)).toBeUndefined();
     const bare = pathArm(noCopy, name);
     expect(bare.pathCopy).toBeUndefined();
@@ -1669,17 +1669,23 @@ test("a skill:// read of another skill of the profile is answered from its insta
     text: "Unknown skill: gamma\nAvailable: beta",
     isError: true,
   });
-  // No answer for a read of the case's skill, one with a selector, one of a directory, another
-  // URL, or a path no rule names a skill by.
+  // No answer for a read of the case's skill, one with a selector other than one line range, one
+  // of a directory, another URL, or a path no rule names a skill by; one line range is answered.
   for (const target of [
     "skill://alpha",
-    "skill://beta/SKILL.md:1-5",
+    "skill://beta/SKILL.md:raw",
     "skill://beta/references",
     "https://example.test/skills/beta/SKILL.md",
     "/home/agent/notes/beta.md",
   ]) {
     expect(otherSkillRead(arm("old"), copies, target)).toBeUndefined();
   }
+  expect(otherSkillRead(arm("old"), copies, "skill://beta/SKILL.md:1-5")).toMatchObject({
+    skill: "beta",
+    file: "SKILL.md",
+    from: "copy",
+    isError: false,
+  });
   // With no installed copy of beta, a read of it fails rather than be answered as not found.
   expect(() => otherSkillRead(arm("old"), [], "skill://beta")).toThrow(
     "the old arm's profile installs beta, and the replay holds no installed copy of it"
