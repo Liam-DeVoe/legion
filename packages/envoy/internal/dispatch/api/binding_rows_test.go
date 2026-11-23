@@ -172,7 +172,8 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 // Control: createAgentToken and approverStanding without store.AddressLockSharedSQL: each
 // answers before the sign-in commits, the mint 201 with a token.
 func TestNoCredentialIsMintedForOrApprovedWhileASignInIsInFlight(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it gives B's sign-in 10 s of wall clock to queue behind the trigger it holds, and
+	// in a run of the whole package among its parallel tests none had queued by then.
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
