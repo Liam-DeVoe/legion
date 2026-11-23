@@ -10,6 +10,7 @@ import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import {
   ADDRESS_LANDING,
+  isAddressedRow,
   LANDING_MARKS,
   useAddressLanding,
   useStageLanding,
@@ -67,8 +68,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * Until the view has told the stage whether its tree draws the node an address names - beside the
  * view's own address, or a block of the spec on the Spec view's address - the address's landing
  * is undecided (dispatch://INFRA-1196 decision 413): the stage marks the box it draws the view in
- * so (`useAddressLanding`), and the view's tab stop takes no focus meanwhile (`ViewStage`), so
- * the focus moves once, onto where the address lands.
+ * so (`useAddressLanding`), and the view's tab stop takes no focus meanwhile but where it is the
+ * row of that node, whose focus is the landing (`ViewStage`), so the focus moves once, onto where
+ * the address lands.
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -106,11 +108,11 @@ export function StageSlot({
   const viewBox = useRef<HTMLDivElement>(null);
   // What the view told the stage first for this following, and whether the reader had acted by
   // then: until it has, the landing of an address that names a node is undecided, and the stage
-  // marks the view's box so, which the view's tab stop reads (`useAddressLanding`). A view tells
+  // marks the view's box so, with the node where the address names it whole, which the view's
+  // tab stop reads (`useAddressLanding`, below, once the reader's acts are watched). A view tells
   // it whether or not the node is beside its own address, and each call but the first of a
   // following leaves it as it is.
   const [viewTold, setViewTold] = useState<ViewTold>();
-  useAddressLanding(viewBox, address.target === undefined ? undefined : following, viewTold);
   const onAddressDrawn = useCallback(
     (drawn: boolean) => {
       setViewTold((was) =>
@@ -135,6 +137,7 @@ export function StageSlot({
   // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
   // lands as it does where the reader made no act, a press on blank space included.
   const acts = useRef<AbortController | undefined>(undefined);
+  useAddressLanding(viewBox, address.target, following, viewTold, acts);
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
@@ -179,8 +182,9 @@ export interface ViewSlotProps extends SlotProps {
    * node beside the view's own address and opens no document, and no other call, so a view may
    * call it on every render once its reads have settled, by the rule `StageSlot` gives. Given
    * true first, the stage keeps the view, with the focus on the view's tab stop or the row it
-   * lands on, which it takes once it is told, and not where the reader acted first (decision
-   * 413); given false first, it draws the body in the view's place for the rest of that
+   * lands on, which it takes once it is told - at once where its tab stop is the row of the node
+   * the address names - and not where the reader acted first (decision 413); given false first,
+   * it draws the body in the view's place for the rest of that
    * following, as under a view whose part has not filled its slot, and the body lands on the node
    * or says in the outline's place that the issue holds none of it, and takes the focus unless
    * the reader moved it outside the view: a control outside the view they pressed keeps it.
@@ -248,13 +252,16 @@ const SLOT_TREE = '[role="tree"]';
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  *
  * An address that names a node lands once (decision 413): while the stage marks the box
- * undecided (`ADDRESS_LANDING`, `useAddressLanding`), the take gives no row the focus, and gives
- * it only to a failed read's Retry where the view draws no row, since a view whose own read
- * stands refused tells the stage nothing. Once the mark is gone the take waits one frame more,
- * the frame in which a view's own landing on the row the address names takes the focus
- * (`landOnRow`), and then takes it where that left it held by nothing: on the view's tab stop,
- * which is the named row where the view starts its tab stop there. Marked `acted`, the reader
- * acted first, and the take places nothing: the landing moves no focus.
+ * undecided (`ADDRESS_LANDING`, `useAddressLanding`), the take gives no row the focus but the
+ * row of the node the address names (`isAddressedRow`), whose focus is the landing itself: a
+ * view that draws that row as its tab stop while its other reads are out, as the Spec view draws
+ * a comment the address names, has the focus on it at once. It gives the focus to a failed
+ * read's Retry where the view draws no row, since a view whose own read stands refused tells
+ * the stage nothing. Once the mark is gone the take waits one frame more, the frame in which a
+ * view's own landing on the row the address names takes the focus (`landOnRow`), and then takes
+ * it where that left it held by nothing: on the view's tab stop, which is the named row where
+ * the view starts its tab stop there. Marked `acted`, the reader acted first, and the take
+ * places nothing: the landing moves no focus.
  */
 export function ViewStage({
   box: given,
@@ -309,8 +316,9 @@ export function ViewStage({
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
-      // While the landing is undecided no row takes the focus; a Retry drawn with no row does.
-      if (waits && to?.matches(TAB_STOP_ROW) === true) return false;
+      // While the landing is undecided no row takes the focus but the row of the node the address
+      // names, whose focus is the landing; a Retry drawn with no row does.
+      if (waits && to?.matches(TAB_STOP_ROW) === true && !isAddressedRow(stage, to)) return false;
       if (to === null) return false;
       place(to);
       placed = to;

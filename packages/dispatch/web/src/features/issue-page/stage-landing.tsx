@@ -17,13 +17,15 @@ import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { useOpenedDocument, useOutlineAddress } from "./document-address";
 import { useEscapeOrder } from "./escape-order";
 import { useFocusedNode } from "./focused-node";
-import { issueAddress } from "./issue-address";
+import { type AddressTarget, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { OpenedDocument } from "./OpenedDocument";
 import { useAskOutline, useFocusBranch } from "./outline-request";
 import { isFilter } from "./presets";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
+import { blockNodeId } from "./tree-drafts";
+import { nodeRowSelectorOf } from "./tree-focus";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
 import { type ItemLanding, isItemRoute, useItemLanding } from "./useItemLanding";
@@ -230,6 +232,28 @@ export const ADDRESS_LANDING = "data-address-landing";
  *  address was followed (`acted`). */
 export const LANDING_MARKS = { acted: "acted", undecided: "undecided" } as const;
 
+/** What the stage sets on the box beside the `undecided` mark (`useAddressLanding`): the id of
+ *  the node the address names, where the address says that id whole (`wholeNodeId`), until the
+ *  reader's first act since the address was followed. The box's take reads it
+ *  (`isAddressedRow`). */
+const ADDRESS_NODE = "data-address-node";
+
+/**
+ * The id of the node `target` names where the address says it whole, so that a row can be told
+ * to be that node's without the tree: an item's own id, which is its node's, and a block of the
+ * document the address names (`blockNodeId`). Undefined for every other target, whose node only
+ * the tree tells (`pathToTarget`): a block of no named document is the first node holding that
+ * block id, the issue's children are their first row, and an ask indexed from a block is that
+ * block's node, which no row carries the ask's id on.
+ */
+function wholeNodeId(target: AddressTarget | undefined): string | undefined {
+  if (target?.kind === "item") return target.id;
+  if (target?.kind === "block" && target.document !== undefined) {
+    return blockNodeId(target.document, target.id);
+  }
+  return undefined;
+}
+
 /**
  * An address that names a node moves the focus once, onto where it lands (dispatch://INFRA-1196
  * decision 413): the row the view draws for the node, the outline's row drawn in the view's place,
@@ -237,35 +261,61 @@ export const LANDING_MARKS = { acted: "acted", undecided: "undecided" } as const
  * the focus on its tab stop as it draws its rows (`ViewStage`), before every read it needs has
  * settled and it can say whether it draws the node, the focus moved first to the view's first
  * row, then to the outline drawn in its place, then to the line drawn in the outline's place. So
- * from the following's start (`following`, undefined where the address names no such node) until
- * the view has told the stage what it draws (`told`), the stage marks the box it draws the view in
- * (`box`) undecided, and the box's take of the focus gives none to a row meanwhile. Told after
- * the reader's first act since the address was followed, it marks the box `acted`: the landing
- * moves nothing then, as the view's own landing on its row does nothing after such an act. The
- * mark is set in the commit that draws the view, before the box's take runs, and read again as
- * it changes. An address that names no node leaves the box unmarked, so the view's tab stop takes
- * the focus as its rows are drawn.
+ * from the following's start until the view has told the stage what it draws (`told`), the stage
+ * marks the box it draws the view in (`box`) undecided, and the box's take of the focus gives
+ * none to a row meanwhile, but to the row of the node the address names (`isAddressedRow`): its
+ * focus is the landing itself, which the view takes at once as it draws that row its tab stop,
+ * as a comment the Spec view draws while the statements' reads are out. Told after the reader's
+ * first act since the address was followed (`acts`), it marks the box `acted`: the landing moves
+ * nothing then, as the view's own landing on its row does nothing after such an act, and the
+ * named row is no landing from that act on either. The marks are set in the commit that draws
+ * the view, before the box's take runs, and read again as they change. An address that names no
+ * node (`target`) leaves the box unmarked, so the view's tab stop takes the focus as its rows
+ * are drawn.
  */
 export function useAddressLanding(
   box: RefObject<HTMLElement | null>,
-  following: string | undefined,
-  told: ViewTold | undefined
+  target: AddressTarget | undefined,
+  following: string,
+  told: ViewTold | undefined,
+  acts: RefObject<AbortController | undefined>
 ): void {
   const mark =
-    following === undefined
+    target === undefined
       ? undefined
       : told?.following !== following
         ? LANDING_MARKS.undecided
         : told.reader
           ? LANDING_MARKS.acted
           : undefined;
-  // At every commit of the stage, so a box drawn anew for another view takes the mark too.
+  const node = mark === LANDING_MARKS.undecided ? wholeNodeId(target) : undefined;
+  // At every commit of the stage, so a box drawn anew for another view takes the marks too.
   useLayoutEffect(() => {
     const element = box.current;
     if (element === null) return;
     if (mark === undefined) element.removeAttribute(ADDRESS_LANDING);
     else element.setAttribute(ADDRESS_LANDING, mark);
+    // The following's watch of the reader's acts (`ReaderActsWatch`), which the stage draws and
+    // which starts it in a layout effect of the same commit, before this one: an act ends it,
+    // and the node's mark with it, though the act draws nothing.
+    const watched = acts.current;
+    if (node === undefined || watched === undefined || watched.signal.aborted) {
+      element.removeAttribute(ADDRESS_NODE);
+      return;
+    }
+    element.setAttribute(ADDRESS_NODE, node);
+    const acted = () => element.removeAttribute(ADDRESS_NODE);
+    watched.signal.addEventListener("abort", acted);
+    return () => watched.signal.removeEventListener("abort", acted);
   });
+}
+
+/** Whether `row`, the tab-stop row of the view drawn in `box`, is the row of the node the address
+ *  names while the stage marks the box undecided and the reader has not acted since the address
+ *  was followed (`useAddressLanding`): its focus is then the landing itself, the one move. */
+export function isAddressedRow(box: HTMLElement, row: Element): boolean {
+  const node = box.getAttribute(ADDRESS_NODE);
+  return node !== null && row.matches(nodeRowSelectorOf(node));
 }
 
 /** An approval request's own address puts the focus on the approval the header draws for the
