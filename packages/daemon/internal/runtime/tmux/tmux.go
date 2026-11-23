@@ -122,9 +122,9 @@ type Options struct {
 	// directory, which the pane's own user can write. Required with GitHubCredential.
 	ClaimRepository func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
 	// ClaimRole is a claim's stored role, from the daemon's own state: the role whose App the pane
-	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), since the
-	// claim's token names its agent and not its role. Optional: without it such a pane keeps its
-	// gh files until it is launched again.
+	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), unless
+	// the runtime's ActsAs gives another, since the claim's token names its agent and not its role.
+	// Optional: without it such a pane keeps its gh files until it is launched again.
 	ClaimRole func(ctx context.Context, token claim.Token) (claim.Role, error)
 	// Launchers are how a pane runs each harness the daemon resolved at boot (Launcher), by backend:
 	// a spec whose backend (runtime.Of) has none is refused. At least one, and only backends the

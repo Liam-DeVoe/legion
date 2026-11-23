@@ -69,7 +69,8 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // has nothing to refresh.
 //
 // The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
-// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
+// role the pane works as (paneRole, runtime.SlotRole: its claim's role, or the step's while the
+// architect does a step of its own; appauth.AppRoleFor) and the pane's repository alone, and
 // each build opens with a live read of every page of its App's installations under a fresh JWT
 // (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
 // read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
@@ -154,10 +155,10 @@ func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bund
 
 // paneBundle is the gh bundle of one pane's claim of issue ("" for the controller's), and the one
 // place each path of this runtime that writes a pane's gh files asks for one: the refresh
-// (refreshGitHubCredentials) and a launch (mintGitHubCredential). The controller's is asked for by
-// owner (controllerDefault, "" for none); every other role's is built for repo through bundles,
-// the caller's memo, on issue, whose plan can define the role and decides the App of a role it
-// defines.
+// (refreshGitHubCredentials), a launch (mintGitHubCredential), and the write an owner's step asks
+// of a slot (WriteSlotCredential). The controller's is asked for by owner (controllerDefault, ""
+// for none); every other role's is built for repo through bundles, the caller's memo, on issue,
+// whose plan can define the role and decides the App of a role it defines.
 func (r *Runtime) paneBundle(ctx context.Context, bundles *appauth.Bundles, issue string, role claim.Role, repo ghrepo.Repository, controllerDefault string) (ghconfig.Bundle, error) {
 	if role == claim.RoleController {
 		return r.controllerCredential(ctx, controllerDefault)
@@ -187,10 +188,12 @@ func (r *Runtime) writeWatchedBundle(entry trackedProcess, root string, bundle g
 }
 
 // paneRole is the role whose App entry's pane holds (runtime.SlotRole): the controller's for the
-// controller's pane, else the role the pane was launched as, which the claim held then and the
-// process keeps for its whole life, and for a pane this runtime adopted without seeing its launch,
-// the daemon's record of the claim's role (Options.ClaimRole). It answers false for a pane whose
-// role it cannot know: an adopted pane with no record to ask, or a token that names no claim.
+// controller's pane; the role the runtime's ActsAs gives the claim, the step's while the
+// architect does a step of its own; else the role the pane was launched as, which the claim held
+// then and the process keeps for its whole life, and for a pane this runtime adopted without
+// seeing its launch, the daemon's record of the claim's role (Options.ClaimRole). It answers false
+// for a pane whose role it cannot know: an adopted pane with no record to ask, or a token that
+// names no claim.
 func (r *Runtime) paneRole(ctx context.Context, entry trackedProcess) (claim.Role, bool, error) {
 	token := entry.locator.Claim
 	if token.IsController() {

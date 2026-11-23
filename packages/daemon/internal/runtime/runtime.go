@@ -2,8 +2,10 @@
 // that actually runs it — a pane on the daemon's private tmux server today, a pod in a cluster
 // at Stage 4.
 //
-// The boundary carries process facts only: a runtime spawns, stops, and observes processes, and
-// says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about them. What the agent inside
+// The boundary carries process facts, and the gh credential of each slot: a runtime spawns, stops,
+// and observes processes, and says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about
+// them, and it writes a slot's gh credential and says whether the slot holds it (SlotCredentials),
+// which an owner's step asks of it. What the agent inside
 // the process is doing — that it connected, acknowledged a prompt, started or ended a turn — is
 // the worker stream's to report, a peer source beside this one. Both reach the supervisor, which
 // is the only place the two kinds of fact meet.

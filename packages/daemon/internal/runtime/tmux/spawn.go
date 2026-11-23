@@ -711,8 +711,10 @@ type launchGitHubCredential struct {
 	noOwner bool
 }
 
-// mintGitHubCredential mints spec's role its GitHub credential for the repository spec names,
-// the one its write token reaches. The controller's is asked for by owner instead
+// mintGitHubCredential mints spec's claim the GitHub credential of the role its pane works as
+// (runtime.SlotRole: spec's role, or the step's while the architect does a step of its own) for
+// the repository spec names, the one its write token reaches. The controller's is asked for by
+// owner instead
 // (Options.ControllerCredential), the one function a controller's bundle is made from here, by
 // this launch and by the refresh of the pane it opens (refreshGitHubCredentials): it works no
 // repository, and the launch asks for no owner, which takes the first owner the project serves,
@@ -726,9 +728,10 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
-	// claim's stored role: the spec's role, which the machine builds from it. The controller's
-	// is its own.
+	// The pane holds the App of the step its claim does now (runtime.SlotRole): the claim's stored
+	// role, the spec's role, which the machine builds from it, unless the runtime's ActsAs gives
+	// another, the step's role while the architect does a step of its own. The controller's is its
+	// own.
 	role := spec.Role
 	var err error
 	if role != claim.RoleController {
