@@ -247,7 +247,7 @@ function SentOutcomes({ onDone, sent }: { onDone: () => void; sent: Sent }): Rea
 
 /** A recipient's state before Send, as the registry's newest answer reads it. A session it does
  *  not list is `unlisted`, in a send to two or more, or `unlisted alone`, in a send to one. */
-type RecipientState = "running" | "stored" | "unlisted" | "unlisted alone" | "unknown";
+type RecipientState = "running" | "unresponsive" | "unlisted" | "unlisted alone" | "unknown";
 
 /** The words of a recipient's state before Send. The registry's own mark says an unresponsive
  *  session's state only in a tooltip, so what the server does with the message is said here, in
@@ -259,11 +259,11 @@ type RecipientState = "running" | "stored" | "unlisted" | "unlisted alone" | "un
  *  so only the first applies to it. */
 const STATE_WORDS: Record<RecipientState, string> = {
   running: "Running",
-  stored: `It has not ended: ${UNRESPONSIVE_KEEPS_MESSAGES}`,
   unknown: "Running state unknown",
   unlisted:
     "Not listed: the message is stored for it if the Envoy listener knows it; otherwise the send leaves it out",
   "unlisted alone": "Not listed: the message is stored for it",
+  unresponsive: `It has not ended: ${UNRESPONSIVE_KEEPS_MESSAGES}`,
 };
 
 /**
@@ -357,7 +357,7 @@ export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
     if (!current) return "unknown";
     const agent = listed.get(sessionId);
     if (agent === undefined) return recipients.length > 1 ? "unlisted" : "unlisted alone";
-    return agent.state === "unresponsive" ? "stored" : "running";
+    return agent.state === "unresponsive" ? "unresponsive" : "running";
   };
 
   const sendBroadcast = (send: BroadcastSend) => {

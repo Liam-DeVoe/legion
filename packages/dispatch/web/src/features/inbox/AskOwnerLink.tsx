@@ -122,7 +122,7 @@ export function ThreadOwnerLine({
   /** The classes the host's line gives the session's name. */
   className: string;
   /** `AskOwnerLink`'s, for a host whose line wraps: the owner's link asks the line for no more
-   *  than its key's width. A session's name is drawn as before. */
+   *  than its key's width. It does not change how a session's name is drawn. */
   sizedByKey?: boolean;
   thread: MyReplyRow;
 }): ReactNode {

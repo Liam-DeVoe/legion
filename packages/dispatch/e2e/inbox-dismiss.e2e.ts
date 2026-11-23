@@ -11,7 +11,7 @@ import {
   patchIssue,
 } from "./api";
 import { chooseShow } from "./filters";
-import { typeFilterCount } from "./inbox-filter";
+import { typeFilterCounts } from "./inbox-filter";
 import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow, selectRow } from "./inbox-pane";
 import {
   agentRowId,
@@ -226,8 +226,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     await expect(rows).toHaveCount(3);
     await expectSidebarInboxCount(page, 3);
     expect(await bandHeadings(page)).toEqual(["P2 (2)", "No priority (1)"]);
-    expect(await typeFilterCount(page, "Threads")).toBe(1);
-    expect(await typeFilterCount(page, "Agent message")).toBe(1);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([1, 1]);
 
     // The selected row draws its Dismiss twice - on the short row and in the column's head -
     // and both name the thread.
@@ -254,8 +253,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 
     // And out of the Filter control's count and the band's.
     expect(await bandHeadings(page)).toEqual(["P2 (1)", "No priority (1)"]);
-    expect(await typeFilterCount(page, "Threads")).toBe(0);
-    expect(await typeFilterCount(page, "Agent message")).toBe(1);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([0, 1]);
 
     // The server holds the same: one thread dismissed, one left in the Inbox.
     await expect.poll(async () => dismissedThreads()).toBe(1);
@@ -453,18 +451,19 @@ test("Select all dismisses every row of the group in one request that names each
     expect(await inboxThreads()).toBe(0);
     expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
-    // The Dismissed view reads them a page at a time, and **Show more** reads the next page. The
-    // view's window draws only the rows near sight, so the rows it has loaded are read from the
-    // count each drawn row states (`aria-setsize`), not counted.
+    // The Dismissed view reads them a page at a time. The view's window draws only the rows near
+    // sight, so the rows it has loaded are read from the count each drawn row states
+    // (`aria-setsize`), not counted.
     await chooseShow(page, "Dismissed");
     await expect(page).toHaveURL(/show=dismissed/);
     await expect(rows.first()).toHaveAttribute("aria-setsize", String(INBOX_DISMISSED_PAGE));
     const more = page.locator('[data-inbox-show-more="dismissed"]');
     await expect(more).toHaveText(`Show ${INBOX_DISMISSED_PAGE} more`);
-    // Show more is pressed by key, as the window's own test presses it. Bringing it into view
-    // reaches the end of the loaded rows, and that reads the next page as any scroll there does,
-    // so the control is held and then gone before a click could land on it.
-    await more.press("Enter");
+    // Focusing Show more brings it into view, which reaches the end of the loaded rows, and that
+    // scroll reads the last page as any scroll there does, so the control is held and then gone
+    // with no press on it. The window's own test (`inbox-dismissed-window.e2e.ts`) presses Show
+    // more by key and reads the page it reads.
+    await more.focus();
     await expect(rows.first()).toHaveAttribute("aria-setsize", String(THREADS));
     await expect(more).toHaveCount(0);
   } finally {

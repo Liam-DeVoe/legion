@@ -30,30 +30,35 @@ export async function openFilterFields(page: Page): Promise<Locator> {
   return openFilterPanel(page);
 }
 
-/** How many rows the **Type** filter counts for one of its values, read off that option's own
- *  accessible name. `within` is the surface whose row opens the panel - the page itself, or the
- *  drawer. The fields themselves are portalled to the body, so they are read off the page rather
- *  than through `within`. Before this answers, the popover and then the panel are shut again,
- *  one Escape each, as `closeAssigneeFilter` shuts them. The panel can hang over the list's rows,
- *  so the next press or read of the list is not made through it. */
-export async function typeFilterCount(
+/** How many rows the **Type** filter counts for each of `names`, in their order, read off each
+ *  option's own accessible name, with the panel and its Type list opened once for all of them.
+ *  `within` is the surface whose row opens the panel - the page itself, or the drawer. The fields
+ *  themselves are portalled to the body, so they are read off the page rather than through
+ *  `within`. Before this answers, the popover and then the panel are shut again, one Escape each,
+ *  as `closeAssigneeFilter` shuts them. The panel can hang over the list's rows, so the next press
+ *  or read of the list is not made through it. */
+export async function typeFilterCounts(
   page: Page,
-  name: string,
+  names: readonly string[],
   within: Locator | Page = page
-): Promise<number> {
+): Promise<number[]> {
   const panel = await openFilterPanel(page, within);
   const trigger = page.getByRole("button", { name: "Filter by type" });
   if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   const options = page.getByRole("listbox", { name: "Type options" });
-  const label =
-    (await options
-      .getByRole("option", { name: new RegExp(`^${name},`) })
-      .getAttribute("aria-label")) ?? "";
+  const counts: number[] = [];
+  for (const name of names) {
+    const label =
+      (await options
+        .getByRole("option", { name: new RegExp(`^${name},`) })
+        .getAttribute("aria-label")) ?? "";
+    counts.push(Number(label.replace(`${name}, `, "").replace(" rows", "")));
+  }
   await page.keyboard.press("Escape");
   await expect(options).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(panel).toHaveCount(0);
-  return Number(label.replace(`${name}, `, "").replace(" rows", ""));
+  return counts;
 }
 
 /** Opens the popover unless it is open already; the trigger says which it is. */

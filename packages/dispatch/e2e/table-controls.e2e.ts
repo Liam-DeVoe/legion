@@ -7440,11 +7440,14 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // the focus goes to the list's first row, and the list scrolls to its top. The architect's ruling
 // of 2026-11-21 06:0xZ (open-items.md, "The selection bar's return"): after a bulk action takes
 // away the row marked last, the focus goes to the row that now stands at that row's place when it
-// is in sight, else to the nearest row in sight before it, else to the list's own stop. It never
-// scrolls and never goes to the body. A focused control taken away, for which Firefox and WebKit
+// is in sight, else to the nearest row in sight before it, else to the list's own stop, and never
+// to the body. That ruling also said the press never scrolls; INFRA-3135's architect's ruling of
+// 2026-11-23 11:42Z replaces that rule: the press scrolls by no more than the line that closes
+// above the list in its commit (below `sm`, Mark all read's line), so the landing's row stands
+// where the row marked last stood. A focused control taken away, for which Firefox and WebKit
 // fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
 // focus row (e2e/playwright.config.ts).
-test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls nothing @firefox @webkit", async ({
+test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls by no more than the line that closes above the list @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);

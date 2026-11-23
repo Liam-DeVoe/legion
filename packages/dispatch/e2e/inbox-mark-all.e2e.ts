@@ -3,7 +3,7 @@ import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, meInboxThreads } from "./api";
 import { controlRow } from "./filters";
-import { typeFilterCount } from "./inbox-filter";
+import { typeFilterCounts } from "./inbox-filter";
 import {
   asSession,
   compactInboxLink,
@@ -98,8 +98,10 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
     await expect(unreadMarks).toHaveCount(0);
     await expect(rows).toHaveCount(GROUP_PAGE);
-    expect(await typeFilterCount(page, "Threads")).toBe(REPLY_THREADS);
-    expect(await typeFilterCount(page, "Agent message")).toBe(AGENT_THREADS);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([
+      REPLY_THREADS,
+      AGENT_THREADS,
+    ]);
     await expectSidebarInboxCount(page, ASKS);
 
     // The server answers; a reload reads the same list and the same numbers back from it, every
@@ -111,8 +113,10 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(rows).toHaveCount(GROUP_PAGE);
     await expect(unreadMarks).toHaveCount(0);
     await expectSidebarInboxCount(page, ASKS);
-    expect(await typeFilterCount(page, "Threads")).toBe(REPLY_THREADS);
-    expect(await typeFilterCount(page, "Agent message")).toBe(AGENT_THREADS);
+    expect(await typeFilterCounts(page, ["Threads", "Agent message"])).toEqual([
+      REPLY_THREADS,
+      AGENT_THREADS,
+    ]);
 
     // The compact header carries the same number, as a link to the Inbox from another page.
     await page.setViewportSize({ height: 900, width: 1024 });
@@ -167,7 +171,7 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
     await drawer.locator("[data-inbox-mark-all]").click();
     await expect(drawer.locator("[data-inbox-mark-all]")).toHaveCount(0);
     await expect(drawer.locator("[data-inbox-row] [aria-label='Unread']")).toHaveCount(0);
-    expect(await typeFilterCount(page, "Threads", drawer)).toBe(REPLY_THREADS);
+    expect(await typeFilterCounts(page, ["Threads"], drawer)).toEqual([REPLY_THREADS]);
     await expectInboxCount(page, ASKS);
     await expect(drawer.locator("[data-inbox-row]")).toHaveCount(GROUP_PAGE);
 

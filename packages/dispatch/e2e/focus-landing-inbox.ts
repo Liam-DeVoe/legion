@@ -282,10 +282,10 @@ async function markRows(page: Page, ids: readonly string[]): Promise<void> {
 
 /**
  * The tester's row "a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the
- * marked row's place in sight, and scrolls nothing": 38 asks and threads beside the seed's six,
- * listed in one band (`?group=none`), with two threads twelve rows down marked by Space, the upper
- * one last, scrolled to 40% of the box that shows them, and the bar's Dismiss pressed. The marked
- * row is taken away.
+ * marked row's place in sight, and scrolls by no more than the line that closes above the list":
+ * 38 asks and threads beside the seed's six, listed in one band (`?group=none`), with two threads
+ * twelve rows down marked by Space, the upper one last, scrolled to 40% of the box that shows
+ * them, and the bar's Dismiss pressed. The marked row is taken away.
  */
 const bulkDismissDeep: Arrange = async ({ n, page }) => {
   for (let index = 0; index < 12; index++) await question(`Early ask ${index} (${n})`);

@@ -243,7 +243,6 @@ func seedOwnWriteDismissals(t *testing.T, shape *dismissedScaleShape, count int)
 	if tag.RowsAffected() != int64(count) {
 		t.Fatalf("dismissed %d threads only the person wrote in, want %d", tag.RowsAffected(), count)
 	}
-	dismissedNarrowingOwnWriteNodes(t, shape)
 	var newer bool
 	if err := shape.database.Pool.QueryRow(ctx, `
 		select (select min(dismissed_at) from user_threads
@@ -340,15 +339,16 @@ func explainDismissedNarrowing(t *testing.T, shape *dismissedScaleShape, name st
 		t.Fatalf("acquire a connection for %s: %v", name, err)
 	}
 	defer connection.Release()
-	custom, customText := explainDismissedScale(t, connection.Conn(), name+" under the custom plan", statement, args, meInboxNoJIT)
-	generic, genericText := explainDismissedScaleGeneric(t, connection.Conn(), name+" under the generic plan", statement, args, meInboxSettings...)
+	customName, genericName := name+" under the custom plan", name+" under the generic plan"
+	custom, customText := explainDismissedScale(t, connection.Conn(), customName, statement, args, meInboxNoJIT)
+	generic, genericText := explainDismissedScaleGeneric(t, connection.Conn(), genericName, statement, args, meInboxSettings...)
 	for _, explained := range []struct {
 		name string
 		plan json.RawMessage
 		text string
 	}{
-		{name + " under the custom plan", custom, customText},
-		{name + " under the generic plan", generic, genericText},
+		{customName, custom, customText},
+		{genericName, generic, genericText},
 	} {
 		reads := []string{}
 		for _, node := range explaintest.Nodes(t, explained.plan) {
@@ -357,7 +357,7 @@ func explainDismissedNarrowing(t *testing.T, shape *dismissedScaleShape, name st
 			}
 		}
 		t.Logf("%s reads %s by %v", explained.name, dismissedNarrowingIndex, reads)
-		if !planReadsIndex(t, explained.plan, dismissedNarrowingIndex) {
+		if len(reads) == 0 {
 			t.Errorf("%s does not read %s:\n%s", explained.name, dismissedNarrowingIndex, explained.text)
 		}
 		if explaintest.SeqScansRelation(t, explained.plan, "user_threads") {

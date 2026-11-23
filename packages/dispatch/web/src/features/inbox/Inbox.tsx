@@ -481,8 +481,8 @@ interface ShortRowProps {
  * it are one group, whose link asks the line for its key's width alone, and a document's link,
  * which has no key, for none (`sizedByKey`). So the group moves under the marks only when an
  * issue's key and its controls do not fit beside them, and otherwise stands there and the title
- * or the document's name takes the room the line leaves, cut as before. `children` is drawn under
- * the lines.
+ * or the document's name takes the room the line leaves, and is cut there. `children` is drawn
+ * under the lines.
  */
 function ShortRowFrame({
   age,
@@ -780,7 +780,7 @@ function InboxCardRow({
           group wraps too: neither the mark nor the issue key shrinks, so on a phone a long mark
           and a long key side by side would run past the card's edge. The owner's link asks the
           line for its key's width alone (`sizedByKey`), so it moves under the mark only when the
-          key does not fit beside it, and otherwise stays there and cuts its title as before. */}
+          key does not fit beside it, and otherwise stays beside it and cuts its title. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
         {reads}
         <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />

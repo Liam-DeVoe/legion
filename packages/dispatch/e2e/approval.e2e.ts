@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { WriteAdvice } from "@legion/contracts";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Artifact } from "../web/src/api/types";
+import { COPY_REF_SELECTOR } from "../web/src/features/refs/CopyRefButton";
 
 import { setLiveSessions } from "./agents";
 import {
@@ -1489,10 +1490,9 @@ interface Box {
 }
 
 /** The row's own items the line of its approval mark and the line of its owner draw, beside the
- *  issue key: the mark, the priority tag, the urgency mark and the copy-reference button
- *  (`COPY_REF_SELECTOR` in `web/src/features/refs/CopyRefButton.tsx`). */
+ *  issue key: the mark, the priority tag, the urgency mark and the copy-reference button. */
 const LINE_ITEMS = {
-  copy: "[data-copy-ref] button",
+  copy: COPY_REF_SELECTOR,
   mark: "[data-inbox-approval]",
   priority: "[data-inbox-priority]",
   urgency: "[data-inbox-urgency]",
@@ -1582,7 +1582,7 @@ async function expectLineItemsApart(page: Page, row: PlacedMark): Promise<void> 
 
 /** Reads that the issue key of ask row `row` stands on the line of its approval mark, and the
  *  start of its title after it on that line: where the line has room, the owner is drawn beside
- *  the marks, cut as it was before that line wrapped. */
+ *  the marks, with its title cut. */
 async function expectOwnerBesideMarks(page: Page, row: PlacedMark): Promise<void> {
   const boxes = await inboxRow(page, row.id).evaluate((element) => {
     const boxOf = (part: Element | null | undefined): Box | null => {
@@ -1696,8 +1696,8 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
     await expect(inboxPane(page)).toBeVisible();
     await expectMarksInPlace(page, short);
     await expect(page.locator("[data-inbox-row] [data-inbox-thread-card]")).toHaveCount(0);
-    // Where the line has room, the owner stands beside the marks as it did before the line
-    // wrapped: the key, then the start of its title.
+    // Where the line has room, the owner stands beside the marks: the key, then the start of its
+    // title.
     for (const row of roomy) await expectOwnerBesideMarks(page, row);
 
     // Below its width: the two cards.
