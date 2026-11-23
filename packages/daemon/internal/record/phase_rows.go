@@ -106,7 +106,7 @@ func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of
 // task holds (ReviewedHead), and "" where agent ran no earlier step of role on task, so an agent
 // whose step has no deciding review of its own on the task reads the whole change. Each row of one
 // agent's role on a task holds the commit that agent's newest deciding review there read
-// (AgentsOtherRows), so the row it is taken from holds the newest whichever step read it. agent ""
+// (AgentsOtherRow), so the row it is taken from holds the newest whichever step read it. agent ""
 // is the worker of an issue whose key names no claims, one for each role, whose every row of the
 // role is its own.
 func ReviewedBefore(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
@@ -132,23 +132,14 @@ func AnotherAgentsReview(rows []PhaseRow, row PhaseRow) string {
 	return other.ReviewedHead
 }
 
-// AgentsOtherRows is each row among rows of row's role on row's task, other than row, that names
-// row's claim: the rows of the other steps of that role that row's agent ran. A deciding review's
-// commit is written onto row and onto each of them (workflow's shareReviewedHead), since the commit
-// a review step is named is its agent's newest on the task, at whichever of its steps that review
-// was made, and no row records when its commit was read. None for a row of no step or naming no
-// claim.
-func AgentsOtherRows(rows []PhaseRow, row PhaseRow) []PhaseRow {
-	if row.StepTask == "" || row.Claim == "" {
-		return nil
-	}
-	var others []PhaseRow
-	for _, other := range rows {
-		if other.Role == row.Role && other.StepTask == row.StepTask && other.StepPlace != row.StepPlace && other.Claim == row.Claim {
-			others = append(others, other)
-		}
-	}
-	return others
+// AgentsOtherRow says whether other is a row of another step of row's role on row's task that
+// row's agent ran: it names row's claim. A deciding review's commit is written onto row and onto
+// each such row (workflow's shareReviewedHead), since the commit a review step is named is its
+// agent's newest on the task, at whichever of its steps that review was made, and no row records
+// when its commit was read. False for every other where row runs no step or names no claim.
+func AgentsOtherRow(row, other PhaseRow) bool {
+	return row.StepTask != "" && row.Claim != "" && other.Role == row.Role && other.StepTask == row.StepTask &&
+		other.StepPlace != row.StepPlace && other.Claim == row.Claim
 }
 
 // AgentsRowOf is role's row among rows that agent ran last, the row whose commit and entry a task

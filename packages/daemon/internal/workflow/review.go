@@ -952,7 +952,7 @@ func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseR
 
 // shareReviewedHead writes the commit row's agent's deciding review has just written on row
 // (record.PhaseRow.ReviewedHead) onto each other row of row's role on row's task that its agent ran
-// (record.AgentsOtherRows). A role keeps a row for each step it runs, while the commit a review step
+// (record.AgentsOtherRow). A role keeps a row for each step it runs, while the commit a review step
 // is named is its agent's newest on the task, at whichever of its steps that review was made, and
 // no row records when its commit was read, so no read could pick the newest among them: each row
 // of one agent holds that one commit alike instead. The reviewer's own review (review) and a
@@ -962,8 +962,8 @@ func (e *Engine) shareReviewedHead(ctx context.Context, tx pgx.Tx, row record.Ph
 	if err != nil {
 		return err
 	}
-	for _, other := range record.AgentsOtherRows(rows, row) {
-		if other.ReviewedHead == row.ReviewedHead {
+	for _, other := range rows {
+		if !record.AgentsOtherRow(row, other) || other.ReviewedHead == row.ReviewedHead {
 			continue
 		}
 		other.ReviewedHead = row.ReviewedHead
