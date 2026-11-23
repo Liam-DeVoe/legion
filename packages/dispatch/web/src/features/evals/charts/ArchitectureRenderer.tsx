@@ -5,13 +5,14 @@
 // its number in a badge; each place a frame around the parts it holds, dashed where no edge
 // reaches it; the rows above the first place and below the last as titled bands; and each edge as
 // an arrow (`flow`), a dashed route (`carried`) or a line ending in a dot at a kernel (`kernel`).
-// Under it, the heaviest parts with their notes, and the sources of its values. While the compare
-// range is shown, each value prints its compare value and its change beside it. Each value it
-// draws names itself as the chart's table names it (`data-chart`, `data-series`,
-// `data-statistic`, `data-x`, `data-range`, `data-value`), so the table holds every number the
-// graph draws; the second reading draws nothing here, and is the table's.
+// Under it, the heaviest parts with their notes, and the sources of its values with their
+// readings' links. While the compare range is shown, each value prints its compare value and its
+// change beside it. Each value it draws names itself as the chart's table names it (`data-chart`,
+// `data-series`, `data-statistic`, `data-x`, `data-range`, `data-value`), so the table holds every
+// number the graph draws; the second reading draws nothing here, and is the table's.
 import { type ReactNode, useId } from "react";
 
+import { LinkList } from "../../../components/LinkList";
 import {
   chartGroup,
   chartPlot,
@@ -469,6 +470,9 @@ export function ArchitectureRenderer({ compare, model }: ChartRendererProps): Re
             ? `Values from ${architecture.sources[0]}.`
             : `Values from ${architecture.sources.length} sources: ${architecture.sources.join(", ")}.`}
         </p>
+      )}
+      {architecture.links.length === 0 ? null : (
+        <LinkList label={`${model.title}: links of its values`} links={architecture.links} />
       )}
       {compare && architecture.compareOnly.length > 0 ? (
         <p className={`text-[11px] ${textMutedOnSurface}`} data-architecture-compare-only>

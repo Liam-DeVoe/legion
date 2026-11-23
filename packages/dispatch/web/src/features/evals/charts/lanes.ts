@@ -162,6 +162,7 @@ function mockReadings(mockup: DeclaredSpec, series: string): DeclaredReading[] {
         ciLow: specNumber(point.ci_low),
         col: "",
         id: `mockup-${String(index).padStart(3, "0")}`,
+        links: [],
         measuredAt: new Date(at).toISOString(),
         measuredMs: at,
         n: specNumber(point.n),

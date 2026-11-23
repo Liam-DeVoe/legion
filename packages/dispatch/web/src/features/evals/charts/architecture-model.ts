@@ -11,6 +11,7 @@
 // series and draws nothing on the diagram. With a compare range, each value prints its compare
 // value and its change beside it. `graph`, the eval platform's ledger folder, is accepted and draws
 // nothing: Dispatch reads the parts and their edges from readings (plan D10). Pure.
+import type { EvalLink } from "../../../api/types";
 import {
   type ChartAxis,
   type ChartModel,
@@ -115,6 +116,8 @@ export interface ArchitectureDrawing {
   readonly heaviest: readonly HeavyPart[];
   /** The sources its values name (the ledger document's version), each once. */
   readonly sources: readonly string[];
+  /** The links its values' readings carry (D10's `links`), which its sources line draws. */
+  readonly links: readonly EvalLink[];
   /** The parts the compare range holds and the window does not, by label. */
   readonly compareOnly: readonly string[];
   /** The lines under the diagram: the edges it cannot draw. */
@@ -397,6 +400,7 @@ export function architectureModel(spec: DeclaredSpec, input: DeclaredInput): Arc
       kernel: drawn.some((edge) => edge.kind === "kernel")
         ? (specText(key.kernel) ?? "a kernel's line")
         : null,
+      links: [...values.values()].flatMap((reading) => reading.links),
       notes: [
         ...(strays === 0
           ? []

@@ -2,7 +2,7 @@
 // reads the readings write"): each reading row of an eval's items views as one plain record, with
 // the reading fields every kind reads named as the platform's chart rules name them, so a kind's
 // model reads `rowGroup` and `bound` rather than the readings write's `attributes`. Pure.
-import type { EvalItemRow } from "../../../api/types";
+import type { EvalItemRow, EvalLink } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 
 /** A reading's bound: its value is at least (`>=`) or at most (`<=`) the true value's. */
@@ -31,6 +31,9 @@ export interface DeclaredReading {
   readonly bound: Bound | null;
   readonly note: string;
   readonly source: string;
+  /** The reading's own links (D10's `source` and `links` row), which a kind draws where it draws
+   *  the reading's row. */
+  readonly links: readonly EvalLink[];
   /** When it was measured, as the items read answers it. */
   readonly measuredAt: string;
   /** The same instant in epoch milliseconds, the place a time axis draws it at. */
@@ -92,6 +95,7 @@ export function readingsOf(rows: readonly EvalItemRow[]): DeclaredReading[] {
         ciLow: finite(cols.ci_low),
         col: text(cols.col),
         id,
+        links: row.links ?? [],
         measuredAt: row.measured_at,
         measuredMs: Date.parse(row.measured_at),
         n: finite(cols.n),

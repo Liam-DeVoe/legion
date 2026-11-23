@@ -9,6 +9,7 @@
 // runs draw over their steps (`step_label`), starting at `name`. A run started in the compare
 // range when its first reading is of the compare range: it is marked, and its numbers are compare
 // values. A run is in one range, so no run has a change. Pure.
+import type { EvalLink } from "../../../api/types";
 import {
   type ChartModel,
   type ChartPoint,
@@ -78,6 +79,8 @@ export interface Run {
   readonly cells: Readonly<Record<string, ChartValue>>;
   /** Its numbers over steps, by series, in the order of their steps. */
   readonly steps: Readonly<Record<string, readonly RunStep[]>>;
+  /** The links its readings carry (D10's `links`), which its row draws. */
+  readonly links: readonly EvalLink[];
 }
 
 /** A series a run holds numbers of at steps, and its unit. */
@@ -173,6 +176,7 @@ interface Gathered {
   readonly tags: Map<string, string>;
   readonly finals: Map<string, DeclaredReading>;
   readonly steps: Map<string, Map<number, DeclaredReading>>;
+  readonly links: EvalLink[];
 }
 
 function gather(readings: readonly DeclaredReading[], series: ReadonlySet<string>): Gathered[] {
@@ -186,6 +190,7 @@ function gather(readings: readonly DeclaredReading[], series: ReadonlySet<string
         finals: new Map(),
         first: reading,
         id: reading.row,
+        links: [],
         settings: new Map(),
         steps: new Map(),
         tags: new Map(),
@@ -201,6 +206,7 @@ function gather(readings: readonly DeclaredReading[], series: ReadonlySet<string
         if (text !== null) held.set(key, text);
       }
     }
+    run.links.push(...reading.links);
     if (reading.col === "") run.finals.set(reading.series, reading);
     else if (STEP.test(reading.col)) {
       const steps = run.steps.get(reading.series) ?? new Map<number, DeclaredReading>();
@@ -297,6 +303,7 @@ export function runsModel(spec: DeclaredSpec, input: DeclaredInput): RunsModel {
     return {
       cells: Object.fromEntries(columns.map((column) => [column.id, cellOf(run, column)])),
       id: run.id,
+      links: run.links,
       range: comparing ? run.first.range : "window",
       started: {
         // A time as the run table writes it, to the minute.

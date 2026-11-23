@@ -1,14 +1,16 @@
 // The renderer of a `runs` model (runs.ts), the run view: a table of the runs, through the one
-// table core, with the spec's columns and the start, and every other setting, tag and final number
-// the runs hold behind "Choose columns"; a tick box on each run picks it; the picked runs' numbers
-// of one series drawn over their steps, one line each, the series picked from those they hold;
-// and the picked runs' settings side by side, the ones that differ first. While the compare range
-// is shown, each run that started in it is listed too, marked, and its line is dashed; else only
-// the window's runs are. Each number it draws names itself as the chart's table names it
-// (`data-chart`, `data-series`, `data-statistic`, `data-x`, `data-range`, `data-value`).
+// table core, each run's links under its id, with the spec's columns and the start, and every
+// other setting, tag and final number the runs hold behind "Choose columns"; a tick box on each
+// run picks it; the picked runs' numbers of one series drawn over their steps, one line each, the
+// series picked from those they hold; and the picked runs' settings side by side, the ones that
+// differ first. While the compare range is shown, each run that started in it is listed too,
+// marked, and its line is dashed; else only the window's runs are. Each number it draws names
+// itself as the chart's table names it (`data-chart`, `data-series`, `data-statistic`, `data-x`,
+// `data-range`, `data-value`).
 import type { ColumnDef } from "@tanstack/react-table";
 import { type ReactNode, useMemo, useState } from "react";
 
+import { LinkList } from "../../../components/LinkList";
 import {
   chartPlot,
   textMutedOnSurface,
@@ -326,14 +328,19 @@ function RunView({ compare, model }: { compare: boolean; model: RunsModel }): Re
       {
         accessorFn: (run) => run.id,
         cell: ({ row }) => (
-          <span className="flex items-baseline gap-1" data-run={row.original.id}>
-            {row.original.id}
-            {row.original.range === "compare" ? (
-              <span className={`text-xs ${textMutedOnSurface}`} data-run-compare>
-                started in the compare range
-              </span>
-            ) : null}
-          </span>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="flex items-baseline gap-1" data-run={row.original.id}>
+              {row.original.id}
+              {row.original.range === "compare" ? (
+                <span className={`text-xs ${textMutedOnSurface}`} data-run-compare>
+                  started in the compare range
+                </span>
+              ) : null}
+            </span>
+            {row.original.links.length === 0 ? null : (
+              <LinkList label={`Links of run ${row.original.id}`} links={row.original.links} />
+            )}
+          </div>
         ),
         enableColumnFilter: false,
         header: "Run",

@@ -402,6 +402,7 @@ function mockReading(
     ciLow: specNumber(point.ci_low),
     col: "",
     id: `mockup-${index}`,
+    links: [],
     measuredAt: "",
     measuredMs: 0,
     n: specNumber(point.n),

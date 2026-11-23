@@ -256,6 +256,32 @@ test("the run table lists the window's runs, and while the compare range is show
   expect(listed()).toEqual(["run-b", "run-a"]);
 });
 
+// D10: a reading's `links` are its row's own links, and the run view draws each run's under its id.
+test("each run's row draws the links its readings carry, through the link list", () => {
+  const link = {
+    href: "https://ci.example.com/runs/run-a",
+    label: "run-a's log",
+    recorded_at: "2026-11-02T09:00:00Z",
+    rel: "via",
+  };
+  const rows = (fixture.items as EvalItemRow[]).map((row) =>
+    row.row_key === "run-a" && row.cols?.series === "usd" ? { ...row, links: [link] } : row
+  );
+  const given = { ...input(), readings: readingsOf(rows) };
+  expect(model(given).runs.list.find((run) => run.id === "run-a")?.links).toEqual([link]);
+  expect(model(given).runs.list.find((run) => run.id === "run-b")?.links).toEqual([]);
+
+  render(createElement(EvalChart, { model: model(given), renderer: runsKind.renderer }));
+  const table = within(screen.getByRole("figure", { name: "Training runs" })).getByRole("table", {
+    name: "Training runs: the runs",
+  });
+  const links = within(table).getByRole("list", { name: "Links of run run-a" });
+  const anchor = within(links).getByRole("link", { name: /run-a's log/ });
+  expect(anchor).toHaveAttribute("href", "https://ci.example.com/runs/run-a");
+  expect(anchor).toHaveAttribute("data-link-kind", "via");
+  expect(within(table).queryByRole("list", { name: "Links of run run-b" })).toBeNull();
+});
+
 test("the picked runs draw over their steps, and their settings stand side by side, the ones that differ first", async () => {
   const user = userEvent.setup();
   render(createElement(EvalChart, { model: model(), renderer: runsKind.renderer }));

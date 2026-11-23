@@ -368,6 +368,36 @@ test("the diagram: shaded boxes, badges, the fault mark, places, bands and edges
   ).toBeTruthy();
 });
 
+// D10: the links a value's reading carries draw beside the sources line, through the link list.
+test("the links of its values' readings draw under the sources", () => {
+  const link = {
+    href: "https://ledger.example.com/grader",
+    label: "grader's row",
+    recorded_at: "2026-11-02T09:00:00Z",
+    rel: "describedby",
+  };
+  const rows = (fixture.items as EvalItemRow[]).map((row) =>
+    row.row_key === "grader" && row.source.endsWith("@v30") ? { ...row, links: [link] } : row
+  );
+  const drawn = architectureKind.model(DIAGRAM, {
+    compare: fixture.compare,
+    readings: readingsOf(rows),
+    slug: "grading",
+    window: fixture.window,
+  });
+  if (!isArchitectureModel(drawn)) throw new Error("the architecture model holds no diagram");
+  expect(drawn.architecture.links).toEqual([link]);
+  expect(model().architecture.links).toEqual([]);
+
+  render(createElement(EvalChart, { model: drawn, renderer: architectureKind.renderer }));
+  const figure = screen.getByRole("figure", { name: "Where the risk sits" });
+  const links = within(figure).getByRole("list", { name: "Where the risk sits: links of its values" });
+  expect(within(links).getByRole("link", { name: /grader's row/ })).toHaveAttribute(
+    "href",
+    "https://ledger.example.com/grader"
+  );
+});
+
 test("each value prints its compare value and change beside it while the compare range shows", async () => {
   const user = userEvent.setup();
   render(createElement(EvalChart, { model: model(), renderer: architectureKind.renderer }));

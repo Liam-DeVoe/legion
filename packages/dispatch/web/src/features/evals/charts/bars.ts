@@ -402,6 +402,7 @@ function mockReading(
     ciLow: specNumber(point.ci_low),
     col: form.byCol ? category : group,
     id: `mockup-${index}`,
+    links: [],
     measuredAt: form.overTime ? new Date(at).toISOString() : "",
     measuredMs: at,
     n: specNumber(point.n),
