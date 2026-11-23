@@ -251,7 +251,8 @@ func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) 
 			if err != nil {
 				t.Fatalf("run the way back: %v", err)
 			}
-			tasks := rowsAsText(t, store, `select concat_ws(' | ', task, state, running_kind, position, stopped_reason, hold_reason, step_wait, step_wait_since is null)
+			// A boolean cast to text is its word (true, false); concat_ws alone would write t or f.
+			tasks := rowsAsText(t, store, `select concat_ws(' | ', task, state, running_kind, position, stopped_reason, hold_reason, step_wait, (step_wait_since is null)::text)
 				from plan_tasks order by task`)
 			want := []string{
 				"a | running | step | 1 |  |  |  | true",
