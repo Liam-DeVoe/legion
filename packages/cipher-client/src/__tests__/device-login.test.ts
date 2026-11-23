@@ -8,7 +8,7 @@
 // login's lock that keeps the rotated refresh token, and the trade of the login's access token
 // with no actor. The two-process row lives in envoy-client's device-login.test.ts.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -315,19 +315,17 @@ test("a code that lapses after polls the broker did not answer names them", asyn
   ] as const) {
     const stub = broker({ polls });
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-    // The code's lifetime is this row's own, and passes during the wait after the third poll.
-    const expiresAt = new Date(started.expiresAt);
+    // The code's lifetime passes on the poll's clock during the wait after the third poll.
+    let now = 0;
     let waited = 0;
-    const refusal = await finishDeviceLogin(
-      { ...started, expiresAt },
-      {
-        path: loginPath(),
-        sleep: async () => {
-          waited += 1;
-          if (waited === 4) expiresAt.setTime(Date.now() - 1);
-        },
-      }
-    ).then(
+    const refusal = await finishDeviceLogin(started, {
+      path: loginPath(),
+      clock: () => now,
+      sleep: async () => {
+        waited += 1;
+        if (waited === 4) now += 3_600_000;
+      },
+    }).then(
       () => null,
       (error: unknown) => error as Error
     );
@@ -343,19 +341,20 @@ test("a code that lapses after polls the broker did not answer names them", asyn
 
 // A wait never passes the code's lifetime: with 2 s of it left, a 503 that grows the interval to
 // 6 s waits what is left, and a code that lapses during that wait is not polled again, and names
-// the outage before it.
+// the outage before it. Each wait passes on the poll's clock.
 test("a poll's wait ends at the code's lifetime, and a lapse in it names the outages before", async () => {
   const stub = broker({ polls: ["unavailable-503", "approve"] });
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const expiresAt = new Date(Date.now() + 2000);
+  let now = 0;
   const waits: number[] = [];
   const refusal = await finishDeviceLogin(
-    { ...started, expiresAt },
+    { ...started, expiresAt: new Date(Date.now() + 2000) },
     {
       path: loginPath(),
+      clock: () => now,
       sleep: async (ms) => {
         waits.push(ms);
-        if (waits.length === 2) expiresAt.setTime(Date.now() - 1);
+        now += ms;
       },
     }
   ).then(
@@ -363,7 +362,7 @@ test("a poll's wait ends at the code's lifetime, and a lapse in it names the out
     (error: unknown) => error as Error
   );
   expect(waits[0]).toBe(1000);
-  expect(waits[1] ?? 0).toBeLessThanOrEqual(2000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(1000);
   expect(stub.polls).toHaveLength(1);
   expect(refusal?.message).toContain("; the broker was unreachable or busy for the last poll;");
 });
@@ -402,11 +401,65 @@ test("a Retry-After past the code's lifetime is waited only until the code lapse
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
   const { waits, sleep } = recordedWaits();
   const began = Date.now();
-  await finishDeviceLogin(started, { path: loginPath(), sleep });
+  // The poll's clock stands still, so the second wait is what was left of the code when the poll
+  // began.
+  await finishDeviceLogin(started, { path: loginPath(), sleep, clock: () => 0 });
   const ended = Date.now();
   expect(waits).toHaveLength(2);
   expect(waits[1] ?? 0).toBeLessThanOrEqual(started.expiresAt.getTime() - began);
   expect(waits[1] ?? 0).toBeGreaterThanOrEqual(started.expiresAt.getTime() - ended);
+});
+
+// The code's end is kept on the monotonic clock (`performance.now()`): a step of the wall clock
+// past the code's lifetime, as NTP or a person setting the clock makes, neither ends the poll early
+// nor, back, keeps it going past the code. The wall clock is put back before the save, which dates
+// the login. `performance.now()` is spied on, not waited out, so the second row's wait passes on it
+// at once.
+test("a step of the wall clock neither ends the poll early nor keeps it past the code", async () => {
+  const twoHours = 2 * 3_600_000;
+  const monotonic = performance.now.bind(performance);
+  let ahead = 0;
+  const spied = spyOn(performance, "now").mockImplementation(() => monotonic() + ahead);
+  try {
+    const forward = broker({ polls: ["pending", "approve"] });
+    const started = await startDeviceLogin({ brokerUrl: forward.url, person: PERSON, host: HOST });
+    let waited = 0;
+    const login = await finishDeviceLogin(started, {
+      path: loginPath(),
+      sleep: async () => {
+        waited += 1;
+        if (waited === 1) setSystemTime(new Date(Date.now() + twoHours));
+        else setSystemTime();
+      },
+    });
+    expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+    expect(forward.polls).toHaveLength(2);
+
+    // A code with 10 s left, polled 30 s apart, lapses in its first wait, which waits it out on the
+    // monotonic clock, though the wall clock stepped back two hours in it.
+    const back = broker({ polls: ["approve"], interval: 30 });
+    const backStarted = await startDeviceLogin({ brokerUrl: back.url, person: PERSON, host: HOST });
+    const refusal = await finishDeviceLogin(
+      { ...backStarted, expiresAt: new Date(Date.now() + 10_000) },
+      {
+        path: loginPath(),
+        sleep: async (ms) => {
+          setSystemTime(new Date(Date.now() - twoHours));
+          ahead += ms;
+        },
+      }
+    ).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    // The wait ran: a code that lapsed before it would pass the row without one.
+    expect(ahead).toBeGreaterThan(0);
+    expect(back.polls).toHaveLength(0);
+    expect(refusal?.message).toContain(`the code ${STAND_IN_USER_CODE} expired before ${PERSON}`);
+  } finally {
+    setSystemTime();
+    spied.mockRestore();
+  }
 });
 
 test("a poll the broker did not answer is polled again", async () => {
@@ -463,12 +516,12 @@ test("a broker refusal shows its OAuth code only where the clients know it", asy
   expect(unstarted?.message).not.toContain("the stand-in answered");
 });
 
-test("a code is polled once a second to once a minute, every 5 s where the broker names no interval", async () => {
+test("a code is polled at the broker's interval, once a second at least, every 5 s where it names none", async () => {
   for (const [interval, wait] of [
     [0.001, 1_000],
     [null, 5_000],
-    // An interval past a timer's range would fire at once.
-    [3_000_000, 60_000],
+    // RFC 8628 Section 3.5: the poll waits at least the interval the broker names.
+    [90, 90_000],
   ] as const) {
     const stub = broker({ interval });
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
@@ -480,6 +533,27 @@ test("a code is polled once a second to once a minute, every 5 s where the broke
       },
     });
     expect(waits, String(interval)).toEqual([wait]);
+  }
+});
+
+test("an interval past the code's lifetime is waited only until the code lapses", async () => {
+  // 1800 s is past the 600 s code and inside the hour the interval is held to; 3000000 s is past
+  // both.
+  for (const interval of [1_800, 3_000_000]) {
+    const stub = broker({ interval });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const { waits, sleep } = recordedWaits();
+    const began = Date.now();
+    // The poll's clock stands still, so the wait is what was left of the code when it began.
+    await finishDeviceLogin(started, { path: loginPath(), sleep, clock: () => 0 });
+    const ended = Date.now();
+    expect(waits, String(interval)).toHaveLength(1);
+    expect(waits[0] ?? 0, String(interval)).toBeLessThanOrEqual(
+      started.expiresAt.getTime() - began
+    );
+    expect(waits[0] ?? 0, String(interval)).toBeGreaterThanOrEqual(
+      started.expiresAt.getTime() - ended
+    );
   }
 });
 

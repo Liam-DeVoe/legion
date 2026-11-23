@@ -115,14 +115,14 @@ const ACCESS_MARGIN_MS = 2 * TRADE_ATTEMPT_MS;
 const BROKER_REQUEST_MS = TRADE_ATTEMPT_MS / 2;
 
 /** How many seconds apart a code is polled where the broker names no interval (RFC 8628 Section
- *  3.2), and the least and the most interval the poll starts at whatever interval the broker
- *  names: a wait past a timer's range would fire at once, and no broker means a code to wait
- *  minutes between polls. Each `slow_down` and each poll the broker did not answer or answered
- *  with an outage add 5 s from then on (RFC 8628 Section 3.5), which can take the interval past
- *  the most; no wait passes the code's lifetime, at most {@link MOST_LIFETIME_SECONDS}. */
+ *  3.2), and the least interval the poll starts at whatever interval the broker names, so no poll
+ *  goes out with no wait. The most it starts at is the code's longest life,
+ *  {@link MOST_LIFETIME_SECONDS}: RFC 8628 Section 3.5 has a client wait at least the interval the
+ *  broker names, and no wait passes the code's lifetime, so a longer interval would only wait the
+ *  code out. Each `slow_down` and each poll the broker did not answer or answered with an outage
+ *  add 5 s from then on (RFC 8628 Section 3.5). */
 const DEFAULT_POLL_SECONDS = 5;
 const LEAST_POLL_SECONDS = 1;
-const MOST_POLL_SECONDS = 60;
 
 /** The most a code or an access token the broker answers is taken to live, whatever lifetime it
  *  names: an hour, four times the broker's own access tokens' 900 s. A longer one would keep a
@@ -346,10 +346,10 @@ export interface DeviceAuthorization {
  * `person` — and posts it to the broker's device authorization endpoint with the key's thumbprint
  * as `dpop_jkt`, as the machine-login client and its one scope. It answers what the person types
  * and where, each refused where it holds a control or format character, and the page where it is
- * no http or https URL; the interval it polls at is the broker's, from {@link LEAST_POLL_SECONDS}
- * to {@link MOST_POLL_SECONDS}, and {@link DEFAULT_POLL_SECONDS} where the broker names none, and
- * the code lives as long as the broker says, {@link MOST_LIFETIME_SECONDS} at most. A refusal is
- * worded as every broker refusal is (`brokerRefusal`).
+ * no http or https URL; the interval it polls at is the broker's, {@link LEAST_POLL_SECONDS} at
+ * least and {@link MOST_LIFETIME_SECONDS} at most, and {@link DEFAULT_POLL_SECONDS} where the
+ * broker names none, and the code lives as long as the broker says, {@link MOST_LIFETIME_SECONDS}
+ * at most. A refusal is worded as every broker refusal is (`brokerRefusal`).
  */
 export async function startDeviceLogin(options: {
   readonly brokerUrl: string;
@@ -403,7 +403,7 @@ export async function startDeviceLogin(options: {
     expiresAt,
     intervalSeconds: Math.min(
       Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS),
-      MOST_POLL_SECONDS
+      MOST_LIFETIME_SECONDS
     ),
     deviceCode: holdSecret(answered.device_code, expiresAt),
     key: privateKey,
@@ -454,25 +454,22 @@ function retryAfterMs(error: unknown): number {
  * way. RFC 8628 Section 3.5 grows the interval on a `slow_down` and slows the polling on a
  * connection timeout, and `pollLogin` grows it the same way. An outage whose answer names a
  * `Retry-After`, in seconds or as an HTTP date, is waited at least that long before the next
- * poll, though never past the code's lifetime, as `pollLogin` waits it. Any other answer of a 4xx,
- * with another OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate`
- * challenge), stops the poll at once, naming the status, rather than polling until the code lapses
- * and saying it expired. That is the one place this poll and `pollLogin` differ by choice: the
- * helper polls on there until the code lapses, as it records the login's state in the background,
- * where a person waits on this poll. They also read apart some answers no conforming broker
- * gives, where their libraries or their own checks differ; `pollLogin`'s doc names some, and
- * neither list is complete. Among them: an OAuth error in a body that is not JSON or beside a
- * `WWW-Authenticate` challenge ({@link outage}'s module header), a 2xx naming an OAuth error, a
- * 3xx, a 2xx but a 200, a JSON approval in a body typed otherwise, an approval the library or
- * `loginOf` refuses, a poll still in flight at the code's end, a wait named otherwise than in an
- * unsigned `Retry-After` count or an HTTP date, and a device authorization's edge values (an
- * interval or a lifetime that is not positive, a fraction, a string, or none). Each refusal names
+ * poll, though never past the code's lifetime, as `pollLogin` waits it. The code's end is read
+ * once from its {@link DeviceAuthorization.expiresAt} and kept on the monotonic clock
+ * (`performance.now()`, or `clock`), as `pollLogin` keeps it, so a step of the wall clock neither
+ * ends the poll early nor makes it go on past the code. Any other answer of a 4xx, with another
+ * OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate` challenge), stops the
+ * poll at once, naming the status, rather than polling until the code lapses and saying it
+ * expired. That is the one place this poll and `pollLogin` differ by choice: the helper polls on
+ * there until the code lapses, as it records the login's state in the background, where a person
+ * waits on this poll. They also read apart some answers no conforming broker gives, where their
+ * libraries or their own checks differ; the one list of them is `pollLogin`'s doc
+ * (`packages/envoy/internal/cipher/helper/broker.go`). Each refusal names
  * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot be kept is
  * refused naming its credential, which the broker holds live, and where to revoke it, and a copy
- * of it written whole is kept beside the file
- * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the lock
- * included. One kept whose lock is then not let go is answered as kept: the machine uses that
- * login, so it is not one to revoke.
+ * of it written whole is kept beside the file ({@link KeptCopyError}), which the refusal names
+ * whatever fails after it, letting go of the lock included. One kept whose lock is then not let go
+ * is answered as kept: the machine uses that login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -480,9 +477,13 @@ export async function finishDeviceLogin(
     readonly path: string;
     readonly fetch?: typeof fetch | undefined;
     readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+    /** The monotonic clock, in milliseconds, the code's end is kept on; `performance.now()`
+     *  unless a test replaces it. */
+    readonly clock?: (() => number) | undefined;
   }
 ): Promise<KeptDeviceLogin> {
   const wait = options.sleep ?? ((ms: number) => sleep(ms, undefined, true));
+  const clock = options.clock ?? (() => performance.now());
   const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, {
     key: loginDpopKey(started.key),
     nonce: { value: "" },
@@ -504,12 +505,14 @@ export async function finishDeviceLogin(
   let outages = 0;
   // The wait before the next poll: the interval, or an outage's longer `Retry-After`.
   let waitMs = interval * 1000;
+  // The code's end on the monotonic clock: what is left of it read once from the wall clock.
+  const endsAt = clock() + (started.expiresAt.getTime() - Date.now());
   while (true) {
-    const left = started.expiresAt.getTime() - Date.now();
+    const left = endsAt - clock();
     if (left <= 0) throw expired(outages);
     // No wait passes the code's lifetime, and a code that lapses in it is not polled.
     await wait(Math.min(waitMs, left));
-    if (Date.now() >= started.expiresAt.getTime()) throw expired(outages);
+    if (clock() >= endsAt) throw expired(outages);
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_DEVICE_CODE, {
