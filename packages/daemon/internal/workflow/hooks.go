@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -83,19 +84,19 @@ func hookCount(hook Hook, counts map[string]int) int {
 // settings the deployment keys by that name, a hook's prompt among them, so the firing passes it
 // over on that issue (record.Store.PlanRoleOf). Legion's roles are no plan's and read no plan.
 //
-// Each prompt names the claim of the agent that works its role's step in the round the move
-// opened (workerClaim), read once the move's start has written that agent, and the outbox
-// publishes on that claim's topic: a prompt resolved when it runs would reach whichever agent a
-// later entry of the role's step names by then, in a round the words were not written for. The
-// role implementer is the one exception to the role's own step: it names the agent of the task's
-// step that does its implementation work where the move left it (implementationAgent), whatever
-// that step's role is called, so a task whose step of the type implementation is a coder's prompts
-// the coder, and a task with no step of that type prompts nobody for it.
-// Whether a role has a session is not read here. A role that has run no phase holds no topic, and
-// the outbox ends that one row undelivered with a log line, as it does for any role message; a
-// firing that wrote rows only for the roles a phase row names would write a different set of rows
-// on an issue whose reviewer has not started, which is not what the hook names. Such a role's
-// prompt names the role's own claim (record.WorkerClaim).
+// Each prompt names the claim of the agent that does its role's work in the round the move opened,
+// read once the move's start has written that agent, and the outbox publishes on that claim's
+// topic: a prompt resolved when it runs would reach whichever agent a later entry of the role's
+// step names by then, in a round the words were not written for. For one of Legion's roles of a
+// step (the planner, the implementer, the tester and the reviewer) that agent is the agent of the
+// task's step that does the role's work where the move left it (workAgent): a step of the role's
+// type whose role is the role itself or a role the deployment or the plan defines, whatever it is
+// called, so a task whose step of the type testing is a checker's prompts the checker for the
+// tester, the owner where that step's key is owner, and nobody for a role whose work no step of
+// the task does. The claim is the one the start of that step names, whether or not the step has
+// run, and whether a role has a session is not read here: a claim no session holds is ended
+// undelivered by the outbox with a log line, as any role message is. Every other role a hook names,
+// a role of the deployment, names the claim of the worker on its role's step (workerClaim).
 //
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
@@ -108,6 +109,8 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 		pull = fmt.Sprintf("%s#%d", pr.Repo, pr.Number)
 	}
 	prompted := make([]string, 0, len(hook.Roles))
+	// walk is issue's walk, read once for the first role whose agent a step's work names.
+	var walk *Walk
 	for _, role := range hook.Roles {
 		if slices.Contains(prompted, string(role)) {
 			continue
@@ -122,19 +125,20 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 			}
 		}
 		var worker claim.Token
-		if role == claim.RoleImplementer {
-			// The role implementer is the agent that does the implementation work of the task
-			// where the move left it (implementationAgent), whatever its step's role is called: a
-			// role of the type implementation the deployment or the plan defines, the implementer
-			// of today's steps, and the owner where that step's key is owner, as a merge forward's
-			// ask and a settlement's message name it. A task with no step of that type has no such
-			// agent, since no worker of it does implementation work to take back, and so the
-			// firing prompts nobody for the role implementer there, as those senders tell nobody.
-			w, err := e.walk(ctx, tx, issue)
-			if err != nil {
-				return err
+		if _, step := plan.BuiltinRole(string(role)); step && claim.IsBuiltin(role) {
+			// A role of Legion's that does a step's work is the agent of the task's step that does
+			// that work where the move left it (workAgent), as a merge forward's ask and a
+			// settlement's message name the implementer. A task with no step of that work has no
+			// such agent, since no worker of it does that work to take back, and so the firing
+			// prompts nobody for that role there, as those senders tell nobody.
+			if walk == nil {
+				w, err := e.walk(ctx, tx, issue)
+				if err != nil {
+					return err
+				}
+				walk = &w
 			}
-			agent, named, err := e.implementationAgent(ctx, tx, issue, w, to)
+			agent, named, err := e.workAgent(ctx, tx, issue, *walk, to, role)
 			if err != nil {
 				return err
 			}

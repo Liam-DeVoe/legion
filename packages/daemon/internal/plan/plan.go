@@ -208,6 +208,18 @@ func BuiltinRoles() map[string]RoleDef {
 	return roles
 }
 
+// BuiltinRole is the one of Legion's roles of a step (BuiltinRoles) named name, and whether one is,
+// read off the list without the fresh map BuiltinRoles builds, for a caller that asks of one name
+// at a time.
+func BuiltinRole(name string) (RoleDef, bool) {
+	for _, role := range builtinRoles {
+		if role.Name == name {
+			return role, true
+		}
+	}
+	return RoleDef{}, false
+}
+
 // builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
 // task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{

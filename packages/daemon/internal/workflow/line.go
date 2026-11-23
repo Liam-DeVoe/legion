@@ -148,23 +148,42 @@ func (w Walk) workerAt(place record.TaskPlace) (record.Worker, bool) {
 }
 
 // implementationPlace is the place of the step whose agent does the implementation work of w's
-// task where it stands at place, the one rule of that agent whatever its role is called: the last
-// step of the type implementation (record.PlanStep.Type) at or before place, so a step of that type
-// is its own, and every step stands before the retro and the merge; where none stands there - a
-// task sent back to a step before every step of that type, or a place its line does not hold - the
+// task where it stands at place (workPlace of the role implementer): the last step of the type
+// implementation (record.PlanStep.Type) at or before place, and where none stands there - a task
+// sent back to a step before every step of that type, or a place its line does not hold - the
 // task's last step of that type, whose agent made the head the task stands on. That agent runs the
 // retro (AgentAt), is asked to merge the base forward (mergeForward) and is told what CI said of its
 // head (tellChecks), each on the claim the start of its step names (Engine.implementationAgent).
 // A walk with no plan rows names its implementer's step. ok is false for a task with no step of
 // that type.
 func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, bool) {
+	return w.workPlace(place, claim.RoleImplementer)
+}
+
+// workPlace is the place of the step whose agent does the work of role, one of Legion's roles of a
+// step, in w's task where it stands at place, the one rule of that agent whatever its step's role
+// is called: a step of role's type (plan.BuiltinRole) whose role is role itself or a role the
+// deployment or the plan defines, and never another of Legion's roles, so the reviewer's work is
+// never the acceptance's, whose type is review too. It is the last such step at or before place, so
+// a step of that work is its own, and every step stands before the retro and the merge; where none
+// stands there, it is the task's last such step. ok is false for a task with no such step, and for
+// a role that is none of Legion's roles of a step.
+func (w Walk) workPlace(place record.TaskPlace, role claim.Role) (record.TaskPlace, bool) {
+	def, ok := plan.BuiltinRole(string(role))
+	if !ok {
+		return record.TaskPlace{}, false
+	}
 	reached := len(w.Steps)
 	if place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
 		reached = place.Position
 	}
 	last := 0
 	for i := len(w.Steps) - 1; i >= 0; i-- {
-		if w.Steps[i].Type != plan.TypeImplementation {
+		step := w.Steps[i]
+		if step.Type != def.Type {
+			continue
+		}
+		if _, legion := plan.BuiltinRole(step.Role); legion && step.Role != def.Name {
 			continue
 		}
 		if i < reached {
