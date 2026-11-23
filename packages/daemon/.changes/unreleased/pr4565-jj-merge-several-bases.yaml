@@ -1,13 +1,13 @@
 kind: Fixed
 body: |-
-    The worker image's jj is v0.46.0-sami.20261123-030350, the release of sjawhar/jj#4 on top of
+    The worker image's jj is v0.46.0-sami.20261123-130747, the release of sjawhar/jj#4 on top of
     sjawhar/jj#3. In a merge of two commits with more than one merge base, it keeps what both sides
     hold (jj-vcs/jj#6369). Where both sides changed the merge bases' own conflict, it merges them
     against a virtual merge base, as git does, if that conflict is between text files, and gives a
     conflict if it is not, as at a deleted or binary file. That virtual base is only ever the base
     of a conflict: where a later rebase, abandon or squash would make it a side, jj puts the terms
     of the conflict it stands for in its place, so no file holds its text, and a person's edit of
-    such a conflict reaches every side.
+    such a conflict reaches every term of the conflict it stands for.
 time: 2026-11-22T11:40:15Z
 custom:
     Issue: pr4565
