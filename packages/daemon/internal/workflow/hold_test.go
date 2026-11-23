@@ -57,10 +57,11 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // issue's phase stands: nothing is held for a role that holds no phase, and the controller is not
 // told of a phase that is not stalled. A lingering tree and a child that left the workflow tell
 // nobody, since their claims were suspended or closed. A child's own architect's failure holds
-// nothing either, even at accepting, its own phase, since claimFailed answers an architect before
-// it reads the phase: it is told in a worker-died of the architect on the child, which reaches the
-// architect above it, and that architect takes the child's notices until the daemon starts the
-// child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
+// nothing either, even at a place of its own such as accepting here, since claimFailed answers an
+// architect before it reads the phase: it is told in a worker-died of the architect on the child,
+// which reaches the architect above it, and that architect takes the child's notices but an
+// owner-step, which waits for the child's own architect, until the daemon starts the child's
+// architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -495,8 +496,8 @@ func noticeRows(t *testing.T, pool *pgxpool.Pool) []record.OutboxPayload {
 	return payloads
 }
 
-// A retry's task names the issue's pull request, as a backward move's does, so the restarted
-// worker is told the pull request it works on.
+// A retry's task names the issue's pull request, where it has one, as a backward move's does, so
+// the restarted worker is told the pull request it works on.
 func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -697,7 +698,8 @@ func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
 }
 
 // R2: an architect's claim failing holds nothing and writes no held notice, at admitted as at
-// accepting. Both phases are the architect's own (phase.RoleFor), and claimFailed answers an
+// accepting. On these issues with no plan rows both phases are the architect's own
+// (phase.RoleFor), and claimFailed answers an
 // architect before it asks which role works the phase: a tree's own architect is told in a
 // worker-died, and a child's own architect's failure, at accepting as anywhere, is told only in a
 // worker-died of the architect on the child, which reaches the architect above it, with no
