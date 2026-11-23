@@ -2077,6 +2077,10 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * The daemon refuses the implementer's completion of implementing when no pull request is open on
+ * its task's branch and none is recorded merged (`HANDOFF_NO_PULL_REQUEST`), and, for a task of a
+ * plan of several tasks, when the open one is against another branch than the base the plan gives
+ * that task (`HANDOFF_PULL_REQUEST_BASE`, contract 224); either refusal records nothing.
  * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string

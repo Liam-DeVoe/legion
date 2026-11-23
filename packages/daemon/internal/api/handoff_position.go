@@ -27,9 +27,10 @@ import (
 // Of a plan of several tasks the task is the one whose step the completing claim's agent runs
 // (record.Issue.StepOfAgent), named in ofTask, and the position is that task's: issue stands in
 // that task's own phase and hold, the pass is that task's, the pull request is that task's own
-// row (record.Store.PullRequestOfTask) and branch its branch (record.PlanTask.BranchOf). noStep says
-// the agent runs no step of such a plan, whose completion is of no phase of it. Of a plan of one
-// task, or none, ofTask is "" and branch the issue's own, as before tasks.
+// row (record.Store.PullRequestOfTask), branch its branch (record.PlanTask.BranchOf) and base the
+// branch its pull request is against (record.StoredPlan.BaseOf). noStep says the agent runs no
+// step of such a plan, whose completion is of no phase of it. Of a plan of one task, or none,
+// ofTask is "" and branch the issue's own, as before tasks, and no base is read ("").
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -38,6 +39,7 @@ type completionPosition struct {
 	ofTask         string
 	noStep         bool
 	branch         string
+	base           string
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -96,6 +98,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 			standing.Phase, standing.Hold = phase.Held, &record.Hold{From: step.Phase, Reason: task.HoldReason}
 		}
 		position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
+		position.base, _ = stored.BaseOf(*issue, task.Task)
 		counts = task.Counts
 		if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, task.Task); err != nil {
 			return completionPosition{}, err

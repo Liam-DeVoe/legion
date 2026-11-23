@@ -1309,6 +1309,9 @@ const (
 // completion. A role the deployment defines reports a verdict and writes no handoff record, so its
 // report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
 // summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
+// handoffReport composes that report. A move back of a task with plan rows passes no row: the
+// report of the step that sent the work back stands in reason, before the move's own, and so after
+// the `Pull request:` line (moveBackReason).
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
@@ -1318,7 +1321,28 @@ const (
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue) + at.lines
+	text := continueLine(issue) + at.lines + handoffReport(issue, handoff)
+	if pr != nil && pr.Number != 0 {
+		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
+	}
+	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
+	}
+	if reason != "" {
+		text += " " + reasonLabel + ": " + sentence(reason)
+	}
+	return text + at.owners
+}
+
+// handoffReport is what a start is told of the report of the step handoff is the row of: the
+// handoff record it wrote (Handoff:), the commit it handed off at (Handoff commit:) and its verdict
+// (Tester's verdict:, or Step <i> (<role>) reported: for a role of the deployment), each sentence
+// after a space, under the labels the prompts read. It is the one composition of that report: a
+// start of the next step tells it in its place (task), and a move back writes it in its task's
+// start reason (moveBackReason).
+func handoffReport(issue record.Issue, handoff record.PhaseRow) string {
+	var text string
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
 		text += fmt.Sprintf(" %s: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", handoffLabel, word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
@@ -1336,17 +1360,23 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	default:
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
 	}
-	if pr != nil && pr.Number != 0 {
-		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
-	}
-	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
-		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
-			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
-	}
+	return text
+}
+
+// moveBackReason is why the step a move back returns a task to was started: the report of the step
+// that sent the work back (handoffReport), then the reason the move gives, "" where the move gives
+// neither. The move's reason is a person's or a review's text, so it comes last, after everything
+// the daemon says (docs/solutions/best-practices, untrusted text goes last behind `Reason:`). The
+// move writes it as its task's start reason (record.Store.SetStartReason), and the start of that
+// step tells it in the reason's place and no report of its own, whether the step starts at once
+// (transition) or after a wait for its agent (startAfterWait), so the two starts are told the same
+// and the report is told once.
+func moveBackReason(issue record.Issue, handoff record.PhaseRow, reason string) string {
+	text := handoffReport(issue, handoff)
 	if reason != "" {
-		text += " " + reasonLabel + ": " + sentence(reason)
+		text += " " + sentence(reason)
 	}
-	return text + at.owners
+	return strings.TrimSpace(text)
 }
 
 // sentence is s ended as a sentence: s itself where it already ends with a full stop, a question

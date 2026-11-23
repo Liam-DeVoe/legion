@@ -67,9 +67,10 @@ type Walk struct {
 	// (Engine.start). A step that waits stands in no step (standingStep): nothing of it started.
 	Wait      record.StepWait
 	WaitSince *time.Time
-	// StartReason is why the task started again at its first step (record.PlanTask.StartReason),
-	// "" for a first start and after any later move: a step that starts after a wait (startAfterWait)
-	// tells it and counts as a move back, as the start again would have, had it waited for nothing.
+	// StartReason is why the step the task stands at was started (record.PlanTask.StartReason): a
+	// start again at its first step or a move back, "" for a first start and after any later move:
+	// a step that starts after a wait (startAfterWait) tells it and counts as a move back, as that
+	// start would have, had it waited for nothing.
 	StartReason string
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where

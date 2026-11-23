@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -35,6 +36,15 @@ func startCountOf(t *testing.T, rig *taskBranchRig, issue string) int {
 // task_branch row. It answers the rig and the issue.
 func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
 	t.Helper()
+	return seedJoin(t, nil)
+}
+
+// seedJoin is seedConflictingJoin's rig with the tasks of more beside a, c and d, each waiting, and
+// an engine that gives each working copy the directory dir names (workflow.Config.WorkspaceDir),
+// none where dir is nil. Beside x.txt, a's branch adds a.txt and c's adds c.txt, each its own work
+// alone. Each task runs one implementer step, keyed by its id.
+func seedJoin(t *testing.T, dir func(record.Issue, string) string, more ...record.PlanTask) (*taskBranchRig, record.Issue) {
+	t.Helper()
 	ctx := context.Background()
 	rig := &taskBranchRig{pool: isolatedOutboxPool(t), records: record.NewStore(), github: githubtest.GitRepository(t, "acme", "widgets", "main")}
 	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +52,7 @@ func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
 			githubtest.Unexpected(t, w, r)
 		}
 	}})
-	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, WorkspaceDir: dir}, quietLogger())
 	rig.runner = &outbox{log: quietLogger(), pool: rig.pool, dispatchProject: "LEGION", records: rig.records, tokens: roleTokens{}, project: "legion",
 		githubAPI: api, handlers: []intake.Handler{engine}}
 	issue := taskBranchIssue
@@ -55,6 +65,10 @@ func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
 		{Issue: issue.Key, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskDone, Place: done},
 		{Issue: issue.Key, Generation: issue.Generation, Task: "c", PlanVersion: 1, BlockText: "Task c.", State: record.TaskDone, Place: done},
 		{Issue: issue.Key, Generation: issue.Generation, Task: "d", PlanVersion: 1, BlockText: "Task d.", Needs: []string{"a", "c"}, State: record.TaskWaiting},
+	}
+	for _, task := range more {
+		rows = append(rows, record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: task.Task, PlanVersion: 1, BlockText: "Task " + task.Task + ".",
+			Needs: task.Needs, State: record.TaskWaiting})
 	}
 	var steps []record.PlanStep
 	for _, row := range rows {
@@ -74,8 +88,8 @@ func seedConflictingJoin(t *testing.T) (*taskBranchRig, record.Issue) {
 	}); err != nil {
 		t.Fatalf("store the plan of %s: %v", issue.Key, err)
 	}
-	rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n"}, "a")
-	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n"}, "c")
+	rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n", "a.txt": "a\n"}, "a")
+	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n", "c.txt": "c\n"}, "c")
 
 	factCtx, committed := intake.WithCommitHooks(ctx)
 	factCtx = engine.OpenFact(factCtx)
@@ -146,28 +160,44 @@ func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
 }
 
 // The agent of the first step of a task whose join conflicted is told so in the task its start
-// delivers, through the outbox (seedConflictingJoin): GitHub refuses c's merge into d's branch,
-// and the start row the end of the join queues tells d's agent that GitHub could not join the work
-// of task c, with c's branch to join and d's branch to push, since the task is composed when the
-// entry is raised, after the join ended.
+// delivers, through the outbox (seedConflictingJoin): GitHub refuses c's merge, and the start row
+// the end of the join queues tells d's agent that GitHub could not join the work of task c, with
+// c's branch to join and the branch to push, since the task is composed when the entry is raised,
+// after the join ended. Where d merges, its join is made on its branch, which it is told to repair
+// and push. Where a task needs d (seedJoin with taskNeedingD), d's join is made on its join branch,
+// the base of its pull request, and d is told to repair the join there and push the join branch,
+// so its pull request shows its own work alone.
 //
-// The fault it catches is a conflict the agent of the first step is not told (its control: the
-// conflict sentence dropped from the step's task, under which the start row names no join).
+// The fault it catches is a conflict the agent of the first step is not told, or told on the
+// task's branch where the task has a join branch (its controls: the conflict sentence dropped from
+// the step's task, under which the start row names no join; the join branch left out of the
+// sentence, under which the second case fails).
 func TestAJoinThatConflictsIsInTheFirstStepsText(t *testing.T) {
-	rig, issue := seedConflictingJoin(t)
-	runJoinOfD(t, rig, issue)
-
-	var start record.SuperviseRequest
-	if err := rig.pool.QueryRow(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
-		issue.Key).Scan(&start); err != nil {
-		t.Fatalf("read d's start row: %v", err)
-	}
-	c := rig.task(t, "c").BranchOf(issue.Key)
-	d := rig.task(t, "d").BranchOf(issue.Key)
-	for _, want := range []string{" GitHub could not join the work of task c into this branch: their changes conflict.", " " + c + "@origin ",
-		"and push the branch " + d + "."} {
-		if !strings.Contains(start.Task, want) {
-			t.Fatalf("the task of d's start row = %q,\nwant it to hold %q", start.Task, want)
+	t.Run("a task that merges, joined on its branch", func(t *testing.T) {
+		rig, issue := seedConflictingJoin(t)
+		runJoinOfD(t, rig, issue)
+		c := rig.task(t, "c").BranchOf(issue.Key)
+		d := rig.task(t, "d").BranchOf(issue.Key)
+		task := newestStartTask(t, rig, issue)
+		for _, want := range []string{" GitHub could not join the work of task c into this branch: their changes conflict.", " " + c + "@origin ",
+			"`jj git push --bookmark " + d + "`."} {
+			if !strings.Contains(task, want) {
+				t.Fatalf("the task of d's start row = %q,\nwant it to hold %q", task, want)
+			}
 		}
-	}
+	})
+	t.Run("a task with a join branch", func(t *testing.T) {
+		rig, issue := seedJoin(t, nil, taskNeedingD)
+		runJoinOfD(t, rig, issue)
+		c := rig.task(t, "c").BranchOf(issue.Key)
+		join := rig.task(t, "d").BranchOf(issue.Key) + claim.JoinBranchSuffix
+		task := newestStartTask(t, rig, issue)
+		for _, want := range []string{" GitHub could not join the work of task c into the join branch " + join + ", the base of this task's pull request: their changes conflict.",
+			"`jj new " + join + "@origin " + c + "@origin -m \"LEGION-208: join the work of task c\"`",
+			"`jj git push --bookmark " + join + "`."} {
+			if !strings.Contains(task, want) {
+				t.Fatalf("the task of d's start row = %q,\nwant it to hold %q", task, want)
+			}
+		}
+	})
 }
