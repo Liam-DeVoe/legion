@@ -1425,7 +1425,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  issue takes a slot when the daemon starts it in a phase that keeps one (an issue whose first step
+  is an acceptance starts that step on none, and the slot goes to the next issue in the line), and
+  gives it back as the admission rule says
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
   trees that run whether or not any issue of theirs holds one.
