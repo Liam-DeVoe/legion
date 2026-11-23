@@ -76,8 +76,8 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 //
 // The resume task made because the stored text is empty (a clear emptied it, and no entry was
 // raised since) names no entry, `none`, since no review of that entry moves the commit. A task of
-// any other of Legion's roles names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry);
-// a review step of a role of the deployment names its commit alone (namingTheReviewRound).
+// any other of Legion's roles names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry).
+// A review step of a role of the deployment names its commit alone (namingTheReviewRound).
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}

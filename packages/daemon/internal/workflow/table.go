@@ -45,7 +45,7 @@ const (
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
 // counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. The
 // implementer's completion never moves an issue on a pull request closed without merging, nor with
-// none recorded (hasOpenOrMergedPR); no other step's completion reads it.
+// none recorded (hasOpenOrMergedPR). No other step's completion reads it.
 type Snapshot struct {
 	Phase             phase.Phase
 	HasOpenOrMergedPR bool

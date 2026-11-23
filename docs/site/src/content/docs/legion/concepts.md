@@ -78,9 +78,11 @@ repositories alone.
 The controller is the one Legion agent a person talks to directly. By default (`controller:
 operator`) the operator starts it with `legion controller start` in a terminal on their own machine,
 and it runs there as an interactive Oh My Pi session; closing that terminal leaves the project
-without a controller until someone runs the command again. Under `controller: daemon` (Kubernetes
-only) the daemon launches it as a pod in the cluster and relaunches it when it dies; a person
-reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
+without a controller until someone runs the command again.
+Under `controller: daemon` the daemon launches it and relaunches it when it dies, as a pod in the
+cluster or a pane under tmux.
+A person reaches it through Dispatch.
+The daemon wakes it when something needs a judgment no tree owns:
 
 - a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
   person's label is queued by the daemon: the issue moves to `todo` without the controller);
@@ -170,7 +172,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `step` | the role of the deployment the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below): its agent does what its `prompt_file` asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on; the issue's Dispatch status is `in_progress`. | the App its `github_app` names, the review App by default |
+| `step` | the role of the deployment the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below). Its agent does what its `prompt_file` asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on. The issue's Dispatch status is `in_progress`. | the App its `github_app` names, the review App by default |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
@@ -544,12 +546,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
   let converging rounds run, and posts that decision on the issue. A review's request for changes
-  counts a round, and so does the fail of a step of the type review whose agent is not the owner; a
-  tester's fail, the fail of a step of any other type and a move back by a worker or the architect
-  count none. A round counted while the record holds the head conflicting with its base is a
-  conflict round, which `review_round_cap` does not count. The implementer answers such a round
-  with a forward merge, which no reviewer asked for. The cap's message names both numbers, the
-  rounds counted and the conflict rounds left out.
+  counts a round.
+  So does the fail of a step of the type review whose agent is not the owner.
+  A tester's fail, the fail of a step of any other type and a move back by a worker or the architect count none.
+  A round counted while the record holds the head conflicting with its base is a conflict round, which
+  `review_round_cap` does not count.
+  The implementer answers such a round with a forward merge, which no reviewer asked for.
+  The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
   or any other of the 28 moves back a task's line can make, such as `testing-reviewing` on a
@@ -682,7 +685,10 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it; a root's close releases any admission
+A child's close deletes its pod, and the disk goes with it.
+Where the close is the child's merge and a production check opens, the pod and its disk go when
+the check's first look ends.
+A root's close releases any admission
 slot its issues still held, which happens once no other issue of its tree is still in the
 workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
