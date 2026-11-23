@@ -153,16 +153,45 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 	where ` + priorityProjectFilter + `
 	group by m.priority, i.status`
 
-// priorityNewestEventQuery reads the newest event under each priority: max(events.created_at)
-// over the issues that advance it. It is the events table and not issues.updated_at, which a
-// claim and an issue patch write and a comment does not — comment_create.go appends a
-// `comment.created` event and writes no issue row — so a priority whose work was last spoken
-// about rather than last moved still reads as having moved.
+// priorityNewestEventQuery reads the newest event under each priority. For each issue that
+// advances it, it reads the issue's event of issues.last_seq through the unique (issue_key, seq)
+// of events (events_issue_key_seq_key), and it answers the newest created_at of those events.
+// Each append sets last_seq to the seq it took, in the statement that inserts the event
+// (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest by seq. The
+// statement reads that one event of each member and no other. An issue with no event has
+// last_seq 0, which no event of it carries, so it matches no row; a priority none of whose issues
+// has an event answers no row and keeps its null (scanPriorityNewestEvents).
+//
+// The read of the event is a lateral probe with `limit 1`. The key is unique, so the limit
+// changes no answer. It keeps the planner from flattening the subquery into a join, which the
+// planner may hash: for a plain join on (issue_key, seq) over a table of a million events, it
+// hashed all of them under both plans.
+//
+// The time can be earlier than the newest created_at over all the events of the members, but only
+// inside a bound. An event that Dispatch appends takes the start of its transaction as its
+// created_at (the now() default of events.created_at, store/migrations/0001_init.up.sql). Each
+// write of an issue holds the issue's lock from before it takes its seq until it commits
+// (store.LockOwner, and the issue's row in lockEventOwner of events/broker.go), so the seq follows
+// the order in which the writes of the issue commit, and the event of last_seq is that of the
+// write that committed last. Its time is earlier than the time of another event of the issue only
+// when its transaction began before that other write committed, and then it is earlier by less
+// than the time from that start to that commit. Over the members of a priority, the difference is
+// less than the longest such time.
+//
+// It reads the event and not issues.updated_at. The broker moves updated_at on every append, to
+// the later of its value and the event's created_at (events/broker.go, QueueAppendWithLogins),
+// but a patch moves it too, to the clock time of its own statement (issueUpdatedNow), so
+// updated_at is not the time of an event.
 var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `
-	select m.priority, max(e.created_at)
+	select m.priority, max(last_seq_event.created_at)
 	from members m
 	join issues i on i.key = m.key
-	join events e on e.issue_key = i.key
+	cross join lateral (
+		select last_seq_event.created_at
+		from events last_seq_event
+		where last_seq_event.issue_key = i.key and last_seq_event.seq = i.last_seq
+		limit 1
+	) last_seq_event
 	where ` + priorityProjectFilter + `
 	group by m.priority`
 

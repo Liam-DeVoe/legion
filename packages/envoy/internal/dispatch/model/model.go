@@ -414,9 +414,9 @@ type PriorityRow struct {
 // and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
 // which is work finished rather than work standing.
 //
-// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
-// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
-// would not. It is null for a priority no issue advances.
+// NewestEventAt is the newest created_at among the events of last_seq of the issues that advance
+// the priority, one event of each issue read by the unique (issue_key, seq) of events, and it is
+// null when none of those issues has an event.
 type PriorityWork struct {
 	ByStatus        map[string]int `json:"by_status"`
 	Claimed         int            `json:"claimed"`

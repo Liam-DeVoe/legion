@@ -142,7 +142,7 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatal("ship-the-daemon carries no newest event, want the newest event on an issue that advances it")
 	}
 
-	// A comment on a member moves the newest event, although it writes no issue row.
+	// A comment on a member appends an event of that issue, and the event moves the newest event.
 	beforeComment := *ship.Work.NewestEventAt
 	if commented := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+coreChild+"/comments",
 		map[string]any{"body": "The packaging is ready."}, "bob"); commented.Code != http.StatusCreated {
