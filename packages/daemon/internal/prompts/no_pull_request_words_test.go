@@ -1,6 +1,8 @@
 package prompts
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -102,4 +104,116 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 			t.Errorf("%s still says %q", retired.part, retired.words)
 		}
 	}
+}
+
+// repoFile is one file of the checkout by its path from the repository's root, which is four
+// levels above this package.
+func repoFile(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
+}
+
+// saysAndRetires holds each text, read by read, to the words it must say and the words it must no
+// longer say, over a body whose whitespace is folded.
+func saysAndRetires(t *testing.T, read func(*testing.T, string) string, says, retired [][2]string) {
+	t.Helper()
+	for _, pin := range says {
+		if !strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+			t.Errorf("%s does not say %q", pin[0], pin[1])
+		}
+	}
+	for _, pin := range retired {
+		if strings.Contains(foldWhitespace(read(t, pin[0])), pin[1]) {
+			t.Errorf("%s still says %q", pin[0], pin[1])
+		}
+	}
+}
+
+// The guides say what the daemon does: an issue with no pull request closes at its retro's end
+// (workflow's table, noPullRequest), the fresh agent's refused pass is taken when sent again
+// (handoff leaves it unspent), an approval ends a round once GitHub reports the head mergeable
+// (review.go reviewRound), and an issue's agents share one pod.
+func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t *testing.T) {
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/site/src/content/docs/legion/concepts.md", "Another agent's refused pass is taken when it sends it again once they have left."},
+		{"docs/site/src/content/docs/legion/concepts.md", "as one comment on the issue where a point qualifies"},
+		{"docs/site/src/content/docs/legion/concepts.md", "ends the round whatever the CI verdict at that commit, once GitHub reports that head one the issue may advance on"},
+		{"docs/site/src/content/docs/legion/concepts.md", "an issue with no pull request, such as one whose only step is `tester`, is done when its retro ends"},
+		{"docs/site/src/content/docs/legion/index.md", "An issue with no pull request closes when its retro ends, with no merge."},
+		{"docs/site/src/content/docs/legion/index.md", "Phase workers, in the issue's one pod"},
+		{"docs/site/src/content/docs/legion/using-legion.md", "An issue with no pull request has no merge: it moves to `done` when its retro ends."},
+		{"docs/site/src/content/docs/index.mdx", "and set the branch rules each merge must meet."},
+		{"README.md", "An issue with no pull request is Done when its retro ends"},
+	}, [][2]string{
+		{"docs/site/src/content/docs/legion/concepts.md", "applies by itself once they have left"},
+		{"docs/site/src/content/docs/legion/concepts.md", "whatever CI says at that commit"},
+		{"docs/site/src/content/docs/legion/index.md", "one Kubernetes pod each"},
+		{"docs/site/src/content/docs/index.mdx", "and merge the result"},
+		{"README.md", "An issue whose steps open no pull request"},
+		{"docs/site/src/content/docs/legion/using-legion.md", "An issue whose steps opened no pull request"},
+	})
+}
+
+// The owner's sign_off and request_backward_move keep the pull request's head, and complete_step
+// the review record's (workflow's recordOwnersReview, recordStepReview); owner-does-step.sh proves no
+// step acceptance, and its driver posts the route with the commit itself.
+func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve(t *testing.T) {
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/kubernetes.md", "Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own"},
+		{"docs/kubernetes.md", "A `complete_step` holds the head of the `review` record it reported instead"},
+		{"scripts/e2e/README.md", "A step `acceptance` with no key is a fresh agent of the role `acceptance`."},
+		{"scripts/e2e/README.md", "which the driver posts itself (an agent's `legion` tool fills the commit in)"},
+	}, [][2]string{
+		{"scripts/e2e/README.md", "a step `acceptance` with no key is a fresh agent, and a task with no pull request is done"},
+	})
+}
+
+// A read-only copy is no workspace, the summary reaches the architect in phase-finished, nothing
+// refuses a plan handoff's shape (api's handoffRecord reads no body), the reviewer cannot resolve a
+// thread (the implement App opened the pull request), and a missing surface holds the completion.
+func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"mechanics/headless.md", "A copy of the head under `$TMPDIR` that you only read or run checks from is no workspace: commit nothing in it."},
+		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself, in its `phase-finished` notice."},
+		{"core/tester.md", "Report the missing surface to whoever owns the plan, and hold your completion until it exists."},
+		{"core/planner.md", "nothing refuses a plan handoff without them, so check them yourself before you record it."},
+		{"core/reviewer.md", "Run the thermonuclear pair over that diff as the paragraph above says."},
+		{"go/reviewer.md", "name the threads you accepted to the implementer, which resolves them, as the thread rule above says."},
+	}, [][2]string{
+		{"core/planner.md", "the plan handoff is refused otherwise"},
+		{"go/reviewer.md", "resolve the ones you answered as the thread rule above says"},
+		{"mechanics/headless.md", "Send your evidence-backed report to the architect"},
+	})
+}
+
+// return_to is optional on a fail (api's returnToRefusal), and a task with no pull request has a diff
+// from the default branch, as the reviewer's prompt reads it.
+func TestTheAcceptancePromptSaysReturnToIsOptionalAndWhatItsDiffIs(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"acceptance.md", "and a fail when one is unmet. The fail may name the earlier step whose work must change (the daemon part below)."},
+		{"acceptance.md", "its diff runs from the default branch to the head you read."},
+	}, [][2]string{
+		{"acceptance.md", "and a fail, naming the earlier step whose work must change, when one is unmet"},
+		{"acceptance.md", "has no pull request body and no diff to read"},
+	})
+}
+
+// An approval ends a round once GitHub reports the head mergeable (review.go reviewRound), the
+// owner's GitHub review is the base's or the merge forward's, and in retro or merging the phase's
+// agent holds request_backward_move (workflow's backwardRefusal).
+func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"architect-root.md", "Each round after a push records every check of a large pull request again"},
+		{"architect.md", "and the retro holds or sends the issue back for one with no pass standing (`skill://legion-retro`)."},
+		{"go/architect-common.md", "Its approval of the head ends the round whatever the CI verdict, once GitHub reports that head one the issue may advance on"},
+		{"go/architect-common.md", "Submit one where the base requires an approving review, approving the head you passed, and where the daemon asks for one after a merge forward."},
+		{"go/architect-common.md", "In `retro` or `merging` the agent of that phase holds `request_backward_move`, so a request for changes there, yours included, is its to act on."},
+	}, [][2]string{
+		{"architect-root.md", "Each round tests a large pull request whole again"},
+		{"go/architect-common.md", "ends the round whatever CI says there"},
+	})
 }

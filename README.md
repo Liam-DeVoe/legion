@@ -31,7 +31,7 @@ issue's status back to Dispatch as it moves from Todo through In Progress, Testi
 and Retro to Done. On the default steps, the architect accepts the reviewed change, the merger
 posts `READY` on the issue and submits the merge, the pull request merges under the repository's
 own rules and closes the issue, and the tester then checks the change in production once it is
-deployed, recording that on the pull request. An issue whose steps open no pull request is Done
+deployed, recording that on the pull request. An issue with no pull request is Done
 when its retro ends, with no merge and no production check.
 
 [Legion's documentation](https://cybermonklabs.github.io/legion/legion/) ·

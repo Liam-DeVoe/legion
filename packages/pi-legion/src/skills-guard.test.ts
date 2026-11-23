@@ -844,7 +844,7 @@ test("each phase of the implementing agent names a declined bot thread in its ow
     /Name each thread you declined[^.]*in your completion's `summary`; at your retro, name them in the Dispatch message of `skill:\/\/legion-retro` step 5/
   );
   expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
+    /Name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
   );
   expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
@@ -887,7 +887,7 @@ test("a run still going at retro is named in its message and as a risk", () => {
     /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
   );
   expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /at your retro too where the retro is yours, the threads you find there, naming in its message each run still going/
+    /At a retro that is yours, answer the threads you find there too, naming in its message each run still going/
   );
 });
 
@@ -977,6 +977,26 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
     ]),
     ...lacks("legion-architect/references/wake-routing.md", [
       /An `owner-step` goes to the issue's own architect alone, never to one above it\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the skills say how the owner's retro and review read an issue, and when a refused completion is sent again", () => {
+  expect([
+    ...lacks("legion-architect/references/own-steps.md", [
+      /A child's own architect sends that question to the architect above it instead\./,
+      /An issue with no pull request, such as one whose plan is `tester` alone, has no merge\./,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /approves, or passes with no pull request, only once a pass stands/,
+      /a task block's attribute `needs`, `owner`, `part_of` or `merges`: write it again[^.]*\. A step's key `owner` is no such attribute\./,
+    ]),
+    ...lacks("legion-worker/references/merge-gate.md", [
+      /`dispatch results --issue <issue>` \(`--at <head>` with no pull request\)/,
+      /the step ends by its verdict, not by a review on GitHub\./,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /not a retry loop: complete again once its cause is fixed, or as its code below says\./,
     ]),
   ]).toEqual([]);
 });

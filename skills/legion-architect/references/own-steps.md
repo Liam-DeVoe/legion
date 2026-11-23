@@ -15,6 +15,7 @@ Read it also when a retro reports to you.
 - Retro's output is in `skill://legion-retro`, steps 3 to 5.
   When it reports that it cannot compute, read or write the pull request body, it is still in its phase.
   Answer it on its role topic from the deployment instructions, or open a `dispatch ask` naming the missing instruction.
+  A child's own architect sends that question to the architect above it instead.
 
 ## Which steps are yours
 
@@ -80,7 +81,7 @@ Read it also when a retro reports to you.
 
 ## A task with no pull request
 
-- A task where no step opens a pull request, such as the plan `tester` alone, has no merge.
+- An issue with no pull request, such as one whose plan is `tester` alone, has no merge.
   Its retro's end closes the issue (`done`), no merger starts and no production check opens.
 
-- Read its evidence from its steps' reports, its results (`dispatch results --issue <KEY>`) and the working copy its task names, never from a pull request.
+- Read its evidence from its steps' reports, its results (`dispatch results --issue <KEY> --at <head>`) and the working copy its task names, never from a pull request.

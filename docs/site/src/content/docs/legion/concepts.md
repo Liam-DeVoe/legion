@@ -181,8 +181,8 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. On an issue with no pull request it reviews the work its task text names and reports `pass` or `fail`, with the commit it read, instead. | review App |
-| `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`); another agent's refused pass applies by itself once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
-| `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer); the architect keeps its own |
+| `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). Another agent's refused pass is taken when it sends it again once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
+| `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue where a point qualifies, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer); the architect keeps its own |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test or a review that requests changes sends the issue back to an earlier step: the one
@@ -192,8 +192,8 @@ again: in the default steps, the tester before the reviewer sees it. A step that
 step before it and names none stops its task, and its architect is told (`task-stopped`). A head
 that starts conflicting with its base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
-reviewer's approval of the head ends the round whatever CI says at that commit, since the
-reviewer reads the code commit's checks on GitHub before it approves
+reviewer's approval of the head ends the round whatever the CI verdict at that commit, once
+GitHub reports that head one the issue may advance on, since the reviewer reads the code commit's checks on GitHub before it approves
 ([review signalling](#review-signalling)); a review step that no review on GitHub decides, on an
 issue with no pull request or the architect's own, ends by its reported verdict. What a red check
 does is reach the architect that owns
@@ -229,8 +229,8 @@ starts: for a child, before `release_children` releases it, since a released chi
 first step in the same admission pass. Legion holds a plan given for a child it has not recorded
 yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
 in that order, then the retro, and the merge where the issue has a pull request, so an issue with
-that plan runs no planner and no tester; an issue whose steps open no pull request, such as
-`steps="tester"`, is done when its retro ends, with no merge and no production check. Legion
+that plan runs no planner and no tester; an issue with no pull request, such as one
+whose only step is `tester`, is done when its retro ends, with no merge and no production check. Legion
 refuses a plan it cannot run, such as one of more than one task, with `PLAN_REFUSED` and one
 reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
