@@ -4030,10 +4030,11 @@ function declineDialogIn(main: HTMLElement): {
 // decline's write is out with the button held. The reader Tabs to Cancel, inside the dialog, and
 // then the decline lands: the dialog goes, and the row the question was asked in goes with it.
 // That loss is the reader's, so the focus is handed on from the place the dialog was opened from
-// (`handOn`'s opener), and lands on the nearest control before that place in sight. At the head
-// the Tab ended the press, the loss read as one the reader did not cause, and the focus stayed on
-// the page (measured at 390x664 in three engines, INFRA-3135 round 24). With Chromium's
-// `focusout` for the control the dialog took away, and with none.
+// (`handOn`'s opener), and lands on the next question's Ship, the first control of the row that
+// moved up into the place of the question's row (`controlsOfRowMovedUp`). Where the Tab ended the
+// press, the loss read as one the reader did not cause, and the focus stayed on the page
+// (measured at 390x664 in three engines). With Chromium's `focusout` for the control the dialog
+// took away, and with none.
 test("a Tab inside the region a press was made in leaves the press the cause of that region's going", async () => {
   for (const withFocusout of [true, false]) {
     const writes = signedInWrites();
@@ -4381,4 +4382,84 @@ test("a component's hand-off for a control taken away with a control before it l
     });
   }
   expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
+});
+
+// (dc) The same place for a control hidden under the focus with the name link before it, its list
+// hidden rather than taken away. Its loss can be noted at a `focusout` while the list still
+// stands: one at a `blur()` before the hide, or at a disable before the list is hidden while the
+// rescue waits on the held control. Counted there, the place takes in the name link hidden with
+// it, and the walk back starts at the next question's Select checkbox. Counted where the control
+// still stands as the loss is answered, the focus lands on the card's Unfollow, as it does for a
+// `focusout` that comes once the list is hidden, as an engine's focus fixup fires it.
+test("a control hidden under the focus with a control before it lands on the card's control before the place", async () => {
+  const ways = [
+    "focusout before the hide",
+    "focusout at the disable, hidden in the wait",
+    "focusout after the hide",
+  ] as const;
+  const landed: Record<string, string | null> = {};
+  for (const way of ways) {
+    await withRescue(async () => {
+      const subscribers = recipientsCard(mainOf("Before").main);
+      const unsubscribe = subscribers.remove;
+      unsubscribe.focus();
+      enterPress(unsubscribe);
+      if (way === "focusout before the hide") {
+        unsubscribe.blur();
+        subscribers.chips.hidden = true;
+      } else if (way === "focusout after the hide") {
+        subscribers.chips.hidden = true;
+        unsubscribe.blur();
+      } else {
+        // happy-dom blurs no disabled button, so the `focusout` comes just before the disable, as
+        // in (c). The rescue then waits on the held control, until the write's answer hides the
+        // subscribers' list.
+        unsubscribe.blur();
+        unsubscribe.disabled = true;
+        await settled();
+        subscribers.chips.hidden = true;
+        await settled();
+      }
+      await settled();
+      landed[way] = focusedName();
+    });
+  }
+  expect(landed).toEqual(Object.fromEntries(ways.map((way) => [way, "Unfollow"])));
+});
+
+// (dd) The same place for the control a dialog was opened from. The reader opens a confirm
+// dialog from the subscriber's Unsubscribe and presses its Confirm, which takes the dialog away,
+// and the same commit takes the subscribers' list away with the name link and the Unsubscribe,
+// or hides it. The focus goes back to where the dialog was opened from (`handOn`). The opener's
+// place was counted as the focus left it for the dialog, with the name link standing before it,
+// so the walk back would start at the next question's Select checkbox. Counted off the spot the
+// opener went from, or where it still stands while hidden (`openerPlace`), the focus lands on the
+// card's Unfollow. With Chromium's `focusout` for the dialog's Confirm and without.
+test("a walk back from a dialog's opener that went or was hidden with a control before it lands on the card's control before the place", async () => {
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const way of ["taken away", "hidden"] as const) {
+    for (const withFocusout of [true, false]) {
+      const named = `${way}, ${withFocusout ? "with Chromium's focusout" : "without"}`;
+      await withRescue(async () => {
+        const subscribers = recipientsCard(mainOf("Before").main);
+        const { buttons, dialog } = modalOf("Confirm");
+        const confirm = buttons[0] as HTMLButtonElement;
+        subscribers.remove.focus();
+        confirm.focus();
+        enterPress(confirm);
+        const answer = () => {
+          dialog.remove();
+          if (way === "hidden") subscribers.chips.hidden = true;
+          else subscribers.chips.remove();
+        };
+        if (withFocusout) lose(confirm, answer);
+        else answer();
+        await settled();
+        landed[named] = focusedName();
+      });
+      belongs[named] = "Unfollow";
+    }
+  }
+  expect(landed).toEqual(belongs);
 });

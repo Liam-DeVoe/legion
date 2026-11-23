@@ -87,8 +87,9 @@ export function focusOnMount(element: HTMLElement | null): void {
  *  control before that place, walking back. `index` is the lost control's place among `controls`
  *  as they stand now: how many of them come before the point it left. The page's rescue and a
  *  component's hand-off count the place of a control taken away off the spot it went from, once
- *  it has gone (`placeOfRemoval`; `Loss`'s `index`, `useFocusPlace`), so however many controls
- *  went together, the walk starts where they were. */
+ *  it has gone (`placeOfRemoval`; `Loss`'s `index`, `useFocusPlace`, `openerPlace`), and the
+ *  rescue counts that of a control hidden where it still stands (`handOn`), so however many
+ *  controls went or were hidden together, the walk starts where they were. */
 function placesFrom(
   controls: readonly HTMLElement[],
   index: number,
@@ -1165,10 +1166,11 @@ function rowPlacesOf(element: Element, region: Element): RowPlace[] {
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
  *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
  *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
- *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals
- *  and no row places (`UNPLACED`): the hand-off reads only its element, region, place, item, path
- *  and opener. A loss the reader did not cause holds none of these and no item, nor a place
- *  (-1): it is answered without any of them (`leaveUncaused`). */
+ *  focus entered from the body. A loss kept only as a dialog's opener holds no arrivals
+ *  (`UNPLACED`), but its item, its spots and its row places: the hand-off reads its element,
+ *  region, place, item, path, opener, spots and row places. A loss the reader did not cause holds
+ *  none of these and no item, nor a place (-1): it is answered without any of them
+ *  (`leaveUncaused`). */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
    *  noted into it while its check or its wait is out - none the page only moved, which stood in
@@ -1183,7 +1185,10 @@ interface Loss {
    *  Firefox and WebKit, and again off it for a loss noted at a `focusout` while the control still
    *  stood in the page - Chromium's as a commit takes it away, or any engine's as it is disabled
    *  or hidden under the focus - where the removal comes while the loss's check or wait is out
-   *  (the page's watcher in `useFocusRescue`). */
+   *  (the page's watcher in `useFocusRescue`). A control hidden rather than taken away is counted
+   *  where it still stands as its loss is answered (`handOn`). A loss kept as a dialog's opener
+   *  keeps the place counted as the focus left it for the dialog, and the walk back from it counts
+   *  the place again (`openerPlace`). */
   index: number;
   /** The item the element was in (`itemOf`), read as the loss is noted where the element is still
    *  in it, as its row places are, else the one it was in as it took the focus; null where it was
@@ -1216,8 +1221,10 @@ interface Loss {
 }
 
 /** What a loss holds where nothing reads where its element stood: no arrivals, no item and no
- *  row places (`Loss`). A loss kept only as a dialog's opener takes its own spots beside these,
- *  which say the rows it stood in (`rowsIn`). */
+ *  row places (`Loss`). A loss kept only as a dialog's opener takes its own item, spots and row
+ *  places beside these: the spots say the rows it stood in (`rowsIn`) and the spot it went from
+ *  (`openerPlace`), and with the row places they say which row moved up into the place of a row
+ *  it was taken away with (`controlsOfRowMovedUp`). */
 const UNPLACED: Pick<Loss, "arrived" | "item" | "rowPlaces" | "spots"> = {
   arrived: null,
   item: null,
@@ -1605,7 +1612,10 @@ export function aboveSightNow(
  *  text, every control the reader cannot see now (`inSightNow`) and every control of another item
  *  than the one the element was in (`inAnotherItem`), such as the next question the Inbox's
  *  reading column draws in its place, else the region itself, which is every region but the
- *  document, focused with no scroll. A control that only takes the element's index in the
+ *  document, focused with no scroll. The place of an element hidden rather than taken away is
+ *  counted where it still stands, among the controls the region draws now (`countBefore`), and
+ *  that of one taken away off the removal that took it (`Loss`'s `index`), so the controls that
+ *  went with it before it never count. A control that only takes the element's index in the
  *  region's Tab order, from another row or item, is at no place of the element's: Unsubscribe on
  *  an Inbox card's recipients would land on the next question's own checkbox. The walk takes only
  *  a control in sight, because a landing may scroll its control to its nearest edge (`land`), and
@@ -1617,10 +1627,14 @@ export function aboveSightNow(
  *  mounted - the focus goes only back to the place it was opened from (its `opener`, or that
  *  region's own opener where it has gone too): that element, the control that opened it - a
  *  list's trigger - if it can still take the focus, scrolled to its nearest edge where it is
- *  partly in sight, else the control now at its place, read by the same rule (`atPlaceOf`,
- *  against the rows that control stood in), else the nearest one before it, by the same walk
- *  back, passing over the controls of another item than the one that control was in. A dialog
- *  opened from the body hands the focus nowhere: the body is where the reader was. */
+ *  partly in sight, else the same control in the row that moved up into the place of a row that
+ *  control was taken away with, else that row's first control (`controlsOfRowMovedUp`), else the
+ *  control now at its place, read by the same rule (`atPlaceOf`, against the rows that control
+ *  stood in), else the nearest one before it, by the same walk back. Each of these is taken only
+ *  in sight, passing over the controls of another item than the one that control was in. That
+ *  place is counted where the control still stands, or off the spot it went from
+ *  (`openerPlace`). A dialog opened from the body hands the focus nowhere: the body is where the
+ *  reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { caused, region } = loss;
   if (!caused) {
@@ -1639,16 +1653,25 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     for (const control of controlsOfRowMovedUp(loss, drawn)) {
       if (land(control)) return;
     }
-    back = walkBack(drawn, loss.index, atPlaceOf(rowsIn(loss.spots), region));
+    // A control hidden rather than taken away still stands in the page: its place is counted
+    // where it stands, among the controls drawn now, since the count made at its `focusout` - one
+    // made before the hide, at a disable or at a `blur()` - takes in every control before it that
+    // was hidden with it.
+    const index = loss.element.isConnected ? countBefore(drawn, loss.element) : loss.index;
+    back = walkBack(drawn, index, atPlaceOf(rowsIn(loss.spots), region));
   } else {
     const opener = drawnOpener(loss.opener);
     if (opener === null || opener.path !== loss.path) return;
     if (opener.element.isConnected && rendered(opener.element) && land(opener.element)) return;
-    back = walkBack(
-      drawnIn(opener.region, main),
-      opener.index,
-      atPlaceOf(rowsIn(opener.spots), opener.region)
-    );
+    const drawn = drawnIn(opener.region, main);
+    back = [
+      ...controlsOfRowMovedUp(opener, drawn),
+      ...walkBack(
+        drawn,
+        openerPlace(opener, drawn),
+        atPlaceOf(rowsIn(opener.spots), opener.region)
+      ),
+    ];
     item = opener.item;
   }
   const clips = new Map<Element, boolean>();
@@ -1658,6 +1681,20 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
   focusOwnStop(region);
+}
+
+/** The place among `drawn`, the controls its region draws now, that `opener` - the control a
+ *  dialog or a panel was opened from - left: where it still stands, for one hidden rather than
+ *  taken away (`countBefore`), else off the spot it went from, the nearest of its spots whose node
+ *  has gone from a parent still in its region (`goneFrom`, `placeOfRemoval`), else the place
+ *  counted as the focus left it for the dialog. That count was made while the control still stood
+ *  in the page, so it takes in every control before it that went or was hidden with it since: a
+ *  confirm that takes its dialog away, and its write's answer that takes away the opener's list
+ *  with a name link before the opener. */
+function openerPlace(opener: Loss, drawn: readonly HTMLElement[]): number {
+  if (opener.element.isConnected) return countBefore(drawn, opener.element);
+  const spot = opener.spots.find((each) => goneFrom(each, opener.region));
+  return spot === undefined ? opener.index : placeOfRemoval(drawn, spot);
 }
 
 /**
@@ -1713,12 +1750,14 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * run, and nothing answers it, even when a commit after that takes the control away - the issue
  * title's editor, whose save draws the heading in its place. A control a commit takes away fires
  * Chromium's `focusout` during the removal itself, while it is still in the page, so by that
- * microtask it has gone, and its loss is answered. A loss noted at a `focusout` - that one, or
- * one at a disable or a hide - counts its place while the control still stands in the page, with
- * every control before it that goes with it. So where the page's watcher sees the removal that
- * takes the control while the loss's check or wait is out, the place is counted again off that
- * removal, as for a control taken away with no `focusout`. A new loss cancels whatever is still
- * out for the one before it.
+ * microtask it has gone, and its loss is answered. A loss noted at a `focusout` can count its
+ * place while the control, and every control before it that goes with it, still stand in the
+ * page: Chromium's as a commit takes the control away, or one at a disable or a `blur()` before
+ * the control is hidden or taken away. So where the page's watcher sees the removal that takes
+ * the control while the loss's check or wait is out, the place is counted again off that removal,
+ * as for a control taken away with no `focusout`; and the place of a control hidden rather than
+ * taken away is counted where it still stands as the loss is answered (`handOn`). A new loss
+ * cancels whatever is still out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: whatever moves the focus
@@ -2014,16 +2053,18 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Wri
         taken: !stands(element),
       };
       // A focus going straight to another region is kept only as the place it left: the opener
-      // of the dialog it is entering, whose arrivals and row places the hand-off never reads.
-      // The item it was in is read, since a walk back from its place lands in no other, and so
-      // are its spots, which say the rows it stood in (`rowsIn`): the control now at its place
-      // is read against them (`handOn`).
+      // of the dialog it is entering, whose arrivals the hand-off never reads. The item it was in
+      // is read, since a walk back from its place lands in no other, and so are its spots and its
+      // row places, which say the rows it stood in (`rowsIn`), the spot it went from
+      // (`openerPlace`) and the row that moved up into its row's place (`controlsOfRowMovedUp`):
+      // the hand-off back to that place reads them (`handOn`).
       if (next instanceof Element) {
         moving = {
           from: {
             ...fields,
             ...UNPLACED,
             item: itemOf(element),
+            rowPlaces: rowPlacesOf(element, region),
             spots: spotsOf(element, region),
           },
           to: next,
