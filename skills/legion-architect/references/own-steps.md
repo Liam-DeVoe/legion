@@ -31,7 +31,7 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
 
 - While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound, and at each launch of your session.
 
-- A retry of your claim at your step (`legion claims retry`) relaunches your session and sends the notice again; it starts no worker.
+- A retry of your claim at your step (`legion claims retry`) relaunches your session, and Legion tells you the step again; it starts no worker.
 
 ## Reporting it
 

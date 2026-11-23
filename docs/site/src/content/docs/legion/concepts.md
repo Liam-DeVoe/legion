@@ -706,14 +706,13 @@ the issue. A held phase worker is its architect's to retry or escalate to the co
 architect that runs out goes to the controller, which restarts a running tree when it finds no
 cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
 that runs out holds nothing: the architect above it is told and takes the child's notices, all but
-an `owner-step`, which goes to the child's own architect alone, is dropped while that architect's
-claim has failed, and is told again by the catch-up of its next launch. The daemon starts the
-child's architect again, with fresh budgets, at the child's next phase start. Where the child
-stands at a step its architect does itself, other than an acceptance, or at a retro its architect
-does, no phase start follows until that architect reports it, so the daemon starts it again at
-once, at most three times in that step's run; after that `legion state` names it under `retry`
-among the claims nothing will wake, and an operator's retry relaunches it and tells it the step
-again.
+an `owner-step`, which goes to the child's own architect alone, and which that architect is told
+again when it runs again. The daemon starts the child's architect again, with fresh budgets, at the
+child's next phase start. Where the child stands at a step its architect does itself, other than an
+acceptance, or at a retro its architect does, no phase start follows until that architect reports
+it, so the daemon starts it again at once, at most three times in that step's run; after that
+`legion state` names it under `retry` among the claims nothing will wake, and an operator's retry
+relaunches it and tells it the step again.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word

@@ -1343,9 +1343,9 @@ func (e *Engine) endByVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue
 // walk starts at the child's parent for an architect's own worker-died (record.OwningArchitect).
 // That architect takes the child's notices from then on, all but an owner-step, because the failed
 // claim no longer holds its role, until the child's architect runs again. An owner-step goes to
-// the child's own architect alone (record.OwnerClaim): one sent while its claim has failed
-// finishes undelivered, and its next launch's catch-up tells it the step again (claimReady). The
-// daemon starts that architect again at the child's next
+// the child's own architect alone (record.OwnerClaim), which is told that step again when it runs
+// again (claimReady's owedOwnersStep, where no owner-step of it is still queued). The daemon
+// starts that architect again at the child's next
 // phase start (start), and so do a re-admission of the tree while the child stands in a phase
 // (admit's startMidPhaseMembers) and an operator's retry. A child that stands at a step of its
 // owner's or its owner's retro, which only its own architect reports, has no next phase start
@@ -2246,9 +2246,10 @@ func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.I
 // may be waiting for its architect to decide. The phase the worker works is started again, which
 // is what gives it the task of that phase; at a step or a retro the owner does, the retry of the
 // owner's claim, which the route has relaunched through its machine (api's retryStart), tells the
-// owner its step again with one more owner-step notice, starting no run, and gives it every
-// restart of the step's run again (restart). An issue held for this role is restored from its hold first,
-// as the architect's retry does. One whose phase another role works, or that has left the
+// owner its step again, with one more owner-step notice where none is still queued, starting no
+// run, and gives it every restart of the step's run again (restart). An issue held for this role
+// is restored from its hold first, as the architect's retry does. One whose phase another role
+// works, or that has left the
 // workflow, is refused, since starting that phase under this claim's name would run the wrong
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it
 // queues, so the claim forgets its recorded session in the retry that start makes and no refusal

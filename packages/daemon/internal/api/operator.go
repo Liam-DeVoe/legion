@@ -770,12 +770,12 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // is the machine's to answer (machineRetry), relaunched on its own with whatever task it still
 // holds. An architect is the machine's to relaunch in every case, since no phase start starts it;
 // where it is the owner of its issue's task standing at a place of its own (ownersOwnPlace), the
-// phase's restart then tells it its step again with one more owner-step, which a relaunch alone
-// would not, and the answer is that restart's 202. A restart refused after the relaunch is logged
-// and the relaunch answered: the claim runs again, and its catch-up at its ready tells it the step
-// it owes (workflow's owedOwnersStep). It is how an operator relaunches the claims a runtime failed
-// to launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
-// gone.
+// phase's restart then tells it its step again, with one more owner-step where none is still
+// queued, and the answer is that restart's 202. A restart refused after the relaunch is logged
+// and the relaunch answered: the claim runs again, and is told the step it owes when it does
+// (workflow's owedOwnersStep, where no owner-step of it is still queued). It is how an operator
+// relaunches the claims a runtime failed to launch — every failed claim in turn, with
+// `legion claims retry --failed` — once the cause is gone.
 //
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
@@ -826,8 +826,9 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 //     (intake.RestartPhase). It is where an operator's stop leaves an issue, since a stop is no
 //     death and holds nothing, and where a failure the workflow could not hold leaves one. For the
 //     owner at a step or a retro of its own the restart starts no run: it queues one more
-//     owner-step with the retry's task, and gives the owner the daemon's restarts of that step's
-//     run again (workflow's restart). Its caller has relaunched the claim itself.
+//     owner-step with the retry's task where none is still queued, and gives the owner the
+//     daemon's restarts of that step's run again (workflow's restart). Its caller has relaunched
+//     the claim itself.
 //
 // Either way the start is the workflow's, so a restart that ran reports 202, for its caller to
 // answer with the claim as it is until that start runs. A restart that did not run reports the

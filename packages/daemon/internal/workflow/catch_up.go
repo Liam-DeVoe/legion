@@ -320,8 +320,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // a step acceptance:owner among them — went to an architect that may have failed or lost its
 // session since, so an architect that comes back learns of it from its catch-up, which a revived
 // architect reads as its issues already running, and of a step of its own also from that step's
-// owner-step, told again after the catch-up (claimReady, owedOwnersStep). The keys, in key order,
-// of the listed
+// owner-step: the one still queued for it, or else one told again after the catch-up (claimReady,
+// owedOwnersStep). The keys, in key order, of the listed
 // issues waiting in accepting for this architect's acceptance (awaitingAcceptance): an issue with
 // no plan rows, or a step `acceptance:owner`, whose sign_off an architect above takes as well.
 // And, where issue's own task stands at another step of its owner's or at the owner's retro, which

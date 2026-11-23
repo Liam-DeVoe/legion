@@ -1196,10 +1196,10 @@ type SuperviseRequest struct {
 	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
 	// into it, is that start where another agent than the owner works the place
 	// (workflow.Engine.restart; at a step or a retro the owner does, the retry starts nothing and
-	// tells the owner its step again, one more owner-step): it raises no entry, and a claim whose
-	// worker confirmed that entry's last task and whose turn then ended holds it as its given one
-	// with no delivery pending, so the entry test alone would drop the retry's own task and
-	// relaunch the worker with no prompt. The outbox row-id guard still holds
+	// tells the owner its step again, in one more owner-step where none is still queued): it raises
+	// no entry, and a claim whose worker confirmed that entry's last task and whose turn then ended
+	// holds it as its given one with no delivery pending, so the entry test alone would drop the
+	// retry's own task and relaunch the worker with no prompt. The outbox row-id guard still holds
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
 	// time.
 	ResendEntry bool `json:"resendEntry,omitempty"`

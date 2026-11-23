@@ -905,8 +905,8 @@ failure by the child's next phase start, or at once where the child stands at a 
 only it reports. A notice starts no architect, except one whose idle pod
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
-does not hold its role goes to the architect above, except an `owner-step`, which goes to the
-child's own architect alone, as a root's notice goes to the root's. A suspended worker of its issue's current
+does not hold its role goes to the architect above, but an `owner-step` goes to its issue's own
+architect alone, a root's or a child's, which is told that step again when it runs again. A suspended worker of its issue's current
 phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
 (`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
 suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
@@ -990,13 +990,14 @@ name of the claim's agent, the role of that agent's first step, whatever role it
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
   not deliver to the failed architect, the notice of the step that moved an issue into `accepting`
-  and an `owner-step` among them, so the catch-up's reason names each issue of the tree waiting in
+  among them, so the catch-up's reason names each issue of the tree waiting in
   `accepting` for the architect's own acceptance (a step `acceptance:owner`, or an issue with no
   plan rows), and the architect's own issue where it stands at another step of its own or at its
   retro (`at a step of yours, which no worker does`); no worker runs at either. A step
   `acceptance` with no key is a fresh agent's, which the catch-up leaves out. Where its own issue
   stands at a step or the retro of its plan that it does itself, started and not ended, it is also
-  told that step again in an `owner-step` after the catch-up, unless one is still queued. Retry it:
+  told that step again in an `owner-step`: the one still queued for it, or else one after the
+  catch-up. Retry it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
