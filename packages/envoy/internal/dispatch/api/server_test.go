@@ -413,6 +413,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 // server, as a test that failed while the handler waited leaves it - so the test's releases run
 // first (releaseHeld): the test is over, and they would run next anyway.
 func waitBackgroundOf(t testing.TB, served *server) {
+	t.Helper()
 	waitRegisteredBackground(t, served.waitBackground)
 }
 
@@ -421,6 +422,7 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // server's waitBackground. Take Register's answer before the cleanup that calls this, so the
 // server is registered when the row starts.
 func waitRegisteredBackground(t testing.TB, wait func()) {
+	t.Helper()
 	releaseHeld(t)
 	testwait.Returns(t, "the server's background work to end", wait)
 }
