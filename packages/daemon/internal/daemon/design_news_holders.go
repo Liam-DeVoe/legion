@@ -47,7 +47,8 @@ func phaseHolder(ctx context.Context, tx pgx.Tx, phases record.PhaseReader, proj
 	if err != nil {
 		return newsHolder{}, false, fmt.Errorf("read the phases rows of %s: %w", member.Key, err)
 	}
-	token, err := record.WorkerClaim(project, member.Key, role, rows)
+	_ = rows
+	token, err := claim.NewToken(project, member.Key, role)
 	if err != nil {
 		return newsHolder{}, false, nil
 	}
