@@ -889,20 +889,12 @@ function gatewayAdvice(method: string, status: number): string {
     : "the write did not reach Dispatch, and a retry may succeed";
 }
 
-/** Whether a gateway's answer with `status` can clear on asking again: one that can on its own
- *  (`transientStatus`), or a 2xx something in Dispatch's place wrote, which a later request can
- *  get past once whatever is in the way is. */
+/** Whether a gateway's answer with `status` can clear on asking again: an outage (`outage`: a
+ *  gateway's 5xx, a timeout or a rate limit), which can on its own, or a 2xx something in
+ *  Dispatch's place wrote, which a later request can get past once whatever is in the way is. Any
+ *  other status answers the same request the same way. */
 function gatewayClears(status: number): boolean {
-  return transientStatus(status) || (status >= 200 && status < 300);
-}
-
-/**
- * Whether a status that did not come from Dispatch can clear on its own: an outage (`outage`: a
- * gateway's 5xx, a timeout or a rate limit) can; any other status answers the same request the
- * same way.
- */
-export function transientStatus(status: number): boolean {
-  return outage(status);
+  return outage(status) || (status >= 200 && status < 300);
 }
 
 /**

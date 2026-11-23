@@ -7,7 +7,6 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { outage } from "@legion/contracts/http-status";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
@@ -18,7 +17,6 @@ import {
   DispatchNoRouteError,
   DispatchWriteUnsettledError,
   type SearchOptions,
-  transientStatus,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
 
@@ -2031,11 +2029,4 @@ describe("a broker token Dispatch says is not live", () => {
       expect(requests).toHaveLength(1);
     }
   });
-});
-
-// A gateway's answer can clear on its own exactly when it is an outage, the rule every client of
-// the workspace reads (`@legion/contracts/http-status`): no second copy of the set to drift.
-test("transientStatus reads every status from 100 to 599 as outage does", () => {
-  const statuses = Array.from({ length: 500 }, (_, index) => 100 + index);
-  expect(statuses.filter((status) => transientStatus(status) !== outage(status))).toEqual([]);
 });
