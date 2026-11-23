@@ -472,6 +472,49 @@ func TestALateReportOfARolesLaterStepIsTakenOnThatStep(t *testing.T) {
 	}
 }
 
+// A return to a role's earlier step carries the record the role named last, as the first run of a
+// later step does. In `implementer:a reviewer implementer:a tester`, the tester fails naming step 1,
+// and agent a's completion of step 1 then names the record it wrote for step 3: it is refused
+// HANDOFF_NOT_NEW, and a record written anew is taken. Before, the return raised step 1's row as it
+// stood, still naming step 1's first record, so the record of step 3 passed as new work and later
+// steps read it as step 1's report.
+func TestAReturnToARolesEarlierStepRefusesTheRecordOfItsLaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
+	implementer := agentToken(t, "implementer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 3)
+	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(4))
+	apply := applyFacts(t, pool, engine)
+	if result := apply("tester-fails-to-step-1", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleTester, Claim: agentToken(t, "tester"),
+		Summary: "fails", Commit: "head", Verdict: "fail", ReturnTo: 1, HandoffRecord: "test-1", HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+
+	stale := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer, Claim: implementer, Summary: "done", Commit: "head",
+		HandoffRecord: "implement-3", HandoffVersion: 3}
+	result := apply("implementer-step-1-names-step-3", stale)
+	if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_NEW" {
+		t.Fatalf("agent a's completion of step 1 naming its step-3 record implement-3 = %+v, want HANDOFF_NOT_NEW; step 1's row is %+v",
+			result.Refusal, rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1])
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	fresh := stale
+	fresh.HandoffRecord, fresh.HandoffVersion = "implement-4", 4
+	if result := apply("implementer-step-1-anew", fresh); result.Refusal != nil {
+		t.Fatalf("agent a's completion of step 1 naming a record written anew = %+v, want it taken", result.Refusal)
+	}
+	if first := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1]; first.HandoffRecord != "implement-4" {
+		t.Fatalf("step 1's row after the completion = %+v, want implement-4 recorded", first)
+	}
+}
+
 // A keyed agent's next step after a new generation is numbered above every entry its claim was
 // given, whatever rows the generation's clear folded away. In `implementer:a reviewer:b
 // implementer:b`, key b, named reviewer, works steps 2 and 3 and the retro, the last of them on the

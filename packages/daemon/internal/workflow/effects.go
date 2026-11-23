@@ -1101,18 +1101,21 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 
 // stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether
 // it is the role's row of no step, which the entry moves to the step (record.Store.MovePhaseToStep):
-// the row the step's earlier runs wrote; else the role's row of no step, a row a new generation
-// cleared or the release before wrote, which was the role's one row and so is the step's, as the
-// one row of a role was raised at each step it ran; else, for a later step's first run, now, the
-// role's row now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries
-// what the role's one row carried into its next phase and the row of the role's earlier step keeps
-// its report.
+// the row the step's earlier runs wrote, which takes the record the role named last from now, the
+// role's row now, since a return to an earlier step of the role comes after the role named a
+// record at a later one, and the next completion must name one written anew (HANDOFF_NOT_NEW);
+// else the role's row of no step, a row a new generation cleared or the release before wrote,
+// which was the role's one row and so is the step's, as the one row of a role was raised at each
+// step it ran; else, for a later step's first run, now, with no handoff (phaseHandoff) and stamped
+// with the step, so the new row carries what the role's one row carried into its next phase and
+// the row of the role's earlier step keeps its report.
 func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int) (record.PhaseRow, bool) {
 	var noStep *record.PhaseRow
 	for i, row := range rows {
 		switch {
 		case row.Role != role:
 		case row.StepTask == task && row.StepPlace == place:
+			row.LastHandoff = now.LastHandoff
 			return row, false
 		case row.StepTask == "" && noStep == nil:
 			noStep = &rows[i]
