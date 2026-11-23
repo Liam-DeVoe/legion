@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -457,6 +458,50 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The release of an idle pod whose Sandbox keeps its volume deletes the Secret of each slot the
+// pod held, as its stored template binds them: each of Legion's roles, a role the deployment
+// defines (the checker), and the slot of an agent of the issue's plan whose name no role has
+// (`implementer-2`). Each such Secret holds a launcher token and the gh files of an App, which no
+// pod reads once the pod is gone. A release that deleted the Secrets of Legion's six roles alone
+// would leave the checker's and implementer-2's behind.
+func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfEachSlotOfItsPod(t *testing.T) {
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement}
+			keptVolumes(SandboxMicroVM)(o)
+			o.Store.(*fakeStore).plan(childIssue, map[claim.Agent]claim.Role{
+				"implementer": claim.RoleImplementer, "implementer-2": claim.RoleImplementer,
+			})
+		}),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+	g.spawn(childSpec(t))
+	name := SandboxName(childToken)
+	slots := append(slices.Clone(claim.Roles), "checker", "implementer-2")
+	if built := templateRoles(g.sandbox(name)); !slices.Equal(built, slots) {
+		t.Fatalf("the pod's template binds the slots %v, want %v", built, slots)
+	}
+	secrets := []string{secretName(name)}
+	for _, slot := range slots {
+		secrets = append(secrets, roleSecretName(name, slot))
+	}
+	for _, secret := range secrets {
+		if g.secret(secret) == nil {
+			t.Fatalf("the running pod's Sandbox has no Secret %s", secret)
+		}
+	}
+	if err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+		t.Fatalf("ReleaseIssue: %v", err)
+	}
+	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
+		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
+	}
+	for _, secret := range secrets {
+		if g.secret(secret) != nil {
+			t.Errorf("the release left the Secret %s, want the Secret of each slot of the pod deleted", secret)
+		}
 	}
 }
 
