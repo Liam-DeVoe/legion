@@ -467,7 +467,9 @@ export const dispatchRouteToolSpecs = [
       repo: z
         .string()
         .nullable()
-        .describe("The repository as owner/name, such as acme/infra, or null to clear the default."),
+        .describe(
+          "The repository as owner/name, such as acme/infra, or null to clear the default."
+        ),
     }),
     strict: true,
     routes: send("PUT", "/api/v1/projects/{key}/default-repository", {
