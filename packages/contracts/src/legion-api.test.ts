@@ -1540,7 +1540,11 @@ test("a held row's heldBy parses a check name and a head beside an issue key", (
   const state = fixture("state.json") as {
     admission: { held: { issue: string; heldBy: string[] }[] };
   };
-  const heldBy = ["LEGION-231", "ci / test (ubuntu-24.04)", "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29"];
+  const heldBy = [
+    "LEGION-231",
+    "ci / test (ubuntu-24.04)",
+    "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+  ];
   const row = { issue: "LEGION-250", heldBy };
   state.admission.held.push(row);
   expect(LegionStateResponse.parse(state).admission?.held?.at(-1)).toEqual(row);
