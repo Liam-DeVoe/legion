@@ -60,6 +60,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 . "$SCRIPT_DIR/lib/exec-env.sh"
 # shellcheck source-path=SCRIPTDIR source=proxy-role/assert.sh
 . "$SCRIPT_DIR/proxy-role/assert.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
+. "$SCRIPT_DIR/lib/pg-url.sh"
 
 usage() {
 	sed -n '/^# Usage:/,/^# gh on PATH/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -261,7 +263,9 @@ jq --arg a "$ACCOUNT_A" --arg b "$ACCOUNT_B" --argjson permissions "$PERMISSIONS
 	'.profiles += [
 	   {name: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions},
 	    proxy: {hosts: ["api.github.com", "github.com", "uploads.github.com"]}},
-	   {name: "PROXY_ROLE_PLAIN", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}}]' \
+	   {name: "PROXY_ROLE_PLAIN", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions}},
+	   {name: "PROXY_ROLE_RENEW", source: "PROXY_ROLE_APP", github: {accounts: [$a, $b], permissions: $permissions},
+	    proxy: {hosts: ["api.github.com", "github.com", "uploads.github.com"]}}]' \
 	"$AIRLOCK_PROFILES_FILE" >"$WORK_DIR/profiles.json"
 API_PORT="$(free_port)"
 PROXY_PORT="$(free_port)"
@@ -394,6 +398,58 @@ judge "$([ -n "$recovered" ] && [ "$recovered" -le 60 ] && [ "$second_grant" != 
 # 407 is failed by the forwarder rather than carried under the new grant with the old placeholder.
 placeholder_records="$(jq -s 'map(select(.kind == "placeholder")) | length' "$RECORDS")"
 judge "$([ "$placeholder_records" = 0 ] && echo 0)" "no placeholder reached the stand-in GitHub, after the revocation either ($(record_count) calls recorded)"
+
+# --- A renewal: a client that read its placeholder before the forwarder renewed, and opens a new
+# connection after it, while the previous grant is still live. A gh process alive across the
+# renewal does that whenever it opens a second connection. The forwarder's first grant of
+# PROXY_ROLE_RENEW is written into the broker's database as if 49 min 45 s of its hour had passed,
+# so the forwarder asks for the next one 15 seconds after it holds it, and the broker, which reuses
+# an automatic grant only in its first half, gives a new grant then; the old grant stays live. ---
+BROKER_DB_URL=""
+for entry in "${BROKER_ENV[@]}"; do
+	case "$entry" in BROKER_DATABASE_URL=*) BROKER_DB_URL="${entry#BROKER_DATABASE_URL=}" ;; esac
+done
+# The trigger matches this reason, which no other step's request carries.
+RENEW_REASON="proxy-role-check: a renewal of the implementer of ACME-1"
+pg_url_run "$BROKER_DB_URL" psql -v ON_ERROR_STOP=1 -q >/dev/null <<'SQL'
+create or replace function proxy_role_check_backdate() returns trigger as $$
+declare why text;
+begin
+  select r.reason into why from requests r where r.id = new.request_id;
+  if why = 'proxy-role-check: a renewal of the implementer of ACME-1' and not exists (
+      select 1 from grants g join requests r on r.id = g.request_id where r.reason = why) then
+    new.created_at := now() - interval '49 minutes 45 seconds';
+    new.expires_at := new.created_at + interval '60 minutes';
+  end if;
+  return new;
+end $$ language plpgsql;
+create trigger proxy_role_check_backdate before insert on grants for each row execute function proxy_role_check_backdate();
+SQL
+RENEW_PORT="$(free_port)"
+RENEW_LOG="$WORK_DIR/forwarder-renew.log"
+RENEW_GH="$WORK_DIR/role-renew/gh"
+AGENT_SECRETS_URL="$BROKER_URL" AGENT_SECRETS_KEY_DIR="$AGENT_SECRETS_KEY_DIR" \
+	"$LEGION" forwarder --role implementer --listen "127.0.0.1:$RENEW_PORT" --secret PROXY_ROLE_RENEW \
+	--reason "$RENEW_REASON" --gh-dir "$RENEW_GH" --default-owner "$ACCOUNT_A" >"$RENEW_LOG" 2>&1 &
+RENEW_PID=$!
+PIDS+=("$RENEW_PID")
+await "the renewing forwarder's first grant" 60 "$RENEW_LOG" 'holds a grant of the role' "$RENEW_PID"
+old_placeholder="$(sed -n 's/^ *oauth_token: //p' "$RENEW_GH/$ACCOUNT_A/hosts.yml" | head -n 1)"
+await "the renewing forwarder's renewal" 60 "$RENEW_LOG" 'the grant nears its expiry' "$RENEW_PID"
+mapfile -t renew_grants < <(grep -o 'grant=[0-9a-f-]*' "$RENEW_LOG" | cut -d= -f2)
+mark="$(record_count)"
+# The header goes on standard input, as every credential-shaped value of these scripts does, so
+# no process's arguments hold it.
+status="$(printf 'Authorization: token %s\n' "$old_placeholder" | "${role_env[@]}" "HTTPS_PROXY=http://127.0.0.1:$RENEW_PORT" "https_proxy=http://127.0.0.1:$RENEW_PORT" \
+	curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -H @- \
+	"https://api.github.com/repos/$ACCOUNT_A/$REPO")" || status=failed
+judge "$([ "$status" = 200 ] && [ "${#renew_grants[@]}" -ge 2 ] && [ "${renew_grants[0]}" != "${renew_grants[1]}" ] && call_reached "$mark" api.github.com "$ACCOUNT_A" && echo 0)" \
+	"after a renewal (grant ${renew_grants[0]:-none} to ${renew_grants[1]:-none}), a new connection carrying the previous grant's placeholder, read before the renewal, gets $ACCOUNT_A's token, and no placeholder reaches the stand-in GitHub (answer $status)"
+kill -TERM "$RENEW_PID"
+wait "$RENEW_PID" 2>/dev/null || true
+live="$(pg_url_run "$BROKER_DB_URL" psql -Atqc "select count(*) from grants g join requests r on r.id = g.request_id where r.reason = '$RENEW_REASON' and g.revoked_at is null")"
+judge "$([ "${#renew_grants[@]}" -ge 2 ] && [ "$live" = 0 ] && echo 0)" \
+	"the forwarder's stop revoked both grants it held, as the broker's grants table reads ($live live)"
 
 # --- A public fetch while the broker's proxy port answers nothing. ---
 kill -STOP "$BROKER_PID"
