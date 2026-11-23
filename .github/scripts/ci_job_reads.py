@@ -1210,12 +1210,13 @@ FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
-ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
+# to a version with no hooks fails the step), one on 2.15.3, which the clustered hub runs, and one
+# on 2.10.29. The daemon steps: the linked version and 2.15.3; the daemon refuses 2.10.29.
+ENVOY_FORCED_ORDER_SERVERS = ("", "2.15.3", "2.10.29")
 ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
-DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
+DAEMON_FORCED_ORDER_SERVERS = ("", "2.15.3")
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
-# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# The script's own test, envoy-go-race's step before its three above: packages/envoy/scripts/
 # forced-order.test.sh runs forced-order.sh in five cases, and the one run that gets as far as a
 # go test is over its fixture package, hooktest/skiponly, on the linked version; the other four
 # are refused before anything is built.
@@ -1229,6 +1230,13 @@ def envoy_forced_order_step(server):
     on the version the workspace links."""
     return f"Forced-order tests on the hooked nats-server v{server}" if server else \
         "Forced-order tests on the hooked nats-server the module links"
+
+
+def daemon_forced_order_step(server):
+    """The daemon-go step that runs the daemon's forced-order tests on nats-server `server`, or, for
+    "", on the version the workspace links."""
+    return f"Forced-order tests of the daemon on the hooked nats-server v{server}" if server else \
+        "Forced-order tests of the daemon on the hooked nats-server the module links"
 
 
 def forced_order_run(job, step, workdir, pkgs):
@@ -2745,8 +2753,8 @@ GATES = [
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
-        forced_order_run("daemon-go", DAEMON_FORCED_ORDER_STEP, DAEMON, DAEMON_FORCED_ORDER_PKGS),
-    ], exact=[
+    ] + [forced_order_run("daemon-go", daemon_forced_order_step(server), DAEMON, DAEMON_FORCED_ORDER_PKGS)
+         for server in DAEMON_FORCED_ORDER_SERVERS], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
         # form that check reduces either. What it compiles is every test file of every package
@@ -2801,7 +2809,8 @@ GATES = [
                                                 f"consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                                f"const HubImage"),
-    ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
+    ) + [read for server in DAEMON_FORCED_ORDER_SERVERS
+         for read in forced_order_reads("daemon-go", daemon_forced_order_step(server))]
       + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
