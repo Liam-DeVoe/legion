@@ -507,7 +507,7 @@ func webhookGap(w *workflowRuntime, repo string) string {
 // notInstalledWebhookApp is the state's webhook App gap for repo while Dispatch's GitHub App is not
 // installed on it (checkWebhookApp).
 func notInstalledWebhookApp(repo string) string {
-	return "Dispatch's GitHub App is not installed on " + repo + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	return "Dispatch's GitHub App is not installed on " + repo + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed"
 }
 
 // A repository a record names that Dispatch's GitHub App is not installed on is one GitHub sends

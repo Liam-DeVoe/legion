@@ -2824,7 +2824,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     {
       repo: "zeta/tools",
       reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed",
     },
   ]);
   expect(block.data?.caches).toEqual(live.caches);
@@ -3447,7 +3447,7 @@ test("the state golden names each live repository without the webhook App", () =
     {
       repo: "zeta/tools",
       reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed",
     },
   ];
   expect(state.repositories?.withoutWebhookApp).toEqual(gaps);
