@@ -193,6 +193,25 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
 
+test("below 1280 px a dismiss refused from the reading view's head is said where the reader is", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  await user.click(document.querySelector('[data-inbox-row="reply:c1"] time') as HTMLElement);
+  const view = await screen.findByTestId("inbox-reading-view");
+  await user.click(view.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+
+  // The view is still open - on the row the selection moved to - and the refusal is on screen
+  // above it, not in the list's hidden header.
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe("Could not dismiss 1 thread: not found.");
+  expect(alert.closest("[hidden]")).toBeNull();
+  expect(screen.getByTestId("inbox-reading-view")).toBeTruthy();
+});
+
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();

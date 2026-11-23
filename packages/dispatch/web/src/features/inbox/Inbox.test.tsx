@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import type { ComponentProps } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
@@ -1652,9 +1653,13 @@ function RouteProbe() {
   );
 }
 
+/** One entry of the history `renderInbox` starts from: a path, or a location with its state. */
+type InitialEntry = NonNullable<ComponentProps<typeof MemoryRouter>["initialEntries"]>[number];
+
 /** `route` is the whole history when it is a list, the last entry being where the reader is:
  *  whether a filter change replaces its entry or pushes one is only visible from a history that
- *  has something underneath it. `runtime` is for the tests whose reading column opens a
+ *  has something underneath it. An entry may carry the state its history entry holds, as one the
+ *  reader reloads onto does. `runtime` is for the tests whose reading column opens a
  *  document: that column mounts `ProofDocument`, which wants the document runtime and the
  *  margin the app shell gives it, and every other test's column shows a card and needs
  *  neither. `commits` records each commit of the Inbox; it has no one value a host passes, so
@@ -1662,14 +1667,14 @@ function RouteProbe() {
  *  question is answered, snoozed and assigned in its own row: the page reads one row at a time
  *  at every width, and the rows of this file that drive a card in its row drive that list. */
 function renderInbox(
-  route: string | readonly string[] = "/",
+  route: InitialEntry | readonly InitialEntry[] = "/",
   {
     commits,
     pane = true,
     runtime,
   }: { commits?: Commits<null>; pane?: boolean; runtime?: DocumentRuntimeValue } = {}
 ) {
-  const entries = typeof route === "string" ? [route] : [...route];
+  const entries = Array.isArray(route) ? [...route] : [route as InitialEntry];
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -3081,6 +3086,218 @@ test("below 1280 px Assign to me in the reading view's head PATCHes the viewer's
   } finally {
     unmount();
     patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px a row the column chose by itself is no row the reader opened: narrowing shows the list", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(1440);
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    // Beside the list the column shows the first row the reader can see, by itself.
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(address()).toBe("/?item=ask-a"));
+
+    // Narrowed, the reader is shown the list, and the address drops the row they never picked.
+    act(() => width.setWidth(1279));
+    await waitFor(() => expect(address()).toBe("/"));
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+    expect(screen.getByTestId("inbox-list").closest("[hidden]")).toBeNull();
+
+    // A row the reader picks beside the column is theirs, and narrowing keeps it open.
+    act(() => width.setWidth(1440));
+    await waitFor(() => expect(address()).toBe("/?item=ask-a"));
+    await user.click(shortRow("ask-b"));
+    await waitFor(() => expect(address()).toBe("/?item=ask-b"));
+    act(() => width.setWidth(1279));
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
+  } finally {
+    unmount();
+    width.restore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px the way back from an opened row stays on the Inbox after a Back and a width change", async () => {
+  const user = userEvent.setup();
+  const width = movableReadingPaneWidth(1024);
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox(["/agents", "/"]);
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a"));
+    await screen.findByTestId("inbox-reading-view");
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    await waitFor(() => expect(address()).toBe("/"));
+
+    // Wider, the column picks a row by itself over the list's entry; narrower again, the list.
+    act(() => width.setWidth(1440));
+    await waitFor(() => expect(address()).toBe("/?item=ask-a"));
+    act(() => width.setWidth(1024));
+    await waitFor(() => expect(address()).toBe("/"));
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    // A row opened now goes back to that list, not past it.
+    await user.click(shortRow("ask-b"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(view).getByRole("button", { name: "Inbox" }));
+    await waitFor(() => expect(address()).toBe("/"));
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    expect(address()).toBe("/agents");
+  } finally {
+    unmount();
+    width.restore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px a reload onto an opened row keeps its way back: the Inbox control goes back through the entry the open pushed", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  // The history a reload keeps: the entry the open pushed holds its mark, the Inbox remounts.
+  const { unmount } = renderInbox([
+    "/agents",
+    "/",
+    { pathname: "/", search: "?item=ask-a", state: { inboxOverList: true } },
+  ]);
+
+  try {
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(view).getByRole("button", { name: "Inbox" }));
+    await waitFor(() => expect(address()).toBe("/"));
+    await user.click(screen.getByRole("button", { name: "History back" }));
+    expect(address()).toBe("/agents");
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px Escape on an answer option steps out to the view and keeps the pick; the next Escape is the list", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+    }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    await user.click(shortRow("ask-a"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    const ship = await within(view).findByRole("radio", { name: "Ship" });
+    await user.click(ship);
+    expect(ship).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    expect(ship).toBeChecked();
+    // Not a palette row: in the palette Escape closes the palette.
+    expect(appKeymap.actions().map((action) => action.id)).not.toContain("leave-reading");
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(address()).toBe("/");
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px Enter that opens a row leaves the focus where the next Enter reaches the answer box", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    shortRow("ask-b").focus();
+    await user.keyboard("{Enter}");
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() => expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus());
+    await user.keyboard("{Enter}");
+    expect(view.querySelector("[data-ask-answer]")).toHaveFocus();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px `h` on a focused ask row opens its view at the head's Snooze, and with rows marked reaches the bar the view shows", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    shortRow("ask-b").focus();
+    await user.keyboard("h");
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(address()).toBe("/?item=ask-b");
+    await waitFor(() => expect(document.activeElement?.matches("[data-inbox-snooze]")).toBe(true));
+    expect(view.contains(document.activeElement)).toBe(true);
+
+    // `x` marks the row the view shows, and the view says so: its own checkbox and the bar.
+    screen.getByTestId("inbox-pane-scroller").focus();
+    await user.keyboard("x");
+    expect(within(view).getByRole("checkbox", { name: /^Select / })).toBeChecked();
+    expect(screen.getByRole("group", { name: "Selected rows" })).toHaveTextContent("1 selected");
+    await user.keyboard("h");
+    expect(screen.getByRole("combobox", { name: "Snooze selected asks" })).toHaveFocus();
+  } finally {
+    unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
