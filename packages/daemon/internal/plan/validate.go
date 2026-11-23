@@ -138,14 +138,26 @@ type KeyMismatch struct {
 	First, Step KeyStep
 }
 
-// Reason is the mismatch in the words Validate refuses it with.
+// Reason is the mismatch in the words Validate refuses it with, each step named by its place and
+// its task.
 func (m KeyMismatch) Reason() string {
+	return m.reason(func(s KeyStep) string { return fmt.Sprintf("step %d of task %s", s.Place, s.Task) })
+}
+
+// StepsReason is the mismatch in a list of steps that is no task's, such as a project's
+// `default_steps`: Reason's words, each step named by its place alone.
+func (m KeyMismatch) StepsReason() string {
+	return m.reason(func(s KeyStep) string { return fmt.Sprintf("step %d", s.Place) })
+}
+
+// reason is the mismatch's words, each of its two steps named as at names it.
+func (m KeyMismatch) reason(at func(KeyStep) string) string {
 	runOn := fmt.Sprintf("two models (%s, %s); one agent runs on one model.", modelName(m.First.Def.Model), modelName(m.Step.Def.Model))
 	if m.Step.Def.Model == m.First.Def.Model {
 		runOn = fmt.Sprintf("two harnesses (%s, %s); one agent runs on one harness.", m.First.Def.Backend, m.Step.Def.Backend)
 	}
-	return fmt.Sprintf("the key %s names one agent for %s at step %d of task %s and %s at step %d of task %s, whose roles run on %s",
-		m.Key, m.First.Role, m.First.Place, m.First.Task, m.Step.Role, m.Step.Place, m.Step.Task, runOn)
+	return fmt.Sprintf("the key %s names one agent for %s at %s and %s at %s, whose roles run on %s",
+		m.Key, m.First.Role, at(m.First), m.Step.Role, at(m.Step), runOn)
 }
 
 // KeyMismatches is each step of p whose key, but the key owner, names one agent with the key's
