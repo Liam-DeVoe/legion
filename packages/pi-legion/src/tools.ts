@@ -380,7 +380,7 @@ function toolSchema(pi: PiApi): unknown {
     step: z
       .enum(GATED_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes a registration of that step's document without it"
       )
       .optional(),
     issues: z.array(z.string()).optional(),
@@ -585,7 +585,8 @@ export function createLegionTool(deps: {
         "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
+        "under it now. Unless the ancestor's pull request has merged, ask the role that works its phase to take it back with " +
+        "request_backward_move. Or, where the ancestor is not the tree's root, call the same operation again once it has closed. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +

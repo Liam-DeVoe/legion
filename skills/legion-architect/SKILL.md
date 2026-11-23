@@ -5,7 +5,7 @@ description: "Use when you are a Legion root or child architect, before any life
 
 # Legion architect
 
-You own one issue and every issue under it until the merge that closes it.
+You own one issue and every issue under it while you hold your role.
 The daemon starts every worker and moves every phase; you write no code.
 Your role prompt holds the lifecycle rules, this skill the procedures.
 
@@ -42,7 +42,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
-6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
+6. A root: file every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
    the gate's opening starts the root's own first phase, and a later child runs beside it.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
@@ -72,7 +72,8 @@ A parent's own first phase does not start while Dispatch shows an open child und
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
+  Only the part a child carries is proven in the child, with a check of its own whose `serves` names the criterion.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
@@ -100,8 +101,8 @@ Finding asks, refusals and what follows: `skill://legion-architect/references/ac
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow;
-nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+The issue closes once its pull request has merged, it is in `merging` and every issue beneath it has left the workflow.
+Nothing after that close is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
 
