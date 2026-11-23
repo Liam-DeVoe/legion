@@ -790,13 +790,15 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 // URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
 // a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost
 // or a name under .localhost, with or without the root's trailing dot; a loopback, link-local,
-// unspecified, multicast or the IPv4 broadcast address; a cloud metadata server's IPv6 address; an
-// address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse
-// the start, naming the setting and the fault. No refusal quotes the URL's user, path, query or
-// fragment, where a credential can sit, nor a URL written with no <host>= before it, whose user
-// and path then sit before the first =. A private address, one in 100.64.0.0/10, one inside the
-// cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with
-// its port, the local stack's stand-in of Dispatch, are read: each is an address the dial opens.
+// unspecified, multicast or the IPv4 broadcast address, or one of 0.0.0.0/8; a cloud metadata
+// server's IPv6 address; an IPv6 address that carries an IPv4 address, in each form, whatever it
+// carries, and even inside the cluster ranges; an address the proxy would tunnel to, public and
+// outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse the start, naming the setting and the fault.
+// No refusal quotes the URL's user, path, query or fragment, where a credential can sit, nor a URL
+// written with no <host>= before it, whose user and path then sit before the first =. A private
+// address, one in 100.64.0.0/10, one inside the cluster ranges though public, and a loopback URL
+// that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the local stack's stand-in of Dispatch,
+// are read: each is an address the dial opens.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
@@ -864,6 +866,14 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
 		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
 		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
+		{"an address of 0.0.0.0/8", "dispatch.test=http://0.0.0.1:8766", "", "an address of 0.0.0.0/8"},
+		{"the NAT64 form of the IPv4 metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "carries an IPv4 address"},
+		{"the NAT64 form of a loopback address", "dispatch.test=http://[64:ff9b::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"the NAT64 form of a private address", "dispatch.test=http://[64:ff9b::a00:5]:8766", "", "carries an IPv4 address"},
+		{"the 6to4 form of the IPv4 metadata server", "dispatch.test=http://[2002:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"the IPv4-compatible form of a loopback address", "dispatch.test=http://[::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"a Teredo address whose server is the IPv4 metadata server", "dispatch.test=http://[2001:0:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"an address of the local-use translation prefix", "dispatch.test=http://[64:ff9b:1::a9fe:a9fe]", "", "a local-use translation IPv6 address"},
 		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
 	} {
 		e := airlockEnv()
@@ -892,6 +902,14 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	ranged[setting] = "dispatch.test=http://34.118.240.1:8766"
 	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
 		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
+	}
+	// The cluster ranges widen the private ranges and nothing else: a range that holds an IPv6
+	// form carrying the metadata server's address does not make that form a destination.
+	carried := airlockEnv()
+	carried["BROKER_AIRLOCK_CLUSTER_RANGES"] = "64:ff9b::/96"
+	carried[setting] = "dispatch.test=http://[64:ff9b::a9fe:a9fe]"
+	if _, err := Load(env(carried)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "carries an IPv4 address") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=64:ff9b::/96) = %v; want a refusal naming the setting and the form", setting, carried[setting], err)
 	}
 }
 

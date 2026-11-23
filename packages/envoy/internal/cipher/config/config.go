@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
@@ -320,23 +319,23 @@ type Config struct {
 	// sends to url, an address inside the broker's own cluster, in place of the host's own address.
 	// It is the one exception to the proxy's refusal of private addresses and of
 	// BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials url's host only when every address it resolves
-	// to is one it refuses every other request - private, 100.64.0.0/10 or inside
-	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback, link-local, unspecified, multicast or a
-	// cloud metadata server's IPv6 address (netaddr.DestinationRefusal), and a tunnel or a
-	// plain-HTTP request to those addresses stays refused. The request keeps the host as its Host
-	// header, and the DPoP proof of a dpop entry still names https:// and the host. Unset, the proxy
-	// sends every bound host's request to that host's own address. The start is refused, naming the
-	// setting and the fault and quoting no part of the url a credential can sit in, for more than
-	// one entry, for the setting without BROKER_PROFILES_FILE, for a host that is not one lower-case
-	// host name, for a url that is not http or https, names no host or a port outside 1 to 65535,
-	// or carries a user, a path other than /, a query or a fragment, and for a url whose host every
-	// dial refuses - an address proxy.PrivateUpstreamRefusal refuses on a broker of these
-	// BROKER_AIRLOCK_CLUSTER_RANGES (one the proxy would tunnel to, or one
-	// netaddr.DestinationRefusal names), localhost or a name under .localhost, with or without a
-	// trailing dot - unless BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the
-	// broker reads the profiles file (AirlockResultRules), unless the profile DISPATCH_RESULTS_TOKEN
-	// binds the host, exactly and alone, of kind dpop, with a non-empty allow list, carried in
-	// Authorization alone.
+	// to is in a range the destination may be in - private, 100.64.0.0/10 or inside
+	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback, link-local, unspecified, multicast, the
+	// IPv4 broadcast address, in 0.0.0.0/8, a cloud metadata server's IPv6 address, or an IPv6
+	// address that carries an IPv4 address (NAT64, 6to4, Teredo, IPv4-compatible, 64:ff9b:1::/48)
+	// (netaddr.DestinationRefusal), and a tunnel or a plain-HTTP request to those addresses stays
+	// refused. The request keeps the host as its Host header, and the DPoP proof of a dpop entry
+	// still names https:// and the host. Unset, the proxy sends every bound host's request to that
+	// host's own address. The start is refused, naming the setting and the fault and quoting no part
+	// of the url a credential can sit in, for more than one entry, for the setting without
+	// BROKER_PROFILES_FILE, for a host that is not one lower-case host name, for a url that is not
+	// http or https, names no host or a port outside 1 to 65535, or carries a user, a path other
+	// than /, a query or a fragment, and for a url whose host every dial refuses - an address
+	// netaddr.DestinationRefusal refuses on a broker of these BROKER_AIRLOCK_CLUSTER_RANGES,
+	// localhost or a name under .localhost, with or without a trailing dot - unless
+	// BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the broker reads the
+	// profiles file (AirlockResultRules), unless the profile DISPATCH_RESULTS_TOKEN binds the host,
+	// exactly and alone, of kind dpop, with a non-empty allow list, carried in Authorization alone.
 	AirlockPrivateUpstream PrivateUpstream
 	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
 	// every container to the address of the cluster's kubernetes Service. It is no setting of the
@@ -2114,16 +2113,16 @@ func portInRange(port string) bool {
 
 // privateUpstreamDialable refuses, naming the setting, a private destination every dial of the
 // proxy refuses (proxy.Server.upstreamAddresses), so the broker does not start with a destination
-// no write can reach: a URL whose host is an address proxy.PrivateUpstreamRefusal refuses on a
-// broker of these cluster ranges (BROKER_AIRLOCK_CLUSTER_RANGES) - one the proxy would tunnel to
-// for a command, being neither private nor in 100.64.0.0/10 nor in the ranges, or a loopback,
-// link-local, unspecified, multicast or cloud metadata server's address - which is the dial's own
-// rule, read here rather than written twice; or localhost or a name under .localhost, with or
-// without the root's trailing dot, which resolve to loopback alone (RFC 6761, section 6.3). The
-// one exception is the proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port,
-// the local stack's way to reach a stand-in of Dispatch on loopback, which a production start
-// refuses. A name that resolves elsewhere is the dial's to check, since it can resolve
-// differently at each dial.
+// no write can reach: a URL whose host is an address netaddr.DestinationRefusal refuses on a
+// broker of these cluster ranges (BROKER_AIRLOCK_CLUSTER_RANGES) - one in no range the destination
+// may be in (private, 100.64.0.0/10 or the ranges), or a loopback, link-local, unspecified,
+// multicast, broadcast, 0.0.0.0/8 or cloud metadata server's address, or an IPv6 address that
+// carries an IPv4 address - which is the dial's own rule, read here rather than written twice; or
+// localhost or a name under .localhost, with or without the root's trailing dot, which resolve to
+// loopback alone (RFC 6761, section 6.3). The one exception is the proxy's own:
+// BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port, the local stack's way to reach a
+// stand-in of Dispatch on loopback, which a production start refuses. A name that resolves
+// elsewhere is the dial's to check, since it can resolve differently at each dial.
 func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
 	if upstream.URL == nil {
 		return nil
@@ -2142,7 +2141,7 @@ func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		if why := proxy.PrivateUpstreamRefusal(addr, clusterRanges); why != "" {
+		if why := netaddr.DestinationRefusal(addr, clusterRanges); why != "" {
 			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
 		}
 	}

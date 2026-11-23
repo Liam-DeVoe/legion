@@ -405,6 +405,43 @@ func TestAnUpstreamAtTheIPv4BroadcastAddressIsRefused(t *testing.T) {
 	writeRefusedAtConnect(t, r, standIn, at, "the IPv4 broadcast address, which the airlock never dials")
 }
 
+// TestAnUpstreamAtAnAddressThatCarriesAnIPv4AddressIsRefused: a destination whose name resolves to
+// an IPv6 address that carries an IPv4 address - the NAT64, 6to4, IPv4-compatible and Teredo forms
+// of the metadata server, loopback, 0.0.0.1, multicast and the broadcast address, and an address of
+// the local-use translation prefix - or to 0.0.0.1 is refused, whatever address it carries, and
+// nothing is dialled. The general rule refuses each of them too, by the address it carries, and
+// the destination's rule takes an address only for the ranges it names (netaddr.DestinationRefusal),
+// so a form the general rule refuses is never read as private: before that rule, each row here was
+// dialled and its write stored. Control: the private address the rig's other tests take, in the
+// same run, stores its write.
+func TestAnUpstreamAtAnAddressThatCarriesAnIPv4AddressIsRefused(t *testing.T) {
+	const carries = "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo or IPv4-compatible form), which is never the private destination's"
+	for _, row := range []struct{ name, addr, want string }{
+		{"0.0.0.1, of 0.0.0.0/8", "0.0.0.1", "an address of 0.0.0.0/8, which is reserved for this network"},
+		{"NAT64 of 169.254.169.254", "64:ff9b::a9fe:a9fe", carries},
+		{"NAT64 of 127.0.0.1", "64:ff9b::7f00:1", carries},
+		{"NAT64 of 0.0.0.1", "64:ff9b::1", carries},
+		{"NAT64 of 224.0.0.1", "64:ff9b::e000:1", carries},
+		{"NAT64 of 255.255.255.255", "64:ff9b::ffff:ffff", carries},
+		{"6to4 of 169.254.169.254", "2002:a9fe:a9fe::1", carries},
+		{"6to4 of 127.0.0.1", "2002:7f00:1::1", carries},
+		{"IPv4-compatible 169.254.169.254", "::a9fe:a9fe", carries},
+		{"IPv4-compatible 127.0.0.1", "::7f00:1", carries},
+		{"Teredo whose server is 169.254.169.254", "2001:0:a9fe:a9fe::1", carries},
+		{"local-use translation of 169.254.169.254", "64:ff9b:1::a9fe:a9fe", "a local-use translation IPv6 address (64:ff9b:1::/48), which is never the private destination's"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			at := netip.MustParseAddr(row.addr)
+			r, standIn := newPrivateRig(t, at, []netip.Prefix{serviceRange})
+			writeRefusedAtConnect(t, r, standIn, at, row.want)
+		})
+	}
+	r, standIn := newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
+	if answer, body, err := r.writeResult(); err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
+		t.Fatalf("control: the write to %s = %v %v %q; want 201", privateAddress, answer, err, body)
+	}
+}
+
 // TestAnUnreachableUpstreamIsNotNamedToTheCommand: a destination at an address the proxy may dial,
 // where nothing answers, fails the write 502 UPSTREAM_UNREACHABLE, whose words name the rule and
 // nothing of the dial: neither the destination's in-cluster name nor its address, nor the address

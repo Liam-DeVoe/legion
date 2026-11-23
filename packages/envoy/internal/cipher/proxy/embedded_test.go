@@ -72,9 +72,9 @@ var embeddingForms = []struct {
 	}},
 }
 
-// refusalOf is the whole answer localRule gives an address that carries v4 in the form whose
-// words are words, when bare is v4's own rule: the form's words, v4 and its rule; and bare alone
-// for the IPv4-mapped form, which is v4 itself.
+// refusalOf is the whole answer netaddr.DialRefusal gives an address that carries v4 in the form
+// whose words are words, when bare is v4's own rule: the form's words, v4 and its rule; and bare
+// alone for the IPv4-mapped form, which is v4 itself.
 func refusalOf(words, v4, bare string) string {
 	if words == "" {
 		return bare
@@ -97,8 +97,8 @@ func localUse(v4 [4]byte) []netip.Addr {
 	return []netip.Addr{netip.AddrFrom16(first), netip.AddrFrom16(example), netip.AddrFrom16(slash48)}
 }
 
-// refusedIPv4 are IPv4 addresses localRule refuses, one for each of its rules a form could
-// otherwise carry a tunnel past: among them 0.1.2.3 and 0.255.255.255, the last address, of
+// refusedIPv4 are IPv4 addresses netaddr.DialRefusal refuses, one for each of its rules a form
+// could otherwise carry a tunnel past: among them 0.1.2.3 and 0.255.255.255, the last address, of
 // 0.0.0.0/8, "this network" (RFC 1122), of which Go's IsGlobalUnicast excludes only 0.0.0.0; and
 // last a ClusterIP, refused only by the cluster ranges.
 var refusedIPv4 = []string{"169.254.169.254", "10.0.0.5", "127.0.0.1", "100.64.1.2", "0.1.2.3", "0.255.255.255", clusterIPs[0]}
@@ -125,32 +125,32 @@ var beyondForms = []string{"::1:a9fe:a9fe", "64:ff9b::1:a9fe:a9fe", "64:ff9b:2::
 // localUseRule is the words of the refusal of the whole local-use translation prefix.
 const localUseRule = "64:ff9b:1::/48"
 
-// TestLocalRuleRefusesEveryIPv6FormOfARefusedIPv4Address: localRule refuses an address that
-// carries a refused IPv4 address in any form, and its answer names the form, the address carried
-// and that address's own rule, so an operator reads which rule refused it and why. An IPv4-mapped
-// address is the IPv4 address it holds (netaddr.Canonical), so its answer is the bare address's
-// answer. A form that carries a public IPv4 address, an IPv6 address that carries none, and an
-// address just outside a form are refused by no rule.
-func TestLocalRuleRefusesEveryIPv6FormOfARefusedIPv4Address(t *testing.T) {
+// TestTheDialRuleRefusesEveryIPv6FormOfARefusedIPv4Address: netaddr.DialRefusal refuses an
+// address that carries a refused IPv4 address in any form, and its answer names the form, the
+// address carried and that address's own rule, so an operator reads which rule refused it and
+// why. An IPv4-mapped address is the IPv4 address it holds (netaddr.Canonical), so its answer is
+// the bare address's answer. A form that carries a public IPv4 address, an IPv6 address that
+// carries none, and an address just outside a form are refused by no rule.
+func TestTheDialRuleRefusesEveryIPv6FormOfARefusedIPv4Address(t *testing.T) {
 	ranges := []netip.Prefix{serviceRange}
 	for _, form := range embeddingForms {
 		t.Run(form.name, func(t *testing.T) {
 			for _, v4 := range refusedIPv4 {
 				bare := netip.MustParseAddr(v4)
-				rule := localRule(bare, ranges)
+				rule := netaddr.DialRefusal(bare, ranges)
 				if rule == "" {
-					t.Errorf("localRule(%s) = \"\"; want a refusal", v4)
+					t.Errorf("DialRefusal(%s) = \"\"; want a refusal", v4)
 					continue
 				}
 				v6 := form.carry(bare.As4())
-				if got, want := localRule(v6, ranges), refusalOf(form.words, v4, rule); got != want {
-					t.Errorf("localRule(%s) = %q; want %q", v6, got, want)
+				if got, want := netaddr.DialRefusal(v6, ranges), refusalOf(form.words, v4, rule); got != want {
+					t.Errorf("DialRefusal(%s) = %q; want %q", v6, got, want)
 				}
 			}
 			for _, v4 := range allowedIPv4 {
 				v6 := form.carry(netip.MustParseAddr(v4).As4())
-				if got := localRule(v6, ranges); got != "" {
-					t.Errorf("localRule(%s) = %q; want none: it carries %s, a public address", v6, got, v4)
+				if got := netaddr.DialRefusal(v6, ranges); got != "" {
+					t.Errorf("DialRefusal(%s) = %q; want none: it carries %s, a public address", v6, got, v4)
 				}
 			}
 		})
@@ -161,15 +161,15 @@ func TestLocalRuleRefusesEveryIPv6FormOfARefusedIPv4Address(t *testing.T) {
 			v6s = append(v6s, localUse(netip.MustParseAddr(v4).As4())...)
 		}
 		for _, v6 := range v6s {
-			if got := localRule(v6, ranges); !strings.Contains(got, localUseRule) {
-				t.Errorf("localRule(%s) = %q; want it to name %q", v6, got, localUseRule)
+			if got := netaddr.DialRefusal(v6, ranges); !strings.Contains(got, localUseRule) {
+				t.Errorf("DialRefusal(%s) = %q; want it to name %q", v6, got, localUseRule)
 			}
 		}
 	})
 	t.Run("an IPv6 address in no form", func(t *testing.T) {
 		for _, v6 := range slices.Concat(publicIPv6, beyondForms) {
-			if got := localRule(netip.MustParseAddr(v6), ranges); got != "" {
-				t.Errorf("localRule(%s) = %q; want none", v6, got)
+			if got := netaddr.DialRefusal(netip.MustParseAddr(v6), ranges); got != "" {
+				t.Errorf("DialRefusal(%s) = %q; want none", v6, got)
 			}
 		}
 	})
@@ -195,7 +195,7 @@ func TestTheProxyOpensNoTunnelToAnIPv6FormOfARefusedIPv4Address(t *testing.T) {
 	for _, form := range embeddingForms {
 		for _, v4 := range tunnelled {
 			bare := netip.MustParseAddr(v4)
-			refused = append(refused, target{name: form.name + " of " + v4, want: refusalOf(form.words, v4, localRule(bare, ranges)), addr: form.carry(bare.As4())})
+			refused = append(refused, target{name: form.name + " of " + v4, want: refusalOf(form.words, v4, netaddr.DialRefusal(bare, ranges)), addr: form.carry(bare.As4())})
 		}
 		admitted = append(admitted, target{name: form.name + " of " + publicIPv4, addr: form.carry(public)})
 	}
