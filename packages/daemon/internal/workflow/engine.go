@@ -234,20 +234,20 @@ func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenam
 // cannot silently stop the ladder, and so the facts that ask are one list the compiler checks
 // rather than nine calls and a comment (dispatch://INFRA-714 R3).
 func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	result, err := e.apply(ctx, tx, fact)
+	result, err := e.applyAndFix(ctx, tx, fact)
 	if err != nil {
 		return result, err
 	}
 	return result, e.askMergeState(ctx, tx, fact)
 }
 
-// apply is the fact's handler (handle), then the fix rule over the issue the fact names
+// applyAndFix is the fact's handler (apply), then the fix rule over the issue the fact names
 // (fixRule), in the fact's own transaction: whatever the handler wrote of the issue's check
 // states, its head or where its task stands, the rule reads it as the fact leaves it. A fact the
 // handler refused, left unspent or answered as a duplicate wrote nothing, and the rule writes
 // nothing beside it.
-func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	result, err := e.handle(ctx, tx, fact)
+func (e *Engine) applyAndFix(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	result, err := e.apply(ctx, tx, fact)
 	if err != nil || result.Refusal != nil || result.Unspent || result.Duplicate || e.noFixRule {
 		return result, err
 	}
@@ -259,7 +259,9 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	return result, nil
 }
 
-func (e *Engine) handle(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+// apply is the handler of each fact the workflow takes, one case for each fact type, which a test
+// of the end of a step's run reads from this file (admit's TestEveryWayOutOfAStepEndsItsRun).
+func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	// An architect's request is judged again on the record as the fact reads it before its
 	// handler runs (requestRefusal); its refusal writes nothing and is left unspent.
 	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
