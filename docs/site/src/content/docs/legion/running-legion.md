@@ -33,7 +33,7 @@ Dispatch resolved it when the daemon read the issue (its event, or a listing of 
 its default branch as GitHub names it, when it first records the issue.
 A change of the issue's own repository sends an event, and once the daemon has applied that event, no listing read before it records the issue: when the daemon applies the edit's event before it records the issue, the edit is applied, and the issue is recorded where Dispatch resolves it at that event or later.
 The daemon prepares an event, GitHub's answers for its repository included, before it applies it, so a listing read before the edit can still record the issue while the edit's event is being prepared.
-Then the issue is recorded on the repository that listing showed, and the edit's own event, prepared while the issue had no record, read nothing of GitHub for a correction, so it moves the record nowhere and says nothing on the issue: the record takes the edit at the next pass that reads it, as below.
+Then the issue is recorded on the repository that listing showed, and the edit's own event, prepared while the issue had no record, carries no read of GitHub for the repository the edit names: when it applies, it moves the record nowhere and says nothing on the issue, and the daemon reads that issue again from Dispatch's listing and GitHub, as it does when GitHub does not answer a pass (below), with no other event of the issue and no restart, and applies the edit from what GitHub answers then.
 The record follows Dispatch: a later change of the issue's repository is applied in the next pass that reads it,
 which is a live Dispatch event of the issue, a hand-over, or the pass over every recorded issue
 that runs once the daemon's boot is over. Each such pass reads both role Apps' installations on

@@ -97,6 +97,41 @@ func TestAnEditOfARecoveredIssuesRepositoryIsFollowedOnceGitHubAnswers(t *testin
 	}
 }
 
+// The order between the two above: the edit's event is prepared while the issue has no record,
+// and the held recovery's listing, read before the edit, records the issue on zeta/tools before
+// that event applies. A preparation of an issue with no record reads GitHub for no correction and
+// stamps no record (intake.DispatchIssue.PreparedAgainst), so when the event applies, its change
+// onto orbit/gadgets writes nothing (workflow.Resolution.Unread), and the engine asks a follow of
+// the issue at the event's commit, which reads Dispatch's listing and GitHub and moves the record
+// onto orbit/gadgets, with no further event of the issue, no boot and nothing said on it. Before,
+// that event asked no follow, and the record stayed on zeta/tools until the issue's next event or
+// the next boot.
+func TestAnEditPreparedBeforeARecoveryRecordedTheIssueIsFollowed(t *testing.T) {
+	const key = "LEGION-1803"
+	h := newHeldEditRecovery(t, key)
+	h.installs.setFailing(nil, "implement orbit/gadgets")
+	edit := issue(key, "orbit/gadgets", "todo", true, "", 2)
+	prepared := prepareEvent(t, h.w, h.client, edit)
+	if prepared.PreparedAgainst != "" || prepared.RepositoryRead != nil {
+		t.Fatalf("the edit prepared while %s had no record = %+v, want no stamp of a record and no read for a correction", key, prepared)
+	}
+	h.installs.setFailing(nil, "implement zeta/tools")
+	h.release()
+	testwait.Eventually(t, key+" recorded by the held recovery's listing", func() bool { return recordedIssue(t, h.w, key) != nil })
+	if got := recordedIssue(t, h.w, key); got.Repo != "zeta/tools" || got.LastDispatchSeq != 1 {
+		t.Fatalf("%s is %s, want the held recovery's listing, read before the edit, to record it on zeta/tools at sequence 1",
+			key, recordedAs(t, h.w, key))
+	}
+	applyEvent(t, h.w, edit, prepared)
+	testwait.Eventually(t, key+" on orbit/gadgets with no further event of it and no boot", func() bool {
+		got := recordedIssue(t, h.w, key)
+		return got != nil && got.Repo == "orbit/gadgets"
+	})
+	if got := recordedIssue(t, h.w, key); got.LastDispatchSeq != 2 || repoNoteOf(t, h.w, key) != nil {
+		t.Fatalf("%s is %s, want it on orbit/gadgets at sequence 2, the edit, with no repository note", key, recordedAs(t, h.w, key))
+	}
+}
+
 // A child's own event that the daemon applies while the child's parent is unrecorded records
 // nothing, and nothing but a listing records the child after its parent is recorded
 // (applySummary). Here GitHub has answered for zeta/tools again and the recovery pass that

@@ -2952,13 +2952,14 @@ func (w *workflowRuntime) requestFollow() {
 // requestFollowOf asks the refresher for a follow of the recorded issue key alone: an event's or
 // a hand-over's preparation whose correction's reads GitHub did not answer (prepareIssue,
 // prepareHandover), the engine at the commit of a fact whose correction it did not write because
-// the record moved after the fact was prepared (workflow.Config.FollowIssue), and the refresher's
-// backfill for each record it filled (backfillLater). Each leaves a record that can hold another
-// repository than Dispatch resolves the issue to — a correction that wrote nothing, or a fill
-// from a listing read before an event that wrote nothing — so without the follow nothing in the
-// running process would read the change again until the issue's next event or the next boot. The
-// follow reads that issue alone, so it reads no other issue's waiting change sooner than that
-// issue's own next event or the next boot would.
+// the record moved after the fact was prepared or because the fact was prepared while the issue
+// had no record and read GitHub for no correction (workflow.Config.FollowIssue), and the
+// refresher's backfill for each record it filled (backfillLater). Each leaves a record that can
+// hold another repository than Dispatch resolves the issue to — a correction that wrote nothing,
+// or a fill from a listing read before an event that wrote nothing — so without the follow
+// nothing in the running process would read the change again until the issue's next event or the
+// next boot. The follow reads that issue alone, so it reads no other issue's waiting change sooner
+// than that issue's own next event or the next boot would.
 //
 // A key no owed follow covers yet wakes the refresher, which follows it at once. A key already
 // covered (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass

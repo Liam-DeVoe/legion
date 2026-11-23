@@ -904,6 +904,13 @@ func (d *repositoryDispatch) show(issues ...dispatch.Issue) {
 // prepares and applies one through w's handlers.
 func deliver(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue dispatch.Issue) {
 	t.Helper()
+	applyEvent(t, w, issue, prepareEvent(t, w, client, issue))
+}
+
+// prepareEvent shows issue in Dispatch and prepares its event, at its sequence, as the Dispatch
+// consumer does, for applyEvent to apply.
+func prepareEvent(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue dispatch.Issue) intake.DispatchIssue {
+	t.Helper()
 	client.show(issue)
 	fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Type: "issue.updated", Status: issue.Status, Title: issue.Title, Rank: issue.Rank,
 		Parent: parentKey(issue.Parent), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
@@ -911,6 +918,12 @@ func deliver(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue
 	if err != nil {
 		t.Fatal(err)
 	}
+	return prepared
+}
+
+// applyEvent applies prepared, the event of issue prepareEvent prepared, through w's handlers.
+func applyEvent(t *testing.T, w *workflowRuntime, issue dispatch.Issue, prepared intake.DispatchIssue) {
+	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", fmt.Sprintf("%s-%s-%d", issue.Key, issue.Status, issue.LastSeq), prepared, w.handlers...); err != nil {
 		t.Fatal(err)
 	}
