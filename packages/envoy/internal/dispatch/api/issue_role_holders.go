@@ -59,8 +59,8 @@ import (
 
 // issueRoleHolder is one pair of a publication: a role of the issue and the session that holds it.
 // Both are required: the route refuses a pair that leaves either out. The role is one of Legion's
-// six or a role the deployment defines, a name of the role grammar but the controller's
-// (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
+// six, a role the deployment defines or a role the issue's plan defines, a name of the role grammar
+// but the controller's (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
 type issueRoleHolder struct {
 	Role    string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session string `json:"session" required:"true"`
@@ -75,8 +75,8 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionclaim.Roles, which is the order the workflow reaches them, then every role the
-// deployment defines by name. An issue where no session holds a role answers [].
+// the order of legionclaim.Roles, which is the order the workflow reaches them, then every other
+// role by name. An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
 	Holders []issueRoleHolderRecord `json:"holders"`
@@ -172,7 +172,8 @@ const maxRoleHolderSessionBytes = 256
 // the pairs that are not stored yet. A pair that changed is deleted before the insert, so the insert
 // meets neither key of the table, and a pair that did not change keeps its recorded_at. The body is
 // checked whole before the transaction opens: each role is a role of an issue
-// (legionclaim.IsRole: one of Legion's six or a role the deployment defines), once, and each
+// (legionclaim.IsRole: one of Legion's six, a role the deployment defines or a role the issue's
+// plan defines), once, and each
 // session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A body
 // that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or
 // an index of the table, whose check takes the same roles.
@@ -205,7 +206,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	for index, holder := range holders {
 		if !legionclaim.IsRole(holder.Role) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
-				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, or a role the deployment defines.",
+				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, a role the deployment defines, or a role the issue's plan defines.",
 				holder.Role, legionclaim.RolePattern, strings.Join(legionclaim.Roles, ", ")))
 			return
 		}
