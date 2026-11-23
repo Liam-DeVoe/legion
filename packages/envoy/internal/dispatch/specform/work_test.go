@@ -161,31 +161,38 @@ func workRows(race bool) []workRow {
 // whole sentence for each word of it, first passed it at 90 (46.4; 28.5 at 64), so its n is 180,
 // where the smaller window lasts about 110 ms unbroken; and many findings whose two places a run
 // of open quoted sentences joins, whose walk, each sentence between read with no charge, first
-// passed it at 64 (32.7; 29.2 at 45), so its n is 128. The types hold the third walk's charge (no
+// passed it at 64 (32.7; 29.2 at 45), so its n was 128. The types hold the third walk's charge (no
 // code of the judge reads a sentence but through charge.Texts.Read), so its break loosens them.
 // At those n each of the three walks, broken in turn, failed its row in 5 of 5 runs, 38.3, 83.7
 // and 40.9 times or more; the second also fails the first row (119.9 times), and the first and
-// the third fail no other of the three rows. A walk that the types cannot hold, a look at each
-// sentence of the text through its charge for each finding that holding looks for, costs a step for
-// each sentence also after the charge refuses it, a few nanoseconds, so its row needs many
-// sentences that cost little else: many findings, each beside ten sentences that hold none. Its n
-// was found in the same way, on the machine of 288 cores at a load average of about 1,000: that
-// walk, written into holding, first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is
-// 1,448, where the smaller window lasts about 10 s unbroken, the longest of the table. At 1,448
-// that walk failed the row in 5 of 5 runs, 37.0 times or more, and the row grows 16.4 times
-// unbroken. A copy of a sentence kept in a field of the judge, read again later, is read outside
-// the charge, and no type can stop a new field from keeping one (charge), so the walk of such a
-// copy for each finding has a row: many findings of one claim whose words one sentence after them
-// holds in code font, the shape of the charge's second row as a claim. Its n was found in the same
-// way, on the machine of 288 cores at a load average of about 150: that walk, the sentences where a
-// finding's words stand and it does not each read for its Spread from a copy of the sentences kept
-// in a field of wholeText, once for each finding, first passed the bound at 45 (34.1; 27.1 at 32),
-// so its n is 90, where the smaller window lasts about 500 ms unbroken and the row grows 15.5 times.
-// At 90 that walk failed the row in 5 of 5 runs, 54.6 times or more, and the row grew 16.3 to 17.9
-// times unbroken; the same walk through the charge passes it (17.4), and with the charge taken out
-// the row fails (235.6). The walk of every word of every sentence from such a copy for each finding
-// (the acceptance's sb-holding-fields) passes this row (22.7 to 25.8 in 5 runs) and fails the row
-// of many findings beside ten sentences each (140.5 times) and the row of runs (33.0).
+// the third fail no other of the three rows. The third walk read from a copy of the sentences'
+// records kept in a field of wholeText (the acceptance's fieldcopy-runs), which costs less for each
+// sentence, passed the row at 128 (28.5 to 31.3) and first passed the bound at 256 (40.5; 31.5 at
+// 181, on the machine of 288 cores at a load average of about 230), so the row's n is 512, where it
+// grows 16.4 times unbroken. A walk that the types cannot hold, a look at each sentence of the text
+// through its charge for each finding that holding looks for, costs a step for each sentence also
+// after the charge refuses it, a few nanoseconds, so its row needs many sentences that cost little
+// else: many findings, each beside ten sentences that hold none. Its n was found in the same way,
+// on the machine of 288 cores at a load average of about 1,000: that walk, written into holding,
+// first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is 1,448, where the smaller window
+// lasts about 10 s unbroken, the longest of the table. At 1,448 that walk failed the row in 5 of 5
+// runs, 37.0 times or more, and the row grows 16.4 times unbroken. A copy of a sentence kept in a
+// field of the judge, read again later, is read outside the charge. The judge's fields hold no text
+// of a sentence, which a test of their types holds (TestTheJudgeKeepsNoTextOfASentenceInAField),
+// but no type can tell a copy of what a reading gave as counts or flags from what the judge keeps
+// of the split of its text, so the walk of a copy for each finding has a row in changedRuns (the
+// row of runs, above) and one in holding: many findings of one claim whose words one sentence after
+// them holds in code font, the shape of the charge's second row as a claim. Its n was found in the
+// same way, on the machine of 288 cores at a load average of about 150: that walk, the sentences
+// where a finding's words stand and it does not each read for its Spread from a copy of the
+// sentences kept in a field of wholeText, once for each finding, first passed the bound at 45
+// (34.1; 27.1 at 32), so its n is 90, where the smaller window lasts about 500 ms unbroken and the
+// row grows 15.5 times. At 90 that walk failed the row in 5 of 5 runs, 54.6 times or more, and the
+// row grew 16.3 to 17.9 times unbroken; the same walk through the charge passes it (17.4), and with
+// the charge taken out the row fails (235.6). The walk of every word of every sentence from such a
+// copy for each finding (the acceptance's sb-holding-fields) passes this row (22.7 to 25.8 in 5
+// runs) and fails the row of many findings beside ten sentences each (140.5 times) and the row of
+// runs at its n of 128 (33.0).
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -409,7 +416,7 @@ func workTable() []workRow {
 				}
 				return text.String() + "It logs" + strings.Repeat(" `Web.Config`", n) + " today."
 			})},
-		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 128,
+		{"many findings whose two places a run of open quoted sentences joins", ruleStopNoSpace, 512,
 			built(KindClaim, func(n int) string {
 				var text strings.Builder
 				text.WriteString("It starts.")
