@@ -46,9 +46,7 @@ export function inboxEntryState(state: unknown): InboxEntryState {
   };
 }
 
-/** How a selection is written to the address: over the entry it is on (`replace`), over it as
- *  the column's own default (`auto`), or as a new entry over the list's (`push`). */
-type SelectMode = "auto" | "push" | "replace";
+type SelectMode = "column-default" | "push" | "replace";
 
 export interface PaneSelectionOptions {
   /** How many rows a bulk snooze is deferring; zero while none is out. */
@@ -175,15 +173,9 @@ export function usePaneSelection({
    *  browser's `history.go` lands a frame or more later, so until it does the address still
    *  names the row the reader closed: read as a new address, it would select that row again. */
   const leaving = useRef<string | undefined>(undefined);
-  /** Whether the list has answered at all: `showing` runs only once the Inbox's read has landed,
-   *  so from then on an empty `listedRows` is a list that holds nothing, not one still loading. */
   const listAnswered = useRef(false);
 
   const select = (id: string | undefined, mode: SelectMode = "replace"): void => {
-    // Below the column's width, nothing selected on an entry `open` pushed over the list's own
-    // is that list: back through the entry, rather than writing the list a second entry the next
-    // Back would only land on again. The view stays as it is until the step lands, so nothing is
-    // drawn for an address it is about to leave.
     if (!columns && id === undefined && entry.inboxOverList === true) {
       if (leaving.current !== location.key) {
         leaving.current = location.key;
@@ -194,16 +186,13 @@ export function usePaneSelection({
     setSelectedId(id);
     selectedNow.current = id;
     shownItem.current = id;
-    // A row stays on the entry `open` pushed while the view walks to the next one, so the way
-    // back still knows where the list is; the column's own pick says so, so the narrow widths
-    // do not read it as the reader's.
     const written: InboxEntryState =
       mode === "push"
         ? { inboxOverList: true }
         : id === undefined
           ? {}
           : inboxEntryState({
-              inboxDefaultPick: mode === "auto",
+              inboxDefaultPick: mode === "column-default",
               inboxOverList: entry.inboxOverList,
             });
     if (
@@ -358,17 +347,12 @@ export function usePaneSelection({
       if (selectedId !== undefined) setSelectedId(undefined);
       return;
     }
-    // A row the column chose by itself is no row the reader opened: below the column's width -
-    // a window made narrower, a tablet turned - the list shows, and the address drops the row.
     if (!columns && entry.inboxDefaultPick === true) {
       select(undefined);
       return;
     }
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
-    // address: `?item=` is left unread until there are rows to read it against. Below the
-    // column's width, once the list has answered and holds nothing, the row the address names
-    // cannot be shown: the view gives way to the list, so the address names nothing gone and the
-    // page's own keys work again - unless the view is keeping a question for an unsent answer.
+    // address: `?item=` is left unread until there are rows to read it against.
     if (listedRows.current.length === 0) {
       if (
         !columns &&
@@ -408,13 +392,11 @@ export function usePaneSelection({
     const next = nextAfterSelected();
     const first = visible[0];
     if (visible.some((placed) => rowId(placed.row) === next)) {
-      // The column handing on a row it picked by itself is still the column's own pick, so the
-      // narrow widths do not read the next row as one the reader opened either.
-      select(next, entry.inboxDefaultPick === true ? "auto" : "replace");
+      select(next, entry.inboxDefaultPick === true ? "column-default" : "replace");
       return;
     }
     if (columns && first !== undefined) {
-      select(rowId(first.row), "auto");
+      select(rowId(first.row), "column-default");
       return;
     }
     select(undefined);

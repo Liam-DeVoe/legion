@@ -17,7 +17,7 @@ import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { LabelPill } from "../../components/Pill";
+import { LabelPill, pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import { capSearchQuery } from "../../lib/query-param";
 import {
@@ -110,11 +110,7 @@ function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
   const agentText = useAgentText();
   if (ask.waiting_on === "human" && ask.last_reply?.author.kind === "session") {
     return (
-      <span
-        className={`inline-flex min-w-0 max-w-[40%] shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`}
-        data-inbox-reply-chip=""
-      >
-        {/* One span, so the ellipsis has one line of text to end: the name and "replied". */}
+      <span className={`${pillClassName("label")} min-w-0 max-w-[40%]`} data-inbox-reply-chip="">
         <TruncatedText title={`${agentText.label(ask.last_reply.author)} replied`}>
           <AgentName actor={ask.last_reply.author} inline /> replied
         </TruncatedText>
@@ -130,13 +126,9 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
 
-/** The Snooze of the row in hand: the reading column's or view's head draws it, and `h` on a
- *  short row below 1280 px opens that row's view and lands there. */
 const SNOOZE_SELECTOR = "[data-inbox-snooze]";
 
-/** Where the reading view below 1280 px takes the reader once it has drawn: the element `find`
- *  names in the view, or null while the view has not drawn it, and what `act` does there. */
-interface Landing {
+interface ReadingViewTarget {
   act: (element: HTMLElement) => void;
   find: (view: HTMLElement) => HTMLElement | null;
 }
@@ -146,8 +138,10 @@ const inView =
   (selector: string) =>
   (view: HTMLElement): HTMLElement | null =>
     view.querySelector<HTMLElement>(selector);
-/** A row opened by a click or Enter lands on the view's scroller. */
-const SCROLLER_LANDING: Landing = { act: focusOn, find: inView(PANE_SCROLLER_SELECTOR) };
+const READING_VIEW_SCROLLER_TARGET: ReadingViewTarget = {
+  act: focusOn,
+  find: inView(PANE_SCROLLER_SELECTOR),
+};
 
 /** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
  *  behind in its compact variant - the card a decision block hosts, which is what the reading
@@ -518,9 +512,6 @@ function InboxCardRow({
           <InboxOwnerLink ask={ask} rowOwner />
           <InboxRowChip ask={ask} />
         </div>
-        {/* `max-w-full` bounds the group to the row: a server's own refusal reason -
-            `snoozed_until must be in the future`, or anything longer - would otherwise set the
-            group's width and widen the whole document past the viewport on a phone. */}
         <div
           className="flex min-w-0 max-w-full flex-wrap items-center gap-1 pl-6"
           data-inbox-card-actions=""
@@ -1008,19 +999,11 @@ export function Inbox({
   /** Below 1280 px on the page: whether a row's reading view stands in the list's place. The
    *  list is the level out of it, so Escape and the view's own Inbox control go back there. */
   const reading = paneShown && !columns;
-  /** Where in the reading view the reader's last pick below 1280 px still has to land, or null
-   *  once it has: the row they picked is hidden with the list, so the first commit whose view has
-   *  drawn that element hands the reader to it (the layout effect below). The view's scroller for
-   *  a click or Enter, where the next Enter reaches the answer box as it does beside the list;
-   *  its head's Snooze for `h`; its head's copy control for `y`; the card's option for `1`-`9`. */
-  const focusReadingView = useRef<Landing | null>(null);
-  /** The reader's own pick of a row - its click, Enter, `h`, `y` or `1`-`9` on it below 1280 px. */
-  const openRow = (id: string, landing: Landing = SCROLLER_LANDING) => {
-    if (!columns) focusReadingView.current = landing;
+  const pendingReadingViewTarget = useRef<ReadingViewTarget | null>(null);
+  const openRow = (id: string, target: ReadingViewTarget = READING_VIEW_SCROLLER_TARGET) => {
+    if (!columns) pendingReadingViewTarget.current = target;
     paneSelection.open(id);
   };
-  /** Below 1280 px with no row open, the focused short row's id when it is a question whose card
-   *  offers options to pick: what `1`-`9` open and pick in. */
   const focusedAskWithOptions = (): string | undefined => {
     const row = handRow();
     return row?.kind === "ask" && row.ask.kind !== "approval" && (row.ask.options?.length ?? 0) > 0
@@ -1337,9 +1320,6 @@ export function Inbox({
       label: `Select option 1–9 of the ${acted} ask`,
       run: (event) => {
         const index = Number(event.key) - 1;
-        // Below 1280 px with no row open the focused short row draws no options: its view does,
-        // so the key opens the row and picks the option there once the card is drawn, and lands
-        // on the view's scroller where the card has fewer options than the key.
         if (pane && !paneShown) {
           const id = focusedAskWithOptions();
           if (id === undefined) return;
@@ -1376,8 +1356,7 @@ export function Inbox({
       id: "copy-ref",
       keys: "y",
       // An Agent row has no reference of its own - its thread is a message to a session - so
-      // it draws no copy control and this stands down on it. Below 1280 px an ask's short row
-      // draws none either: its view's head does, so the key opens the row and copies there.
+      // it draws no copy control and this stands down on it.
       label: `Copy the ${acted} row's reference`,
       run: () => {
         const id = focusedRow()?.dataset.inboxRow;
@@ -1518,9 +1497,6 @@ export function Inbox({
           bulkPicker()?.focus();
           return;
         }
-        // Below 1280 px with no row open the focused short row carries no Snooze of its own, as
-        // the card in its row used to: its view does, in its head, so the key opens the row and
-        // lands there.
         if (pane && !paneShown) {
           const id = focusedRow()?.dataset.inboxRow;
           if (id !== undefined) openRow(id, { act: focusOn, find: inView(SNOOZE_SELECTOR) });
@@ -1548,8 +1524,7 @@ export function Inbox({
       label: "Back to the list from the bulk snooze picker",
       run: () => {
         // With every marked row gone there is no row to return to, so the bar itself is the
-        // level out: it holds the count and the way to clear it. Below 1280 px with a row's view
-        // open, the list is hidden behind it, and the view is where the reader came from.
+        // level out: it holds the count and the way to clear it.
         (reading
           ? (paneScroller() ?? bulkBarRef.current)
           : (originRow(pickerOrigin.current) ?? rows()[0] ?? bulkBarRef.current)
@@ -1606,18 +1581,18 @@ export function Inbox({
   // target, and never on the Inbox control in its place, whose own Enter closes the view. A
   // reader who has put the focus somewhere of their own meanwhile keeps it there.
   useLayoutEffect(() => {
-    const target = focusReadingView.current;
+    const target = pendingReadingViewTarget.current;
     const view = paneRef.current;
     if (target === null || view === null) return;
     const land = (): boolean => {
       const active = document.activeElement;
       if (active !== null && active !== document.body && rowAround(active) === null) {
-        focusReadingView.current = null;
+        pendingReadingViewTarget.current = null;
         return true;
       }
       const element = target.find(view);
       if (element === null) return false;
-      focusReadingView.current = null;
+      pendingReadingViewTarget.current = null;
       target.act(element);
       return true;
     };
