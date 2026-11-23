@@ -9,8 +9,8 @@ body: |-
   `rerun_child` on a child in `backlog` or `icebox`, the reopen of an issue its merge closed, and a
   person's `todo` on an issue the release before left at phase `done` open a new run from the first
   phase; an issue that held its own design gate starts its architect again on that new run. No
-  tree lingers: the `linger_hours` key is refused, with the reason, and a stop of a root no longer
-  waits for a deadline.
+  tree lingers: a stop of a root waits for no deadline, and a `linger_hours` key in `legion.yaml`
+  is read for nothing and warned about, with the reason.
 time: 2026-11-22T22:26:12Z
 custom:
     Issue: pr4596

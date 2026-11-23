@@ -30,12 +30,21 @@ func architectOf(t *testing.T, key string) claim.Token {
 	return token
 }
 
-// landClose applies Dispatch's event of key closed at done, as the echo of the daemon's close
-// brings it, and mirrors it, keeping the parent the copy holds for key; the record then holds the
-// status, as admission's observation of the event writes it after the engine's handler (admit's
-// recordObservation), which these tests' admission stub does not. The boot's open of each run no
-// start counted comes before it, as before every fact applyFacts applies.
+// landClose applies Dispatch's event of key closed at done, written by a person, which lands a
+// close the daemon queued as that close's echo does (closeLanded), and mirrors it, keeping the
+// parent the copy holds for key; the record then holds the status, as admission's observation of
+// the event writes it after the engine's handler (admit's recordObservation), which these tests'
+// admission stub does not. The boot's open of each run no start counted comes before it, as before
+// every fact applyFacts applies.
 func landClose(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+	t.Helper()
+	landCloseBy(t, pool, engine, key, false)
+}
+
+// landCloseBy is landClose with the event's author: the daemon (daemon true), whose own close
+// Dispatch echoes as an event of the daemon's session (intake.DispatchIssue.DaemonActor), or a
+// person.
+func landCloseBy(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, daemon bool) {
 	t.Helper()
 	issue := storedIssue(t, pool, key)
 	var parent string
@@ -44,7 +53,7 @@ func landClose(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	}
 	bootBefore(t, pool, engine)
 	applyMirrored(t, pool, engine, key+"-done", intake.DispatchIssue{Key: key, ResolvedRepo: issue.Repo, Seq: issue.LastDispatchSeq + 1,
-		Type: "issue.closed", Status: "done", Title: issue.Title, Parent: parent, Rank: issue.Rank})
+		Type: "issue.closed", Status: "done", Title: issue.Title, Parent: parent, Rank: issue.Rank, DaemonActor: daemon})
 	if _, err := pool.Exec(t.Context(), "update issues set status = 'done', dispatch_status = 'done' where key = $1", key); err != nil {
 		t.Fatalf("record the observation of %s at done: %v", key, err)
 	}
@@ -138,6 +147,34 @@ func TestCloseRootWaitsForEveryChildDone(t *testing.T) {
 	root = storedIssue(t, pool, "LEGION-1")
 	if root.Phase != phase.Done || root.PendingClose != nil {
 		t.Fatalf("the root once Dispatch shows done = phase %s, pending %+v; want done with no close pending", root.Phase, root.PendingClose)
+	}
+	assertOutboxCount(t, pool, "issue_suspend", 1)
+}
+
+// The echo of the daemon's own close lands it while the close's own row is still in the outbox:
+// Dispatch publishes the event of the write before the outbox has finished the row that made it,
+// and the consumer can apply that event first. A close is counted on no record before Dispatch
+// shows it (writeClose), so its echo is no earlier step the record has passed, as the echo of a
+// write the record counted is while a later write is queued (dispatchIssue): the root moves to
+// phase done and leaves, as it does on a person's done, since the daemon acts on a close once
+// Dispatch shows the issue done (R20 and R24 of dispatch://INFRA-3320).
+func TestTheEchoOfTheDaemonsCloseLandsItWhileItsRowIsStillQueued(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1",
+		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}); result.Refusal != nil {
+		t.Fatalf("close_root refused: %+v", result.Refusal)
+	}
+	if got := statusWritesOf(t, pool, "LEGION-1"); !slices.Equal(got, []string{"done"}) {
+		t.Fatalf("status writes of LEGION-1 = %v, want the close's row still queued as its echo arrives", got)
+	}
+
+	landCloseBy(t, pool, engine, "LEGION-1", true)
+	root := storedIssue(t, pool, "LEGION-1")
+	if root.Phase != phase.Done || root.PendingClose != nil {
+		t.Fatalf("the root once Dispatch echoes the daemon's close = phase %s, pending %+v; want done with no close pending", root.Phase, root.PendingClose)
 	}
 	assertOutboxCount(t, pool, "issue_suspend", 1)
 }

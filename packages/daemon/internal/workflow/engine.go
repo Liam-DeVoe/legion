@@ -474,8 +474,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// in_progress of the first phase it started, so the earlier one's event takes only Dispatch's
 	// view and the record keeps its own status (keepStatus). Once no write of the issue is queued, an
 	// event the daemon authored is taken as any other: the children Dispatch moved under a status
-	// change's option are counted by nothing but their entries and their events.
-	if fact.DaemonActor && !fact.StatusMove {
+	// change's option are counted by nothing but their entries and their events. The echo of the
+	// daemon's own close is no step the record has passed, since a close is counted on no record
+	// before Dispatch shows it (writeClose), and Dispatch publishes that event before the outbox
+	// finishes the close's own row: it lands the close (closeLanded) whatever is still queued (R24
+	// of dispatch://INFRA-3320).
+	if fact.DaemonActor && !fact.StatusMove && !(fact.Status == "done" && issue.PendingClose != nil) {
 		queued, err := e.store.StatusWriteQueued(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err

@@ -1,8 +1,9 @@
 kind: Changed
 body: |-
-  The daemon's own status writes follow Dispatch's parent rule. It writes a status through
-  Dispatch's status-change route with a request key, at the Dispatch sequence it read, and only
-  once its record has read Dispatch's events up to that sequence. A close of an issue waits until
+  The daemon's own status writes follow Dispatch's parent rule. Each is written at the Dispatch
+  sequence it read, once its record has read Dispatch's events up to that sequence; a write that
+  carries `include_children`, `unlink_children` or `include_parent` goes through Dispatch's
+  status-change route with a request key. A close of an issue waits until
   each child of it is `done` in Dispatch, and a merged issue with a child that is not `done` waits
   in `merging`, its architect told once by `pr-merged`. A refused close changes nothing and is
   written again once the children are done. A `403 LEGION_STATUS_SCOPE_REQUIRED` keeps the write
