@@ -75,6 +75,7 @@ const REQUIRED_CATEGORIES = [
   "scheme-not-a-scheme",
   "html-reference-full-width",
   "reference-depth",
+  "field-length",
 ];
 
 interface RemoteRow {

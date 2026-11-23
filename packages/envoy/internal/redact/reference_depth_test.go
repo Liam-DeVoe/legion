@@ -76,8 +76,10 @@ const readBound = 20 * time.Second
 // reads one level per pass, each pass the field's whole length, a time quadratic in it. Each of
 // the rule's decodings, Remote's step 0 and UnescapeHTML, makes at most redact.ReferencePasses+1
 // passes, so each field below, 256 KiB to 2 MiB (the review timed 64 KiB and 32 KiB), reads
-// within readBound, and Remote answers it is not readable. Each read runs in a goroutine of its
-// own, so a read past the bound fails its row at the bound.
+// within readBound, and Remote answers it is not readable. Remote's two fields are no longer than
+// redact.FieldLimit, so its passes read them; a longer field it refuses unread
+// (TestAFieldLongerThanTheLimitIsRefusedInBoundedTime). Each read runs in a goroutine of its own,
+// so a read past the bound fails its row at the bound.
 func TestNestedReferencesAreReadInBoundedTime(t *testing.T) {
 	ampSemicolon := func(size int) string { return "&" + strings.Repeat("amp;", size/4) }
 	legacyAmp := func(size int) string { return "&" + strings.Repeat("amp", size/3) + ";" }
@@ -93,7 +95,7 @@ func TestNestedReferencesAreReadInBoundedTime(t *testing.T) {
 		read, shape, field string
 		check              func(string) string
 	}{
-		{"Remote", "&amp;amp;...", ampSemicolon(1 << 20), remote},
+		{"Remote", "&amp;amp;...", ampSemicolon(redact.FieldLimit - 4), remote},
 		{"Remote", "&ampamp...;", legacyAmp(256 << 10), remote},
 		{"UnescapeHTML", "&amp;amp;...", ampSemicolon(2 << 20), unescape},
 		{"UnescapeHTML", "&ampamp...;", legacyAmp(1 << 20), unescape},

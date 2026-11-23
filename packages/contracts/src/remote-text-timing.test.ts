@@ -3,10 +3,13 @@ import { expect, test } from "bun:test";
 // Another party writes the field, so a page or an answer can nest one reference as deep as its
 // length allows: `&amp;amp;amp;…` or `&ampampamp…;`, which a decoding until no reference is left
 // reads one level per pass, each pass the field's whole length, a time quadratic in it. The rule's
-// decoding (readRemoteText's step 0) makes at most REFERENCE_PASSES + 1 passes, so a 1 MiB field
-// reads within READ_BOUND_MS and is not readable. Each read runs in a worker of its own, which the
-// test ends when the bound passes, so a read past the bound fails at the bound. Go's
-// TestNestedReferencesAreReadInBoundedTime holds redact.Remote and redact.UnescapeHTML to the same.
+// decoding (readRemoteText's step 0) makes at most REFERENCE_PASSES + 1 passes, so a field of up
+// to 1 MiB, the longest the rule reads (FIELD_LIMIT), reads within READ_BOUND_MS and is not
+// readable; a longer field the rule refuses before any step reads it. Each read runs in a worker
+// of its own, which the test ends when the bound passes, so a read past the bound fails at the
+// bound. Go's TestNestedReferencesAreReadInBoundedTime holds redact.Remote and
+// redact.UnescapeHTML to the same, and TestAFieldLongerThanTheLimitIsRefusedInBoundedTime holds
+// redact.Remote to the limit.
 
 /** The rule's module, which each worker loads. */
 const RULE = new URL("./remote-text.ts", import.meta.url).href;
@@ -71,9 +74,11 @@ async function readsAsNotReadableWithin(field: string, boundMs: number): Promise
   }
 }
 
+// Each field is one reference short of 1 MiB, so it is no longer than FIELD_LIMIT and the rule's
+// passes read it.
 test.each([
-  ["&amp;amp;amp;…", `&${"amp;".repeat(SIZE / 4)}`],
-  ["&ampampamp…;", `&${"amp".repeat(Math.floor(SIZE / 3))};`],
+  ["&amp;amp;amp;…", `&${"amp;".repeat(SIZE / 4 - 1)}`],
+  ["&ampampamp…;", `&${"amp".repeat(Math.floor((SIZE - 2) / 3))};`],
 ])(
   "readRemoteText of a 1 MiB field nested as %s reads it as not readable within the bound",
   (_shape, field) => readsAsNotReadableWithin(field, READ_BOUND_MS),
@@ -93,4 +98,65 @@ test(
   () =>
     readsAsNotReadableWithin(`&${"amp".repeat(Math.floor((256 << 10) / 3))};`, LONG_NAME_BOUND_MS),
   60_000 + LONG_NAME_BOUND_MS + 10_000
+);
+
+/** How many times a worker of {@link timedRuleWorker} reads the field it is sent, and how long the
+ *  least of those reads may take: the least is the read's own cost, and what a busy box adds to one
+ *  read is not. */
+const LONG_FIELD_READS = 3;
+const LONG_FIELD_BOUND_MS = 20;
+
+/** A worker that loads the rule, says so, then reads each field it is sent LONG_FIELD_READS times
+ *  and answers what readRemoteText made of it and the least time one read took, so the time a
+ *  field takes to reach the worker is not counted. */
+function timedRuleWorker(): Worker {
+  const source = `import { readRemoteText } from ${JSON.stringify(RULE)};
+self.onmessage = (event) => {
+  let least = Number.POSITIVE_INFINITY;
+  let read;
+  for (let i = 0; i < ${LONG_FIELD_READS}; i++) {
+    const began = performance.now();
+    read = readRemoteText(event.data);
+    least = Math.min(least, performance.now() - began);
+  }
+  postMessage({ read: read ?? null, least });
+};
+postMessage("ready");`;
+  return new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+}
+
+/** The length of each field longer than the limit: githubrest reads answers of up to 64 MiB. */
+const LONG_FIELD = 64 << 20;
+
+// The rule reads no field longer than FIELD_LIMIT, so its read of a 64 MiB field of either shape
+// that costs it most per byte, one long numeric reference or one long name, stops at the limit.
+// Before the limit, at a load average of 110 to 130 on 288 CPUs, the least of three reads of these
+// fields took 1.16 s and 0.40 s, past the bound.
+test.each([
+  [
+    "one long numeric reference (&amp;amp;amp;amp;amp;&#000…01;)",
+    `&${"amp;".repeat(5)}&#${"0".repeat(LONG_FIELD)}1;`,
+  ],
+  ["one long name (&ampampamp…;)", `&${"amp".repeat(Math.floor(LONG_FIELD / 3))};`],
+])(
+  "readRemoteText of a 64 MiB field that is %s refuses it within the bound",
+  async (_shape, field) => {
+    const worker = timedRuleWorker();
+    try {
+      expect(await nextMessage(worker)).toBe("ready");
+      const read = nextMessage(worker, READ_BOUND_MS);
+      worker.postMessage(field);
+      const answer = await read;
+      expect(answer, `the reads did not answer within ${READ_BOUND_MS} ms`).not.toBe(
+        PAST_THE_BOUND
+      );
+      const { read: reading, least } = answer as { read: string | null; least: number };
+      console.log(`the least of ${LONG_FIELD_READS} reads took ${least.toFixed(3)} ms`);
+      expect(reading).toBeNull();
+      expect(least).toBeLessThanOrEqual(LONG_FIELD_BOUND_MS);
+    } finally {
+      worker.terminate();
+    }
+  },
+  60_000 + READ_BOUND_MS + 10_000
 );

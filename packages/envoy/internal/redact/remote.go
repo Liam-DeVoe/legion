@@ -12,10 +12,22 @@ import (
 // that is not clean prints in place of every word; cipheraddr.Address.Words prints both.
 const WordsNotReadable = "(not printed: the answer's words hold a URL the rule cannot read as clean)"
 
+// FieldLimit is the longest field, in bytes, the rule reads (Remote): a longer field is not
+// readable, so it prints as WordsNotReadable, and the status and the code beside it still print.
+// It is 1 MiB, the largest body any client here reads and then shows (githubapp's responseLimit:
+// TestAnErrorShowsGitHubsBodyToABound shows the start of such a body). Each step of the rule is
+// linear in the field. The slowest field of that length is one long numeric reference
+// (&amp;amp;amp;amp;amp;&#000...01;), whose digits each pass of decodeSeparators matches whole and
+// which cannot be cut short, since a page's reader reads &#0000047; with any number of zeros as
+// '/'. Its read took 0.47 s at a load average of 150 on 288 CPUs; a 64 MiB answer of that shape,
+// which githubrest reads, took 34 s at a load average of 110 to 130, and is now not read at all.
+const FieldLimit = 1 << 20
+
 // Remote is the rule for one field another party wrote - a refusal's words, a code, a body. It
 // fails closed: it answers the field with each URL's user information removed, each query and
 // fragment value removed (the names stay) and each bare query or fragment segment removed, and
-// true, only when it can read every URL in the field with certainty; otherwise "" and false.
+// true, only when it can read every URL in the field with certainty; otherwise "" and false. A
+// field longer than FieldLimit is not readable, before any step reads it.
 //
 // The grammar, applied to the field:
 //  0. A page can write a URL's separators as HTML character references and a field can write
@@ -86,6 +98,9 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 // value was removed can end in '=' with text after it. The TypeScript half is readRemoteText in
 // packages/contracts/src/remote-text.ts; both are held to the fixture at testdata/remote.json.
 func Remote(field string) (string, bool) {
+	if len(field) > FieldLimit {
+		return "", false
+	}
 	decoded, readable := decodeSeparators(field)
 	if !readable {
 		return "", false

@@ -3962,6 +3962,41 @@
       "production": "redact decodeSeparators (Remote's step 0), characterReference: a name of at most 32 letters, so no pass matches a name as long as the field"
     },
     {
+      "id": "field-length-at-limit-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/field-length-at-limit",
+      "production": "redact.Remote: a field of exactly redact.FieldLimit bytes is read"
+    },
+    {
+      "id": "field-length-past-limit-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/field-length-past-limit",
+      "production": "redact.Remote: a field longer than redact.FieldLimit is not readable, before any step reads it"
+    },
+    {
+      "id": "field-limit-refusal-at-limit",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestARefusalLongerThanTheFieldLimitPrintsItsStatusAndCodeAlone/at-limit",
+      "production": "redact.RemoteText from Answer.Decode: words of redact.FieldLimit bytes print as the rule reads them, beside the status and the code"
+    },
+    {
+      "id": "field-limit-refusal-past-limit",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestARefusalLongerThanTheFieldLimitPrintsItsStatusAndCodeAlone/past-limit",
+      "production": "redact.RemoteText from Answer.Decode: words longer than redact.FieldLimit print as redact.WordsNotReadable, and the status and the code still print"
+    },
+    {
+      "id": "field-limit-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestAFieldLongerThanTheLimitIsRefusedInBoundedTime",
+      "production": "redact.Remote: a 64 MiB field of one long numeric reference or one long name is refused at redact.FieldLimit"
+    },
+    {
       "id": "tokens-request",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
@@ -7749,6 +7784,34 @@
       "file": "packages/contracts/src/remote-text-timing.test.ts",
       "test": "readRemoteText of a 256 KiB field that is one long reference (&ampampamp…;) reads it as not readable within the bound",
       "production": "readRemoteText step 0, decodeSeparators, CHARACTER_REFERENCE: a name of at most 32 letters; the read stays linear in the field"
+    },
+    {
+      "id": "field-length-at-limit-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row field-length-at-limit reads as the fixture says",
+      "production": "readRemoteText: a field of exactly FIELD_LIMIT bytes of UTF-8 is read"
+    },
+    {
+      "id": "field-length-past-limit-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row field-length-past-limit reads as the fixture says",
+      "production": "readRemoteText: a field longer than FIELD_LIMIT bytes of UTF-8 is not readable, before any step reads it"
+    },
+    {
+      "id": "field-limit-bounded-numeric-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 64 MiB field that is one long numeric reference (&amp;amp;amp;amp;amp;&#000…01;) refuses it within the bound",
+      "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
+    },
+    {
+      "id": "field-limit-bounded-name-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 64 MiB field that is one long name (&ampampamp…;) refuses it within the bound",
+      "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
     },
     {
       "id": "tokens-shared-table-ts",

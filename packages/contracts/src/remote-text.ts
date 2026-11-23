@@ -124,12 +124,20 @@ function decodeSeparators(field: string): string | undefined {
   }
 }
 
+/** The longest field, in bytes of UTF-8, the rule reads: a longer field is not readable. Go's
+ *  `redact.FieldLimit`, whose comment says why it is 1 MiB. */
+const FIELD_LIMIT = 1024 * 1024;
+
+/** UTF-8, which the rule measures a field in ({@link FIELD_LIMIT}), as Go's `len` does. */
+const UTF8 = new TextEncoder();
+
 /**
  * The rule for one field another party wrote. It answers the field with each URL's user
  * information removed, each query and fragment value removed (the names stay), each bare query
  * or fragment segment removed and each path parameter's value removed (`;jsessionid=`), only when
- * it can read every URL in the field with certainty, and `undefined` otherwise. The grammar is
- * Go's `redact.Remote`, step for step:
+ * it can read every URL in the field with certainty, and `undefined` otherwise. A field longer
+ * than {@link FIELD_LIMIT} bytes is not readable, before any step reads it. The grammar is Go's
+ * `redact.Remote`, step for step:
  *  0. The field is first read with each full-width form of printable ASCII as that character and
  *     each HTML character reference of a URL's separator, or of its full-width form, as that
  *     separator, in at most {@link REFERENCE_PASSES} passes that change it
@@ -178,6 +186,9 @@ function decodeSeparators(field: string): string | undefined {
  * Its answer is not meant to be read by the rule again.
  */
 export function readRemoteText(field: string): string | undefined {
+  // A field of more UTF-16 code units than FIELD_LIMIT is longer than it in UTF-8 too, each code
+  // unit being at least one byte of UTF-8, so only a field of at most that many is encoded.
+  if (field.length > FIELD_LIMIT || UTF8.encode(field).length > FIELD_LIMIT) return undefined;
   const decoded = decodeSeparators(field);
   if (decoded === undefined) return undefined;
   if (decoded !== field) {

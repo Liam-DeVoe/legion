@@ -1,5 +1,5 @@
 {
-  "about": "Remote fields another party wrote, each with the result of the rule (redact.Remote in Go, readRemoteText in packages/contracts/src/remote-text.ts). A readable row prints as its printed; a row that is not readable prints as the not-readable marker. Every row comes in its raw form and in its Go-quoted form (-quoted). No printed holds any of its row's secrets; each secret is in its row's field. A row with a repeat writes its field with {repeat} where repeat.part stands repeat.count times over, and both replayers write it out before they read the row, so a field nested thousands of references deep stays one short line here. Every credential here is made up.",
+  "about": "Remote fields another party wrote, each with the result of the rule (redact.Remote in Go, readRemoteText in packages/contracts/src/remote-text.ts). A readable row prints as its printed; a row that is not readable prints as the not-readable marker. Every row comes in its raw form and in its Go-quoted form (-quoted). No printed holds any of its row's secrets; each secret is in its row's field. A row with a repeat writes its field with {repeat} where repeat.part stands repeat.count times over, and both replayers write it out before they read the row, so a field nested thousands of references deep, or one as long as the longest field the rule reads, stays one short line here. Every credential here is made up.",
   "not_readable": "(not printed: the answer's words hold a URL the rule cannot read as clean)",
   "rows": [
     {
@@ -1983,6 +1983,39 @@
       "field": "\"&amp;amp;amp;amp;ampCounterClockwiseContourIntegra;\"",
       "readable": false,
       "secrets": []
+    },
+    {
+      "id": "field-length-at-limit",
+      "category": "field-length",
+      "field": "https://issuer.example/path?access_token=not-a-secret-token{repeat}",
+      "repeat": { "part": "x", "count": 1048517 },
+      "readable": true,
+      "printed": "https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "field-length-at-limit-quoted",
+      "category": "field-length",
+      "field": "\"https://issuer.example/path?access_token=not-a-secret-token{repeat}\"",
+      "repeat": { "part": "x", "count": 1048515 },
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "field-length-past-limit",
+      "category": "field-length",
+      "field": "https://issuer.example/path?access_token=not-a-secret-token{repeat}",
+      "repeat": { "part": "x", "count": 1048518 },
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "field-length-past-limit-quoted",
+      "category": "field-length",
+      "field": "\"https://issuer.example/path?access_token=not-a-secret-token{repeat}\"",
+      "repeat": { "part": "x", "count": 1048516 },
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
     }
   ]
 }
