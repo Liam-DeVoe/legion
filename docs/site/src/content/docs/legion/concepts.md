@@ -18,9 +18,9 @@ section can use the words without stopping to explain them.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime each issue runs in a pod of its own, where every agent of that issue runs, from one
   published worker image. Each agent talks to the daemon over a connection its pod dials back, and
-  a controller the daemon launches runs in a pod of its own. Under the tmux runtime a phase
-  worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
-  work through the same `legion` tool and keeps its conversation the same way.
+  a controller the daemon launches runs in a pod of its own. Under either runtime a phase
+  worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`). It does the
+  same work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
