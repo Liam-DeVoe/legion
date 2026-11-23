@@ -1106,6 +1106,9 @@ export const CONTROL_LABELS = freeze({
    *  the list reads it as written. */
   open_history: "Open the issue's history in Details",
   open_collaborators: "Open the issue's collaborators in Details",
+  /** What the list of keys says of `t e`, which opens `/steps`, Details at the issue's steps
+   *  where today's page has its Steps tab (part N's R6, `useIssueKeymap.ts`). */
+  open_steps: "Open the issue's steps in Details",
   /** The node menu beside the presets, holding every document and artifact of the issue and
    *  the upload (R3). */
   other_nodes: "Files and documents",

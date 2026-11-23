@@ -6,7 +6,8 @@
  */
 
 import { expect, type Locator, type Page } from "@playwright/test";
-import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { CONTROL_LABELS, type Preset } from "../web/src/features/issue-page/page-words";
+import type { IssueRoute } from "../web/src/features/refs/routes";
 import { getIssue } from "./api";
 import { connectedDot, documentEditor } from "./editor";
 import { issuePage, openMenu, outlineControl } from "./issue-page";
@@ -847,3 +848,309 @@ export const AWAITING_THE_BOX: readonly string[] = [
   'button "Send"',
   'button "Messages default to Planner (issue layout)"',
 ];
+
+// ---------------------------------------------------------------------------------------------
+// INV-1: every address of today's page (part N's R6).
+// ---------------------------------------------------------------------------------------------
+
+/** The records of one seeded issue the addresses of `OLD_PAGE_ADDRESSES` are written with: the
+ *  whole issue's (`seedWholeIssue`), and what the row that walks them writes beside it. */
+export interface AddressSeed {
+  /** A thread an approval request opened on the spec, which the outline draws no node for, and
+   *  the spec whose approval the header draws. */
+  readonly approval: { readonly askId: string; readonly artifactId: string };
+  /** A comment an agent wrote outside every thread a person wrote in, a turn of the history. */
+  readonly agentsOnly: string;
+  /** The comment anchored in the spec, its node's words, and its id written short. */
+  readonly comment: { readonly id: string; readonly short: string; readonly words: string };
+  /** The id of no ask at all. */
+  readonly goneAsk: string;
+  readonly key: string;
+  /** The root message of the issue's conversation and its words. */
+  readonly message: { readonly id: string; readonly words: string };
+  /** The document a requirement of the spec cites, which no view opens: its slug, the words of
+   *  its one paragraph, and that paragraph's block, which no node of the outline holds. */
+  readonly notes: { readonly paragraph: string; readonly slug: string; readonly words: string };
+  /** The open question the spec's `ask` block was indexed into: its ask, the node the outline
+   *  draws for it, which is that block's, its words, and its id written short. */
+  readonly openQuestion: {
+    readonly askId: string;
+    readonly node: string;
+    readonly short: string;
+    readonly words: string;
+  };
+  /** A comment of another issue, which an address under this issue still names. */
+  readonly otherIssue: { readonly comment: string; readonly key: string; readonly words: string };
+  /** The plan's last task: the node the outline draws for its typed block, and that block. */
+  readonly planTask: { readonly block: string; readonly node: string };
+  /** The spec's slug and words its text holds. */
+  readonly spec: { readonly slug: string; readonly words: string };
+  /** A prefix two comments of the issue carry, and the two. */
+  readonly twins: { readonly ids: readonly string[]; readonly prefix: string };
+}
+
+/** What an address of today's page opens on the new page (INV-1), as the row reads it. */
+export type AddressContent =
+  /** That view on, with no document open in place of the outline. */
+  | { readonly kind: "view"; readonly preset: Preset }
+  /** The node menu, open. */
+  | { readonly kind: "node-menu" }
+  /** A document in place of the outline and of every view, drawing `words` of its text. */
+  | { readonly kind: "document"; readonly words: string }
+  /** That document opened at `block`, a block no node holds, on screen. */
+  | { readonly kind: "document-block"; readonly block: string; readonly words: string }
+  /** That document opened with the ask or comment `id` marked in it. */
+  | { readonly kind: "document-item"; readonly id: string }
+  /** A version of the view's document, pinned: the version control shows it. */
+  | { readonly kind: "version"; readonly version: number }
+  /** The filter by words, holding `words`. */
+  | { readonly kind: "words"; readonly words: string }
+  /** The outline, with `node`'s row focused, on screen, drawing `words` where they are given. */
+  | { readonly kind: "node"; readonly node: string; readonly words?: string }
+  /** The outline, with the first row of the issue's children focused, on screen. */
+  | { readonly kind: "children" }
+  /** Details, open at its history, at the issue's collaborators, or at its steps. */
+  | { readonly kind: "details"; readonly part: "collaborators" | "history" | "steps" }
+  /** Details' history, the turn `id` marked in it, drawing `words`; no row of the outline. */
+  | { readonly kind: "history-turn"; readonly id: string; readonly words: string }
+  /** The header's approval of the document `artifact`, focused. */
+  | { readonly kind: "approval"; readonly artifact: string }
+  /** The items a short id names, listed to choose from. */
+  | { readonly kind: "matches"; readonly ids: readonly string[] }
+  /** The page's line that the issue holds no such item, under `heading`. */
+  | { readonly kind: "not-found"; readonly heading: string }
+  /** The line that the item could not be read, with its Retry. */
+  | { readonly kind: "retry" }
+  /** The address replaced by `to`, which then opens `lands`: an id written short replaced by the
+   *  whole id, and another issue's item at that issue's address. */
+  | { readonly kind: "replaced"; readonly lands: AddressContent; readonly to: string };
+
+/** One address of today's page, and what it opens on the new page. */
+export interface AddressCase {
+  /** The address, on the issue `seed` holds. */
+  readonly address: (seed: AddressSeed) => string;
+  /** What it opens. */
+  readonly opens: (seed: AddressSeed) => AddressContent;
+  /** The read the row answers with a server error for this address alone: the lookup that
+   *  fails, by its URL. */
+  readonly unreadable?: (seed: AddressSeed) => (url: URL) => boolean;
+}
+
+/** The issue's own address on `seed`, with `rest` after it. */
+function issuePath(seed: AddressSeed, rest = ""): string {
+  return `/issues/${seed.key}${rest}`;
+}
+
+/**
+ * INV-1 (part N's R6): every address today's page answers, by the kind of route it parses to
+ * (`refs/routes.ts`), each with the content it opens on the new page. A kind added to
+ * `IssueRoute` fails the type check here until it has its addresses. The forms ride on the kind
+ * whose address carries them: `?q=`, `?ask=`, `?comment=` and a `#b-` of a typed block on the
+ * issue's own; `/spec?comment=` and `?v=` on the spec's; a `#b-` of a block of a document no view
+ * opens, and `?mark=`, on a document's; an id written short, an id that names several items, a
+ * gone id, a failed lookup, another issue's item and an approval request on an item's. Row (1)
+ * of `c-addresses`, "every address of the old page still resolves", walks it.
+ */
+export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly AddressCase[]>> = {
+  activity: [
+    {
+      address: (seed) => issuePath(seed, "/activity"),
+      opens: () => ({ kind: "details", part: "history" }),
+    },
+  ],
+  artifact: [
+    {
+      address: (seed) => issuePath(seed, `/artifacts/${seed.notes.slug}`),
+      opens: (seed) => ({ kind: "document", words: seed.notes.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/artifact/${seed.notes.slug}`),
+      opens: (seed) => ({ kind: "document", words: seed.notes.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/artifacts/${seed.spec.slug}`),
+      opens: (seed) => ({ kind: "document", words: seed.spec.words }),
+    },
+    {
+      // An item named beside a document is a node of the outline, wherever it is anchored.
+      address: (seed) => issuePath(seed, `/artifacts/${seed.spec.slug}?comment=${seed.comment.id}`),
+      opens: (seed) => ({ kind: "node", node: seed.comment.id, words: seed.comment.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/artifacts/${seed.notes.slug}#b-${seed.notes.paragraph}`),
+      opens: (seed) => ({
+        block: seed.notes.paragraph,
+        kind: "document-block",
+        words: seed.notes.words,
+      }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/artifacts/${seed.spec.slug}?mark=${seed.comment.id}`),
+      opens: (seed) => ({ id: seed.comment.id, kind: "document-item" }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/artifacts/${seed.spec.slug}?mark=${seed.comment.short}`),
+      opens: (seed) => ({
+        kind: "replaced",
+        lands: { id: seed.comment.id, kind: "document-item" },
+        to: issuePath(seed, `/artifacts/${seed.spec.slug}?mark=${seed.comment.id}`),
+      }),
+    },
+  ],
+  artifacts: [
+    { address: (seed) => issuePath(seed, "/artifacts"), opens: () => ({ kind: "node-menu" }) },
+  ],
+  ask: [
+    {
+      address: (seed) => issuePath(seed, `/asks/${seed.openQuestion.askId}`),
+      opens: (seed) => ({
+        kind: "node",
+        node: seed.openQuestion.node,
+        words: seed.openQuestion.words,
+      }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/asks/${seed.openQuestion.short}`),
+      opens: (seed) => ({
+        kind: "replaced",
+        lands: { kind: "node", node: seed.openQuestion.node, words: seed.openQuestion.words },
+        to: issuePath(seed, `/asks/${seed.openQuestion.askId}`),
+      }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/asks/${seed.goneAsk}`),
+      opens: () => ({ heading: "Question not found", kind: "not-found" }),
+    },
+    {
+      // An approval request is no node of the outline: the header draws the approval of the
+      // document it reviews, and the address stays the request's.
+      address: (seed) => issuePath(seed, `/asks/${seed.approval.askId}`),
+      opens: (seed) => ({ artifact: seed.approval.artifactId, kind: "approval" }),
+    },
+  ],
+  children: [
+    { address: (seed) => issuePath(seed, "/children"), opens: () => ({ kind: "children" }) },
+  ],
+  collaborators: [
+    {
+      address: (seed) => issuePath(seed, "/collaborators"),
+      opens: () => ({ kind: "details", part: "collaborators" }),
+    },
+  ],
+  comment: [
+    {
+      address: (seed) => issuePath(seed, `/comments/${seed.comment.id}`),
+      opens: (seed) => ({ kind: "node", node: seed.comment.id, words: seed.comment.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/comments/${seed.agentsOnly}`),
+      opens: (seed) => ({
+        id: seed.agentsOnly,
+        kind: "history-turn",
+        words: "Planner to reviewer",
+      }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/comments/${seed.twins.prefix}`),
+      opens: (seed) => ({ ids: seed.twins.ids, kind: "matches" }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/comments/${seed.comment.short}`),
+      opens: () => ({ kind: "retry" }),
+      // The lookup of the id written short, which the server resolves within the issue.
+      unreadable: (seed) => (url) =>
+        url.pathname === "/api/v1/references" &&
+        url.searchParams.get("to") === `dispatch://${seed.key}/comment/${seed.comment.short}`,
+    },
+    {
+      address: (seed) => issuePath(seed, `/comments/${seed.otherIssue.comment}`),
+      opens: (seed) => ({
+        kind: "replaced",
+        lands: { kind: "node", node: seed.otherIssue.comment, words: seed.otherIssue.words },
+        to: `/issues/${seed.otherIssue.key}/comments/${seed.otherIssue.comment}`,
+      }),
+    },
+  ],
+  conversation: [
+    {
+      address: (seed) => issuePath(seed, "/conversation"),
+      opens: () => ({ kind: "view", preset: "conversation" }),
+    },
+  ],
+  decisions: [
+    {
+      address: (seed) => issuePath(seed, "/decisions"),
+      opens: () => ({ kind: "view", preset: "decisions" }),
+    },
+  ],
+  issue: [
+    { address: (seed) => issuePath(seed), opens: () => ({ kind: "view", preset: "conversation" }) },
+    {
+      address: (seed) => issuePath(seed, `?q=${encodeURIComponent("Requirement 2")}`),
+      opens: () => ({ kind: "words", words: "Requirement 2" }),
+    },
+    {
+      address: (seed) => issuePath(seed, `?ask=${seed.openQuestion.askId}`),
+      opens: (seed) => ({
+        kind: "node",
+        node: seed.openQuestion.node,
+        words: seed.openQuestion.words,
+      }),
+    },
+    {
+      address: (seed) => issuePath(seed, `?comment=${seed.comment.id}`),
+      opens: (seed) => ({ kind: "node", node: seed.comment.id, words: seed.comment.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, `?comment=${seed.comment.short}`),
+      opens: (seed) => ({
+        kind: "replaced",
+        lands: { kind: "node", node: seed.comment.id, words: seed.comment.words },
+        to: issuePath(seed, `?comment=${seed.comment.id}`),
+      }),
+    },
+    {
+      // A typed block of a document the issue's own address opens no view of first.
+      address: (seed) => issuePath(seed, `#b-${seed.planTask.block}`),
+      opens: (seed) => ({ kind: "node", node: seed.planTask.node }),
+    },
+  ],
+  message: [
+    {
+      address: (seed) => issuePath(seed, `/messages/${seed.message.id}`),
+      opens: (seed) => ({ kind: "node", node: seed.message.id, words: seed.message.words }),
+    },
+  ],
+  plan: [
+    {
+      address: (seed) => issuePath(seed, "/plan"),
+      opens: () => ({ kind: "view", preset: "plan" }),
+    },
+  ],
+  spec: [
+    {
+      address: (seed) => issuePath(seed, "/spec"),
+      opens: () => ({ kind: "view", preset: "spec" }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/spec?comment=${seed.comment.id}`),
+      opens: (seed) => ({ kind: "node", node: seed.comment.id, words: seed.comment.words }),
+    },
+    {
+      address: (seed) => issuePath(seed, "/spec?v=1"),
+      opens: () => ({ kind: "version", version: 1 }),
+    },
+  ],
+  steps: [
+    {
+      address: (seed) => issuePath(seed, "/steps"),
+      opens: () => ({ kind: "details", part: "steps" }),
+    },
+  ],
+  verification: [
+    {
+      address: (seed) => issuePath(seed, "/verification"),
+      opens: () => ({ kind: "view", preset: "verification" }),
+    },
+  ],
+};

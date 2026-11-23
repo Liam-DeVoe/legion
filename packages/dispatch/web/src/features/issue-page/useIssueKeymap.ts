@@ -213,4 +213,15 @@ export function useIssueKeymap(issueKey: string): void {
   useKeymap("issue", [
     { id: "tab-filter", keys: "t f", label: "Filter by words", run: () => reachPart("filter") },
   ]);
+  // `t e`, today's Steps tab, opens `/steps`, which opens Details at the issue's steps and puts
+  // the focus there (`stage-landing.tsx`): each press is a new arrival at it, so it opens them
+  // again after the reader closed Details (part N's R6).
+  useKeymap("issue", [
+    {
+      id: "tab-steps",
+      keys: "t e",
+      label: CONTROL_LABELS.open_steps,
+      run: () => navigate(buildIssuePath({ key: issueKey, kind: "steps" })),
+    },
+  ]);
 }

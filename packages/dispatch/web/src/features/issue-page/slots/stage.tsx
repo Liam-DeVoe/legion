@@ -55,6 +55,8 @@ import { ViewVerificationSlot } from "./view-verification";
  * Part N's first branch stands before them (its R1, R6): what an item's address lands on in
  * place of the stage, and the document or file an address opens, drawn in place of the outline
  * and of every view, inside the same `DocumentStages` (`stage-landing.tsx`).
+ * An approval request's own address is the header's: the outline is drawn at the issue's own
+ * address under it (`useStageLanding`'s `outline`), as with no view on, and lands on no item.
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -109,6 +111,16 @@ export function StageSlot({
   const View = outline ? undefined : views[preset];
   if (landed.instead !== undefined) return landed.instead;
   if (landed.document !== undefined) return <DocumentStages>{landed.document}</DocumentStages>;
+  if (landed.outline !== undefined) {
+    return (
+      <DocumentStages>
+        <ReaderActsWatch into={acts} key={following} />
+        <StageBox>
+          <BodySlot {...props} acts={acts} route={landed.outline} />
+        </StageBox>
+      </DocumentStages>
+    );
+  }
   return (
     <DocumentStages>
       <ReaderActsWatch into={acts} key={following} />

@@ -46,12 +46,14 @@ function useOpensDocument(address: IssueAddress, artifact: Artifact | undefined)
 }
 
 /**
- * The document the address opens in place of the outline and of every view (part N's R1, R2,
- * R6), or undefined where it opens none: a document's own address, `/artifacts/<slug>` or
- * `/artifact/<slug>`, and a `/spec` address that names a block of the spec, or an item at a
- * pinned version or `?mark=`, which opens the spec as `/artifacts/<spec>` with the same query and
- * fragment does (`issue-address.ts`). The stage draws it (`slots/stage.tsx`) and the view row's
- * version control reads it (`view-row-tools.tsx`), each through this one rule.
+ * The document the address opens in place of the outline (part N's R1, R2, R6), or undefined
+ * where it opens none. Only an address with no view on opens one: a document's own address,
+ * `/artifacts/<slug>` or `/artifact/<slug>`, with what it carries - `?mark=`, a pinned version, a
+ * `#b-` of a block no node holds (`useOpensDocument`). An address that keeps a view's preset draws
+ * that view, a block of the spec, `?mark=` or a pinned version beside `/spec` among them
+ * (`issueAddress`, part I's rule in `slots/stage.tsx`), and so does the outline's own address. The
+ * stage draws the document (`slots/stage.tsx`) and the view row's version control reads it
+ * (`view-row-tools.tsx`), each through this one rule.
  */
 export function useOpenedDocument(
   issue: IssueDetails,
@@ -60,17 +62,11 @@ export function useOpenedDocument(
   const { hash, search } = useLocation();
   const { artifactRoute, primaryArtifact, selectedArtifact } = useIssueDetail(issue, route);
   const address = issueAddress(route, search, hash, primaryArtifact?.slug);
-  const documentRoute: Extract<IssueRoute, { kind: "artifact" }> | undefined =
-    artifactRoute ??
-    (route.kind !== "spec" || address.document === undefined
-      ? undefined
-      : address.version === undefined
-        ? { key: route.key, kind: "artifact", slug: address.document }
-        : { key: route.key, kind: "artifact", slug: address.document, version: address.version });
-  const artifact =
-    artifactRoute === undefined && documentRoute !== undefined ? primaryArtifact : selectedArtifact;
-  const opens = useOpensDocument(address, artifact);
-  return opens && documentRoute !== undefined ? { artifact, route: documentRoute } : undefined;
+  const documentRoute = address.preset === "conversation" ? artifactRoute : undefined;
+  const opens = useOpensDocument(address, selectedArtifact);
+  return opens && documentRoute !== undefined
+    ? { artifact: selectedArtifact, route: documentRoute }
+    : undefined;
 }
 
 /** The outline the reader goes back to from a document they opened: the address they opened it

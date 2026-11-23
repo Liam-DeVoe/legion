@@ -290,7 +290,7 @@ function ItemFallback({
       <NotFoundLine
         heading={`${noun} not found`}
         issueKey={route.key}
-        line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
+        line={`That link doesn't name a ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
         takesFocus={takesFocus}
       />
     );
@@ -364,7 +364,7 @@ function useFocusOnDraw<T extends HTMLElement>(takesFocus: TakesFocus) {
 
 /** What each kind of item is called: a copy of `issue/IssuePage.tsx`'s `itemNoun`. */
 const ITEM_NOUNS: Readonly<Record<ItemRoute["kind"], string>> = {
-  ask: "Ask",
+  ask: "Question",
   comment: "Comment",
   message: "Message",
 };
