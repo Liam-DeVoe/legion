@@ -179,7 +179,7 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open the interest bucket: %v", err)
 		}
-		earlier, err := json.Marshal(store.Interest{SessionID: sesB, MachineID: "test-machine", Topics: append([]string{contracts.LegacyAgentSubject(sesB), keptB}, leftOut...)})
+		earlier, err := json.Marshal(store.Interest{SessionID: sesB, MachineID: "test-machine", UpdatedAt: contracts.NowMillis(), Topics: append([]string{contracts.LegacyAgentSubject(sesB), keptB}, leftOut...)})
 		if err != nil {
 			t.Fatal(err)
 		}

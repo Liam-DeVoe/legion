@@ -306,7 +306,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		if err != nil {
 			t.Fatalf("open the interest bucket: %v", err)
 		}
-		earlier, err := json.Marshal(store.Interest{SessionID: sesD, MachineID: "test-machine", Topics: []string{
+		earlier, err := json.Marshal(store.Interest{SessionID: sesD, MachineID: "test-machine", UpdatedAt: contracts.NowMillis(), Topics: []string{
 			"notifications.>", "notifications.*.t", "notifications.agent.*." + sesA, "notifications.agent.*." + sesD, lane, "notifications.team.>",
 		}})
 		if err != nil {
