@@ -11,6 +11,16 @@ body: |-
   refuses a handoff record the same agent wrote at its later step (`HANDOFF_NOT_NEW`). Two agents
   that start with the same role are still refused.
 
+  A turn of one of an agent's steps that completes after the task moved on to the agent's other
+  step of that role is refused `HANDOFF_STALE_ENTRY`, even at the head the record holds, because
+  the two steps ask for different work. Where two agents of one role run its steps, as in
+  `implementer:a tester:b implementer:b`, a turn of one agent's step that completes while the task
+  stands at the other agent's step of that role is refused `HANDOFF_NOT_CURRENT_PHASE` with the
+  words `the <role> step of <KEY> that the task stands at, in phase <phase>, is the work of
+  another agent's claim, <claim>, on entry <n>; this completion is of entry <m>, a step this claim
+  ran that the task has left, so no task of that step comes to this claim: do not wait for one and
+  do not complete again; this completion changed nothing`.
+
   One migration makes the key of the `phases` table the issue, the role and the step. A daemon of
   the release before cannot write that table, so every project's daemon on the database moves to
   this release together, and back together. Roll back only after each task whose plan names a role
