@@ -2,16 +2,24 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -206,4 +214,221 @@ func durableState(client *bus.Client) string {
 	}
 	return fmt.Sprintf("bound=%v, delivered through stream sequence %d, acknowledged through %d",
 		info.PushBound, info.Delivered.Stream, info.AckFloor.Stream)
+}
+
+// A pull request GitHub closed stops being the head a check CI proves is read at, within the same
+// 5 seconds of GitHub's `pull_request` event, in a deployment that holds no delivery settings.
+//
+// The case is an issue in acme/widgets with one check CI proves and two pull requests Dispatch
+// stores open: #5, the issue's own, at headCommit, where CI's run 41 passed, and #9, a negative
+// control opened after it on a branch that names the issue, at newHeadCommit, where run 42 was
+// cancelled. The read of such a check is at the issue's open head of the highest number
+// (delivery.Attributor.NewestPullRequestHead), so while #9 is stored open the check is read at
+// #9's cancelled run and holds no result. GitHub then closes #9 without merging it, and its
+// `closed` event is the one input that tells Dispatch so: GitHub names no pull request for any
+// commit here and the reconcile is not running. The intake reads #9 from GitHub and writes it
+// closed, a pull request closed unmerged is no head, and the read moves to #5, where the check
+// holds the pass derived from run 41.
+//
+// The deployment repository's #6070 and #6071 were held that way. GitHub closed both at 20:58Z
+// on 2026-11-22. The deployment held no delivery settings, so no intake took their `closed`
+// events, and Dispatch kept both stored open, and read the check at #6071's cancelled run, until
+// the reconcile read them again at about 21:12:37Z.
+//
+// Red where the intake binds only under delivery settings, as at main before
+// cybermonklabs/legion#4209 (Intake.Run waited for the settings cache to hold settings): the
+// event is never taken, #9 stays stored open, and when the bound ends c1 still reads run 42's
+// cancel at #9.
+func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySettings(t *testing.T) {
+	runs := newCheckRunsFake()
+	runs.set(headCommit, completedRun(41, ciCheckRun, "success"))
+	runs.set(newHeadCommit, completedRun(42, ciCheckRun, "cancelled"))
+	// GitHub's answers name the issue and the moment GitHub closed #9: both are set below, before
+	// anything reads a pull request from GitHub.
+	var issueKey, branch, closedAt string
+	handler, database, served := closedNegativeControlGitHub(t, runs, func(number string) string {
+		switch number {
+		case "5":
+			return fmt.Sprintf(`{"number":5,"title":%q,"body":"","state":"open","merged":false,"merged_at":null,
+				"html_url":"https://github.com/acme/widgets/pull/5","updated_at":"2026-11-22T20:30:00Z",
+				"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}`,
+				"The change ("+issueKey+")", "legion/"+issueKey, headCommit)
+		case "9":
+			return fmt.Sprintf(`{"number":9,"title":"A negative control","body":"","state":"closed","merged":false,
+				"merged_at":null,"closed_at":%q,"html_url":"https://github.com/acme/widgets/pull/9","updated_at":%q,
+				"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}`,
+				closedAt, closedAt, branch, newHeadCommit)
+		}
+		return ""
+	})
+	issue := issueInRepository(t, handler, "RESCE", "acme/widgets", "A negative control closed")
+	issueKey = issue.Key
+	// The branch names the issue in lower case, as production's negative-control branches did: a
+	// key in a branch is read in either case.
+	branch = "implementer/" + strings.ToLower(issue.Key) + "-breaks-b"
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	if _, err := delivery.GetSettings(context.Background(), database.Pool); err == nil {
+		t.Fatal("the deployment holds delivery settings, want none: production held none")
+	}
+	writeHead(t, database, "acme/widgets", 5, headCommit, "open", issue.Key)
+	writeHead(t, database, "acme/widgets", 9, newHeadCommit, "open", issue.Key)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update pull_request_heads set head_ref = $1 where repo = 'acme/widgets' and number = 9`, branch); err != nil {
+		t.Fatalf("store #9 on its branch: %v", err)
+	}
+	storedState := func() string {
+		var state string
+		if err := database.Pool.QueryRow(context.Background(),
+			`select state from pull_request_heads where repo = 'acme/widgets' and number = 9`).Scan(&state); err != nil {
+			return fmt.Sprintf("unread (%v)", err)
+		}
+		return state
+	}
+
+	// Before the event the read is production's wrong one: #9 is stored open and has the higher
+	// number, so c1 is read at #9's cancelled run and holds no result.
+	before := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertCI(t, before, ciCheckRun, model.CIStateNoResult, "cancelled", ciUnconcludedLineOf("c1", ciCheckRun, "cancelled"))
+	if len(before.Results) != 0 {
+		t.Fatalf("before #9's closed event, c1 holds %+v, want no result: run 42 was cancelled", before.Results)
+	}
+
+	_, natsURL := testnats.Start(t)
+	publisher, err := bus.ConnectOwningStream([]string{natsURL})
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(publisher.Close)
+	callers, err := database.Pool.Leases()
+	if err != nil {
+		t.Fatalf("open the lease pool: %v", err)
+	}
+	leases, err := delivery.ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
+		return bus.Connect([]string{natsURL}, bus.WithName(name))
+	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil, served.deps.Attributor)
+	if err != nil {
+		cancel()
+		t.Fatalf("start the intakes: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		stopIntakes()
+	})
+
+	closedAt = time.Now().UTC().Format(time.RFC3339)
+	payload, err := json.Marshal(map[string]string{
+		"kind": "pr", "action": "closed", "repo": "acme/widgets", "number": "9",
+		"title": "A negative control", "body": "",
+		"url":      "https://github.com/acme/widgets/pull/9",
+		"author":   "implementer[bot]",
+		"head_sha": newHeadCommit, "head_ref": branch, "head_repo": "acme/widgets",
+		"base_ref": "main", "merged": "false", "updated_at": closedAt,
+	})
+	if err != nil {
+		t.Fatalf("encode the pull request's payload: %v", err)
+	}
+	// The bound and its measure are requireTheEventsHeadWithinTheBound's: v-head-no-settings' 5
+	// seconds, from the publish.
+	published := time.Now()
+	if err := publisher.Publish(contracts.Envelope{
+		EventID: "acme-widgets-pr-9-closed", Source: "github", SourceEventID: "acme-widgets-pr-9-closed",
+		TraceID: "acme-widgets-pr-9-closed", Topic: contracts.GithubResourceSubject("acme", "widgets", "pr", "9"),
+		Payload: string(payload), IssuedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("publish the pull request's close: %v", err)
+	}
+
+	deadline := published.Add(headAfterEventBound)
+	atHead := ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit)
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	for check.CI == nil || check.CI.Line != atHead {
+		if time.Now().After(deadline) {
+			reads := "no ci reading"
+			if check.CI != nil {
+				reads = fmt.Sprintf("case %q (%s)", check.CI.Case, check.CI.Detail)
+			}
+			t.Fatalf("%s after #9's closed event, c1 reads %s and holds %+v, #9 is stored %s and the delivery durable is %s; "+
+				"want CI's pass of run 41 at %s, the head of acme/widgets#5: GitHub closed #9 unmerged, so its head is no head",
+				time.Since(published).Round(time.Millisecond), reads, check.Results, storedState(), durableState(publisher), headCommit)
+		}
+		time.Sleep(100 * time.Millisecond)
+		check = checkOf(t, readResults(t, handler, issue.Key), "c1")
+	}
+	// The answer accepted is held to the bound too, as requireTheEventsHeadWithinTheBound holds it.
+	took := time.Since(published)
+	if took > headAfterEventBound {
+		t.Fatalf("the results route read c1 at #5's head %s after #9's closed event, past the %s of v-head-no-settings",
+			took.Round(time.Millisecond), headAfterEventBound)
+	}
+	t.Logf("the results route read c1 at #5's head %s after #9's closed event, #9 now stored %s", took.Round(time.Millisecond), storedState())
+	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", atHead)
+	result := assertDerived(t, check, 41, ciCheckRun, "success", "pass", headCommit)
+	if basis := result.CommitStands.Basis; basis == nil || basis.PullRequest == nil || *basis.PullRequest != 5 {
+		t.Fatalf("the derived result stands at %+v, want the head of #5", basis)
+	}
+	if stood := check.PassStands; stood.Answer != model.PassStandsYes {
+		t.Fatalf("c1 answers pass_stands %+v, want yes", stood)
+	}
+}
+
+// closedNegativeControlGitHub is a Dispatch with no delivery settings whose GitHub serves
+// acme/widgets: the App is installed there and nowhere else, GitHub names no pull request for any
+// commit (so no read-through writes a head row), each pull request's commits are an empty page,
+// runs lists each commit's check runs, and pull answers GET /repos/{owner}/{repo}/pulls/{number}
+// of acme/widgets, "" being GitHub's 404. The case above needs the check runs and the read of one
+// pull request both: readThroughGitHub serves no check runs, and resultsGitHubCheckRuns no read of
+// a pull request and no server for the intakes.
+func closedNegativeControlGitHub(t *testing.T, runs *checkRunsFake, pull func(number string) string) (http.Handler, *store.Store, *server) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/widgets" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read","checks":"read"}}`)
+	})
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		body := ""
+		if r.PathValue("owner")+"/"+r.PathValue("repo") == "acme/widgets" {
+			body = pull(r.PathValue("number"))
+		}
+		if body == "" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		fmt.Fprint(w, body)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", runs.serve)
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+		githubAPIBase: upstream,
+	})
+	return handler, database, served
 }
