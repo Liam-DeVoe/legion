@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -127,8 +126,9 @@ func (c *Composer) Part(name string) string {
 }
 
 // Compose returns the shared role parts followed by this daemon's parts: the role's own, then the
-// text every architect (architect-common.md) or every phase worker (worker-common.md) shares. The
-// runtime appends addressing and deployment instructions after these paths.
+// text every owner (architect-common.md, which ComposeSubOwner joins for a sub-owner too) or every
+// phase worker (worker-common.md) shares. The runtime appends addressing and deployment
+// instructions after these paths.
 func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	if c == nil {
 		return Parts{}, fmt.Errorf("compose role prompt: nil composer")
@@ -142,15 +142,47 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 		}
 		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
 	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
-		name := string(role)
-		shared = []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
-		daemonParts = []string{name + ".md", "worker-common.md"}
+		shared = stepRoleParts(role)
+		daemonParts = []string{string(role) + ".md", "worker-common.md"}
 	case claim.RoleMerger:
 		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
 	default:
 		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
 	}
+	return c.parts(shared, daemonParts), nil
+}
 
+// ComposeSubOwner returns the prompt parts of the sub-owner of a task whose role is role: the
+// shared parts of that role, then the owner's part (architect-common.md), then the sub-owner's own
+// (sub-owner.md). The role is architect, whose shared part is the sub-architect's, or one of
+// Legion's step roles, whose shared parts are those Compose gives it. Neither the role's own part
+// of this daemon nor worker-common.md is joined: a sub-owner writes the parts of its task and works
+// no phase. Any other role answers an error that names it.
+func (c *Composer) ComposeSubOwner(role string) (Parts, error) {
+	if c == nil {
+		return Parts{}, fmt.Errorf("compose sub-owner prompt: nil composer")
+	}
+	var shared []string
+	switch r := claim.Role(role); r {
+	case claim.RoleArchitect:
+		shared = []string{"architect.md"}
+	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
+		shared = stepRoleParts(r)
+	default:
+		return Parts{}, fmt.Errorf("compose sub-owner prompt: role %q is neither architect nor one of Legion's step roles", role)
+	}
+	return c.parts(shared, []string{"sub-owner.md"}), nil
+}
+
+// stepRoleParts are the shared parts of one of Legion's step roles: the phase workers' common core,
+// the role's own core, the headless mechanics and the role's own part.
+func stepRoleParts(role claim.Role) []string {
+	name := string(role)
+	return []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
+}
+
+// parts is the snapshot path of each shared part, then of each of this daemon's parts, in order.
+func (c *Composer) parts(shared, daemonParts []string) Parts {
 	paths := make([]string, 0, len(shared)+len(daemonParts))
 	for _, part := range shared {
 		paths = append(paths, filepath.Join(c.sharedDir, part))
@@ -158,5 +190,5 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	for _, part := range daemonParts {
 		paths = append(paths, filepath.Join(c.goDir, part))
 	}
-	return Parts{RolePromptPaths: slices.Clone(paths)}, nil
+	return Parts{RolePromptPaths: paths}
 }
