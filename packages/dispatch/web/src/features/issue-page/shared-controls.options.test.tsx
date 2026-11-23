@@ -1447,8 +1447,9 @@ test("the priority's add control has the height of its siblings in Details", asy
 // whole.
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
+  // Today's chip wraps a long label inside its box (INFRA-5200), as the new page's does.
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+    "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   // The rail's line wraps on both pages (INFRA-5200): the new page draws it in its Details.
   const mainRail = "relative flex min-w-0 flex-wrap items-center gap-1";
   const labels = (chipClassName: string | undefined) => (
@@ -1494,17 +1495,18 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   }
 });
 
-// Inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
-// `chipClassName` and without it, because a chip that kept a 40-character label with no space
-// whole (the longest label `IssueLabels` takes) ran past Details. Outside, each chip keeps
-// `main`'s string, and the prefix it keeps before a given `chipClassName`.
+// A label chip stays within its line and breaks a long label anywhere, inside `NoTooltips` with
+// `chipClassName` and without it, and outside without it (today's header, INFRA-5200), because a
+// chip that kept a 40-character label with no space whole (the longest label `IssueLabels`
+// takes) ran past Details and widened the page at 360 px. Outside, a given `chipClassName` keeps
+// the prefix it had.
 test("inside NoTooltips a label chip wraps a long label and is never cut", () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const long = "dispatchissuepagedetailslabelwithnospace";
   expect(long).toHaveLength(40);
   expect(long).not.toMatch(/\s/u);
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+    "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
 
   for (const chipClassName of [undefined, given]) {
@@ -2055,7 +2057,7 @@ test("the default shapes keep main's class strings", async () => {
     "IssueLabels line": "relative mt-2 flex flex-wrap items-center gap-2",
     "IssueLabels rail line": "relative flex min-w-0 flex-wrap items-center gap-1",
     "IssueLabels chip":
-      "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
+      "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     "IssueLabels trigger":
       "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
 

@@ -202,13 +202,14 @@ export function IssueLabels({
   };
   const chips = displayLabels.map((label) => (
     <span
-      // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a long label
-      // anywhere, so a 40-character label with no space wraps inside Details rather than running
-      // past it. Everywhere else it stays whole.
+      // A chip is never cut and never widens its line: it stays within its line and breaks a long
+      // label anywhere, so the longest label the server takes (40 letters, no space) wraps inside
+      // the header at 360 px, or inside Details, rather than running past it. A host's own chip
+      // class (`chipClassName`) outside `NoTooltips` keeps its label whole.
       className={
         page === null
           ? chipClassName === undefined
-            ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+            ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
             : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
           : chipClassName === undefined
             ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
