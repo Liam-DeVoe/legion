@@ -309,8 +309,8 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 // rateLimitWait is the wait a token login's answer of status asks for before the next, read from
 // its Retry-After (RFC 9110 Section 10.2.3) at now: a number of seconds or an HTTP date, the time
 // until which is the wait. Only a 429 is read, the outage that names its own wait, as the envoy
-// module's helper reads only a 429's on its refresh: the broker's launcher routes answer one with
-// the wait their bucket refills in, by default 30 s per source address or a minute per account.
+// module's helper reads only a 429's on its refresh: the broker's token login route answers one
+// with the wait its buckets refill in, by default 30 s per source address or a minute per account.
 // It is zero for any other status, and where the answer names none, names a time already past or
 // names neither form. A wait too long for a time.Duration is the longest one; loginRetry.failed
 // caps it.
@@ -319,10 +319,9 @@ func rateLimitWait(status int, header http.Header, now time.Time) time.Duration 
 		return 0
 	}
 	value := strings.TrimSpace(header.Get("Retry-After"))
-	if value != "" && strings.Trim(value, "0123456789") == "" {
-		seconds, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || seconds > int64(math.MaxInt64/time.Second) {
-			// Only digits, so the one error is a number past int64's range.
+	// ParseUint takes digits alone, no sign; ErrRange is a number of them past uint64's range.
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if seconds > uint64(math.MaxInt64/time.Second) {
 			return math.MaxInt64
 		}
 		return time.Duration(seconds) * time.Second

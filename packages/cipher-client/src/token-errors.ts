@@ -176,8 +176,8 @@ export class RegistrationPendingError extends Error {
  * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
  * ready once its own signal ends. A pod session not registered yet is
  * {@link RegistrationPendingError} instead. The failure is no answer within the trade's own time
- * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, a 408 or a 429, a DPoP refusal, or a trade that
- * could not be made.
+ * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no
+ * OAuth error, or a trade that could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
  * line for that failure (`Retried.said`), which names nothing a peer wrote.
  */

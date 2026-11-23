@@ -98,9 +98,9 @@ export interface BrokerToken {
 export const BROKER_URL_SETTING = "the broker URL";
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
- *  5xx, a 408 or a 429, a DPoP refusal, or that failed before it reached the broker, doubling to
- *  {@link RETRY_MAX_WAIT_MS} until a trade lands: the Go client's `defaultRetryWait` and
- *  `maxRetryWait` (packages/envoy/internal/cipherclient/brokerclient.go). */
+ *  5xx, a 408 or a 429, a DPoP refusal or a 4xx naming no OAuth error, or that failed before it
+ *  reached the broker, doubling to {@link RETRY_MAX_WAIT_MS} until a trade lands: the Go client's
+ *  `defaultRetryWait` and `maxRetryWait` (packages/envoy/internal/cipherclient/brokerclient.go). */
 export const RETRY_FIRST_WAIT_MS = 15_000;
 export const RETRY_MAX_WAIT_MS = 5 * 60_000;
 
@@ -619,9 +619,10 @@ export class BrokerTokenClient {
    * - a refusal no trade cures: the loop ends, answering every caller with it;
    * - a pod session the broker holds no registration for yet: traded again on its own schedule,
    *   {@link PENDING_FIRST_WAIT_MS} doubling to {@link PENDING_MAX_WAIT_MS};
-   * - no answer, no connection, a 5xx, a 408 or a 429, a DPoP refusal, an answer that is not
-   *   this grant's, or a trade that could not be made: traded again on the Go client's schedule,
-   *   {@link RETRY_FIRST_WAIT_MS} doubling to {@link RETRY_MAX_WAIT_MS}.
+   * - no answer, no connection, a 5xx, a 408 or a 429, a DPoP refusal, a 4xx naming no OAuth
+   *   error, an answer that is not this grant's, or a trade that could not be made: traded again
+   *   on the Go client's schedule, {@link RETRY_FIRST_WAIT_MS} doubling to
+   *   {@link RETRY_MAX_WAIT_MS}.
    *
    * It says at each wait what the trade came to, naming the session, and when it trades again.
    * Only a token landing starts a schedule over: no caller arriving, and no trade failing

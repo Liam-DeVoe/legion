@@ -533,7 +533,8 @@ export async function finishDeviceLogin(
         throw new Error(`${refusal.message}; ask again with: ${DEVICE_LOGIN_COMMAND}`);
       }
       const asked = unanswered ? retryAfterMs(error) : 0;
-      waitMs = Math.max(interval * 1000, Math.min(asked, started.expiresAt.getTime() - Date.now()));
+      // The wait before the next poll is capped at the code's lifetime where it is waited.
+      waitMs = Math.max(interval * 1000, asked);
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());

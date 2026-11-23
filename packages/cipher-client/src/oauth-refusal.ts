@@ -5,17 +5,14 @@
 // endpoint answered: a 5xx, a 408 and a 429 are a server that could not answer now (`outage`),
 // whatever their body names. An OAuth error code (RFC 6749 Section 5.2) that decides something
 // counts only in a refusal, a 4xx that is no outage (`refusalCode`), and ending a grant is
-// narrower still (`endsGrant`). A device code's `slow_down` needs no rule of its own: the library
-// reads an OAuth error only in a 4xx, so a `slow_down` is a refusal's code or comes in a 408 or a
-// 429, an outage, and the device login's poll grows its interval for either. A person's sign-in
-// (`person-identity.ts`) and a machine's device login (`device-login.ts`) read their answers
-// through these, so each of these rules has one definition in this language; the broker's wording
-// of a refusal (`brokerRefusal`, `token-client.ts`) makes any 4xx OAuth error a
-// `BrokerRefusedError`, as Go's broker client makes it a `RefusedError`, and leaves whether it is
-// final to `outage`. The library under these reads fewer answers as an OAuth error than Go's
-// x/oauth2 does: oauth4webapi does not read the body of an answer carrying `WWW-Authenticate`, and
-// reads only a JSON body (oauth4webapi 3.8.8, build/index.js:914, :925-927), so an OAuth error in
-// any other answer is never seen as one.
+// narrower still (`endsGrant`). A person's sign-in (`person-identity.ts`) and a machine's device
+// login (`device-login.ts`) read their answers through these, so each of these rules has one
+// definition in this language; the broker's wording of a refusal (`brokerRefusal`,
+// `token-client.ts`) makes any 4xx OAuth error a `BrokerRefusedError`, as Go's broker client makes
+// it a `RefusedError`, and leaves whether it is final to `outage`. The library under these reads
+// fewer answers as an OAuth error than Go's x/oauth2 does: oauth4webapi does not read the body of
+// an answer carrying `WWW-Authenticate`, and reads only a JSON body (oauth4webapi 3.8.8,
+// build/index.js:914, :925-927), so an OAuth error in any other answer is never seen as one.
 
 import { ResponseBodyError } from "openid-client";
 

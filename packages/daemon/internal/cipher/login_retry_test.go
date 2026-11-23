@@ -185,8 +185,29 @@ func failedCall(brokerURL, failure string) string {
 	return fmt.Sprintf("broker POST %s: Post %q: %s", loginRoute, brokerURL+loginRoute, failure)
 }
 
-// fixed is a cause a rig knows before the login it drives has run.
-func fixed(cause string) func() string { return func() string { return cause } }
+// fixed is a value a row knows before the login it drives has run: a cause, or a Retry-After.
+func fixed(value string) func() string { return func() string { return value } }
+
+// failedLoginMsg is the message of the one line a failed login logs (Client.retryAfter).
+const failedLoginMsg = "agent-secrets: the token login failed; retrying"
+
+// failedLoginLine starts a Client on brokerURL through httpClient, whose first login must fail,
+// and answers the one line that login logged, without its timestamp.
+func failedLoginLine(t *testing.T, brokerURL string, httpClient *http.Client) string {
+	t.Helper()
+	logged := &lockedLog{}
+	client := &Client{
+		URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "token"),
+		Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := client.Start(ctx)
+	cancel() // before the line is read, so the loop cannot write a second line into it
+	if err == nil {
+		t.Fatal("the login succeeded, want the failure this row drove")
+	}
+	return strings.TrimSuffix(logged.String(), "\n")
+}
 
 // withoutTime drops the timestamp from a log line, so a row can read the line whole.
 func withoutTime(groups []string, a slog.Attr) slog.Attr {
@@ -428,26 +449,14 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			brokerURL, httpClient, cause := row.rig(t)
-			logged := &lockedLog{}
-			client := &Client{
-				URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "token"),
-				Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			err := client.Start(ctx)
-			cancel() // before the row reads the log, so the loop cannot write a second line into it
-			if err == nil {
-				t.Fatal("the login succeeded, want the failure this row drove")
-			}
-			got := strings.TrimSuffix(logged.String(), "\n")
+			got := failedLoginLine(t, brokerURL, httpClient)
 			t.Logf("the line: %s", got)
 			wait := longWait
 			if row.schedule == "short" {
 				wait = shortWait
 			}
-			const msg = "agent-secrets: the token login failed; retrying"
 			head := fmt.Sprintf("level=ERROR msg=%q class=%s schedule=%s retry_in=%s error=",
-				msg, row.class, row.schedule, wait)
+				failedLoginMsg, row.class, row.schedule, wait)
 			if !strings.HasPrefix(got, head) {
 				t.Fatalf("the line\n\t%s\nwants the head\n\t%s", got, head)
 			}
@@ -472,13 +481,14 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 
 // TestALoginTheBrokerRateLimitedWaitsItsRetryAfter pins the wait after a token login answered 429:
 // the short schedule's step, or the Retry-After the answer names where it asks longer, in seconds
-// or as an HTTP date, though never longer than the long schedule's most. The broker's launcher
-// routes answer a 429 with the wait their bucket refills in (by default 30 s per source address,
-// a minute per account), and a login sent before then spends a token verification and is refused
-// again. The rows asking 30 s, a date 45 s ahead, a day and a number past int64 are the change:
-// before it, a 429 waited the short step whatever it asked. The other rows wait the step, as they
-// did: a 429 asking less than the step, naming no Retry-After, a date already past, a negative
-// number or no wait at all, and a 503 asking 30 s, since only a 429's Retry-After is read.
+// or as an HTTP date, though never longer than the long schedule's most. The broker's token login
+// route answers a 429 with the wait its buckets refill in (by default 30 s per source address, a
+// minute per account), and a login sent before then is refused again; one the account's bucket
+// refuses has spent a request of its address's bucket and a token verification first. The rows
+// asking 30 s, a date 45 s ahead, a day and a number past int64 are the change: before it, a 429
+// waited the short step whatever it asked. The other rows wait the step, as they did: a 429 asking
+// less than the step, naming no Retry-After, a date already past, a negative number or no wait at
+// all, and a 503 asking 30 s, since only a 429's Retry-After is read.
 func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
 	const step = 2 * time.Second
 	withUnansweredRetry(t, step, 10*time.Second)
@@ -517,20 +527,8 @@ func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
 				fmt.Fprint(w, `{"code":"RATE_LIMITED","error":"too many token logins"}`)
 			}))
 			t.Cleanup(server.Close)
-			logged := &lockedLog{}
-			client := &Client{
-				URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"),
-				Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			err := client.Start(ctx)
-			cancel() // before the row reads the log, so the loop cannot write a second line into it
-			if err == nil {
-				t.Fatal("the login succeeded, want the refusal this row drove")
-			}
-			got := strings.TrimSuffix(logged.String(), "\n")
-			head := fmt.Sprintf("level=ERROR msg=%q class=broker-unavailable schedule=short retry_in=",
-				"agent-secrets: the token login failed; retrying")
+			got := failedLoginLine(t, server.URL, server.Client())
+			head := fmt.Sprintf("level=ERROR msg=%q class=broker-unavailable schedule=short retry_in=", failedLoginMsg)
 			rest, headed := strings.CutPrefix(got, head)
 			waited, _, named := strings.Cut(rest, " error=")
 			if !headed || !named {
