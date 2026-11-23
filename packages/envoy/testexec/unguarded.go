@@ -38,10 +38,11 @@ import (
 // (withoutExecuteBit). So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
 // os.Chmod as a function value, whose file and mode it cannot follow, and a dot import of os,
 // whose calls it cannot tell from the file's own functions. The one place left out is
-// programfile.Write itself: the files of a package named programfile that are no test files. A
-// directory below root that holds a go.mod of its own is another module, which that module's
-// check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
-// module.
+// programfile.Write itself: the function Write of the package WriterPackage, in a file that is no
+// test file; every other function of that package is read, and so is a package of that name at
+// any other import path. A directory below root that holds a go.mod of its own is another module,
+// which that module's check reads, and node_modules, vendor, testdata and dot directories are not
+// Go source of the module.
 //
 // Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
 // or one of its subdirectories does, and when it read no test file under root: a root that holds
@@ -65,11 +66,12 @@ import (
 // A file a command such as cp writes is open in that command's process, not in the test's, so no
 // fork of the test copies its descriptor, and the check has nothing to name there.
 func Unguarded(root string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+	module, err := modulePath(filepath.Join(root, "go.mod"))
+	if err != nil {
 		return nil, fmt.Errorf("read no module at %s: it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", root, err)
 	}
 	dirs, tests := map[string][]string{}, 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -101,8 +103,16 @@ func Unguarded(root string) ([]string, error) {
 		return nil, fmt.Errorf("read no Go test file under %s: it holds none, or each directory below it that holds one has a go.mod of its own and is another module, so no write a test makes was read", root)
 	}
 	var offences []string
-	for _, paths := range dirs {
-		found, err := unguardedInPackage(root, paths)
+	for dir, paths := range dirs {
+		relative, err := filepath.Rel(root, dir)
+		if err != nil {
+			return nil, err
+		}
+		importPath := module
+		if relative != "." {
+			importPath += "/" + filepath.ToSlash(relative)
+		}
+		found, err := unguardedInPackage(root, importPath == WriterPackage, paths)
 		if err != nil {
 			return nil, err
 		}
@@ -112,11 +122,33 @@ func Unguarded(root string) ([]string, error) {
 	return offences, nil
 }
 
-// unguardedInPackage is Unguarded for the Go files of one directory.
-func unguardedInPackage(root string, paths []string) ([]string, error) {
+// WriterPackage is the import path of the one package whose Write Unguarded leaves out: the writer
+// every other place calls.
+const WriterPackage = "github.com/sjawhar/envoy/programfile"
+
+// modulePath is the module path the go.mod at path declares.
+func modulePath(path string) (string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for line := range strings.Lines(string(body)) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			if module, err := strconv.Unquote(strings.TrimSpace(rest)); err == nil {
+				return module, nil
+			}
+			return strings.TrimSpace(rest), nil
+		}
+	}
+	return "", fmt.Errorf("%s declares no module", path)
+}
+
+// unguardedInPackage is Unguarded for the Go files of one directory. writer says the directory is
+// WriterPackage's, whose function Write it leaves out.
+func unguardedInPackage(root string, writer bool, paths []string) ([]string, error) {
 	files := token.NewFileSet()
 	parsed := map[string]*ast.File{}
-	parallel, support, self := false, false, false
+	parallel, support := false, false
 	for _, path := range paths {
 		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)
 		if err != nil {
@@ -129,19 +161,18 @@ func unguardedInPackage(root string, paths []string) ([]string, error) {
 		}
 		name := file.Name.Name
 		support = support || strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test")
-		self = self || name == "programfile"
 	}
 	var offences []string
 	for _, path := range paths {
 		test := strings.HasSuffix(path, "_test.go")
-		if self && !test || test && !parallel && !support {
+		if test && !parallel && !support {
 			continue
 		}
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil, err
 		}
-		for _, line := range executableWrites(files, parsed[path]) {
+		for _, line := range executableWrites(files, parsed[path], writer && !test) {
 			offences = append(offences, filepath.ToSlash(relative)+":"+strconv.Itoa(line))
 		}
 	}
@@ -170,8 +201,9 @@ var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": t
 
 // executableWrites are the lines of file that open a file for writing by package os, by whatever
 // name the file imports it, and give it an execute bit or a mode that is no constant (Unguarded
-// says how), with each line that uses one of osWriters as a value and that dot-imports os.
-func executableWrites(files *token.FileSet, file *ast.File) []int {
+// says how), with each line that uses one of osWriters as a value and that dot-imports os. writer
+// leaves out the file's function Write, programfile.Write itself.
+func executableWrites(files *token.FileSet, file *ast.File, writer bool) []int {
 	osName, lines := "", map[int]bool{}
 	for _, spec := range file.Imports {
 		if path, err := strconv.Unquote(spec.Path.Value); err != nil || path != "os" {
@@ -196,17 +228,26 @@ func executableWrites(files *token.FileSet, file *ast.File) []int {
 			return ""
 		}
 		called := map[*ast.SelectorExpr]bool{}
+		var read []ast.Decl
 		for _, declaration := range file.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok && writer && function.Recv == nil && function.Name.Name == "Write" {
+				continue
+			}
+			read = append(read, declaration)
+		}
+		for _, declaration := range read {
 			for _, open := range executableOpens(declaration, osFunc, called) {
 				lines[files.Position(open.Pos()).Line] = true
 			}
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			if selector, ok := node.(*ast.SelectorExpr); ok && !called[selector] && osWriters[osFunc(selector)] {
-				lines[files.Position(selector.Pos()).Line] = true
-			}
-			return true
-		})
+		for _, declaration := range read {
+			ast.Inspect(declaration, func(node ast.Node) bool {
+				if selector, ok := node.(*ast.SelectorExpr); ok && !called[selector] && osWriters[osFunc(selector)] {
+					lines[files.Position(selector.Pos()).Line] = true
+				}
+				return true
+			})
+		}
 	}
 	return slices.Sorted(maps.Keys(lines))
 }
