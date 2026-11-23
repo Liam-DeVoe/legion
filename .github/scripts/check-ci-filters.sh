@@ -102,7 +102,10 @@
 #      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
 #      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
 #      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
-#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      reports that check on a pull request or a merge group, or whose `if:` is any but `${{
+#      !github.event.pull_request.draft }}`, since GitHub names a job it skips by its name
+#      expression's literal text, so a dispatch must run it to name it pr-title (dispatch); a
+#      ci-ok job — the verdict, whose own
 #      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
 #      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
@@ -337,7 +340,14 @@
 #      skipped on every change it selects, and nothing else here would say so. Which step
 #      declares a name was the other half of this rule and has no subject left: the filters are
 #      one file, which the one step hands the action whole, so a name is a filter of the job
-#      exactly when that file holds it,
+#      exactly when that file holds it. The one other reference an output may carry is the
+#      every-job term's `steps.scope.outputs.every_job`, written by the job's scope step, which
+#      ci-router-outputs.test.sh runs and holds to what it selects, and only beside a filter's
+#      verdict: an output that reads it alone is true only on a run that selects every job; and,
+#      once the changes job has that scope step, an output but ref_is_main that does not open with
+#      `${{ steps.scope.outputs.every_job && `, since one written with an older
+#      `github.event_name == 'workflow_dispatch' && 'true'` term selects its job on every dispatch
+#      of a branch,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the

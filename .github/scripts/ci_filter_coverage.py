@@ -933,6 +933,16 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
 STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
+# The every-job term every output carries
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
+# the changes job's scope step writes every_job, which is no filter's verdict and the one other
+# step output an output may read. ci-router-outputs.test.sh runs that step and holds what it
+# selects; this rule holds only that the job has the step.
+SCOPE_STEP_ID = "scope"
+SCOPE_OUTPUT = "every_job"
+# How every output of the changes job but REF_OUTPUT opens; then `'true' ||` its own term, or
+# filter_verdicts' `'{}' ||` the filter step's outputs as JSON.
+EVERY_JOB_TERM = f"${{{{ steps.{SCOPE_STEP_ID}.outputs.{SCOPE_OUTPUT} && "
 
 
 def check_output_steps(document: dict, filters: dict, problems: list[Annotation]) -> None:
@@ -944,19 +954,45 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
     every name while no filter was read at all, since each way that happens is refused on its own
     (changes_filters, rule 21) and holding the names to nothing would refuse every output again.
-    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
+    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it. Nor is
+    the every-job term's SCOPE_STEP_ID.SCOPE_OUTPUT, which a step of the job must still write, and
+    which an output may read only beside a filter's verdict. Once the job has that step, every
+    output but REF_OUTPUT opens with EVERY_JOB_TERM: one that does not, an older
+    `github.event_name == 'workflow_dispatch' && 'true'` term among them, selects its job on every
+    dispatch of a branch, or leaves it off main's, which no other rule of this check sees."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
+    has_scope = SCOPE_STEP_ID in ids and SCOPE_STEP_ID not in filter_steps
     for output, expression in (job.get("outputs") or {}).items():
         if output == REF_OUTPUT:
             continue
-        for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
+        text = str(expression).strip()
+        if has_scope and not text.startswith(EVERY_JOB_TERM):
+            problems.append(error(WORKFLOW, f"the changes job's output {output} does not open with the every-job "
+                                            f"term `{EVERY_JOB_TERM}`, so a dispatch of main or one given every-job "
+                                            f"does not select its job by that step, and a term of its own (an older "
+                                            f"`github.event_name == 'workflow_dispatch' && 'true'`) selects it on "
+                                            f"every dispatch of a branch whatever its diff touches; open it with "
+                                            f"that term, as every other output does"))
+        refs = STEP_OUTPUT_REF.findall(str(expression))
+        # A filter step's outputs read whole (filter_verdicts' toJSON(steps.filter.outputs)) are its verdicts too.
+        read_steps = re.findall(r"steps\.([A-Za-z0-9_-]+)\.outputs\b", str(expression))
+        if ((SCOPE_STEP_ID, SCOPE_OUTPUT) in refs and SCOPE_STEP_ID not in filter_steps
+                and not any(step_id in filter_steps for step_id in read_steps)):
+            problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
+                                            f"steps.{SCOPE_STEP_ID}.outputs.{SCOPE_OUTPUT} and no filter's verdict, so "
+                                            f"it is true only on a run that selects every job and false on every "
+                                            f"pull request, merge group and dispatch of a branch; give it the "
+                                            f"filter it stands for after the every-job term"))
+        for step_id, name in refs:
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
                                                 f"so the output is empty on every run"))
+            elif step_id == SCOPE_STEP_ID and name == SCOPE_OUTPUT and step_id not in filter_steps:
+                continue
             elif step_id not in filter_steps:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and step {step_id} is no "
@@ -1786,10 +1822,12 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # Each of the two carries the one `name:` DISPATCH_NAMES gives it, and no other. GitHub evaluates
 # a job's name only when the job runs. ci-ok runs on every event: it is `ci-ok` on a pull
 # request, a merge group and a dispatch of exactly refs/heads/main, and `ci-ok (dispatch)` on a
-# dispatch of any other ref. pr-title runs only on a pull request that is not a draft and on a
-# merge group, and is named pr-title there; every run that skips it, a dispatch of any ref and a
-# draft's run among them, leaves the name unevaluated, and the check run carries the
-# expression's text, which is no pr-title either. A dispatch of a branch tests the branch's own
+# dispatch of any other ref. pr-title runs on a pull request that is not a draft, on a merge group
+# and on a dispatch, where its steps check nothing, and is named pr-title on the first two and
+# `pr-title (dispatch)` on the third (PR_TITLE_IF). A draft's run skips it, leaves the name
+# unevaluated, and its check run carries the expression's text, which is no pr-title either; a
+# dispatch once did the same, and its check run was named by the expression's literal text
+# (#5231's head 1bca361a). A dispatch of a branch tests the branch's own
 # tree, not its merge with the base, and its check runs land on the branch's head, which is a
 # pull request's head: under the plain name that commit carried a second ci-ok with another
 # tree's verdict, and a skipped pr-title. Pull request #3513 at a368687e carried both on
@@ -1804,8 +1842,9 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # is_main=true only for exactly refs/heads/main, and the changes job hands it on as
 # REF_OUTPUT; a dispatch whose changes job wrote nothing (it failed) is no dispatch of main
 # either. pr-title needs no job, so it cannot read that output, and its name carries the event
-# alone: it runs on no dispatch, so its dispatch arm is never evaluated, and what keeps a
-# skipped pr-title from posting a pass named pr-title is that its name is an expression at all.
+# alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
+# What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
+# expression at all.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
@@ -1819,6 +1858,9 @@ DISPATCH_NAMES = {
     "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
+# pr-title's one `if:`: every event this file runs on, a draft's pull request apart, so its name is
+# evaluated on a dispatch too.
+PR_TITLE_IF = "${{ !github.event.pull_request.draft }}"
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
 # `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
 # refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
@@ -1993,6 +2035,12 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             problems.append(error(WORKFLOW, f"this file has no {check} job, a check main's ruleset "
                                             f"requires: its own check run is that check on a pull request and on a merge group, "
                                             f"and the queue cannot merge a group nothing reports it on"))
+    title = jobs.get("pr-title")
+    if isinstance(title, dict) and str(title.get("if", "")) != PR_TITLE_IF:
+        problems.append(error(WORKFLOW, f"job pr-title carries `if: {squash(str(title.get('if', '')))}`: give it "
+                                        f"`if: {PR_TITLE_IF}`, so that it runs on a dispatch too and its check run is "
+                                        f"named pr-title (dispatch), not the name expression's literal text, which "
+                                        f"GitHub writes for a job it skips"))
     verdict = jobs.get(VERDICT_JOB)
     if verdict is None:
         problems.append(error(WORKFLOW, f"this file has no {VERDICT_JOB} job, the check main's ruleset "

@@ -287,7 +287,7 @@ jobs:
           job-status: ${{ job.status }}
   pr-title:
     name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check the pull request's text
@@ -1297,12 +1297,24 @@ done
 echo "case: a job named for a required check holding the re-run term"
 root=$(fixture pr-title-rerun-guard)
 replace "$root/.github/workflows/ci.yaml" \
-  "    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'" \
+  "    if: \${{ !github.event.pull_request.draft }}" \
   "    if: (github.event_name != 'merge_group' || github.run_attempt == '1')"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says a skipped required check passes" \
   "$(contains "$out" "job pr-title is named for a check main's ruleset requires and its if: holds a term that skips it on a re-run attempt of a merge-group run")"
+
+echo "case: pr-title skipped on a dispatch, so its check run carries the name expression's text"
+# The shape before #5231: a dispatched run skipped pr-title, and GitHub, which evaluates a skipped
+# job's name nowhere, named its check run by the expression's literal text.
+root=$(fixture pr-title-skips-dispatch)
+replace "$root/.github/workflows/ci.yaml" \
+  "    if: \${{ !github.event.pull_request.draft }}" \
+  "    if: \${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the if: it must carry and why" \
+  "$(contains "$out" "job pr-title carries \`if: \${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}\`: give it \`if: \${{ !github.event.pull_request.draft }}\`, so that it runs on a dispatch too")"
 
 echo "case: the verdict job holding the re-run term"
 root=$(fixture ci-ok-rerun-guard)
@@ -1325,7 +1337,7 @@ check "and asks the verdict to need it" \
 
 echo "case: the file has no pr-title job"
 root=$(fixture pr-title-absent)
-replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: github.event_name == \'pull_request\' || github.event_name == \'merge_group\'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
+replace "$root/.github/workflows/ci.yaml" $'  pr-title:\n    name: ${{ github.event_name == \'workflow_dispatch\' && \'pr-title (dispatch)\' || \'pr-title\' }}\n    if: ${{ !github.event.pull_request.draft }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Check the pull request\'s text\n        run: echo text\n' ""
 replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" "CI_OK_EXEMPT: '[\"ci-ok\"]'"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -4014,6 +4026,61 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the output and says that step writes no filter's verdict" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.note.outputs.image, and step note is no dorny/paths-filter step of the job, so it writes no filter's verdict and the output is empty on every run")"
+
+echo "case: the every-job term reads the scope step, the one other step an output may read"
+root=$(fixture output-every-job)
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+  "      image: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.image }}"
+replace "$root/.github/workflows/ci.yaml" '      app: ${{ steps.filter.outputs.app }}' \
+  "      app: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.app }}"
+replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - uses: dorny/paths-filter@v4" \
+  $'    steps:\n      - id: scope\n        run: echo every_job= >> "$GITHUB_OUTPUT"\n      - uses: dorny/paths-filter@v4'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+echo "case: with a scope step, an output without the every-job term in front fails"
+# The hand fix a rebase invites: an output added on main with the old dispatch term, which
+# selects its job on every dispatch of a branch.
+for shape in "\${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.app }}" \
+  '${{ steps.filter.outputs.app }}'; do
+  n=$((${n:-0} + 1))
+  root=$(fixture "output-no-every-job-$n")
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    "      image: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.image }}"
+  replace "$root/.github/workflows/ci.yaml" '      app: ${{ steps.filter.outputs.app }}' "      app: $shape"
+  replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - uses: dorny/paths-filter@v4" \
+    $'    steps:\n      - id: scope\n        run: echo every_job= >> "$GITHUB_OUTPUT"\n      - uses: dorny/paths-filter@v4'
+  run_check "$root"
+  check "$shape: fails" "$(is "$status" 1)"
+  check "$shape: names app and the term it lacks" \
+    "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output app does not open with the every-job term")"
+  check "$shape: and only app" \
+    "$(is "$(contains "$out" "the changes job's output image does not open with the every-job term")" false)"
+done
+root=$(fixture output-scope-other)
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+  "      image: \${{ steps.scope.outputs.other == 'true' && 'true' || steps.filter.outputs.image }}"
+replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - uses: dorny/paths-filter@v4" \
+  $'    steps:\n      - id: scope\n        run: echo every_job= >> "$GITHUB_OUTPUT"\n      - uses: dorny/paths-filter@v4'
+run_check "$root"
+check "another output of the scope step fails" "$(is "$status" 1)"
+check "  naming it" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.other, and step scope is no dorny/paths-filter step of the job")"
+root=$(fixture output-every-job-no-scope)
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+  "      image: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.image }}"
+run_check "$root"
+check "the every-job term with no scope step fails" "$(is "$status" 1)"
+check "  naming the step the job has not got" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.every_job, and the job has no step scope, so the output is empty on every run")"
+root=$(fixture output-every-job-only)
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+  '      image: ${{ steps.scope.outputs.every_job }}'
+replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - uses: dorny/paths-filter@v4" \
+  $'    steps:\n      - id: scope\n        run: echo every_job= >> "$GITHUB_OUTPUT"\n      - uses: dorny/paths-filter@v4'
+run_check "$root"
+check "the every-job term with no filter beside it fails" "$(is "$status" 1)"
+check "  naming the output and what it lost" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.scope.outputs.every_job and no filter's verdict")"
 
 echo "case: an output naming a filter the filters file does not hold"
 # Renaming the filter leaves EXCLUDED naming one the file has not got as well, which is its own
