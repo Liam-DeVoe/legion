@@ -1693,6 +1693,12 @@ async function clickEachLink(
     `k-link-click: in ${view}, a click on the web link opens a new page at ${AWAY}`
   ).toBe(AWAY);
   expect(page.url(), `k-link-click: in ${view}, the Dispatch page stays at its address`).toBe(at);
+  // Firefox under Playwright gives this page's window the new page's size once the new page
+  // closes (outer 1440x986 became 1280x806, the page still reading 1440x900), and a pointer's
+  // click near the bottom of the viewport then reached no element of the page (builds Jobs
+  // `infra-2160-probe-how-qp655` and `infra-2160-probe-low-8858d`, 2026-11-23): set the
+  // viewport again, which sizes the window again.
+  await page.setViewportSize(page.viewportSize() ?? WIDE);
 
   await markDocument(page);
   await links.issue.click();
@@ -1705,7 +1711,9 @@ async function clickEachLink(
 }
 
 // SLOW(>=2s): the spec opened four times, two new pages loaded, and four new tabs of Dispatch.
-test("k-link-click: in the spec the reader edits, a plain click opens each link, a pointer over one shows no Open link card, and Ctrl and a middle click open a new tab", async ({
+// @firefox: the click each engine sends on a link, whose fields decide the path the link opens
+// through (Firefox sends Enter's click on a focused link with `detail` 1, Chromium with 0).
+test("k-link-click: in the spec the reader edits, a plain click opens each link, a pointer over one shows no Open link card, and Ctrl and a middle click open a new tab @firefox", async ({
   context,
   page,
 }) => {
@@ -1777,7 +1785,8 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
 
 // SLOW(>=2s): the spec and a project document each opened once, a new tab loaded by a Ctrl+click
 // in each, and one move in place from each.
-test("k-link-click: in the spec the reader edits and in a project document, a plain click on a link opens it after a Ctrl+click on that link opened it in a new tab", async ({
+// @firefox: the click each engine sends on a link (the row above says why).
+test("k-link-click: in the spec the reader edits and in a project document, a plain click on a link opens it after a Ctrl+click on that link opened it in a new tab @firefox", async ({
   context,
   page,
 }) => {
@@ -1819,7 +1828,8 @@ test("k-link-click: in the spec the reader edits and in a project document, a pl
 
 // SLOW(>=2s): the spec and a project document each opened once, a text selected in each and one
 // move in place from each.
-test("k-link-click: in the spec the reader edits and in a project document, one plain click on a link inside text the reader selected opens it", async ({
+// @firefox: the click each engine sends on a link (k-link-click's first row says why).
+test("k-link-click: in the spec the reader edits and in a project document, one plain click on a link inside text the reader selected opens it @firefox", async ({
   page,
 }) => {
   const seed = await seedLinkSpec();
@@ -1857,7 +1867,11 @@ test("k-link-click: in the spec the reader edits and in a project document, one 
 
 for (const view of ["the past version", "the reading pane", "the comment"] as const) {
   // SLOW(>=2s): the view opened twice, a new page loaded and two moves to the other issue.
-  test(`k-link-click: in ${view}, a plain click opens each link`, async ({ context, page }) => {
+  // @firefox: the click each engine sends on a link (k-link-click's first row says why).
+  test(`k-link-click: in ${view}, a plain click opens each link @firefox`, async ({
+    context,
+    page,
+  }) => {
     const seed = await seedLinkSpec();
     await clickEachLink(context, page, seed, view);
   });
@@ -1889,7 +1903,8 @@ async function seedPlanTask(): Promise<{ readonly key: string; readonly referenc
 
 // SLOW(>=2s): a plan seeded at version 2, and its page and its version 1 each opened and left by
 // a click.
-test("k-link-click: in the plan the reader edits and in its past version, a plain click on a task's serves link moves the page to the spec with no new load of the application", async ({
+// @firefox: the click each engine sends on a link (k-link-click's first row says why).
+test("k-link-click: in the plan the reader edits and in its past version, a plain click on a task's serves link moves the page to the spec with no new load of the application @firefox", async ({
   page,
 }) => {
   const seed = await seedPlanTask();
@@ -1999,7 +2014,8 @@ async function keepsPressedLink<T>(
 }
 
 // SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses.
-test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a press on a link leaves the comment folded and the link in the page, and a Ctrl+click and a middle click open its dispatch:// link in a new page", async ({
+// @firefox: the click each engine sends on a link (k-link-click's first row says why).
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a press on a link leaves the comment folded and the link in the page, and a Ctrl+click and a middle click open its dispatch:// link in a new page @firefox", async ({
   context,
   page,
 }) => {
@@ -2096,7 +2112,8 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
 });
 
 // SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses, and each of the four presses that move the page waits out 5 s for a new page that never opens.
-test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a click on its web link opens a new page, a click on its dispatch:// link or its key's title moves the page to the other issue, and a Ctrl+click and a middle click on its key's title open it in a new page, the comment staying folded and the pressed link in the page", async ({
+// @firefox: the click each engine sends on a link (k-link-click's first row says why).
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a click on its web link opens a new page, a click on its dispatch:// link or its key's title moves the page to the other issue, and a Ctrl+click and a middle click on its key's title open it in a new page, the comment staying folded and the pressed link in the page @firefox", async ({
   context,
   page,
 }) => {
@@ -2205,7 +2222,8 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
 });
 
 // SLOW(>=2s): the spec opened three times and a new page loaded.
-test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a link or beside a key's title opens it and changes no text", async ({
+// @firefox: the click each engine sends on a link (k-link-click's first row says why).
+test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a link or beside a key's title opens it and changes no text @firefox", async ({
   context,
   page,
 }) => {
@@ -2292,7 +2310,9 @@ async function tabWalk(page: Page, scope: Locator, limit: number): Promise<TabSt
 }
 
 // SLOW(>=2s): two views walked by Tab, and each of their three links opened by Enter.
-test("k-link-keys: in the past version and the reading pane, Tab reaches each link, the key's title included, and Enter opens it", async ({
+// @firefox: the click each engine sends for Enter on a focused link (k-link-click's first row
+// says why).
+test("k-link-keys: in the past version and the reading pane, Tab reaches each link, the key's title included, and Enter opens it @firefox", async ({
   context,
   page,
 }) => {

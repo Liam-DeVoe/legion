@@ -496,6 +496,9 @@ const parallelProjects = [
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // The click the engine sends on a link, whose fields say which path opens it: Enter's click on
+  // a focused link carries `detail` 1 here and 0 in Chromium, with an empty `pointerType` in
+  // both: `keyboard-complete`'s `k-link-click` and `k-link-keys` rows.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
