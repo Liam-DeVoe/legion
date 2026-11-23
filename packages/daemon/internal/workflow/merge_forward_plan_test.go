@@ -278,7 +278,7 @@ func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 				return
 			}
 			applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+				Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Summary: "retro done", Commit: conflictHead})
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 			}
@@ -395,7 +395,7 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 			}
 
 			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+				Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Summary: "retro done", Commit: conflictHead})
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after the retro's completion LEGION-208 is in %s, want merging", got)
 			}
@@ -551,7 +551,7 @@ func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
 				}
 			}
 			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+				Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Summary: "retro done", Commit: conflictHead})
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 			}

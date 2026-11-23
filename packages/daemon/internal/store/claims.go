@@ -600,7 +600,9 @@ func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, erro
 // holds is refused.
 func (s *Store) ClaimRole(ctx context.Context, token claim.Token) (claim.Role, error) {
 	var role string
-	err := s.pool.QueryRow(ctx, `select role from claims where token = $1`, string(token)).Scan(&role)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select role from claims where token = $1`, string(token)).Scan(&role)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("no claim holds token %s", token)
 	}
