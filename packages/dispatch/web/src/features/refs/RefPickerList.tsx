@@ -271,11 +271,7 @@ export function RefPickerList({
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
           <TruncatedText
-            className={
-              tooltips
-                ? `text-xs ${textOptionDescription}`
-                : `text-xs whitespace-normal! [overflow-wrap:anywhere] ${textOptionDescription}`
-            }
+            className={`text-xs ${tooltips ? "" : "whitespace-normal! [overflow-wrap:anywhere] "}${textOptionDescription}`}
             title={tooltips ? one.detail : undefined}
           >
             <RefRowDetail row={one} />
