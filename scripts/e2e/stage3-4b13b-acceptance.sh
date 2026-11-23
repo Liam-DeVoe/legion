@@ -15,6 +15,9 @@
 #   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
 # Nothing here merges into sjawhar/legion-smoke's main: each proof PR is retargeted to a scratch base
 # branch before any merge, and the scratch base is deleted at the end.
+# No owner here gives a plan, so each issue runs the project's default steps (`planner implementer
+# tester reviewer acceptance:owner`): the phases, workers, pull requests, acceptance, retro and
+# merge named below are that plan's.
 #
 # Run it as `bash scripts/e2e/stage3-4b13b-acceptance.sh` from the operator's own Oh My Pi session,
 # with the Stage 3 proof's three required inputs, LEGION_E2E_MODEL_GATEWAY_URL, SMOKE_UPSTREAM_NATS
@@ -1051,14 +1054,14 @@ note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$p
 pass
 
 begin reviewers
-# A review ends when its reviewer completes it: the reviewer approves the head it has, then commits
-# and pushes its handoff, so the pull request's head moves past the approved commit before the issue
-# leaves reviewing, and the retro's handoff moves it again. Whether that approval still stands for
-# the head the round ends on is the daemon's judgement (classify.ApprovalStands), recorded on the
-# round as its decision; the proof checks the review App approved and the daemon ended the round on
-# that approval, which moves the issue to accepting, where no worker runs: the tree's architect
-# accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts on no
-# notice under the rig's instructions.
+# A review ends when its reviewer completes it: the reviewer approves the head it has and writes its
+# handoff as a record on the Dispatch issue, pushing nothing, and the retro's push later moves the
+# head past the approved commit. Whether that approval still stands for the head the round ends on
+# is the daemon's judgement (classify.ApprovalStands), recorded on the round as its decision; the
+# proof checks the review App approved and the daemon ended the round on that approval, which moves
+# the issue to accepting, the default steps' acceptance:owner, where no worker runs: the issue's
+# architect accepts with the legion tool's sign_off (→ retro), told here by the proof, since it acts
+# on no notice under the rig's instructions.
 reviewed_through() {
   reviewer_approved "${pr_of[$1]}" >/dev/null && phase_at_least "$1" accepting &&
     daemon_state | jq -e --arg i "$1" '.issues[$i].pullRequest.reviewDecision == "approved"' >/dev/null
