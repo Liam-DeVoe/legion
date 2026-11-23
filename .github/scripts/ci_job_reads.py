@@ -702,6 +702,12 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
+    # This test reads the plan rows' migration through migrations.All, as the one above does, and
+    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
+    # text outside its package, so the guide is this one's one row.
+    f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -2269,8 +2275,8 @@ BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciph
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
@@ -2516,22 +2522,22 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it too: the pull request's text is the guard's other surface"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's text naming a term"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:26 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's new text"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it, over a pull request's new text"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2599,7 +2605,7 @@ SCRIPT_TEST_GATES = [
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
         (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:34 sources it for its gh read"),
+        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:38 sources it for its gh read"),
     ]),
     harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
         (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
@@ -2651,6 +2657,10 @@ SCRIPT_TEST_GATES = [
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
+    harness("architecture_check_test", "Test the architecture-check action's go-path mode",
+            ".github/actions/architecture-check/check.test.sh", [
+        (".github/actions/architecture-check/check.sh", "the script under test"),
+    ]),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
@@ -3518,11 +3528,11 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+         ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:68 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:78 reads"),
+         "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:85 reads"),
         (".github/actions/spec-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
         (".github/actions/spec-check/check.sh",
@@ -3531,7 +3541,7 @@ GATES = [
         (".github/scripts/build-envoy-command.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/architecture-check/check.sh:60 and .github/actions/spec-check/check.sh:62 run it"),
+         ".github/actions/architecture-check/check.sh:67 and .github/actions/spec-check/check.sh:62 run it"),
         (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
         # The step judges the action's default path, .dispatch/spec, which holds no file on main;
         # the read names .dispatch whole because a read that matches no file is refused, and the
