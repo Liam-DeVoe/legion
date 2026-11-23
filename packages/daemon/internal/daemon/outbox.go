@@ -4587,7 +4587,10 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 		needs = append(needs, need)
 	}
 	branch := task.BranchOf(issue.Key)
-	base, join := stored.BaseOf(issue, task.Task)
+	base, join, err := stored.BaseOf(issue, task.Task)
+	if err != nil {
+		return fmt.Errorf("make the branch %s of task %s of %s: %w", branch, task.Task, issue.Key, err)
+	}
 	onto := branch
 	if join {
 		onto = base

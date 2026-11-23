@@ -114,7 +114,9 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if err != nil {
 			return Standing{}, err
 		}
-		told = planToldOf(issue, stored, w.Task)
+		if told, err = planToldOf(issue, stored, w.Task); err != nil {
+			return Standing{}, err
+		}
 	}
 	return standingText(issue, e.cfg.WorkspaceDir, w, rows, told)
 }
@@ -139,13 +141,17 @@ type joinConflict struct {
 	task, branch string
 }
 
-// planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan.
-func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) planTold {
+// planToldOf is planTold of task of stored, the plan of issue's run, and nothing for no plan. A task
+// or a need the plan does not hold is an error (record.StoredPlan.BaseOf).
+func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (planTold, error) {
 	if stored == nil {
-		return planTold{}
+		return planTold{}, nil
 	}
 	var told planTold
-	base, join := stored.BaseOf(issue, task)
+	base, join, err := stored.BaseOf(issue, task)
+	if err != nil {
+		return planTold{}, err
+	}
 	if base != issue.DefaultBranch {
 		told.base = base
 	}
@@ -160,7 +166,7 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) plan
 		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: byID[need].BranchOf(issue.Key)})
 	}
 	told.unmerged = join && byID[task].JoinUnmerged
-	return told
+	return told, nil
 }
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
