@@ -18,11 +18,14 @@ const forwarderStopWait = 4 * time.Second
 // startForwarder runs the role's GitHub forwarder (Config.GitHubForwarder, `legion forwarder`) as a
 // child of the shim, once the role's key exists: the forwarder asks the broker for the role's grant
 // with that key, once the daemon has enrolled it. It is restarted after forwarderRestartDelay
-// whenever it exits, until the shim's loop ends, which sends it SIGTERM and gives it
-// forwarderStopWait to revoke the grants it holds; the shim's Run waits for it. It runs in the
-// shim's own environment, where the runtime set AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR, and
-// its lines go to the shim's stderr, beside the renewer's. One forwarder per shim: a later call
-// starts no second one.
+// whenever it exits, until the stop begins (s.commands ends, with the shim's own stop, the agent's
+// SIGTERM or the loop's end): at the stop's start role-init signals every process of the role,
+// the forwarder among them, which revokes its grants and exits, and a new one then would ask for
+// a fresh grant while the role goes away. A forwarder still running at the stop keeps running
+// until the loop ends, which sends it SIGTERM and gives it forwarderStopWait to revoke the grants
+// it holds; the shim's Run waits for it. It runs in the shim's own environment, where the runtime
+// set AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR, and its lines go to the shim's stderr, beside
+// the renewer's. One forwarder per shim: a later call starts no second one.
 func (s *shim) startForwarder() {
 	argv := s.cfg.GitHubForwarder
 	if len(argv) == 0 {
@@ -38,7 +41,7 @@ func (s *shim) startForwarder() {
 	s.forwarders.Add(1)
 	go func() {
 		defer s.forwarders.Done()
-		for s.loop.Err() == nil {
+		for s.commands.Err() == nil {
 			cmd := exec.CommandContext(s.loop, argv[0], argv[1:]...)
 			cmd.Env = s.cfg.Env
 			cmd.Stdout = os.Stderr
@@ -50,14 +53,15 @@ func (s *shim) startForwarder() {
 			} else {
 				s.log.Printf("[worker-shim] forwarder started (pid %d)", cmd.Process.Pid)
 				err := cmd.Wait()
-				if s.loop.Err() != nil {
+				if s.commands.Err() != nil {
+					s.log.Printf("[worker-shim] forwarder exited (%v) during the stop; not starting it again", err)
 					return
 				}
 				s.log.Printf("[worker-shim] forwarder exited (%v); restarting in %s", err, forwarderRestartDelay)
 			}
 			select {
 			case <-s.clock.After(forwarderRestartDelay):
-			case <-s.loop.Done():
+			case <-s.commands.Done():
 				return
 			}
 		}

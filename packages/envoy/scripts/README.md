@@ -384,9 +384,15 @@ broker with the stack's enrolled session's key. It checks `gh api`, `gh pr list`
 `gh api graphql`, `gh stack --help`, `git ls-remote` and `git push --dry-run`, the stand-in
 recording each account's installation token for a call naming that account, from one grant;
 a revocation, after which the role's gh works again within 60 seconds and no placeholder
-reached the stand-in; a public fetch while the broker's proxy port answers nothing, with the
-control that a bound host fails then; and that the role's `hosts.yml` files and
-`legion git-credential` hold placeholders alone (`proxy-role/assert.sh`).
+reached the stand-in; a renewal, in which a second forwarder asks for `PROXY_ROLE_RENEW`, whose
+first grant a trigger back-dates in the broker's database to 49 min 45 s of its hour, so the
+forwarder renews 15 seconds in, and a new connection carrying the previous grant's placeholder,
+read before the renewal, must still get the account's token while that grant lives, then that
+forwarder's stop must leave neither of its grants live in the broker's grants table; a public
+fetch while the broker's proxy port answers nothing, with the control that a bound host fails
+then; and that the role's `hosts.yml` files and `legion git-credential` hold placeholders
+alone (`proxy-role/assert.sh`). The renewal check passes only on a broker that swaps the
+placeholder of another live grant of the session on one connection.
 
 Its negative control runs that placeholder assertion over a `hosts.yml` holding the token
 the daemon reads without the role map (`agent-secrets PROXY_ROLE_PLAIN -- printenv

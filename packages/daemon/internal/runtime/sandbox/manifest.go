@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -392,11 +393,13 @@ type launch struct {
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
 	// proxied is the GitHub proxy decision (Runtime.proxiesGitHubIn) for the pod this launch
-	// builds, and proxyDefault the account directory its role is told as GH_CONFIG_DIR where its
-	// GitHub is behind the proxy (Runtime.proxyDefault), both decided once in prepare; a launch
-	// that keeps a pod reads the pod's own decision instead (launch.proxiesGitHub).
+	// builds, and proxyDefault and proxyPairs the account directory its role is told as
+	// GH_CONFIG_DIR and the renames its forwarder's bundle routes by where its GitHub is behind the
+	// proxy (Runtime.proxyRoute), all decided once in prepare; a launch that keeps a pod reads the
+	// pod's own decision instead (launch.proxiesGitHub).
 	proxied      bool
 	proxyDefault string
+	proxyPairs   []ghrepo.Rename
 	// kept is what the live pod this launch keeps rather than replaces already carries for its
 	// role, read from that pod's stored template (relaunch's keptBy). Nil is a launch that builds
 	// the pod itself — every replacing launch, and every caller that only builds a manifest — whose
@@ -739,7 +742,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	l.secrets, l.prompt = secrets, prompt
 	l.proxied = r.proxiesGitHubIn(nil, spec.Role)
 	if l.proxied {
-		l.proxyDefault = r.proxyDefault(spec)
+		l.proxyDefault, l.proxyPairs = r.proxyRoute(spec)
 	}
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
 	// (checkStartFrame), so a prompt that would overrun it is refused now, before anything of the

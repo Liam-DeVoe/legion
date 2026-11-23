@@ -87,8 +87,8 @@ const (
 )
 
 // TestConcurrentAsksInTheSecondHalfGetOneNewGrant: eight asks for the same names at once, 31
-// minutes into an automatic grant of an hour, get one new grant between them, in each of five
-// rounds: Create reads the reuse again under the names' locks (reuseUnderLock), so each ask that
+// minutes into an automatic grant of an hour, get one new grant between them, in each of
+// concurrentRounds rounds: Create reads the reuse again under the names' locks (reuseUnderLock), so each ask that
 // waited on them finds the grant the first one wrote.
 //
 // The named revert: drop reuseUnderLock's call from Create, and a round writes more than one new
@@ -112,7 +112,7 @@ func TestConcurrentAsksInTheSecondHalfGetOneNewGrant(t *testing.T) {
 }
 
 // TestConcurrentFirstAsksGetOneGrant: eight first asks for the same names at once, with no live
-// grant, get one grant between them, in each of five rounds.
+// grant, get one grant between them, in each of concurrentRounds rounds.
 //
 // The named revert: drop reuseUnderLock's call from Create, and a round writes more than one grant.
 func TestConcurrentFirstAsksGetOneGrant(t *testing.T) {

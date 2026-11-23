@@ -15,9 +15,19 @@
 //
 // The forwarder asks for the next grant with ten minutes of the hour left, and asks again at once
 // when the broker's proxy answers 407, which it does for a grant the broker ended early; that one
-// connection fails, and the role's next call reads the new grant's placeholders. It revokes the
-// grants it holds when it stops, at the end of the role's generation, and the daemon's revocation
-// of the generation's enrollment ends any it missed.
+// connection fails, and the role's next call reads the new grant's placeholders. Before its first
+// grant, a CONNECT to one of GitHub's hosts waits for it while an ask can still bring it, and every
+// other CONNECT goes out at once. It revokes the grants it holds when it stops, at the end of the
+// role's generation, the grant of an ask still in flight included.
+//
+// A grant it fails to revoke (its stop cut short, its process killed) is not ended by the daemon:
+// the daemon's revocation of the generation's enrollment ends the enrollment, and the broker
+// carries a grant of a session's enrollment to that session's next one (enroll.endMayCarry). It
+// stays live until its own expiry, at most the hour of Lifetime, which is the bound the spec gives
+// a missed revocation. The role's next generation holds none of its placeholders, since the
+// bundle is the generation's own and goes with it; its forwarder's first ask is handed that grant
+// back while it is in the first half of its life (requests' reuseLiveGrant), and revokes it at its
+// own stop, and otherwise leaves it unused.
 package githubproxy
 
 import (
@@ -73,15 +83,23 @@ type Grant struct {
 	Accounts  map[string]string
 }
 
-// Binds reports whether the grant sends a CONNECT to host:port through the broker: port 443 and a
-// host the grant binds, by its exact name or, for an entry `*.<domain>`, under that domain, as
-// the broker's proxy matches them.
-func (g *Grant) Binds(host, port string) bool {
+// githubHosts are the hosts the broker's GitHub kind binds (the spec's kind table: api.github.com,
+// github.com, uploads.github.com). Before the forwarder holds its first grant, whose hosts decide
+// afterwards, a CONNECT to one of them waits for that grant, and a CONNECT to any other host goes
+// out at once (serveConn): no placeholder is in the role's files yet, and no other host needs one.
+var githubHosts = []string{"api.github.com", "github.com", "uploads.github.com"}
+
+// Binds reports whether the grant sends a CONNECT to host:port through the broker (bindsHost).
+func (g *Grant) Binds(host, port string) bool { return bindsHost(g.Hosts, host, port) }
+
+// bindsHost reports whether hosts bind host:port: port 443 and a host of hosts, by its exact name
+// or, for an entry `*.<domain>`, under that domain, as the broker's proxy matches them.
+func bindsHost(hosts []string, host, port string) bool {
 	if port != "443" {
 		return false
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	for _, bound := range g.Hosts {
+	for _, bound := range hosts {
 		bound = strings.ToLower(bound)
 		if suffix, wildcard := strings.CutPrefix(bound, "*."); wildcard {
 			if strings.HasSuffix(host, "."+suffix) {
@@ -165,12 +183,21 @@ type keeper struct {
 	mu      sync.Mutex
 	current *Grant
 	held    map[string]time.Time // every grant asked for and not yet revoked, by id, with its expiry
-	ready   chan struct{}        // closed once the first grant is held
 	asking  *ask                 // the ask in flight, which every caller joins
+	// lastErr is how the last ask ended, nil for a grant or before any ask, and changed is closed
+	// and replaced each time an ask ends, so awaitFirst learns of the next one.
+	lastErr error
+	changed chan struct{}
+	// stopping is set once revokeHeld began: no ask starts after it, so none lands a grant it
+	// cannot revoke.
+	stopping bool
 	// saidNotEnrolled is whether the wait for the role's enrollment was logged, which is said
 	// once.
 	saidNotEnrolled bool
 }
+
+// errStopping is the answer to an ask the forwarder's stop came before.
+var errStopping = errors.New("the forwarder is stopping")
 
 // ask is one ask for a grant, which every caller that needs one while it runs joins.
 type ask struct {
@@ -181,7 +208,7 @@ type ask struct {
 
 func newKeeper(open func() (Broker, error), names []string, reason, ghDir, defaultOwner string, renames []ghrepo.Rename, renewBefore time.Duration, log *slog.Logger) *keeper {
 	return &keeper{open: open, names: names, reason: reason, ghDir: ghDir, defaultOwner: defaultOwner, renames: renames,
-		renewBefore: renewBefore, log: log, held: map[string]time.Time{}, ready: make(chan struct{})}
+		renewBefore: renewBefore, log: log, held: map[string]time.Time{}, changed: make(chan struct{})}
 }
 
 // Current is the grant held now, nil before the first.
@@ -191,13 +218,28 @@ func (k *keeper) Current() *Grant {
 	return k.current
 }
 
-// awaitFirst waits for the first grant, until ctx ends.
+// awaitFirst waits for the first grant while one may come soon: while an ask runs, and while the
+// role's key awaits its enrollment or no ask has run yet, until ctx ends. Once an ask has failed
+// for any other reason, with none running, it answers that failure at once: a broker that is down
+// or refuses the role's names answers a GitHub call with its reason, not with a minute's wait.
 func (k *keeper) awaitFirst(ctx context.Context) (*Grant, error) {
-	select {
-	case <-k.ready:
-		return k.Current(), nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("no grant of the role's GitHub secrets yet: %w", context.Cause(ctx))
+	for {
+		k.mu.Lock()
+		current, asking, last, changed := k.current, k.asking, k.lastErr, k.changed
+		k.mu.Unlock()
+		switch {
+		case current != nil:
+			return current, nil
+		case asking != nil:
+			changed = asking.done
+		case last != nil && !errors.Is(last, cipher.ErrNotEnrolled):
+			return nil, fmt.Errorf("the forwarder's last ask for a grant failed: %w", last)
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("no grant of the role's GitHub secrets yet: %w", context.Cause(ctx))
+		}
 	}
 }
 
@@ -217,10 +259,14 @@ func (k *keeper) Replace(ctx context.Context, failed *Grant) (*Grant, error) {
 }
 
 // obtain makes one ask for a grant, or joins the one in flight, and on success makes it current
-// and writes its placeholders into the bundle.
+// and writes its placeholders into the bundle. Once the stop began it starts none (errStopping).
 func (k *keeper) obtain(ctx context.Context, why string) (*Grant, error) {
 	k.mu.Lock()
 	if k.asking == nil {
+		if k.stopping {
+			k.mu.Unlock()
+			return nil, errStopping
+		}
 		a := &ask{done: make(chan struct{})}
 		k.asking = a
 		go k.run(a, why)
@@ -244,15 +290,14 @@ func (k *keeper) run(a *ask, why string) {
 	defer cancel()
 	grant, err := k.ask(ctx)
 	k.mu.Lock()
-	k.asking = nil
 	if err == nil {
 		k.held[grant.ID] = grant.ExpiresAt
-		first := k.current == nil
 		k.current = grant
-		if first {
-			close(k.ready)
-		}
 	}
+	a.grant, a.err = grant, err
+	k.asking, k.lastErr = nil, err
+	close(k.changed)
+	k.changed = make(chan struct{})
 	k.mu.Unlock()
 	switch {
 	case errors.Is(err, cipher.ErrNotEnrolled):
@@ -271,7 +316,6 @@ func (k *keeper) run(a *ask, why string) {
 		k.log.Info("forwarder: holds a grant of the role's GitHub secrets", "why", why, "grant", grant.ID,
 			"expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339), "accounts", slices.Sorted(maps.Keys(grant.Accounts)), "hosts", grant.Hosts)
 	}
-	a.grant, a.err = grant, err
 	close(a.done)
 }
 
@@ -398,8 +442,22 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // revokeHeld ends every grant the forwarder asked for that has not expired, within ctx: the
-// generation's end, when no call of the role's needs them.
+// generation's end, when no call of the role's needs them. No ask starts once it began
+// (keeper.stopping), and it first waits, within ctx, for the ask in flight, whose grant the broker
+// may commit after the stop began, so that grant is revoked with the rest. An ask that outlives
+// ctx leaves its grant live until its own expiry, as a stop cut short does (see the package doc).
 func (k *keeper) revokeHeld(ctx context.Context) {
+	k.mu.Lock()
+	k.stopping = true
+	asking := k.asking
+	k.mu.Unlock()
+	if asking != nil {
+		select {
+		case <-asking.done:
+		case <-ctx.Done():
+			k.log.Warn("forwarder: an ask in flight outlived the stop; its grant, if one comes, lives to its expiry")
+		}
+	}
 	k.mu.Lock()
 	held := maps.Clone(k.held)
 	k.held = map[string]time.Time{}

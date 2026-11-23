@@ -386,7 +386,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	var agentSecrets *sandbox.AgentSecrets
 	if a := k.AgentSecrets; a != nil {
 		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience,
-			GitHub: a.GitHub, GitHubRenames: cfg.RepositoryRenames.Pairs()}
+			GitHub: a.GitHub}
 	}
 	cache, err := repositoryCache(k.RepositoryCache)
 	if err != nil {
@@ -678,6 +678,12 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
 		opts.ControllerMemoryGuardKilled = kills.controllerKilled
+		// The rename rule a role's forwarder writes its bundle by, the App-token bundle's own
+		// (appauth.Route over the same served set and renames), so the two route one repository
+		// alike.
+		opts.GitHubRoute = func(repo ghrepo.Repository) (string, []ghrepo.Rename) {
+			return appauth.Route(served, renames, repo)
+		}
 		if apps != nil {
 			// Two records per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for: the owners each App's last bundle read

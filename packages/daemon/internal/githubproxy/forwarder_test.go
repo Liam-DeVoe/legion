@@ -130,12 +130,16 @@ func (p *brokerProxy) calls() []proxyCall {
 
 // fakeBroker is the role's session at a broker that grants the role's names at once: each ask is
 // a new grant g<n>, whose proxy password and two account placeholders name it, alive at the
-// proxy until the test ends it or the forwarder revokes it.
+// proxy until the test ends it or the forwarder revokes it. With gate set, each ask signals
+// entered and then waits for gate to close before it answers: an ask the broker commits while the
+// forwarder stops.
 type fakeBroker struct {
 	proxy    *brokerProxy
 	lifetime time.Duration
 	hosts    []string
 	asValue  bool // release the name as its value, which the forwarder must refuse
+	gate     chan struct{}
+	entered  chan struct{}
 
 	mu      sync.Mutex
 	asked   int
@@ -145,6 +149,13 @@ type fakeBroker struct {
 func (b *fakeBroker) Request(_ context.Context, names []string, reason string, lifetime int) (cipher.RequestAnswer, error) {
 	if lifetime != 3600 || reason == "" || !slices.Equal(names, []string{"ROLE_APP"}) {
 		return cipher.RequestAnswer{}, fmt.Errorf("asked for %v for %d s under %q", names, lifetime, reason)
+	}
+	if b.gate != nil {
+		select {
+		case b.entered <- struct{}{}:
+		default:
+		}
+		<-b.gate
 	}
 	b.mu.Lock()
 	b.asked++
@@ -425,6 +436,97 @@ func TestStopRevokesTheHeldGrants(t *testing.T) {
 	r.shutdown()
 	if revoked := r.broker.revokedIDs(); !slices.Contains(revoked, grant.ID) {
 		t.Fatalf("the broker saw revocations %v; want %s revoked at the stop", revoked, grant.ID)
+	}
+}
+
+// TestABrokerDownAtTheStartStopsOnlyGitHubCalls: with the broker unreachable from the start, a
+// CONNECT to a host GitHub's kind does not bind is tunnelled at once, with nothing waiting on a
+// grant, and a CONNECT to api.github.com is answered 503 at once, naming the failed ask, rather
+// than held for the recovery bound.
+//
+// The named revert: have serveConn wait for the first grant before it reads the host, and the
+// first CONNECT is held 60 s, past connect's 20 s deadline.
+func TestABrokerDownAtTheStartStopsOnlyGitHubCalls(t *testing.T) {
+	public := echoServer(t, "public")
+	r := newRig(t, func(cfg *Config, _ *fakeBroker) {
+		cfg.Open = func() (Broker, error) { return nil, errors.New("dial the broker: connection refused") }
+	})
+	start := time.Now()
+	status, echoed := r.connect(public.Addr().String())
+	if !strings.HasPrefix(status, "200") || echoed != "public:ping" || time.Since(start) > 3*time.Second {
+		t.Fatalf("CONNECT %s with no grant = %q, echo %q, in %s; want 200 and the public host's echo at once", public.Addr(), status, echoed, time.Since(start))
+	}
+	start = time.Now()
+	if status, _ := r.connect("api.github.com:443"); !strings.HasPrefix(status, "503") || time.Since(start) > 5*time.Second {
+		t.Fatalf("CONNECT api.github.com:443 with the broker down = %q in %s; want 503 at once", status, time.Since(start))
+	}
+	if calls := r.proxy.calls(); len(calls) != 0 {
+		t.Fatalf("the broker's proxy saw %+v; want nothing while the forwarder holds no grant", calls)
+	}
+}
+
+// TestAGrantInFlightAtTheStopIsRevokedWhenItLands: an ask the broker answers only after the
+// forwarder's stop began still lands a grant, and the stop waits for it, within its bound, and
+// revokes it.
+//
+// The named revert: have revokeHeld read the grants it holds without waiting for the ask in
+// flight, and the grant that lands after it is never revoked.
+func TestAGrantInFlightAtTheStopIsRevokedWhenItLands(t *testing.T) {
+	gate := make(chan struct{})
+	r := newRig(t, func(_ *Config, b *fakeBroker) {
+		b.gate, b.entered = gate, make(chan struct{}, 1)
+	})
+	select {
+	case <-r.broker.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the forwarder made no ask")
+	}
+	r.stop()
+	time.Sleep(200 * time.Millisecond)
+	close(gate)
+	select {
+	case <-r.stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the forwarder did not stop")
+	}
+	if revoked := r.broker.revokedIDs(); !slices.Equal(revoked, []string{"g1"}) {
+		t.Fatalf("the broker saw revocations %v; want g1, the grant that landed during the stop", revoked)
+	}
+}
+
+// TestAListenerThatFailsStillRevokesTheGrants: when the listener fails for good, Serve answers the
+// failure and still revokes the grants it holds first.
+//
+// The named revert: have Serve return on a failed Accept before revokeHeld, and the grant stays
+// live.
+func TestAListenerThatFailsStillRevokesTheGrants(t *testing.T) {
+	broker := &fakeBroker{proxy: newBrokerProxy(t, echoServer(t, "bound").Addr().String()), lifetime: time.Hour, hosts: []string{"api.github.com"}}
+	fwd, err := Listen(Config{Role: "implementer", Listen: "127.0.0.1:0", Secrets: []string{"ROLE_APP"}, Reason: "the implementer of ACME-1",
+		GHDir: filepath.Join(t.TempDir(), "gh"), Open: func() (Broker, error) { return broker, nil },
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- fwd.Serve(context.Background()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && fwd.Current() == nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if fwd.Current() == nil {
+		t.Fatal("the forwarder holds no grant")
+	}
+	_ = fwd.listener.Close()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Serve answered nil for a listener that failed")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after its listener failed")
+	}
+	if revoked := broker.revokedIDs(); !slices.Equal(revoked, []string{"g1"}) {
+		t.Fatalf("the broker saw revocations %v; want g1", revoked)
 	}
 }
 

@@ -6,12 +6,10 @@ import (
 	"maps"
 	"slices"
 	"strconv"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -85,34 +83,27 @@ func gitHubProxyDir(generation uint64) string {
 	return generationDir(generation) + "/gh"
 }
 
-// proxyRenames are the configured renames a forwarder's bundle routes by: every configured pair
-// that moves a repository to another owner's installation. A pair whose two names are one owner's
-// routes nothing, since an owner's directory answers for each of its repositories.
-func (r *Runtime) proxyRenames() []ghrepo.Rename {
-	return slices.DeleteFunc(slices.Clone(r.agentSecrets.GitHubRenames), func(pair ghrepo.Rename) bool {
-		return strings.EqualFold(pair.From.Owner(), pair.To.Owner())
-	})
-}
-
-// proxyDefault is the account directory a role behind the proxy is told as GH_CONFIG_DIR: the
-// directory the issue's repository routes to over the forwarder's renames (ghconfig.RouteDir),
-// and, for the controller, which works no repository, the first owner the daemon serves
-// (Options.GitHubDirs), "" where it serves none. It mints nothing.
-func (r *Runtime) proxyDefault(spec runtime.SpawnSpec) string {
+// proxyRoute is where a role behind the proxy is routed, decided once in prepare: the account
+// directory GH_CONFIG_DIR names and the configured renames its forwarder's bundle routes by, both
+// by the rule the App-token bundle routes by (Options.GitHubRoute, appauth.Route), so a role
+// routes one repository alike whichever bundle it reads. The directory is the one the issue's
+// repository routes to and, for the controller, which works no repository, the first owner the
+// daemon serves (Options.GitHubDirs), "" where it serves none. It mints nothing.
+func (r *Runtime) proxyRoute(spec runtime.SpawnSpec) (string, []ghrepo.Rename) {
+	dir, pairs := r.gitHubRoute(spec.Repository)
 	if spec.Role == claim.RoleController {
-		owners := ghOwnerDirs(r.gitHubDirs(ghrepo.Repository{}, podAppRoles(controllerPod{})))
-		if len(owners) == 0 {
-			return ""
+		dir = ""
+		if owners := ghOwnerDirs(r.gitHubDirs(ghrepo.Repository{}, podAppRoles(controllerPod{}))); len(owners) > 0 {
+			dir = slices.Min(owners)
 		}
-		return slices.Min(owners)
 	}
-	dir, _, _ := ghconfig.RouteDir(r.proxyRenames(), spec.Repository.Owner(), spec.Repository.Name())
-	return dir
+	return dir, pairs
 }
 
 // forwarderFlags are the flags l's forwarder is started with (`legion forwarder`): its role, its
 // loopback address, the role's secret names, a reason naming the role and its issue (the grant's
-// audit row names it), the bundle it writes, the directory GH_CONFIG_DIR names and the renames.
+// audit row names it), the bundle it writes, the directory GH_CONFIG_DIR names and the renames
+// (proxyRoute).
 func (r *Runtime) forwarderFlags(l launch) []string {
 	role := l.spec.Role
 	reason := fmt.Sprintf("GitHub access of the %s of %s, through its forwarder", role, l.spec.Issue)
@@ -127,7 +118,7 @@ func (r *Runtime) forwarderFlags(l launch) []string {
 	if l.proxyDefault != "" {
 		flags = append(flags, "--default-owner", l.proxyDefault)
 	}
-	for _, pair := range r.proxyRenames() {
+	for _, pair := range l.proxyPairs {
 		flags = append(flags, "--rename", pair.From.String()+"="+pair.To.String())
 	}
 	return flags

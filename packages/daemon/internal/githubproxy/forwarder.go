@@ -107,16 +107,20 @@ func (f *Forwarder) Addr() net.Addr { return f.listener.Addr() }
 // Current is the grant the forwarder holds now, nil before the first.
 func (f *Forwarder) Current() *Grant { return f.keeper.Current() }
 
-// Serve keeps the role's grant and serves connections until ctx ends, then closes the listener
-// and revokes the grants it holds, within stopBound.
+// Serve keeps the role's grant and serves connections until ctx ends or the listener fails for
+// good, then closes the listener and revokes the grants it holds, within stopBound, and answers
+// the listener's failure, or nil.
 func (f *Forwarder) Serve(ctx context.Context) error {
 	f.log.Info("forwarder: listening", "addr", f.listener.Addr().String(), "names", f.cfg.Secrets, "gh_dir", f.cfg.GHDir)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var wg sync.WaitGroup
 	wg.Go(func() { f.keeper.keep(ctx) })
 	go func() {
 		<-ctx.Done()
 		_ = f.listener.Close()
 	}()
+	var failed error
 	for {
 		conn, err := f.listener.Accept()
 		if err != nil {
@@ -128,21 +132,25 @@ func (f *Forwarder) Serve(ctx context.Context) error {
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			return err
+			failed = err
+			cancel()
+			break
 		}
 		go f.serveConn(ctx, conn)
 	}
 	wg.Wait()
-	stop, cancel := context.WithTimeout(context.Background(), stopBound)
-	defer cancel()
+	stop, stopped := context.WithTimeout(context.Background(), stopBound)
+	defer stopped()
 	f.keeper.revokeHeld(stop)
-	return nil
+	return failed
 }
 
-// stopBound bounds the revocation of the forwarder's grants at its stop: inside the four seconds
-// its shim waits for it (internal/shim's forwarderStopWait), within the role's stop grace. A
-// revocation cut short is no grant left live for long: the daemon revokes the generation's
-// enrollment once the role has stopped, which ends every grant of it.
+// stopBound bounds the revocation of the forwarder's grants at its stop, the wait for an ask in
+// flight included: inside the four seconds its shim waits for it (internal/shim's
+// forwarderStopWait), within the role's stop grace. A revocation cut short leaves its grant live
+// until its own expiry, at most the hour of Lifetime, the bound the spec gives a missed
+// revocation; the daemon's revocation of the enrollment carries it to the session's next
+// enrollment rather than ending it (see the package doc).
 const stopBound = 3 * time.Second
 
 // serveConn answers one client connection: a CONNECT is tunnelled, through the broker's proxy for
@@ -168,14 +176,21 @@ func (f *Forwarder) serveConn(ctx context.Context, client net.Conn) {
 	}
 	grant := f.keeper.Current()
 	if grant == nil {
-		// Before the first grant the forwarder cannot tell a bound host from any other, so it waits
-		// for one, within the recovery bound.
+		// Before the first grant no placeholder is in the role's files, and a host GitHub's kind
+		// does not bind needs none: it goes out at once, so a broker that is down or refuses the
+		// role's names stops only GitHub's calls. A call to one of GitHub's hosts waits for the
+		// first grant while an ask can still bring it (keeper.awaitFirst), within the recovery
+		// bound, and is otherwise answered 503 with the failed ask's reason at once.
+		if !bindsHost(githubHosts, host, port) {
+			f.direct(client, reader, req.Host)
+			return
+		}
 		waitCtx, cancel := context.WithTimeout(ctx, recoveryBound)
 		grant, err = f.keeper.awaitFirst(waitCtx)
 		cancel()
 		if err != nil {
-			f.log.Warn("forwarder: a connection came before any grant", "host", host, "err", err)
-			reply(client, http.StatusServiceUnavailable, "the forwarder holds no grant of the role's GitHub secrets yet")
+			f.log.Warn("forwarder: a GitHub connection came before any grant", "host", host, "err", err)
+			reply(client, http.StatusServiceUnavailable, "the forwarder holds no grant of the role's GitHub secrets: "+err.Error())
 			return
 		}
 	}
@@ -205,9 +220,10 @@ func (f *Forwarder) direct(client net.Conn, reader *bufio.Reader, target string)
 // ended it early — so the forwarder asks for a new grant at once, within recoveryBound, which
 // rewrites the bundle, and answers this one connection 503. It does not carry the connection under
 // the new grant: the client wrote its request with a placeholder of the ended grant, read before
-// the bundle was rewritten, which the new grant never swaps, so the broker would take that
-// placeholder to GitHub. The client's next call reads the new bundle. Every other answer of the
-// broker's is relayed to the client as it came, with its Cipher-Proxy-Code.
+// the bundle was rewritten, and the broker refuses a request that still carries a placeholder no
+// live grant of the enrollment swaps (403), so the call would fail either way. The client's next
+// call reads the new bundle. Every other answer of the broker's is relayed to the client as it
+// came, with its Cipher-Proxy-Code.
 func (f *Forwarder) throughBroker(ctx context.Context, client net.Conn, reader *bufio.Reader, target string, grant *Grant) {
 	upstream, resp, upstreamReader, err := connectThrough(grant, target)
 	if err == nil && resp.StatusCode == http.StatusProxyAuthRequired {

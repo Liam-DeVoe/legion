@@ -1105,9 +1105,10 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 }
 
 // sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options,
-// nil when the configuration sets no block, its github map and the configured renames a
-// forwarder's bundle routes by among it, and the worker image's agent-secrets binary is always
-// the tools path (Task 11 mounts it there whether or not the deployment enrolls).
+// nil when the configuration sets no block, its github map among it, and the worker image's
+// agent-secrets binary is always the tools path (Task 11 mounts it there whether or not the
+// deployment enrolls). The renames a forwarder's bundle routes by come from the runtime factory's
+// GitHubRoute (appauth.Route), not from this block.
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
@@ -1115,14 +1116,12 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
 		GitHub: map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
 	}
-	cfg.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := &sandbox.AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: 30 * time.Minute, ExchangeAudience: "legion-broker-exchange",
-		GitHub:        map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
-		GitHubRenames: []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
+		GitHub: map[claim.Role][]string{claim.RoleImplementer: {"LEGION_IMPLEMENT_APP"}},
 	}
 	if opts.AgentSecrets == nil || !reflect.DeepEqual(*opts.AgentSecrets, *want) {
 		t.Fatalf("AgentSecrets = %+v, want %+v", opts.AgentSecrets, want)
