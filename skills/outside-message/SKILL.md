@@ -7,6 +7,8 @@ description: "Use when text you write will reach a person outside the company (a
 
 The operator approves every message that leaves the company. Do the four steps below, then ask.
 
+**Done when:** you did the four steps, then asked, and the ask carries its parts in their order, the removal line among them.
+
 Not covered:
 
 - text written in a person's own name, which that person signs off;
