@@ -31,9 +31,9 @@ const resultGrantMaxLifetime = 15 * time.Minute
 const resultValueSlot = "value"
 
 // AirlockSettings is what a result entry's run is handed beside its placeholder: where the
-// broker's airlock proxy is, the certificate authority to trust it by, and the hosts the rules
-// entry DISPATCH_RESULTS_TOKEN binds, which the command keeps off its NO_PROXY; and the results
-// entry the run's grant is made under, which the grant records.
+// broker's airlock proxy is, the certificate authority to trust it by, and the hosts the proxy
+// block of the results profile DISPATCH_RESULTS_TOKEN binds, which the command keeps off its
+// NO_PROXY; and the results entry the run's grant is made under, which the grant records.
 type AirlockSettings struct {
 	// ProxyURL is BROKER_AIRLOCK_PROXY_URL.
 	ProxyURL string

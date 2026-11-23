@@ -385,8 +385,8 @@ interface Front {
 /**
  * Starts the stack in `options.work`, which the caller reserved with
  * {@link useCIResultsStackDirectory} and which is empty, and resolves once each part serves and
- * project ACME maps local-org/local-repo. It throws, naming why, when a part does not come up;
- * whatever started by then is stopped.
+ * project ACME's default repository is local-org/local-repo. It throws, naming why, when a part
+ * does not come up; whatever started by then is stopped.
  */
 export async function startCIResultsStack(options: CIResultsStackOptions): Promise<CIResultsStack> {
   const { work } = options;

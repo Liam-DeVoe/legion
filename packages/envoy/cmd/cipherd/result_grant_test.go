@@ -1,7 +1,7 @@
 // result_grant_test.go drives the REAL compiled broker's result grants: a CI run's token traded
-// at the token endpoint for an airlock placeholder, on a fresh schema, with the airlock's rules
-// entry DISPATCH_RESULTS_TOKEN of kind dpop. The helpers are token_exchange_test.go's and
-// main_test.go's.
+// at the token endpoint for an airlock placeholder, on a fresh schema, with the results profile
+// DISPATCH_RESULTS_TOKEN, a proxy block of kind dpop, in BROKER_PROFILES_FILE. The helpers are
+// token_exchange_test.go's and main_test.go's.
 package main
 
 import (
