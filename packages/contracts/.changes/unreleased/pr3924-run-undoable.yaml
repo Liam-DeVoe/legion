@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `GoingRun` carries `undoable`, whether Undo can still take back a change of the run, and
+  `undone_at`, when the run's Undo landed (null for a run never undone), in
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`.

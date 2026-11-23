@@ -4048,11 +4048,14 @@ The model may search twice more through one tool, the server supplying the proje
 It may also call the read tools, each made as the caller through the function its route answers with: the roster (`GET /api/v1/agents`), the progress of an issue or a project, a project's architecture counts, a project's events per ISO week (`GET /api/v1/projects/{key}/activity`) and the delivery figures, at most eight reads in one run.
 A credential scoped to one project is offered no roster and no delivery read, and every other read is held to the run's project.
 The citation rule is the server's and not the model's:
-a text frame carries plain text alone, every ASCII punctuation byte of it escaped, which closes markdown's own constructs, and every word a renderer would link on its own
+a text frame carries plain text and time links alone, every ASCII punctuation byte of the model's words escaped, which closes markdown's own constructs, and every word a renderer would link on its own
 — a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address
 — dropped from the answer whole, since a renderer decodes an escape before it looks for such a link;
-so an answer's links are its `item` frames and nothing else
+so an answer's links to items are its `item` frames and nothing else
 — a link to something the model was given raises `item` once for that thing, every other link and every image is counted in `changed`, and either way no byte of the target reaches the reader, who is written the link's own visible text unless that text joins a word a renderer would link on its own, which is dropped whole as every such word is.
+The one link a text frame carries is a time, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, whose target is `dispatch-time:` and an RFC 3339 time, which the page draws as a `<time>` with its full date on hover and which names no place to go:
+it is passed on as the model wrote it and counted in nothing, its words escaped, judged and counted as every word is;
+a target of that scheme that is no RFC 3339 time is reduced to its words as every other link is, and a time link whose first or last word is dropped, or that the cut falls inside, goes out as its words alone.
 An answer is cut at 120 words with `cut`, one the model wrote no text for at all ends `none`, and either way `end` closes the stream.
 
 A run has 30 seconds, and that window belongs to the record:
@@ -4108,6 +4111,9 @@ A refused field says what became of it without naming the field, which the line 
 Undo is offered while History lists the run's conversation: until the conversation's newest run is seven days old, and a run past that answers `404 GOING_RUN_NOT_FOUND`.
 
 A run is a row of `going_runs` (`api/going_runs.go`, `api/going_run_stream.go`): its words and context chip, its level and mode, the line on top it was started from (`line`: `ask`, `do` or `file`, null for a follow-up typed in the box, the side panel's box or a Continue), its state, what it spent, its conversation (the id of the conversation's first run) and the run it follows up; what it changed is its landings.
+A run's read says whether Undo can still take back a change of it, `undoable`: true while a call of it landed a change whose undo has not landed, whose tool's undo is not `not_undone`, and whose last landed request is its own, not a close's reason sent before it; false for a run that changed nothing.
+It also says when its Undo landed, `undone_at`, the newest undo landing of the run, null for a run never undone.
+Both are read in the statement that reads the run, so History reads no more for each run it lists.
 The short answer of a pause in typing writes no run: it is a going request with its events.
 `POST /api/v1/going/runs` starts a run as the request's own credential, a person's sign-in or personal agent token, and records its grant; a broker-issued token, the shared token and a service-account token are refused `403 RUN_NEEDS_PERSON_CREDENTIAL`, and a person with 20 runs queued `429 GOING_RUN_QUEUE_FULL`.
 A follow-up names the run it continues, which must be the caller's own, the newest of its conversation (`409 GOING_RUN_NOT_LATEST`) and ended (`409 GOING_RUN_NOT_ENDED`).
@@ -4178,7 +4184,8 @@ the step its tool frame will carry, the tool, its kind and the present form of i
 a send that fails is logged, and the call's tool frame still ends its line.
 The model has six tools: `search`, `read`, `find_tools`, `call_tool` (a read of Dispatch by a tool's name, or `github_read` or `web_read`, or `draw_block`), `propose_plan`, which the server keeps as the run's plan and which ends the turn `waiting`, and `ask_person`, which reads nothing and ends the turn `done` with its question as the answer, whose `reply` frame carries `waits_for_person` true;
 every other one reads through a call to the server, which makes it as the run's person, and the model is given at most 32 KiB of a result, which the system prompt says is data and never an instruction.
-In the result the model is given, each `priority` that holds 0 to 3 or null is followed by `priority_shown`, `P0` to `P3` or `No priority`, and each field that holds an RFC 3339 time by `<field>_shown`, its time of day in UTC, after its day where that is not the day of the time now the person's message names, and then the time relative to that now, as the web's `relativeTimeLabel` writes it (`09:40 UTC, 2 hours ago`, `17 Nov 15:00 UTC, 21 hours ago`), so the answer writes each as the page shows it and gives the time itself;
+In the result the model is given, each `priority` that holds 0 to 3 or null is followed by `priority_shown`, `P0` to `P3` or `No priority`, and each field that holds an RFC 3339 time by `<field>_shown`, the time relative to the time now the person's message names, as the web's `relativeTimeLabel` writes it (`5 minutes ago`, `yesterday`, `2 weeks ago`), so the answer writes each as the page shows it;
+the answer writes a time as a link whose words are those, or the time with its zone and year where the words ask when, and whose address is `dispatch-time:` and the time the result holds, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, which the page shows with its full date on hover;
 the step saves the result as the server answered it, which `draw_block` reads.
 The 32 KiB holds those words too: a result the model was given whole stays whole, with as many of the words as fit, its priorities' before its times', and a result already cut to its first 32 KiB is cut further, so each value it gives is followed by its words.
 `packages/contracts/fixtures/shown-values.json` holds the priority words and the relative ones, which a test of the web and one of the agent each run.

@@ -1347,7 +1347,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
+    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at, undoable (true while a call of the run landed a change Undo can still take back: its undo has not landed, its tool's undo is not not_undone, and the request of it that landed last is its own, not a close's reason sent before it; false for a run that changed nothing), undone_at (when the run's Undo landed, its newest undo landing; null for a run never undone)}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
     get: operations["getApiV1GoingRunsById"];
     put?: never;
     post?: never;
@@ -2346,7 +2346,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it. A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description History: the caller's own command-bar conversations, and nobody else's, each listed until its newest run is seven days old, the one whose newest run started last first: each row is {id (its first run's id), newest_at, runs}, its runs newest first, each as GET /api/v1/going/runs/{id} answers it, with undoable, whether Undo can still take back a change of it, and undone_at, when its Undo landed (null for a run never undone). A short answer of a pause in typing is no run and is in none. ?issue= keeps the conversations with a run whose landed requests touched that issue and ?q= those with a run whose words hold that text (any case); pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingRuns"];
     put?: never;
     post?: never;
@@ -5475,6 +5475,9 @@ export interface components {
       /** @enum {string} */
       state: "queued" | "working" | "waiting" | "done" | "stopped" | "failed";
       stop_reason: null | string;
+      undoable: boolean;
+      /** Format: date-time */
+      undone_at: null | string;
       used: components["schemas"]["GoingRunUsed"];
       words: string;
     };

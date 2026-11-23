@@ -421,6 +421,92 @@ func TestUndoOfOneRun(t *testing.T) {
 	})
 }
 
+// TestARunSaysWhetherUndoTakesItBack: a run's read, GET /api/v1/going/runs/{id} and History
+// alike, says whether Undo can still take a change of it back (undoable) and when its Undo landed
+// (undone_at), so History offers Undo only while it takes something back and an undone run says
+// when after a reload. A run whose write landed is undoable and was never undone; once its Undo
+// lands it is not undoable, and it says the moment that undo landed. A run that wrote nothing, a
+// run whose one write is a message, which Undo names sent, not undone, and a reasoned close of
+// which only the reason landed are not undoable, before Undo and after it, and never undone.
+func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	// read is run as alice reads it by id, failing t unless History lists it saying the same.
+	read := func(t *testing.T, run string) goingRun {
+		t.Helper()
+		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the run %s answered %d, want 200", run, response.Code)
+		}
+		got := decodeBody[goingRun](t, response)
+		for _, conversation := range goingHistory(t, rig.mux, "alice", "").Rows {
+			for _, listed := range conversation.Runs {
+				if listed.ID != run {
+					continue
+				}
+				if listed.Undoable != got.Undoable || (listed.UndoneAt == nil) != (got.UndoneAt == nil) ||
+					listed.UndoneAt != nil && !listed.UndoneAt.Equal(*got.UndoneAt) {
+					t.Fatalf("History lists run %s undoable %v, undone at %v; its read says %v, %v", run, listed.Undoable, listed.UndoneAt, got.Undoable, got.UndoneAt)
+				}
+				return got
+			}
+		}
+		t.Fatalf("History does not list run %s", run)
+		return goingRun{}
+	}
+	// neverUndoable fails t unless run reads not undoable and never undone.
+	neverUndoable := func(t *testing.T, run, when string) {
+		t.Helper()
+		if got := read(t, run); got.Undoable || got.UndoneAt != nil {
+			t.Fatalf("%s the run reads undoable %v, undone at %v; want it not undoable and never undone", when, got.Undoable, got.UndoneAt)
+		}
+	}
+
+	t.Run("a run whose write landed is undoable until its Undo lands, and then says when", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed, then undone")
+		run := rig.ran(t, "rename Renamed, then undone", goingChange("dispatch_issue_update", retitle(issue, "Renamed by the run")))
+		if got := read(t, run); !got.Undoable || got.UndoneAt != nil {
+			t.Fatalf("before Undo the run reads undoable %v, undone at %v; want it undoable and never undone", got.Undoable, got.UndoneAt)
+		}
+		if line := rig.undone(t, run, "dispatch_issue_update")[0]; !line.Outcome.OK {
+			t.Fatalf("Undo answered %+v, want the title written back", line)
+		}
+		var landed time.Time
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select landed_at from going_landings where run_id = $1::uuid and phase = 'undo'
+		`, run).Scan(&landed); err != nil {
+			t.Fatalf("read when the run's undo landed: %v", err)
+		}
+		if got := read(t, run); got.Undoable || got.UndoneAt == nil || !got.UndoneAt.Equal(landed) {
+			t.Fatalf("after Undo the run reads undoable %v, undone at %v; want it not undoable, undone at %s", got.Undoable, got.UndoneAt, landed)
+		}
+	})
+
+	t.Run("a run that wrote nothing is not undoable", func(t *testing.T) {
+		run := rig.doneRun(t, "alice", "what is open on the board", time.Minute)
+		neverUndoable(t, run, "before Undo")
+		rig.undone(t, run)
+		neverUndoable(t, run, "after Undo")
+	})
+
+	t.Run("a run whose one write is a message is not undoable", func(t *testing.T) {
+		issue := rig.issue(t, "Messaged, not undoable")
+		run := rig.ran(t, "ask on Messaged, not undoable where we are", goingChange("dispatch_message", map[string]any{"issue": issue, "body": "Where are we?"}))
+		neverUndoable(t, run, "before Undo")
+		rig.undone(t, run, "dispatch_message")
+		neverUndoable(t, run, "after Undo")
+	})
+
+	// Last: partlyLandedWaiting stops the rig's agent loop.
+	t.Run("a reasoned close of which only the reason landed is not undoable", func(t *testing.T) {
+		run, issue, _ := rig.partlyLandedWaiting(t, "Only its reason landed")
+		rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
+		neverUndoable(t, run, "before Undo")
+		goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
+		neverUndoable(t, run, "after Undo")
+	})
+}
+
 // TestARowThatAddsALabelKeepsTheOthersAndItsUndoPutsThemBack: a plan row of dispatch_issue_update
 // with labels_add, proposed beside a priority as the preview's "add the label accessibility and set
 // its priority to P2" was, reads the field labels with the labels the issue holds; once it runs,

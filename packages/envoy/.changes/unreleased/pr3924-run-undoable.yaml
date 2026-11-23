@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  A command-bar run's record (`GET /api/v1/going/runs/{id}`, and each run of
+  `GET /api/v1/me/going-runs`) says whether Undo can still take it back and when it was undone.
+  `undoable` is true while a call of the run landed a change whose undo has not landed, whose
+  tool's undo is not `not_undone`, and whose last landed request is its own, not a close's reason
+  sent before it; it is false for a run that changed nothing. `undone_at` is when the run's Undo
+  landed, its newest undo landing, and null for a run never undone. Both are read in the
+  statement that reads the run, so History makes no extra read for each run it lists. History
+  offered Undo on a run already undone, and an undone run could not say when after a reload.
