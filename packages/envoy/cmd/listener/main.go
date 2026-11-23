@@ -2899,14 +2899,19 @@ type listenerParts struct {
 // has to cover stopBudget, and a pod of this listener grants listenerGraceMargin above it;
 // TestListenerPodGracesCoverTheStopBudget holds the rendered pods to both.
 const (
-	// stopHTTPGrace bounds the first part of the stop: seven waits run under the one context it
-	// opens, in this order - the receive stop (loops.receiver.Stop), the relays' stop, an edge
-	// listener's relay sockets' close frames (relaySockets.stop, every socket at once, each write
-	// bounded at relaySocketCloseGrace), the HTTP server's shutdown, the consumer deletes still in
-	// flight, the session-consumer drain and the wait for a self-health rebuild still running
-	// (loops.monitorDone). The receive stop is the one that most plausibly spends the whole of it:
-	// step 2 of shutdownListener below sizes its hand-over at 11 s, and 12.25 s where the flush and
-	// the release both run to their bounds, so whoever sizes this number reads that step too.
+	// stopHTTPGrace bounds the first part of the stop: six waits run under the one context it
+	// opens, in this order - the receive stop (loops.receiver.Stop), the relays' stop, the HTTP
+	// server's shutdown, the consumer deletes still in flight, the session-consumer drain and the
+	// wait for a self-health rebuild still running (loops.monitorDone). Between the relays' stop
+	// and the HTTP server's shutdown an edge listener's relay sockets write their close frames
+	// (relaySockets.stop, every socket at once) under no context, each write bounded at
+	// relaySocketCloseGrace alone, so where the receive stop and the relays' stop spend the whole
+	// of this grace, an edge listener's first part runs up to relaySocketCloseGrace (1 s) past it.
+	// Its whole stop stays inside stopBudget all the same: its role lane has no client of its own,
+	// so its drain spends none of stopLaneDrain (roleLane.drain). The receive stop is the one that
+	// most plausibly spends the whole of this grace: step 2 of shutdownListener below sizes its
+	// hand-over at 11 s, and 12.25 s where the flush and the release both run to their bounds, so
+	// whoever sizes this number reads that step too.
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
@@ -2982,7 +2987,9 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// again at once on another replica, and every upgrade after it is refused. They stay open
 	// through the relays' settle above, since an edge session answers its frames over its socket
 	// alone, and close before the HTTP server's shutdown, which does not wait for a hijacked
-	// connection, so nothing else would close them.
+	// connection, so nothing else would close them. The close takes no context: it waits up to
+	// relaySocketCloseGrace whatever the steps above left of stopHTTPGrace (stopHTTPGrace says
+	// what that costs).
 	parts.sockets.stop()
 
 	// 4. HTTP server — stop accepting new requests, drain in-flight, within what is left of the

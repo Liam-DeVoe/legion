@@ -925,12 +925,14 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 // listener made between this one's read and its write is never overwritten. merge computes the value
 // to write from the stored registration (found false when there is none) and the time, and the value
 // written carries the stored registration's gap mark (SessionEntry.RepositoryGap), none where there
-// is none, whatever merge answers: the mark is SetRepositoryGap's and ClearRepositoryGap's alone to
-// write, so a registration written over an entry never clears a mark no frame has carried, nor
-// raises one no withheld event owes, and a mark another listener set since this one's read refuses
-// the write, which carries that mark on its next attempt. The value written names sessionID
-// (SessionEntry.SessionID), and one that names no machine is refused with ErrEntryUnbound before
-// anything is written, since DecodeEntry reads such a record as no registration.
+// is none, whatever merge answers: the mark is not write's to change (SetRepositoryGap and
+// ClearRepositoryGap raise and clear it, and PutClearingGap writes it empty over a record no
+// writer's stands for), so a registration written over an entry never clears a mark no frame has
+// carried, nor raises one no withheld event owes, and a mark another listener set since this one's
+// read refuses the write, which carries that mark on its next attempt. The value written names
+// sessionID (SessionEntry.SessionID), and one that names no machine is refused with
+// ErrEntryUnbound before anything is written, since DecodeEntry reads such a record as no
+// registration.
 // The first attempt merges onto the cache. A cache miss, or a write the bucket refuses because the
 // revision moved (another listener wrote, or MaxAge removed the key under a cached revision), reads
 // the bucket entry and merges onto that (readStored): Update at the revision of the key's newest
@@ -1087,9 +1089,11 @@ func readLatest(ctx context.Context, kv bus.KeyValue, sessionID string, fromLead
 // behind (a direct get is answered by any copy near enough to current, Refresh), which only the
 // first read can be, since every read after a lost write is the leader's (readLatest). The caller
 // reads the entry again and writes again until its write lands, ctx ends, or it has lost
-// entryWriteLosses writes, when it ends with ErrWriteConflict. Several processes of one session
-// claiming and heartbeating at once, through any pod of the machine, and a relay marking the
-// session's entry beside them, each land in turn well inside that bound.
+// entryWriteLosses writes, when it ends with ErrWriteConflict, but for PutClearingGap, which then
+// reads the leader once more and answers success where the session's own record already carries
+// its change. Several processes of one session claiming and heartbeating at once, through any pod
+// of the machine, and a relay marking the session's entry beside them, each land in turn well
+// inside that bound.
 func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, entry SessionEntry, revision uint64) (written uint64, lost bool, err error) {
 	buf, err := encodeSessionEntry(entry)
 	if err != nil {

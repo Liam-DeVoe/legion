@@ -1735,11 +1735,14 @@ IDENTITY_PROBE_SCRIPT='printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUN
 # refuseRoleMark, main's #4387 on) then refuses another principal's mark 403 and, only once it has
 # taken the mark from Dispatch's principal, the role's name 400, naming the field role. A build
 # from before role marks reads no mark: it refuses the missing target 400, naming target_session,
-# which says it admitted the token and neither takes nor refuses the mark. A 503 is a listener
-# still starting (/v1 closed; its /healthz answers 503 "starting", so its readiness probe fails,
-# until NATS is connected, its webhook and /v1 routes are open, its receive loop has started and
-# its interest copy has read its bucket, which may come after /v1 opens) or one that cannot read
-# its issuer, so the send is made again every 3 s for IDENTITY_CHECK_SECONDS before it counts. A
+# which says it admitted the token and neither takes nor refuses the mark. The send goes through
+# the listener's Service, which sends nothing to a pod whose readiness probe fails, and a listener
+# from #2404 on fails it while it starts (its /healthz answers 503 "starting" until NATS is
+# connected, its webhook and /v1 routes are open, its receive loop has started and its interest
+# copy has read its bucket, which may come after /v1 opens). So a 503 is a listener that cannot
+# read its issuer, or a listener from before #2404 still starting, whose /healthz answers 200
+# "starting" before its /v1 opens, so it is Ready while /v1 answers 503 "service starting"; the
+# send is made again every 3 s for IDENTITY_CHECK_SECONDS before it counts. A
 # listener whose Deployment names no ENVOY_DISPATCH_PRINCIPAL takes no mark from anyone, so there is
 # nothing to check, and it says so.
 IDENTITY_CHECK_SECONDS=120

@@ -1114,8 +1114,10 @@ const publishDedupePrefix = "publish."
 // envelope. A role
 // topic is forwarded to its holder, answered once confirmed or when
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
-// confirmed.go); a topic the stream captures is answered once the stream
-// stored it, with the counts of the sessions it is for (recipientCounts), and any other
+// confirmed.go); a topic the stream captures is answered, with the counts of the sessions it is
+// for (recipientCounts), once the stream stored it, or, where the publish goes over core NATS in
+// a roll (bus.Client.PublishTakesJetStream), once the server took it, which the stream stores
+// just after; and any other
 // notifications. topic is refused by name, since nothing would store it for a session to read,
 // once bus.SubjectsAsk.Uncaptured agrees. An
 // explicit dedupe_key is used verbatim (a re-send a receiver's own dedupe
@@ -1930,11 +1932,12 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // stream leader's read of the record, the write, the read of the registration back for the time
 // the server stamped on it, and the write of its last-seen record
 // (session.SessionRegistry.PutClearingGap, recordSeen), and whose leader read is also the read of
-// the claimant's record the predecessor rule's fallback takes its client instance id from; the
-// claim read and the read of the delete marker a role with no claim record may hold
-// (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read and the write of the
-// claimant's interest record with the role's topic (store.Registry.UpsertWithin); and the claim
-// write. One more, the read that confirms that topic, runs in the reserve after the claim's tries.
+// the claimant's record the predecessor rule's fallback takes its client instance id from where
+// that record is the session's own; the claim read and the read of the delete marker a role with
+// no claim record may hold (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read
+// and the write of the claimant's interest record with the role's topic
+// (store.Registry.UpsertWithin); and the claim write. One more, the read that confirms that topic,
+// runs in the reserve after the claim's tries.
 // A claimant the cache holds saves the first read; a role a claim holds saves the marker read and
 // spends the write of a takeover record instead (takeoverTries.beforeTry); each conflict of a hard
 // claim's write adds a read and a write; and a soft claim adds the reads of its decision. The
@@ -2160,7 +2163,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// id, and the session record then names whichever of them registered the id last. That
 		// record is the thing this route stops trusting, so it is read for one decision alone -
 		// the predecessor rule's fallback below (registeredInstanceID, taken from the refresh's
-		// read of the record).
+		// read of the record where that record is the session's own, and from entry otherwise).
 		claimantInstanceID := body.ClientInstanceID
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
@@ -2179,11 +2182,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (session.SessionRegistry.PutClearingGap), so a write the server or another writer lands
 		// in between is no write this one overwrites: it loses, and the next pass reads and decides
 		// again. That read decides what is written. The session's own writer's record is written
-		// back with only the machine, the self-subscription and the port changed, so the newer host
-		// another listener stored is kept, and so are its projects and the client instance id the
-		// registration carries: this write names none of its own. A record an earlier build wrote,
-		// naming no key, keeps its fields but takes the claim token's projects
-		// (registeringProjects), since it may be another session's record the server copied here.
+		// back with only the machine, the self-subscription and the port changed and its UpdatedAt
+		// stamped, so the newer host another listener stored is kept, and so are its projects and
+		// the client instance id the registration carries: this write names none of its own. A
+		// record an earlier build wrote, naming no key, keeps its fields but takes the claim token's
+		// projects (registeringProjects), since it may be another session's record the server
+		// copied here.
 		// Any other - a record the server wrote, a copy of another key's, a marker or none - is
 		// cleared to the machine, the self-subscription and the claim token's projects: a RePublish
 		// could set its own session's title, a non-consumer delivery that pauses its relay until the
@@ -2204,8 +2208,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// The claimant's registered client instance id, which the predecessor rule falls back to, is
 		// the one PutClearingGap's leader read found, as the record stood before the refresh, where
 		// that record is the session's own registration naming its key; any other record keeps the
-		// id of entry, liveSessionEntry's read. session.SessionRegistry.PutClearingGap says what each
-		// record answers, and bucketSessionEntry why a cached entry decides no instance id.
+		// id of entry, liveSessionEntry's read, which is this listener's cached entry where the cache
+		// holds the claimant, and which a RePublish can have written, since neither the cache nor a
+		// direct get tells one from a registration. session.SessionRegistry.PutClearingGap says what
+		// each record answers.
 		registeredInstanceID := entry.ClientInstanceID
 		if own {
 			registeredInstanceID = prior.ClientInstanceID

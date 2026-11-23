@@ -897,7 +897,11 @@ func (m *sessionRelays) pruneAdmissions(now time.Time) {
 // runs and waits for none of them, so a run its term's end cancelled during a repository gap
 // write (noteRepositoryGap) may still note that mark, or count the give-back that follows a failed
 // write (giveBackWithheld), here after the clear. The session's entry carries the same mark,
-// written before it, so nothing acts on the noted one that would not act on the entry's.
+// written before it, so nothing acts on the noted one that would not act on the entry's. A re-mark
+// after a nak (reMarkWithheldGap) runs on no term and is not waited for either, and one whose
+// write fails notes a fresh mark the entry does not carry, after the clear too: where this
+// listener's term comes back and it relays the session again, the run sends that mark from this
+// process (owedRepositoryGap), and no other listener learns of it.
 func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
 		run.cancel(reason)
@@ -2005,7 +2009,8 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 // a mark having been answered nak (onReply): the frame did not reach the client, so the mark is not
 // lost to it. It writes a fresh id, never the frame's own mark, since noteRepositoryGap mints a new
 // id for every mark, so the relay loop's clear of that mark as sent (repositoryGapSent) can never
-// take the re-mark's. The worst case is then one redundant notice at a later run, never a lost one.
+// take the re-mark's. Where its write lands, the worst case is then one redundant notice at a later
+// run, never a lost one.
 // While its write is in flight the mark this process noted, if any, stands, and the relay loop's
 // owedRepositoryGap reads it rather than this listener's copy of the entry, which can trail the
 // write: a mark noteRepositoryGap noted is on the entry too, since it writes the entry before it
@@ -2014,8 +2019,9 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 // and write that must not stall the other sessions' receipts that one callback carries. A write
 // that fails notes a fresh id in this process alone (the loop may have cleared the frame's own mark
 // as sent, and noteRepositoryGap notes nothing when its write fails), so this listener's next relay
-// run still sends it (owedRepositoryGap); a move to another listener before that run loses it,
-// since the entry carries no mark.
+// run still sends it (owedRepositoryGap); a move to another listener, or the end of this
+// listener's receive term (stopAll's clear), between the note and that run loses it, since the
+// entry carries no mark.
 func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
 	defer cancel()

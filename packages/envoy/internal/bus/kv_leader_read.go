@@ -1,11 +1,13 @@
 // The leader-answered reads of one key of a KV bucket, beside their test, each read so because a
 // copy behind the leader, which a direct get may reach, would answer it wrongly, and because only
 // the leader's answer carries the headers the stream stored a message with:
-// KeyValue.GetFromLeader, whose caller decides a delete on the strength of a key being absent;
-// KeyValue.NewestFromLeader and KeyValue.ReadFromLeader, whose callers decide a delete or the
-// revision a write is fenced on; and KeyValue.GetLatestFromLeader, whose caller decides the
-// revision a conditional write that lost to another writes at next. The read of a key's newest
-// message they all make (newestMessage) is GetLatest's marker read too.
+// KeyValue.GetFromLeader, whose callers decide a delete on the strength of a key being absent
+// (session.SessionRegistry.RefreshFromLeader) or the revision a write or a delete is fenced on
+// (KeyValue.ReadStored, and store's latestStored); KeyValue.NewestFromLeader and
+// KeyValue.ReadFromLeader, whose callers decide a delete or the revision a write is fenced on; and
+// KeyValue.GetLatestFromLeader, whose caller decides the revision a conditional write that lost to
+// another writes at next. The read of a key's newest message they all make (newestMessage) is
+// GetLatest's marker read too.
 
 package bus
 

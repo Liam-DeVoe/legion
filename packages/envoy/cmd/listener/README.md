@@ -20,8 +20,9 @@ Every pod of a machine id, active or standby:
 - authenticates `/v1` by the same settings and counts what it admits in its own `envoy_listener_requests_total` (`apiauth.go`), warning once a minute of its own shared-token, credential-less and unverified broker-token admissions;
   a census of the shared token, the open `/v1` or an unverified broker token therefore reads every pod's `/metrics`, never one pod's;
 
-- is a member of the role lane's core-NATS queue group `envoy-listener-<machine id>`;
-  NATS hands each message of a queue group to one member, so no role message is delivered by two pods;
+- is a member of the role lane's core-NATS queue group: `envoy-roles` (`bus.RoleLaneQueue`), the one every listener of every machine shares, or, where its NATS user may not subscribe in that group, its machine's `envoy-listener-<machine id>`, chosen in that order at its start (`bus.ConnectRoleLane`) and at each resend of a subscription the server refused (`bus.Client.ResendRefusedCore`, which the self-health check calls);
+  NATS hands each message of a queue group to one member, so two pods in one group never both forward a role message,
+  and listeners left in different groups each forward it, of which the stream keeps one copy for the holder by the forward's `Nats-Msg-Id` (`roleForward.msgID`, `role_lane.go`);
 
 - runs the self-health monitor over its caches and its own role lane; an inactive role lane is logged at each probe and is never a reason to rebuild or restart the pod (`isUnrecoverableSelfHealthFailure`);
 

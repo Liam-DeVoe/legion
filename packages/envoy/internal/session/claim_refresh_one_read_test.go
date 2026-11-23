@@ -91,8 +91,9 @@ func requireClearedClaimRefresh(t *testing.T, r *SessionRegistry, sessionID, wha
 // body reads as the session's own registration - is replaced with the session's own record naming
 // its key, carrying none of the RePublish's fields: neither the cache nor a direct get can tell it
 // from a registration, and the leader's read can. Nor is it answered as the session's own record,
-// so the client instance it names decides no role claim's predecessor rule (cmd/listener's
-// roleSetHandler).
+// so cmd/listener's roleSetHandler takes the client instance its predecessor rule falls back to
+// from its own read of the claimant (liveSessionEntry) instead, which the cache answers where it
+// holds the session, and the cache reads the RePublish as a registration.
 func TestAClaimRefreshReplacesAServerWrittenRecordWithOneNamingItsKey(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)

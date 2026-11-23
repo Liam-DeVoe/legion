@@ -13,9 +13,10 @@
 // delivery before the older pod's periodic read of the stream's subjects has seen the newer
 // subject, through a registration with either pod, and
 // TestTwoBuildsTheOlderPodStoresAPublishOnATopicTheNewerBuildAddedInsideTheRefreshWindow checks a
-// message published through the older pod in that window. Like the rows beside them they use
-// nothing a build before INFRA-557 (819dc283) lacks but cmdtest.Build's tags, so they run there
-// with that harness beside them.
+// message published through the older pod in that window. Like the rows beside them they compile
+// only from INFRA-557 on: they call names a build before INFRA-557 (819dc283) lacks,
+// bus.ReachesPrivateStreamSubject and bus.SessionConsumerName, beside the harness's own
+// (multiprocess_harness_test.go).
 
 package main
 

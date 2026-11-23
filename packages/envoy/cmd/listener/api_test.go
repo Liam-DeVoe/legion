@@ -992,9 +992,9 @@ func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *t
 	}
 }
 
-// The role reaper runs on every listener, so it reaches claims other listeners accepted: it ends a
-// claim only when the session bucket has lost the holder, not when this listener's trailing cache has
-// yet to see it.
+// The role reaper runs on the pod holding the delivery lease alone (holderLoops), so it reaches
+// claims other listeners accepted: it ends a claim only when the session bucket has lost the
+// holder, not when this listener's trailing cache has yet to see it.
 func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
 	claimant, observer := trailingListeners(t)
 	claimRole(t, claimant, "ses_fresh_holder", "fresh-claim")
@@ -1019,11 +1019,11 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 	}
 }
 
-// The interest reaper runs on every listener too, and a session missing from this listener's
-// session cache -- one another listener registered that the cache has yet to see, or one a copy
-// reading its bucket again has not delivered yet -- is not gone: the reaper asks the session bucket
-// before it removes anything, keeps the interest of a session the bucket holds, and removes the
-// interest of one the bucket has lost.
+// The interest reaper runs on the pod holding the delivery lease alone too (holderLoops), and a
+// session missing from this listener's session cache -- one another listener registered that the
+// cache has yet to see, or one a copy reading its bucket again has not delivered yet -- is not
+// gone: the reaper asks the session bucket before it removes anything, keeps the interest of a
+// session the bucket holds, and removes the interest of one the bucket has lost.
 func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
 	claimant, observer := trailingListeners(t)
 	interests, err := claimant.client.JS().KeyValue(bus.InterestBucket)
