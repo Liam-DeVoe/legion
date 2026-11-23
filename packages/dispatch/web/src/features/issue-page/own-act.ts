@@ -55,7 +55,10 @@ export type OwnAct =
  * still count such a drop as the reader's. A note is held to the last tree that kept it, so a
  * render of that same tree compares nothing, and a tree that draws the node nowhere ends it.
  *
- * A Keep's note lasts while each tree drawn draws its node as it was noted (`sameOwnFields`).
+ * A Keep's note lasts while each tree drawn draws its node as it was noted (`sameOwnFields`), so
+ * another read that lands first - a comment, a read mark - leaves it for the Keep's own read. The
+ * node is compared by its own fields, its children and their count left out, so a reply someone
+ * else adds under it changes nothing.
  *
  * An edit's note follows decision 409. The note ends at the first tree that draws the node with
  * the words the edit left, or at the first tree drawn after the editing of its row ends, whichever
@@ -102,7 +105,7 @@ export function noteAfterDraw(
  *  (`replaceEqualDeep` gives back its first value where the second holds the same values). The
  *  tree keeps its note of a Keep while each tree it draws draws the noted node so
  *  (`noteAfterDraw`). */
-export function sameOwnFields(before: TreeNode, after: TreeNode): boolean {
+function sameOwnFields(before: TreeNode, after: TreeNode): boolean {
   const own = { ...before, children: [], held: 0 };
   return replaceEqualDeep(own, { ...after, children: [], held: 0 }) === own;
 }
@@ -138,7 +141,7 @@ export function editWords(block: DisplayTree): string {
  * (`lineReading`). The issue's words join its key to its title, which no edit leaves, but the
  * outline draws no row of the issue, so no edit notes it.
  */
-export function drawnWords(node: TreeNode): string {
+function drawnWords(node: TreeNode): string {
   const block =
     node.type === "decision" && node.tree !== undefined ? firstWordedBlock(node.tree) : undefined;
   return block === undefined ? flatWords(nodeWords(node)) : editWords(block);

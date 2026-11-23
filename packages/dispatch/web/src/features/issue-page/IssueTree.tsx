@@ -1071,12 +1071,8 @@ export function IssueTree({
   // too where it drops the row of the node they last acted on themselves (`ownAct`). Two acts are
   // noted, each with the node it acts on and the tree drawn as it is noted. Keep notes its
   // decision's node as its write lands, before its answer is drawn (`own-act.ts`): Keep on a
-  // decision only the frontier unfolded folds its branch shut once that answer is drawn. Its note
-  // lasts until the first render whose tree draws that node otherwise. A tree that draws the node
-  // as it was noted keeps the note, so another read that lands first - a comment, a read mark -
-  // leaves it for the Keep's own read. The node is compared by its own fields, its children and
-  // their count left out, so a reply someone else adds under it changes nothing. The row's editor
-  // notes the edited row's node at each edit of the reader's that changes the document, a
+  // decision only the frontier unfolded folds its branch shut once that answer is drawn. The row's
+  // editor notes the edited row's node at each edit of the reader's that changes the document, a
   // heading's as a paragraph's (`useNodeEditing.ts`'s `onOwnEdit`), with the words the edit left
   // in the row's block (`editWords`): the edit comes back as the document's blocks read again,
   // never as a write, and one that takes a filter's words out of the row drops it then. Each
