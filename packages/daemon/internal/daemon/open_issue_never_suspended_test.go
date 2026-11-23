@@ -36,6 +36,7 @@ import (
 // and `supervise` rows whose op is `release`, and a `supervise` row whose op is `step_stop`,
 // against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
+	t.Parallel()
 	const (
 		root     = "LEGION-800"
 		forward  = "LEGION-801"
@@ -270,6 +271,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
 // none of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
+	t.Parallel()
 
 	t.Run("tree move", func(t *testing.T) {
 		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {

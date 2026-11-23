@@ -76,6 +76,7 @@ var inFlightTitles = []string{"Planner drafts outline", "Implementer writes code
 // rows at the end. The control is an eighth issue seeded as the one in testing with its phase
 // deleted from the seed: it starts again from its first step, and the same check must say so.
 func TestAnIssueThatRanBeforeTheReleaseGoesOn(t *testing.T) {
+	t.Parallel()
 	r := newInFlightRig(t)
 	for _, issue := range r.walks {
 		r.on(issue.key)

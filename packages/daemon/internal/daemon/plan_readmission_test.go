@@ -39,6 +39,7 @@ import (
 // the child runs. The control: the same release of a child its owner gave no plan starts planning,
 // the first of the project's default steps, and runs no implementer.
 func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		given        bool

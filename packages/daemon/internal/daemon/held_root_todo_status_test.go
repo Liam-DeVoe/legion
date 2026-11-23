@@ -31,6 +31,7 @@ import (
 // they were made: each row queued before the release is still waiting when the release queues
 // its own.
 func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-208", "LEGION-209"
 	// heldSentence is the why of the root's hold that a person reads beside the board's move,
 	// naming the issue beneath it.

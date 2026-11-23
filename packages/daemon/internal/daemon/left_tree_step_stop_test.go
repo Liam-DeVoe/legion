@@ -35,6 +35,7 @@ import (
 // (admit's startMidPhaseMembers), and that start finishes at the outbox, the one place every start
 // row of a role runs (workflow.StoppedStepRole).
 func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
