@@ -45,7 +45,8 @@ func readPodToken(path string) (string, error) {
 // and that call must read a whole key or none. internal/cipherclient keeps its own copy for the
 // sign-in records it writes, which is the one other place in this repository that needs it: two
 // short copies cost less than a general file-writing helper exported across a package boundary
-// for one caller each.
+// for one caller each. It writes data, never a program, so perm loses any execute bit
+// (perm&^0o111), which is how testexec.Unguarded reads it as no program file.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -56,7 +57,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(perm &^ 0o111); err != nil {
 		tmp.Close()
 		return err
 	}

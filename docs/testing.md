@@ -581,6 +581,8 @@ package whose name begins or ends with `test`), the test files of a package whos
 names, by `testexec.Unguarded`, each place in those files that opens a file by `os.WriteFile`,
 `os.OpenFile`, `os.Create` or `os.CreateTemp` and gives it an execute bit, in the open's own mode
 or by a `Chmod` of the same file in the same function, and refuses a walk that read no Go file.
+It names a mode it cannot read as holding no execute bit too, so a writer of data whose callers
+choose its mode masks it where it opens or chmods the file (`perm&^0o111`).
 The comment on `Unguarded` lists what it cannot see, such as a file another program writes. A
 package whose tests run one at a time can still write such a file with `os.WriteFile` in its
 tests. Its test binary runs one test at a time, and a fork in another process copies none of its
