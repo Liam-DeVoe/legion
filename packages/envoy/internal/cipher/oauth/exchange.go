@@ -570,20 +570,27 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		resp.SetExtra(oauthwire.ExtraCredentialID, credentialID)
 		resp.SetExtra(oauthwire.ExtraCredentialExpiresAt, credential.Expires.UTC().Format(time.RFC3339))
 	}
+	logSessionTaken(session, taken, fixed)
+	p.oauth.WriteAccessResponse(ctx, w, request, resp)
+}
+
+// logSessionTaken writes the warning for a session name claimSession took from another principal
+// (taken, "" for none), once the claim has committed: the two ways a principal loses a name it used
+// within the retention. Both trades call it, the access token's (exchangeGrant) and the approve
+// placeholder's (grantApprove), since both claim the name the same way.
+func logSessionTaken(session *oauthstore.ExchangeSession, taken string, fixed bool) {
 	switch {
 	case taken != "" && fixed:
-		// Logged once the claim has committed, because it is one of the two ways a principal
-		// loses a name it used within the retention: the configuration now fixes it for an entry.
+		// The configuration now fixes the name for an entry.
 		slog.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	case taken != "":
-		// The other way: a claim the configuration does not fix takes a live name only from an
-		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
-		// deployment's pods to another account does. Logged once it has committed, as the other.
+		// A claim the configuration does not fix takes a live name only from an account paired
+		// with its own (oauthstore.Store.SetSessionPairs), as an operator moving a deployment's
+		// pods to another account does.
 		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	}
-	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
 // reserveSessions holds every session name an entry fixes for that entry's principal

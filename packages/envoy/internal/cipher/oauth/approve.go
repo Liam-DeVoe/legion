@@ -95,7 +95,8 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 	// The session name is held until the grant's end, as a token's claim holds it until the
 	// token's end (claimSession reads the session's access-token expiry).
 	session.SetExpiresAt(oauth2.AccessToken, expires)
-	if _, _, err := p.claimSession(txCtx, session); err != nil {
+	taken, fixed, err := p.claimSession(txCtx, session)
+	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
 	}
@@ -104,6 +105,7 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 		return
 	}
 	*committed = true
+	logSessionTaken(session, taken, fixed)
 	answer := map[string]any{
 		"access_token":         held,
 		"issued_token_type":    oauthwire.TokenTypeProxyPlaceholder,

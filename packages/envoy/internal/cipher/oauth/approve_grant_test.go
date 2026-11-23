@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -251,5 +252,59 @@ func TestAnApproveGrantEndsAtItsEndOrWithItsSignIn(t *testing.T) {
 	}
 	if after := f.count(t, "approve_grants"); before != 3 || after != 2 || left != 0 {
 		t.Fatalf("approve grants before and after the credential's delete = %d and %d, the deleted one's rows %d; want 3, 2 and 0", before, after, left)
+	}
+}
+
+// TestAPlaceholderTradeThatTakesASessionNameLogsIt: a placeholder trade claims its session name as
+// every exchange does (claimSession), so a claim that takes the name from the account paired with
+// its own writes the warning the exchange writes for the same take, once the claim has committed,
+// naming the session, whom it took the name from and who has it now.
+func TestAPlaceholderTradeThatTakesASessionNameLogsIt(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
+	const session, holder = "ada-box-paired", "account:system:serviceaccount:legion:earlier"
+	ctx := context.Background()
+	if _, err := f.store.BindSession(ctx, session, holder, false, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	f.store.SetSessionPairs([][2]string{{exchange.PersonPrincipal(person), holder}})
+	logged := capturedLog(t)
+	if status, body := f.exchange(t, f.placeholderForm(t, session), newKey(t)); status != http.StatusOK {
+		t.Fatalf("the placeholder trade under the paired account's name = %d %v; want 200", status, body)
+	}
+	lines := logged.lines(`"msg":"broker: the token exchange took a session name from the account paired with its own"`,
+		`"session":"`+session+`"`, `"from":"`+holder+`"`, `"to":"`+exchange.PersonPrincipal(person)+`"`)
+	if len(lines) != 1 {
+		t.Fatalf("%d warnings name the session, its earlier holder and the person; want 1", len(lines))
+	}
+}
+
+// TestTheSweepDeletesApproveGrantsThatHaveEnded: every review trades a grant of its own, so the
+// broker's sweep (oauthstore.Store.Sweep) deletes each grant past its end, through the table's
+// expires index, and keeps a live one, so the table does not grow with every review ever made.
+func TestTheSweepDeletesApproveGrantsThatHaveEnded(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
+	ctx := context.Background()
+	grantID := func(session string) string {
+		t.Helper()
+		status, body := f.exchange(t, f.placeholderForm(t, session), newKey(t))
+		id, _ := body[oauthwire.ExtraGrantID].(string)
+		if status != http.StatusOK || id == "" {
+			t.Fatalf("the placeholder trade for %s = %d %v; want 200 and a grant", session, status, body)
+		}
+		return strings.TrimPrefix(id, "approve:")
+	}
+	ended, live := grantID("ada-box-swept"), grantID("ada-box-kept")
+	if _, err := f.pool.Exec(ctx, `update approve_grants set expires_at = now() - interval '1 second' where id = $1`, ended); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	var left string
+	if err := f.pool.QueryRow(ctx, `select coalesce(string_agg(id::text, ','), '') from approve_grants`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != live {
+		t.Fatalf("approve grants after the sweep = %q; want the live grant %s alone, the ended %s deleted", left, live, ended)
 	}
 }
