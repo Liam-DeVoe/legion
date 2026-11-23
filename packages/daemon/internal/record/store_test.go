@@ -1022,11 +1022,12 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 	})
 }
 
-// A new generation clears each role's handoff of its current phase — the commit it reported and the
-// Dispatch handoff record it named — so no role of the new generation reads as having completed,
-// and keeps the record each role last named, which a completion naming it again is refused against.
-// It clears the implementer's counts of the moves back as well, and the cap value the row told
-// for, so the new generation counts and tells from its own first crossing.
+// A new generation clears each role's handoff of its current phase — the commit it reported, the
+// Dispatch handoff record it named and the step a tester's completion named for its task to return
+// to — so no role of the new generation reads as having completed, and keeps the record each role
+// last named, which a completion naming it again is refused against. It clears the implementer's
+// counts of the moves back as well, and the cap value the row told for, so the new generation
+// counts and tells from its own first crossing.
 func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -1034,7 +1035,7 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 	issue := issueFixture("LEGION-286")
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
-		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5, ReturnTo: 2}))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "head", HandoffRecord: "implement-record", HandoffVersion: 1, LastHandoff: "implement-record", Rounds: 1,
 			BackwardMoves: map[string]int{"testing-implementing": 1}, CapTold: 3}))
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
@@ -1047,8 +1048,8 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 			t.Fatalf("phases after ClearGeneration = %#v, want both rows kept", rows)
 		}
 		for _, row := range rows {
-			if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.LastHandoff != want[row.Role] {
-				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version or check states serial, and %q kept as the record it last named", row.Role, row, want[row.Role])
+			if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.ReturnTo != 0 || row.LastHandoff != want[row.Role] {
+				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version, check states serial or step to return to, and %q kept as the record it last named", row.Role, row, want[row.Role])
 			}
 			if len(row.BackwardMoves) != 0 || row.CapTold != 0 {
 				t.Fatalf("the %s row after ClearGeneration counts %#v moves back and told cap %d, want no count and no cap told", row.Role, row.BackwardMoves, row.CapTold)
@@ -2339,7 +2340,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "check_states_seq"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "states_serial", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "states_serial", "return_to", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},

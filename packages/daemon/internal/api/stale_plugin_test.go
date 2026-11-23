@@ -230,8 +230,10 @@ func TestStaleClaimInATurnIsServedWhileItsRelaunchIsHeld(t *testing.T) {
 			grants := h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
 				SessionID: tester.session, Secret: tester.secret, Tree: tester.tree, Issue: tester.issue,
 			}, nil)
+			// No verdict: a plugin one contract behind this daemon's is built after the check
+			// states' change (CheckStatesContract), so its tester completes with none.
 			completed := h.complete(HandoffCompleteRequest{
-				GrantID: grantID, Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1,
+				GrantID: grantID, Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1,
 			})
 
 			if !tc.inTurn {

@@ -3374,13 +3374,18 @@ package api
 // its `test` record, whose `check_states_serial` the daemon waits to hold every state event
 // through; at the head that record names, the move waits while a check of the head's set has no
 // state, or no result while its CI run goes on, whatever the other checks read; then the issue
-// goes to `reviewing` when each check passes, and otherwise back to `implementing` with a task
-// naming each check that does not pass with its state and reason, a state Dispatch could not read
-// (`read_failed`) among them (workflow's decideTesting). A tester's plugin below this contract, in
-// a turn when its daemon was upgraded, still sends `pass` or `fail`: the route takes its
-// completion and ignores the verdict, which no longer makes the completion's key, and any other
-// role's verdict below it is refused as above (`api.CheckStatesContract`). The reviewer's task no
-// longer names `Tester's verdict:`, and a `phase-finished` notice loses `verdict`: from the
+// goes on to the task's next step, `reviewing` in the default steps, when each check passes, and
+// otherwise back to the step the tester's completion names in `returnTo`, or, with none named, to
+// the first implementation step before the tester, with a task naming each check that does not
+// pass with its state and reason, a state Dispatch could not read (`read_failed`) among them
+// (workflow's decideTesting). `returnTo`, 219's field, rides a tester's completion with no
+// verdict: the route refuses it on any other completion 400 `RETURN_TO_NEEDS_FAIL`, the workflow
+// keeps it with the completion until the states decide (`phases.return_to`, store migration
+// 20261123134347_phase_return_to), and a pass does not use it. A tester's plugin below this
+// contract, in a turn when its daemon was upgraded, still sends `pass` or `fail`: the route takes
+// its completion and ignores the verdict, which no longer makes the completion's key, and any
+// other role's verdict below it is refused as above (`api.CheckStatesContract`). The reviewer's
+// task no longer names `Tester's verdict:`, and a `phase-finished` notice loses `verdict`: from the
 // tester's phase its `reason` names each check that does not pass at the tested head, or what the
 // move waits for. The instruction a `HANDOFF_STALE_ENTRY` refusal ends with, which the `legion`
 // tool's description repeats, names no verdict: it ends "never this completion's record or
@@ -3409,7 +3414,38 @@ package api
 // entries above), below 221, so this entry keeps 221, a caller at it is served what one at 219 is,
 // and CheckStatesContract comes after OwnerPlanContract in SupportedContracts. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 221
+//
+// 236: a check that a CI job runs and that fails at the head of a task starts the task's first
+// implementation step again as a fix, in a working copy of its own, while the other steps go on.
+// The shim's `adopt-working-copy` takes two optional members, each a full commit id (40 lowercase
+// hex digits, else the frame is malformed): `fixFrom`, the commit the fix's working copy starts
+// from, which the shim makes or moves in the directory beside its own workspace
+// (workspace.FixDir) and adopts in place of that workspace, and `moveTo`, the commit the task's
+// working copy moves to before anything else runs. Its answer echoes each member it acted on:
+// `fixDir`, the fix's directory, and `movedTo`. A shim built before 236 ignores both members and
+// answers with neither echo, which the daemon reads as a pod that its update round must replace,
+// and the fix's task waits, with no charge to its prompt budget, until the round does.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve an issue's `fix` while a
+// fix of its task runs, and an issue's `holdReason` takes two more values: `fix`, an issue held
+// before its retro while a fix of its task runs, and `ci`, an issue held before its retro until
+// each check a CI job runs passes at its head. `admission.held`'s `reason` takes their words,
+// `fix_running` and `ci_at_head`, each with `heldBy`. A caller whose contract is below 236 is
+// served no `fix`, an issue held for either reason with no `holdReason`, and a row of either word
+// as `unclassified` with no `heldBy`, the row it read for that issue before (shaping.go's band and
+// value strips; answers.go's holdReasons and heldReasons record the new values at 236).
+// `retry_or_escalate` and `legion claims retry` answer `409 FIX_RUNNING` on a hold of the reason
+// `fix` and `409 CI_PENDING` on a hold of the reason `ci`, each naming what ends the hold, and
+// change nothing; only this release writes either reason, so no issue a release before ran gets
+// the new answers. `FIX_RUNNING` and `CI_PENDING` are values of the refusal's `code`, which no
+// reader enumerates. A plugin of a release before 236 is relaunched at the daemon's boot on this
+// contract (refreshStalePlugins), so no plugin before it completes a fix
+// (`api.FixBesideReviewContract`).
+// (This entry takes 236, the lowest number above the base's 221 that no open pull request
+// declares: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 510 open
+// pull requests of cybermonklabs/legion, made between 2026-11-23T13:51:49Z and 13:53:48Z, found
+// each number from 222 to 235 declared. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 236
 
 // CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
 // entry of 221 above): a plugin at it or above has its completion naming one refused
@@ -3419,3 +3455,14 @@ const DaemonAPIVersion = 221
 // check states' change, which a plugin that still sends a verdict can state
 // (TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt).
 const CheckStatesContract = 221
+
+// FixBesideReviewContract is the daemon contract at which a failed CI check starts a fix beside
+// the other steps (the entry of 236 above): the adoption's `fixFrom` and `moveTo` with their
+// echoes, an issue's `fix` in the served state, the hold reasons `fix` and `ci` with their held
+// words `fix_running` and `ci_at_head`, and the refusals `FIX_RUNNING` and `CI_PENDING`. Every
+// served value that arrives with the fix arrives at it, and a caller below it is served none. It is
+// a literal of its own and never DaemonAPIVersion: a later bump moves that constant, and the
+// contract these members and values arrived at stays where it is. In SupportedContracts it comes
+// after CheckStatesContract, and it is declared on top of the check states' change
+// (version_test.go's contractsDeclaredAfterCheckStates).
+const FixBesideReviewContract = 236

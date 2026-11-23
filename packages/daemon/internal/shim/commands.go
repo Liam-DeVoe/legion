@@ -2,9 +2,12 @@ package shim
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -115,11 +118,13 @@ func (s *shim) drainCommands() {
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
 // its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
 // command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand).
+// answers its trimmed standard output (workspace.RunCommand). runIn runs one command the same way
+// in another directory: the adoption's in the fix's working copy beside the workspace.
 type openedWorkspace struct {
-	dir string
-	jj  string
-	run func(stdin []byte, args ...string) (string, error)
+	dir   string
+	jj    string
+	run   func(stdin []byte, args ...string) (string, error)
+	runIn func(dir string, stdin []byte, args ...string) (string, error)
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
@@ -145,16 +150,21 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	}
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
+	runIn := func(at string, stdin []byte, args ...string) (string, error) {
+		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, at, stdin, args)
 	}
-	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
+	run := func(stdin []byte, args ...string) (string, error) {
+		return runIn(dir, stdin, args...)
+	}
+	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
 // worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
 // id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
-// of its reason (cutAnswerError): jj's standard error has no bound of its own.
+// of its reason (cutAnswerError): jj's standard error has no bound of its own. An adoption that
+// ran answers the echo of each member it acted on: the fix's directory for fixFrom, and the
+// commit the task's working copy moved to for moveTo.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -163,8 +173,10 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			return
 		}
 		result.OK, result.Error = false, cutAnswerError(err.Error())
-	} else if err := s.runAdoption(request); err != nil {
+	} else if fixDir, movedTo, err := s.runAdoption(request); err != nil {
 		result.OK, result.Error = false, cutAnswerError(err.Error())
+	} else {
+		result.FixDir, result.MovedTo = fixDir, movedTo
 	}
 	s.toDaemon(result)
 }
@@ -188,29 +200,95 @@ func describedArgs(jj, dir string) []string {
 // shares the workspace, so a working copy the previous role left described (its pushed commit) is
 // kept as it is, and the incoming role starts on a fresh one of its own (`jj new`): otherwise its
 // work would land in the previous role's commit, authored by the previous role's App. One read
-// decides which of the two changes the working copy needs, and only that one runs. Both commands
-// run in the workspace itself, never in the shim's own directory: jj reads the repository of the
-// directory it runs in, whatever -R names, and migrates that repository's legacy configuration
-// (workspace.RunCommand). A failure is reported the way the shipped runner does (commandFailure,
-// packages/workspace/src/workspace.ts): the daemon decides what a failed adoption means. A shim
-// without LEGION_WORKSPACE was not started by a runtime, and refuses (runWorkingCopyAdoption,
-// worker-shim.ts); a PATH without jj refuses naming jj and the PATH searched.
-func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
+// decides which of the two changes the working copy needs, and only that one runs. Every command
+// runs in the working copy it acts on, never in the shim's own directory: jj reads the repository
+// of the directory it runs in, whatever -R names, and migrates that repository's legacy
+// configuration (workspace.RunCommand). A failure is reported the way the shipped runner does
+// (commandFailure, packages/workspace/src/workspace.ts): the daemon decides what a failed adoption
+// means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses
+// (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the PATH
+// searched.
+//
+// A request may name two commits. With MoveTo, the task's working copy moves first: one read of
+// the commit it stands on, and a `jj new` onto MoveTo only where that is another commit; the answer
+// names MoveTo as moved to. With FixFrom, the adoption is of the fix's working copy, beside the
+// workspace (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added
+// on FixFrom where none is there, or, where one is, brought up to date and started on a fresh
+// commit over FixFrom; then the adoption command there, so the fix's commits carry the role's
+// identity. The answer names that directory. Every workspace of the clone shares its store, so a
+// commit a step makes in the workspace is there in the fix's working copy by its id, and a rewrite
+// made from the fix's working copy of a commit under the workspace's working copy leaves that
+// working copy stale. So where the fix's working copy exists, every adoption that acts on the
+// workspace brings it up to date first (`jj workspace update-stale`).
+func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo string, err error) {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	defer done()
-	dir, jj, run := opened.dir, opened.jj, opened.run
+	dir, jj, run, runIn := opened.dir, opened.jj, opened.run, opened.runIn
+	fix := workspace.FixDir(dir)
+	fixMade, err := holdsJJ(fix)
+	if err != nil {
+		return "", "", err
+	}
+	if fixMade && (request.MoveTo != "" || request.FixFrom == "") {
+		if _, err := run(nil, jj, "workspace", "update-stale", "-R", dir); err != nil {
+			return "", "", err
+		}
+	}
+	if request.MoveTo != "" {
+		parent, err := run(nil, jj, "log", "-r", "@-", "--no-graph", "-T", "commit_id", "-R", dir)
+		if err != nil {
+			return "", "", err
+		}
+		if parent != request.MoveTo {
+			if _, err := run(nil, jj, "new", request.MoveTo, "-R", dir); err != nil {
+				return "", "", err
+			}
+		}
+		movedTo = request.MoveTo
+	}
+	if request.FixFrom != "" {
+		if fixMade {
+			if _, err := runIn(fix, nil, jj, "workspace", "update-stale", "-R", fix); err != nil {
+				return "", "", err
+			}
+			if _, err := runIn(fix, nil, jj, "new", request.FixFrom, "-R", fix); err != nil {
+				return "", "", err
+			}
+		} else if _, err := run(nil, jj, "workspace", "add", "--name", filepath.Base(fix), "-r", request.FixFrom, fix, "-R", dir); err != nil {
+			return "", "", err
+		}
+		if _, err := runIn(fix, nil, adoptionArgs(jj, fix)...); err != nil {
+			return "", "", err
+		}
+		return fix, movedTo, nil
+	}
 	described, err := run(nil, describedArgs(jj, dir)...)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	change := adoptionArgs(jj, dir)
 	if described != "" {
 		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = run(nil, change...)
-	return err
+	if _, err := run(nil, change...); err != nil {
+		return "", "", err
+	}
+	return "", movedTo, nil
+}
+
+// holdsJJ is whether dir holds a jj workspace: a `.jj` directory. A dir that is not there holds
+// none, and a read that fails for another reason is the adoption's failure, named.
+func holdsJJ(dir string) (bool, error) {
+	info, err := os.Lstat(filepath.Join(dir, ".jj"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("worker-shim: read the fix's working copy %s: %w", dir, err)
+	}
+	return info.IsDir(), nil
 }

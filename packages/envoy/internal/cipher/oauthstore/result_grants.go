@@ -15,7 +15,7 @@ import (
 // and for one whose end the database's clock has passed.
 var ErrResultGrantNotLive = errors.New("oauthstore: no live result grant")
 
-// ResultGrant is a CI run's result grant (result_grants, migration 0041): the session the token
+// ResultGrant is a CI run's result grant (result_grants, migration 0042): the session the token
 // exchange decided for a result entry's run, kept by the broker in place of the access token the
 // run would otherwise hold. Every broker pod reads it, by its placeholder's SHA-256 when a proxy
 // connection presents the placeholder and by its id when the proxy mints the run's results token,

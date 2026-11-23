@@ -293,7 +293,6 @@ func newStatesProof(t *testing.T) *statesProof {
 		}
 	}
 	cases := statesSelected(t)
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/check-states.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
