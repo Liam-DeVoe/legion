@@ -9319,6 +9319,20 @@ each issue's pod (every role of it alike) and the image probe's.
   - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
     Which session a role registers is held to its claim, but it is still its agent's word, and until session names are bound to the daemon that registered them any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
+- **`runtime.kubernetes.agent_secrets.github`** puts a role's GitHub behind the secrets broker's proxy: a mapping of a role (each workflow role, and `controller`) to the broker's secret names, each a GitHub App secret served behind the proxy, whose grant that role's gh, gh extensions and git reach GitHub under.
+  A role it names holds no GitHub token: the daemon mints no App token for it and writes none into its role Secret, and the refresher passes it over.
+  - The role's shim starts `legion forwarder` once the role's key exists, with the flags the daemon writes into the generation's private directory (`github-forwarder.json`): the role's secret names, a reason naming the role and its issue, a loopback port of the role's own (`127.0.0.1:47801` and up, one per role, since the roles of a pod share its network), the bundle it writes and the configured `repository_renames`.
+    The role is told `HTTPS_PROXY` and `https_proxy` naming that port, `LEGION_GH_OWNERS_DIR` naming the bundle under the generation's private directory, and `GH_CONFIG_DIR` naming the bundle's directory of the issue's owner.
+  - The forwarder asks the broker, with the role's own key, for an hour's grant of those names with no repository target, so the grant holds one placeholder for each account the App is installed on.
+    It writes each account's placeholder where the daemon writes a token for any other role, one gh directory per account, which `legion gh` and `legion git-credential` read.
+    A `CONNECT` to a host the grant binds goes to the broker's proxy port with the grant's proxy password, and the broker swaps each placeholder for its account's token; every other `CONNECT` the forwarder opens itself, so a broker outage stops only the calls that need a credential.
+  - It asks for the next grant with ten minutes of the hour left; the broker hands an automatic grant back only in the first half of its life, so the ask gets a new one and the old one lives on to its expiry.
+    When the broker's proxy answers `407`, as it does for a grant the broker ended early, the forwarder asks for a new grant at once and fails that one connection with `503`, since the client wrote it with the ended grant's placeholder; the role's next call reads the new placeholders.
+    It revokes its grants when the generation stops, and the daemon's revocation of the generation's enrollment ends any it missed.
+  - A pod built while the role's gh volume projected its App's tokens has drifted once the role is named here, and its update round replaces it; until then the role runs as that pod was built.
+  - Unset, every role's App token is minted by the daemon as before.
+  `packages/envoy/scripts/proxy-role-check.sh` runs a role's gh and git through its forwarder on the broker's local stack.
+
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
   The one other key a pod mounts is `NATS_NKEY_SEED`, when the daemon has a NATS nkey seed:
