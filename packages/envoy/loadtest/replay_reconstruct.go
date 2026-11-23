@@ -411,17 +411,21 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 		}
 		g.Go(func() error {
 			k := specs[i].Key
-			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifacts", bundleFileName(k)+".json"), "/api/v1/issues/{key}/artifacts",
+			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifacts", k+".json"), "/api/v1/issues/{key}/artifacts",
 				"/api/v1/issues/"+url.PathEscape(k)+"/artifacts")
 			if err != nil || !ok {
 				return err
 			}
 			var listing []listedArtifact
-			// The key is the event's word and the listing Dispatch's, or the words of whatever
-			// answers in its place: the key is named only in an issue key's shape, and none of
-			// the listing, whose decoder's error can quote a time it could not read.
+			// The key is the event's, so an issue key (eventInShape). The listing is Dispatch's,
+			// or the words of whatever answers in its place: none of it is named, since its
+			// decoder's error can quote a time it could not read, and one that names an artifact
+			// by an id out of Dispatch's shape is refused, as the fetch's listings are.
 			if err := json.Unmarshal(body, &listing); err != nil {
-				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", shownKey(k))
+				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			}
+			if !listingInShape(listing) {
+				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
 			}
 			for _, la := range listing {
 				if la.Primary {
@@ -526,7 +530,7 @@ func stateCounts(st replayState, window []replayEvent) replayCounts {
 	}
 	written := map[string]bool{}
 	for _, ev := range window {
-		c.WindowByType[ev.Type]++
+		c.WindowByType[shownEventType(ev.Type)]++
 		switch ev.Type {
 		case evCommentCreated:
 			var p struct {
@@ -781,22 +785,22 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 	g.SetLimit(f.conc)
 	for _, id := range ids {
 		g.Go(func() error {
-			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("blocks", bundleFileName(id)+".json"), "/api/v1/artifacts/{id}/blocks",
+			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("blocks", id+".json"), "/api/v1/artifacts/{id}/blocks",
 				"/api/v1/artifacts/"+url.PathEscape(id)+"/blocks")
 			if err != nil || !ok {
 				return refused(err)
 			}
 			la, listed := byID[id]
 			if !listed {
-				meta, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifact", bundleFileName(id)+".json"), "/api/v1/artifacts/{id}",
+				meta, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifact", id+".json"), "/api/v1/artifacts/{id}",
 					"/api/v1/artifacts/"+url.PathEscape(id))
 				if err != nil || !ok {
 					return refused(err)
 				}
-				// The id is the anchor's word and the answer Dispatch's: the id is named only in
-				// Dispatch's shape, and none of the answer, whose decoder's error can quote a time.
+				// The id is an anchor's, so in Dispatch's shape (eventInShape). The answer is
+				// Dispatch's: none of it is named, since its decoder's error can quote a time.
 				if err := json.Unmarshal(meta, &la); err != nil {
-					return fmt.Errorf("artifact %s: the answer is not the shape replay-fetch reads", shownID(id))
+					return fmt.Errorf("artifact %s: the answer is not the shape replay-fetch reads", id)
 				}
 			}
 			cur := 0
@@ -815,7 +819,7 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 			}
 			var served []servedBlock
 			if err := json.Unmarshal(body, &served); err != nil {
-				return fmt.Errorf("artifact %s blocks: %w", shownID(id), err)
+				return fmt.Errorf("artifact %s blocks: %w", id, err)
 			}
 			bm, bad := buildBlockMap(cur, markdown, served)
 			outOfRange.Add(int64(bad))

@@ -177,7 +177,7 @@
         "test": "print-envoy.listenerwire.RoleRefusalAs"
       },
       {
-        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/listenerwire.SessionState]",
         "test": "print-envoy.listenerwire.RoleHolderAs"
       },
       {
@@ -305,10 +305,6 @@
         "test": "print-embed.EntraTokenSource.exchange.refusal"
       },
       {
-        "holder": "github.com/sjawhar/envoy/oauth2call.RoleLookup",
-        "test": "print-oauth2call.RoleLookup"
-      },
-      {
         "holder": "github.com/sjawhar/envoy/loadtest.checkNATSServerName struct{ServerName redact.RemoteText \"json:\\\"server_name\\\"\"}",
         "test": "print-loadtest.checkNATSServerName.varz"
       },
@@ -349,16 +345,40 @@
         "test": "print-notify.SessionDeleted"
       },
       {
-        "holder": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer",
-        "test": "print-notify.deleteAnswer"
-      },
-      {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.SessionRegistration",
         "test": "print-notify.SessionRegistration"
       },
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions",
         "test": "print-notify.DeleteConditions"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.SessionRegistrationAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.SessionRegistrationAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.DeleteSessionResponseAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.DeleteSessionResponseAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleHolderAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleRefusalAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleSendFailureAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleSendFailureAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.CapabilityRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.CapabilityRefusalAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.APIErrorAs"
       },
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/cipher.APIError",
@@ -5254,7 +5274,7 @@
       "requirement": "r2-held",
       "package": "./internal/dispatch/envoy",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.RoleHolderAs",
-      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/listenerwire.SessionState]: every printer at every placement"
     },
     {
       "id": "print-envoy.listenerwire.SessionInfoAs",
@@ -5707,8 +5727,8 @@
       "capture": "workspace.status-line/token-refused",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "path, oauth2call.StatusLine(response.StatusCode))",
-        "replacement": "path, response.Status)"
+        "preimage": "whose token this pod holds\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "whose token this pod holds\", request.CacheURL, cache, path, response.Status"
       }
     },
     {
@@ -5730,14 +5750,42 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/tar-refused",
-      "production": "workspace unpackCache: a refused tar names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "production": "workspace unpackCache: a refused tar names the URL it asked and the status by its code and standard phrase (oauth2call.StatusLine)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackCache",
       "capture": "workspace.status-line/tar-refused",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "response.Request.URL, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "response.Request.URL, response.Status"
+        "preimage": "strings.TrimSuffix(request.CacheURL, \"/\"), oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "strings.TrimSuffix(request.CacheURL, \"/\"), response.Status"
       }
+    },
+    {
+      "id": "workspace-status-line-tar-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/tar-redirected",
+      "production": "workspace askCache: a redirect of the tar is refused unfollowed, naming the URL asked and the status by its code and standard phrase (oauth2call.StatusLine), never its Location (cacheClient follows no redirect)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "capture": "workspace.status-line/tar-redirected",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "which this pod never follows\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "which this pod never follows\", request.CacheURL, cache, path, response.Status"
+      }
+    },
+    {
+      "id": "workspace-status-line-health-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/health-redirected",
+      "production": "workspace askCache: a redirect of the health, naming the cache's repository, is a refusal that ends the wait, its target asked nothing (cacheClient follows no redirect)"
+    },
+    {
+      "id": "workspace-status-line-health-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/health-redirect-unanswered",
+      "production": "workspace cacheClient: follows no redirect, so no transport failure net/http names by a Location (its user name and query) becomes the health's not-ready reason"
     },
     {
       "id": "sandbox-status-line-repository-status",
@@ -5782,25 +5830,46 @@
       }
     },
     {
+      "id": "sandbox-status-line-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/redirected",
+      "production": "sandbox cacheHealthOf: a redirect, whatever health it carries, is the read's failure, naming the status by its code and standard phrase (oauth2call.StatusLine), and its target is asked nothing (cacheHealthClient follows no redirect)",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.cacheHealthOf",
+      "capture": "sandbox.status-line/redirected",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/repocache.go",
+        "preimage": "which the daemon never follows\", address, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "which the daemon never follows\", address, response.Status"
+      }
+    },
+    {
+      "id": "sandbox-status-line-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/redirect-unanswered",
+      "production": "sandbox cacheHealthClient: follows no redirect, so the health read's error is never net/http's error naming a Location (its user name and query)"
+    },
+    {
       "id": "controller-answer-words-unresponsive",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/unresponsive",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "controller-answer-words-gone",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/gone",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "controller-answer-words-another-holder",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/another-holder",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "loadtest-answer-words-nats-server-name",
@@ -5863,28 +5932,28 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestACreatedIssuesListingNamesNoneOfItsWords",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).createdSpecs: an event's issue key named only in an issue key's shape (shownKey), and no decoder's error of the listing"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose issue.created names a key out of an issue key's shape (eventInShape), so createdSpecs is handed issue keys alone, and createdSpecs names no decoder's error of the listing"
     },
     {
       "id": "loadtest-answer-members-anchored-meta",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/meta",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: an anchor's document id named only in Dispatch's shape (shownID), and no decoder's error of its artifact answer"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so fetchBlockMaps is handed ids in Dispatch's shape alone, and fetchBlockMaps names no decoder's error of the artifact answer"
     },
     {
       "id": "loadtest-answer-members-anchored-version",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/version",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).docText: a document id named only in Dispatch's shape (shownID)"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so docText is handed ids in Dispatch's shape alone"
     },
     {
       "id": "loadtest-answer-members-anchored-blocks",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/blocks",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: a document id whose blocks do not decode named only in Dispatch's shape (shownID)"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so fetchBlockMaps is handed ids in Dispatch's shape alone"
     },
     {
       "id": "loadtest-answer-members-listed-key",
@@ -5892,6 +5961,76 @@
       "package": "./loadtest",
       "test": "TestAListedKeyThatIsNotTheProjectsNamesNoneOfIt",
       "production": "loadtest issueNumber: a listed key that is not the project's named only in an issue key's shape (shownKey)"
+    },
+    {
+      "id": "loadtest-answer-members-listed-key-shape",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListedKeyIsTheProjectsIssueKeyAlone",
+      "production": "loadtest issueNumber: a listed key is taken only where it is one of the project's issue keys (isIssueKey), so the bundle keeps no other and raw/events/ is named after none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-listing",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/listing",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).run refuses an artifact listing that names an artifact by an id out of Dispatch's shape (listingInShape), so no bundle keeps one and the seed's docText prints none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-ask",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/ask",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose ask names an id out of Dispatch's shape (eventInShape), so no bundle keeps one and the seed's ask errors print none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-comment",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/comment",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose comment names an id out of Dispatch's shape (eventInShape), so no bundle keeps one and the seed's comment errors print none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-window-key",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/window-key",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose window event names an issue key out of an issue key's shape (eventInShape), so bundle.meta.json's created_specs names none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-actor-kind",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/actor-kind",
+      "production": "loadtest actorOf: an actor of a kind the seed cannot act as is refused naming no kind, since a kind has no shape"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-block-id",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/block-id",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replaySeeder).ensureAsk: a typed ask block no ask was indexed from is named by its ask's id alone, never by its block id, which has no shape"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-check-document",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/check-document",
+      "production": "loadtest checkSeed and checkSizesAndAnchors: replay-check-seed's difference and size-mismatch lines and its -out file name a document by its id, never by its name"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-window-type",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/window-type",
+      "production": "loadtest stateCounts: replay-fetch's window_by_type counts a type the package does not name under notAReplayEventType (shownEventType)"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-plan-type",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/plan-type",
+      "production": "loadtest planReplay and (*github.com/sjawhar/envoy/loadtest.replayPlanner).planWrite: a not_sent reason names an event's type only where the package names it (shownEventType)"
     },
     {
       "id": "loadtest-answer-members-refs-etag",
@@ -5933,14 +6072,14 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDThatClimbsOutOfTheBundleNamesNoFileOutsideIt",
-      "production": "loadtest replay-fetch: a cache or bundle file is named after a document id or issue key only in Dispatch's shape, after its SHA-256 otherwise (bundleFileName), so an id with ../ writes no file outside raw/ or the bundle"
+      "production": "loadtest replay-fetch refuses a listing or an event naming a document id or issue key out of Dispatch's shape where it decodes it (listingInShape, eventInShape), before a cache or bundle file is named after it, so an id with ../ writes no file outside raw/ or the bundle"
     },
     {
       "id": "loadtest-answer-members-file-names-long",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDLongerThanAFileNameNamesNoneOfIt",
-      "production": "loadtest replay-fetch: an id longer than a file name names its files after its SHA-256 (bundleFileName), so no *os.PathError prints it"
+      "production": "loadtest replay-fetch refuses a listing or an event naming an id longer than Dispatch's shapes where it decodes it (listingInShape, eventInShape), before a file is named after it, so no *os.PathError prints it"
     },
     {
       "id": "print-loadtest.dispatchCoverage.readCoverage.embedder",
@@ -6909,13 +7048,6 @@
       "production": "github.com/sjawhar/legion/daemon/internal/notify.SessionDeleted: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
-      "id": "print-notify.deleteAnswer",
-      "requirement": "r2-held",
-      "package": "github.com/sjawhar/legion/daemon/internal/notify",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.deleteAnswer",
-      "production": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer: every printer at every placement (oauth2calltest.PrintTest)"
-    },
-    {
       "id": "print-notify.SessionRegistration",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
@@ -6930,6 +7062,55 @@
       "production": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
+      "id": "print-notify.listenerwire.SessionRegistrationAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.SessionRegistrationAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.SessionRegistrationAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's ReadSessionRegistration's: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.DeleteSessionResponseAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.DeleteSessionResponseAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.DeleteSessionResponseAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's DeleteSession's: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleHolderAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleHolderAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText], notify's RoleHolder's and the controller probe's 200: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleRefusalAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleRefusalAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText], notify's RoleHolder's and the controller probe's 404: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleSendFailureAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleSendFailureAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleSendFailureAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 504: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.CapabilityRefusalAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.CapabilityRefusalAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.CapabilityRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 403: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.APIErrorAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.APIErrorAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 403 of a denied forward: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
       "id": "print-cipher.APIError",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
@@ -6942,13 +7123,6 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestABootEndsWhenItsRateLimitWaitsReachTheirBound",
       "production": "the boot's limit error names GitHub's message whole beside the rig's GitHub-shaped token"
-    },
-    {
-      "id": "print-oauth2call.RoleLookup",
-      "requirement": "r2-held",
-      "package": "./oauth2call",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.RoleLookup",
-      "production": "github.com/sjawhar/envoy/oauth2call.RoleLookup: every printer at every placement"
     },
     {
       "id": "print-loadtest.checkNATSServerName.varz",
@@ -8643,6 +8817,56 @@
       "guard": "loadtest-answer-members-listed-key"
     },
     {
+      "site": "loadtest replay-fetch issueNumber: a listed key with a leading zero or a sign after the project's prefix, or under a project given as ../x, kept in the bundle and naming a file of raw/events/",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-listed-key-shape"
+    },
+    {
+      "site": "loadtest replay-fetch: a listed artifact's id, decoded into a plain string and kept in state.json as it came, printed raw by the seed's document errors (docText)",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-listing"
+    },
+    {
+      "site": "loadtest replay-fetch: an ask's id, decoded from its event into a plain string and kept in state.json as it came, printed raw by the seed's ask errors",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-ask"
+    },
+    {
+      "site": "loadtest replay-fetch: a comment's id, decoded from its event into a plain string and kept in state.json as it came, printed raw by the seed's comment errors",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-comment"
+    },
+    {
+      "site": "loadtest replay-fetch: a window event's issue key, decoded into a plain string and written raw to bundle.meta.json's created_specs",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-window-key"
+    },
+    {
+      "site": "loadtest actorOf: an actor's kind from the bundle, decoded into a plain string, quoted raw by the seed's refusal of an actor it cannot act as",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-actor-kind"
+    },
+    {
+      "site": "loadtest replay-seed ensureAsk: a typed ask block's id from the bundle printed raw when no ask was indexed from it",
+      "source": "the review of #4368 at de683f95d2, finding 4 (replay_seed_asks.go:51)",
+      "guard": "loadtest-answer-members-bundle-text-block-id"
+    },
+    {
+      "site": "loadtest replay-check-seed: a document's name from the bundle printed raw in the difference and size-mismatch lines and written raw to the -out file",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-check-document"
+    },
+    {
+      "site": "loadtest replay-fetch stateCounts: a window event's type, decoded into a plain string, a key of window_by_type in the printed counts and bundle.meta.json",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-window-type"
+    },
+    {
+      "site": "loadtest replay-plan: a window event's type in the derived:, no_issue: and unhandled: reasons of the printed and written not_sent counts",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-plan-type"
+    },
+    {
       "site": "loadtest refs-fetch: a references answer's ETag header written raw to the TSV it records",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-refs-etag"
@@ -8896,6 +9120,21 @@
       "site": "a listener send's target_session, expects_reply, message and payload redacted as credentials from the listener's words (no live session [redacted], message is [redacted], and every run of eight characters the reason shares with the message), which broke five of main's delivery tests",
       "source": "the merge of main into the pull request",
       "guard": "redact-listener-send-names-public"
+    },
+    {
+      "site": "workspace unpackCache: a refused tar named response.Request.URL, which cacheClient's followed redirect made the Location the cache's stand-in wrote, its user information and query included",
+      "source": "round 6's security review",
+      "guard": "workspace-status-line-tar-redirected"
+    },
+    {
+      "site": "workspace askCache: after a followed redirect, net/http's url.Error named the Location (its user name and query), returned as the health's not-ready reason that the wait logs",
+      "source": "the class search of round 6's redirect finding",
+      "guard": "workspace-status-line-health-redirect-unanswered"
+    },
+    {
+      "site": "sandbox cacheHealthClient followed redirects: cacheHealthOf read a redirect target's health as the cache's, and returned net/http's url.Error naming the Location (its user name and query) to readCacheHealth, which keeps it through storetext.FarSideError, and to cacheStreams, which logs it",
+      "source": "the class search of round 6's redirect finding",
+      "guard": "sandbox-status-line-redirect-unanswered"
     }
   ]
 }

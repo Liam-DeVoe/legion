@@ -23,19 +23,18 @@ import (
 // The directory holds:
 //
 //	state.json                replayState: the project's issues at `at`, with artifacts, comments and asks
-//	docs/<name>.md            each document's markdown at its version at `at` (replayArtifact.TextPath)
+//	docs/<id>.md              each document's markdown at its version at `at` (replayArtifact.TextPath)
 //	window.jsonl              the window's events, one compact JSON event per line, as Dispatch served them
-//	created-docs/<name>.md    version 1 of each document an artifact.created window event made, and
+//	created-docs/<id>.md      version 1 of each document an artifact.created window event made, and
 //	                          of each spec an issue.created window event made (replayMeta.CreatedSpecs)
 //	roster.json               []replayRosterEntry: the sessions the replay acts as
 //	bundle.meta.json          replayMeta: counts and the sha256 of every other file
 //
 // raw/ beside them is replay-fetch's cache of production responses, never part of the bundle.
 // A bundle carries production text; it never goes in the repository. A file named after a document
-// id or an issue key, in the bundle or in raw/, is named after it only where it is in Dispatch's
-// shape, and after its SHA-256 otherwise (bundleFileName): the id is Dispatch's word, or the word of
-// whatever answers in its place, and one that holds a path separator, "..", or more bytes than a
-// file name may would put the file outside the bundle or fail with an error that prints the path.
+// id or an issue key, in the bundle or in raw/, is named after it as it is: replay-fetch keeps only
+// ids and keys in Dispatch's shape (a lowercase UUID, an issue key; eventInShape, listingInShape,
+// issueNumber), which hold no path separator, no ".." and no more than a few dozen bytes.
 const (
 	bundleStateFile  = "state.json"
 	bundleWindowFile = "window.jsonl"
@@ -47,10 +46,10 @@ const (
 )
 
 // bundleDocRel is the slash path of document id's file under docs/ (a replayArtifact.TextPath).
-func bundleDocRel(id string) string { return bundleDocsDir + "/" + bundleFileName(id) + ".md" }
+func bundleDocRel(id string) string { return bundleDocsDir + "/" + id + ".md" }
 
 // bundleCreatedRel is the slash path of created document id's file under created-docs/.
-func bundleCreatedRel(id string) string { return bundleCreatedDir + "/" + bundleFileName(id) + ".md" }
+func bundleCreatedRel(id string) string { return bundleCreatedDir + "/" + id + ".md" }
 
 // replayState is state.json.
 type replayState struct {
@@ -303,7 +302,8 @@ type replayCounts struct {
 	// AsksResolvedBlocks counts the resolved typed ask blocks the state keeps.
 	AsksResolvedBlocks int `json:"asks_resolved_blocks"`
 	WindowEvents       int `json:"window_events"`
-	// WindowByType counts window events per event type.
+	// WindowByType counts window events per event type: a type this package names under its name,
+	// any other under notAReplayEventType (shownEventType), since replay-fetch prints the counts.
 	WindowByType          map[string]int `json:"window_by_type"`
 	CreatedDocs           int            `json:"created_docs"`
 	CreatedDocsUnreadable int            `json:"created_docs_unreadable"`

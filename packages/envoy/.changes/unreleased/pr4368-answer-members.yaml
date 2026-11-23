@@ -11,10 +11,11 @@ body: |-
   `Proxy-Authorization`, so the refusal prints none of it, and the MCP bridge names a server's
   endpoint, and net/http's error that quotes it, as the rule reads them. The load test keeps and
   names Dispatch's keys, ids, ETags and event types only in Dispatch's own shapes, replaces a
-  parser's error that quotes an answer's value with a fixed phrase, prints the proxy's and the
-  profiler's answers in its notes by their counts only, and names a replay bundle's file after an
-  id or key only where it is in Dispatch's shape and after its SHA-256 otherwise, so an id with
-  `../` writes nothing outside the bundle and an id longer than a file name prints nowhere.
+  parser's error that quotes an answer's value with a fixed phrase, and prints the proxy's and the
+  profiler's answers in its notes by their counts only. `loadgen replay-fetch` refuses an issue
+  listing, an event or an artifact listing that names an issue, a document, a comment or an ask in
+  any other shape, where it decodes it, so a replay bundle keeps no such id or key, the seed, the
+  plan and the checks that read the bundle print none, and no file is named after one.
   The redaction check's censuses read every build CI makes: each GOOS/GOARCH it builds and each
   tag list its vet passes, and a production file no such build compiles by its syntax; the answer
   census also fails on a reader or maker used as a function value, a decode outside

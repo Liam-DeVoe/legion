@@ -42,13 +42,15 @@ func (s *replaySeeder) ensureAsk(ctx context.Context, key string, docs map[strin
 	switch {
 	case a.BlockID != nil:
 		// A typed ask block lives in its document's text, which the history wrote; settlement
-		// indexed it.
+		// indexed it. The refusal names the ask by its id and not the block by its own: a block id
+		// is any text a pasted block names (pmdoc's storedBlockID), so it has no shape a line could
+		// hold it to.
 		local, err := adopt(`select id::text from public.asks where issue_key = $1 and block_id = $2 order by created_at, id`, key, *a.BlockID)
 		if err != nil {
 			return "", err
 		}
 		if local == "" {
-			return "", fmt.Errorf("ask %s: no ask was indexed from its typed block %s", a.ID, *a.BlockID)
+			return "", fmt.Errorf("ask %s: no ask was indexed from its typed block", a.ID)
 		}
 		return local, s.ids.put(ctx, idAsk, a.ID, local)
 	case a.Approval != nil:
