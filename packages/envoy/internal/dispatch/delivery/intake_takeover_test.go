@@ -138,7 +138,6 @@ const standbyTakeOverBound = 10 * time.Second
 // hand-over, measured against the mechanism that replaced its bind: the exclusion the hold buys
 // must not be paid for with a slower hand-over.
 func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
-	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

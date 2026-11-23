@@ -454,7 +454,6 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 // consumer -- an acknowledgement that never reaches the server, a credit never given back --
 // fails here.
 func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
-	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)

@@ -375,7 +375,6 @@ func awaitEverythingAcknowledged(t *testing.T, publisher *bus.Client) {
 // are the ones waiting behind their key (intakeKey): one pull request's messages run one after
 // another, so four more of the one its handler is holding wait behind it.
 func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
-	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	// One message in the holder's handler and four behind it on its key.
 	tuningFor(t).maxAckPending = 5
@@ -707,7 +706,6 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 // over once the hold lapses and is redelivered every one of them at once: within the hold's 15 s
 // TTL, a 2 s bind interval and a margin, not after the 85 s ack wait.
 func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing.T) {
-	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

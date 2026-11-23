@@ -593,7 +593,6 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 // A stop that holds every acknowledgement of a finished handler leaves it at two until the
 // first fetch is released too.
 func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
-	t.Parallel()
 	// The stop has to be waiting for pull request 1's handler still while the counts below are
 	// read, and it is this row that releases that handler, so the budget has only to outlast
 	// two reads of the durable on a loaded runner. Above githubapp.RequestTimeout (20 s) it
