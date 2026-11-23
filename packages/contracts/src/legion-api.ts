@@ -548,14 +548,14 @@ const legionWaitingLineView = z.object({
 
 /** `api.WhyView` — the one rendered answer an issue that is not working now carries: `state`,
  * which of the five facts holds it — its claim has stopped (`claim_stopped`), the work hold holds
- * its tree's work (`held`, `gates.hold: work`, contract 222), it waits in the admission line
+ * its tree's work (`held`, `gates.hold: work`, contract 223), it waits in the admission line
  * (`waiting`), something holds it where it stands (`blocked`), or it stands in neither the line
  * nor the work at all (`unlisted`) — and `reason`, the sentence a person reads; a `held` issue's
  * names the version that closed its tree's design gate. The projection reads the five in one
  * order over the facts the pass already holds and renders the sentence of whichever holds the
  * issue, so an issue carries one answer and never two. `state` is a `z.enum` for the reason `part`
  * and `kind` above are, and it arrives with the line's own `partPlace` and the rest of its fields
- * at contract 85. `held` is the one word that arrived later, at 222: a caller below 222 is served
+ * at contract 85. `held` is the one word that arrived later, at 223: a caller below 223 is served
  * a `held` issue with no `why` at all (the daemon's `withoutUnadmittedWhy`), since its enum
  * refuses the word. */
 const legionWhyView = z.object({
@@ -1600,7 +1600,7 @@ export const LegionReleaseRecordsResponse = z.object({
 
 export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>;
 
-/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (contract 222): the
+/** `api.ClaimApprovalRequest`, the body of `POST /legion/v1/claims/approval` (contract 223): the
  * claim a root architect's session holds, that session, and the claim's secret, as
  * `claims/activity` sends them. The route answers for the claim's own issue alone. */
 export const LegionClaimApprovalRequest = z.strictObject({
@@ -2249,6 +2249,14 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission",
     "admission.blocked[].issue",
     "admission.blocked[].blockedBy",
+    // The summary's `held` lines name each held issue, its reason and the issues that hold it.
+    // Its `trees` line reads `admission.trees` off the summary's own `admission`, as it reads
+    // `cap`, `active` and `waiting`, which the census pairs with no parent. The census reads
+    // `held.issue` as a read of every `issue` under a `held`, so the open pause's held rows name
+    // their `issue` too, though the summary only counts them.
+    "admission.held[].issue",
+    "admission.held[].reason",
+    "admission.held[].heldBy",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -2274,6 +2282,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "paused.waitsOn[].issue",
     "paused.waitsOn[].role",
     "paused.held",
+    "paused.held[].issue",
     "lastPause",
     "lastPause.id",
     "lastPause.since",
@@ -2329,6 +2338,10 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "holds",
     "holds[].reason",
   ],
+  // No plugin code reads the release answer: the tool hands it to its agent whole. Its `held`
+  // rows name their `issue` all the same, because the census reads the summary's `held.issue` of
+  // the state's admission as a read of this as well (above).
+  LegionWaveReleaseResponse: ["held[].issue"],
   // No plugin code reads the pause and resume answers: the controller hands each to its agent
   // whole. Each names the actor's `kind` and a controller's `session` under `by` and `endedBy`
   // all the same, because the census reads the summary's `by.kind`, `by.session`, `endedBy.kind`

@@ -46,14 +46,16 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 and the last four are constants rather than their numbers, because the entries that added
+// 193, 202, 205, 213 and 223 are constants rather than numbers, because the entries that added
 // them name them (shapedAnswersContract, the shaped answers' entry; repositoriesLiveContract,
 // dispatch://INFRA-4401's; childRouteRemovedContract, dispatch://INFRA-3178's;
 // cachesSourceContract, dispatch://INFRA-4036's; and approvalRouteContract, this daemon's own,
 // the entry that added the approval route and the work hold's `held`): a renumber of any of those
 // entries moves its constant and this list with it, and moving one of the two alone would
-// describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, approvalRouteContract}
+// describe a shape at a contract no entry declares. The other entries above 193 follow them as
+// numbers: 199 is version.go's entry for INFRA-4605, and 217 its entry for dispatch://INFRA-3531
+// and dispatch://INFRA-4567.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, approvalRouteContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -202,9 +204,9 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 222: whether a person's approval of a spec stands for a root architect's claim
+	// version.go's 223: whether a person's approval of a spec stands for a root architect's claim
 	// (`api.ClaimApprovalResponse`), which pi-legion reads before a model call of that
-	// architect's own conversation. The route arrives with the answer, so no contract below 222
+	// architect's own conversation. The route arrives with the answer, so no contract below 223
 	// records either.
 	{ID: AnswerClaimApproval, Routes: []string{"POST /legion/v1/claims/approval"}, Since: approvalRouteContract},
 }
@@ -265,8 +267,8 @@ type EnumeratedValue struct {
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, `capabilities.*.source`, which
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), and `why.state`,
-// which gained `held` at 222, so every other list is recorded whole at its own field's arrival.
-// (`suspendedBy` gained `released` at 48 and `hold` at 222 and is no row here: the operator
+// which gained `held` at 223, so every other list is recorded whole at its own field's arrival.
+// (`suspendedBy` gained `released` at 48 and `hold` at 223 and is no row here: the operator
 // claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
@@ -511,7 +513,7 @@ var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
 
 // whyStates is every fact that holds an issue that is not working now. The field arrived at
 // whyAndLineFieldsContract with four words, and its list grew once: `held`, an issue whose work
-// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 222,
+// the work hold holds (`gates.hold: work`), arrived at workHoldContract (version.go's 223,
 // WhyHeld). So it is written out value by value, sorted by value, as lineKinds is.
 var whyStates = []EnumeratedValue{
 	{Value: string(WhyBlocked), Since: whyAndLineFieldsContract},

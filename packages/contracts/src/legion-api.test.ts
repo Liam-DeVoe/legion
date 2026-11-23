@@ -138,7 +138,7 @@ const schemas: Record<string, z.ZodType> = {
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   // Written by internal/api's TestStateWorkHoldGolden: the state of an issue the work hold holds
-  // (`gates.hold: work`), whose `why` is `held` (contract 222).
+  // (`gates.hold: work`), whose `why` is `held` (contract 223).
   "state-work-hold.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -153,7 +153,7 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
-  // `api.ClaimApprovalResponse` (contract 222): the approval that stands for a root architect's
+  // `api.ClaimApprovalResponse` (contract 223): the approval that stands for a root architect's
   // claim, and the answer where none does, whose `approval` is null and never absent. Each is
   // written from what the route builds (internal/api's TestApprovalRoute…Golden).
   "claim-approval.json": LegionClaimApprovalResponse,
@@ -1856,7 +1856,7 @@ test("every request the plugin sends parses and names its required fields", () =
       },
     ],
     // The read a root architect's session makes before a model call of its own conversation
-    // (contract 222), authenticated by the claim as the activity report is.
+    // (contract 223), authenticated by the claim as the activity report is.
     [
       "claim approval",
       LegionClaimApprovalRequest,
@@ -2991,12 +2991,12 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
-// The work hold (contract 222). An issue the hold holds says so on its own view: `why.state` is
+// The work hold (contract 223). An issue the hold holds says so on its own view: `why.state` is
 // `held`, with the sentence that names the version that closed its tree's design gate. The word
 // joins the enum at this contract, and a reader before it refuses the whole state for it, so a
-// caller below 222 is served the state without that `why` (the daemon's `withoutUnadmittedWhy`)
+// caller below 223 is served the state without that `why` (the daemon's `withoutUnadmittedWhy`)
 // rather than the body that reader would refuse.
-test("an issue the work hold holds says why, in a word the reader before contract 222 refuses", () => {
+test("an issue the work hold holds says why, in a word the reader before contract 223 refuses", () => {
   const state = LegionStateResponse.parse(fixture("state-work-hold.json"));
   expect(state.issues["LEGION-214"]?.why).toEqual({
     state: "held",
@@ -3005,11 +3005,11 @@ test("an issue the work hold holds says why, in a word the reader before contrac
       "stands open again: version 4 of its spec document (artifact-208) closed the design gate.",
   });
 
-  const whyBefore222 = z.strictObject({
+  const whyBefore223 = z.strictObject({
     state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
     reason: z.string().min(1),
   });
-  const refused = whyBefore222.safeParse(state.issues["LEGION-214"]?.why);
+  const refused = whyBefore223.safeParse(state.issues["LEGION-214"]?.why);
   expect(refused.success).toBeFalse();
   expect(refused.error?.issues[0]?.path).toEqual(["state"]);
 

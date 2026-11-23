@@ -1003,7 +1003,7 @@ const repositoriesLiveContract = 202
 // constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
-// approvalRouteContract is the daemon contract of the approval route (version.go's 222). It
+// approvalRouteContract is the daemon contract of the approval route (version.go's 223). It
 // added one answer whole with its route, `POST /legion/v1/claims/approval` (answers.go's
 // AnswerClaimApproval), which no contract below it records, and the route's request, which
 // request-shapes.json records from it on. A plugin of an earlier contract never calls the route,
@@ -1013,11 +1013,11 @@ const cachesSourceContract = 213
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the route arrived at stays where it is. It moves only with
 // this change's own number, as shapedAnswersContract moves with its own change's.
-const approvalRouteContract = 222
+const approvalRouteContract = 223
 
 // workHoldContract is the daemon contract that added `held` to an issue's `why.state`: an issue
 // whose work the work hold holds (`gates.hold: work`, WhyHeld). It is the entry that added the
-// approval route (version.go's 222), so it is that constant and moves with it. A reader from
+// approval route (version.go's 223), so it is that constant and moves with it. A reader from
 // whyAndLineFieldsContract up to it reads `state` with an enumeration of the four words before
 // it, which refuses `held` and with it the whole body, so a caller whose restore is below it is
 // served such an issue with no `why` (withoutUnadmittedWhy). The number is written once, in the

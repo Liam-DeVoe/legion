@@ -145,7 +145,7 @@ export interface LegionDaemonClient {
   readonly releaseRecords: (
     input: z.input<typeof LegionReleaseRecordsRequest>
   ) => Promise<z.output<typeof LegionReleaseRecordsResponse>>;
-  /** Whether a person's approval of a spec stands for the claim (contract 222): the document, the
+  /** Whether a person's approval of a spec stands for the claim (contract 223): the document, the
    * version approved and the approval message the plugin places as it is, or `approval: null`. It
    * is authenticated by the claim, as `activity` is. `signal` aborts the request, its answer's
    * body included: pi-legion reads it before a model call under a deadline of its own, and a

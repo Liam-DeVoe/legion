@@ -162,7 +162,7 @@
     "routes": [
       "POST /legion/v1/claims/approval"
     ],
-    "since": 222,
+    "since": 223,
     "noBody": false
   }
 ]

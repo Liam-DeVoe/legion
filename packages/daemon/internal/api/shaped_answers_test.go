@@ -535,7 +535,7 @@ func valueStripCases() map[string]valueStripCase {
 		// shapedAnswersContract on states its own contract (podContracts): the pod alone at it is
 		// served this daemon's own body, the value with it, and the mixed pod is read at its
 		// lowest contract alone. So the case gives no beforeField, though the field arrived above
-		// the floor: a pod spanning a contract below 85 and one at 222 is a pod below 85 alone,
+		// the floor: a pod spanning a contract below 85 and one at 223 is a pod below 85 alone,
 		// which the band of 85 serves no `why` at all. That the strip takes no word that arrived
 		// with the field is read here instead: the mixed pod is served every other issue's
 		// `why` as written.
