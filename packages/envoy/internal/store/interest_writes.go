@@ -561,9 +561,15 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 // answers the newest claim the bucket took, also one written a moment ago. ctx bounds the whole
 // read. It answers as RoleClaim answers: a zero claim for a role no record claims (a marker
 // included), the record's revision on the claim, ErrMalformedRoleClaim for a record that is not a
-// claim, and the refusal of a key NATS refuses (bus.ErrRefused).
+// claim, and the refusal of a key NATS refuses (bus.ErrRefused). A role bucket handle whose legacy
+// half answers the leader's read itself (leaderReader) is read through it.
 func (r *Registry) roleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
-	entry, err := r.roles().GetFromLeader(ctx, role)
+	roles := r.roles()
+	read := roles.GetFromLeader
+	if reader, answers := roles.Legacy().(leaderReader); answers {
+		read = reader.GetFromLeader
+	}
+	entry, err := read(ctx, role)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return RoleClaim{}, nil
 	}
@@ -576,6 +582,14 @@ func (r *Registry) roleClaimFromLeader(ctx context.Context, role string) (RoleCl
 	}
 	claim.Revision = entry.Revision()
 	return claim, nil
+}
+
+// leaderReader is a legacy bucket handle that answers the leader's read of a key itself, as a
+// test's handle does to count or fail that read beside the direct gets it counts: that read goes to
+// the bucket stream's leader on the connection (bus.KeyValue.GetFromLeader) and never through the
+// legacy handle. No nats.go handle is one, so every listener's read goes to the leader.
+type leaderReader interface {
+	GetFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error)
 }
 
 // heldBy is the controller roles h gives sessionID, sorted.
