@@ -1091,16 +1091,18 @@ To stand it up:
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
-`slow`, and the rest the example names). The daemon refuses to boot when an agent's role has no
-model, or its model's key does not work. `smol` and `slow` left unset take the `default` role's
-model, which the daemon accepts. Nothing refuses a missing `default`: an Oh My Pi session whose role
-names no model then starts, silently, on one of Oh My Pi's built-in models. Set every variable your
-route depends on in `pod.env`, which outranks a repository's own `.env`.
+`slow`, and the rest the example names).
+The daemon refuses to boot when an agent's role has no model, or its model's key does not work.
+`smol` and `slow` left unset take the `default` role's model, which the daemon accepts.
+Nothing refuses a missing `default`: an Oh My Pi session whose role names no model then starts,
+silently, on one of Oh My Pi's built-in models.
+Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
-same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched. A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no
-line under `modelRoles` applies to it.
+same `apply.sh` command.
+Pods started after that use it; a running pod keeps its files until it is relaunched.
+A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under
+`modelRoles` applies to it.
 
 ## Check and start the daemon
 
@@ -1146,10 +1148,10 @@ with Go.
 
 ## Start the controller
 
-The controller runs in one of two ways, as `controller` in `legion.yaml` says. By default
-(`controller: operator`) it runs on your own machine, in your terminal. Under `controller: daemon`
-the daemon launches it and keeps it running: as a pod in the cluster, or as a pane under
-`runtime: tmux`.
+The controller runs in one of two ways, as `controller` in `legion.yaml` says.
+By default (`controller: operator`) it runs on your own machine, in your terminal.
+Under `controller: daemon` the daemon launches it and keeps it running: as a pod in the cluster,
+or as a pane under `runtime: tmux`.
 
 ### In the cluster
 
@@ -1247,14 +1249,16 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other, and it
-   moves no phase. The daemon names it to the implementer, to the worker of the issue's phase and
-   to the architect that owns the issue. Each decides whether to re-run it, wait for it or fix the
-   code. The implementer answers and resolves the bot's threads and pushes, and the bot runs again.
+   image pin (an empty list is refused too).
+   A review bot's red is now CI like any other, and it moves no phase.
+   The daemon names it to the implementer, to the worker of the issue's phase and to the architect
+   that owns the issue.
+   Each decides whether to re-run it, wait for it or fix the code.
+   The implementer answers and resolves the bot's threads and pushes, and the bot runs again.
    Where the task has a review step, the reviewer also answers each bot thread, and a finding it
-   cannot accept becomes its own. Where the bot's
-   threads must be closed before a merge, make that the repository's own rule (a ruleset's
-   "Require conversation resolution before merging").
+   cannot accept becomes its own.
+   Where the bot's threads must be closed before a merge, make that the repository's own rule (a
+   ruleset's "Require conversation resolution before merging").
 
    **After the first upgrade to the release where an issue's disk dies with its pod,** the
    `runtime.kubernetes` block must name a `session_store` that keeps sessions in a database, with

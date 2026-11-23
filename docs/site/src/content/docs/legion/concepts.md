@@ -78,9 +78,11 @@ repositories alone.
 The controller is the one Legion agent a person talks to directly. By default (`controller:
 operator`) the operator starts it with `legion controller start` in a terminal on their own machine,
 and it runs there as an interactive Oh My Pi session; closing that terminal leaves the project
-without a controller until someone runs the command again. Under `controller: daemon` the daemon
-launches it and relaunches it when it dies, as a pod in the cluster or a pane under tmux. A person
-reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
+without a controller until someone runs the command again.
+Under `controller: daemon` the daemon launches it and relaunches it when it dies, as a pod in the
+cluster or a pane under tmux.
+A person reaches it through Dispatch.
+The daemon wakes it when something needs a judgment no tree owns:
 
 - a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
   person's label is queued by the daemon: the issue moves to `todo` without the controller);
@@ -659,9 +661,10 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it. Where the close is the child's merge
-and a production check opens, the pod and its disk go when the check's first look ends. A root's
-close releases any admission
+A child's close deletes its pod, and the disk goes with it.
+Where the close is the child's merge and a production check opens, the pod and its disk go when
+the check's first look ends.
+A root's close releases any admission
 slot its issues still held, which happens once no other issue of its tree is still in the
 workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session
