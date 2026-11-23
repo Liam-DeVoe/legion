@@ -4,10 +4,10 @@
 -- 20261116163813 keyed issue_role_holders by (issue_key, role), as the daemon then kept one claim
 -- per issue and role. Two claims of one issue can now hold one role: the agent of a key works a
 -- step of another role than its name, beside that role's own claim of an earlier version of the
--- plan, and a second agent of one role works a later step of it. The daemon publishes the session
--- of each live claim (PUT /api/v1/issues/{key}/role-holders, api/issue_role_holders.go), so the
--- set of such an issue named a role twice, the route refused it whole (400 INVALID_ROLE_HOLDER),
--- the daemon ended the publication, and the second claim's session held no role on Dispatch.
+-- plan. The daemon publishes the session of each live claim
+-- (PUT /api/v1/issues/{key}/role-holders, api/issue_role_holders.go), so the set of such an issue
+-- named a role twice, the route refused it whole (400 INVALID_ROLE_HOLDER), the daemon ended the
+-- publication, and the second claim's session held no role on Dispatch.
 --
 -- The key is now the unique index on (issue_key, session) 20261116163813 made, which keeps each
 -- session to one role of an issue: the primary key on (issue_key, role) is dropped, so a role can

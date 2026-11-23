@@ -1641,10 +1641,10 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 - A narrowing — a type made smaller, a nullable column made `not null`, a check added
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
-No migration is an exception to that rule: a change that cannot be written that way is split into releases that can, so no release stops every server process.
+No migration is an exception to that rule but one, `20261122130956` (below), after which the release before cannot write `issue_role_holders` while both serve: every other change that cannot be written that way is split into releases that can, and no release stops every server process.
 `0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
 So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
-The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it but that of `20261122130956`.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2577,7 +2577,7 @@ It widens and narrows nothing, so it rolls: the release before it writes only th
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 
 Migration `20261122130956_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step, at the constant defaults `''` and `false`.
-Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim, or a second agent of one role), and the route refused a set that named a role twice, so the second claim's session held no role.
+Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim of an earlier version of the plan), and the route refused a set that named a role twice, so the second claim's session held no role.
 Every statement is catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 **It is the one migration after `20261111210103` that does not roll.**
 The release before it inserts with `on conflict (issue_key, role)`, which Postgres refuses once no unique index on exactly those columns stands, so while both releases serve, a role-holder publication that reaches a server of the release before is answered `500`.
