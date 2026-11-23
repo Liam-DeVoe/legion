@@ -2,13 +2,14 @@ name: Dispatch browser nightly
 
 # Three jobs on a schedule: the full browser lane, the re-record of the stubbed layer's
 # recordings, and the quarantine check, which runs on the 02:17 cron and on a workflow_dispatch
-# alone. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
-# carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
-# parallel projects, the three `-alone` ones, the two stub ones and the two-process job - on
-# every other run, so the merge group runs it on the tree a change lands as. This run covers a
-# day with no such event, and is what runs the full lane on main's tip
-# (.github/workflows/dispatch-browser.yaml, which holds every step). The re-record job's own
-# head, below, says what it guards and why it is here rather than in a file of its own.
+# alone. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
+# pull-request lane on a pull request, the rows a pull request is held to, and its
+# dispatch-browser job runs the full lane - all eight parallel projects, the three `-alone` ones,
+# the two stub ones and the two-process job - in the merge queue, so the merge group runs it on
+# the tree a change lands as. This run covers a day with no such event, and is what runs the full
+# lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds every step). The
+# re-record job's own head, below, says what it guards and why it is here rather than in a file
+# of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
 # blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
@@ -21,18 +22,18 @@ name: Dispatch browser nightly
 # thing R4 of dispatch://INFRA-983 decides the quarantine from, the merge jobs' flaky-row
 # notices, and it posts nothing either - it fails the run, and its summary says why.
 #
-# The quarantine (packages/dispatch/e2e/quarantine.ts) has two parts here. The `full` job's call
-# passes `quarantine: true`, so dispatch-browser.yaml runs the quarantined rows in a leg of their
-# own, which reports how each ended and fails nothing, while its shard legs leave them out as on
-# every other call. And the `quarantine-check` job does the checks that depend on the date, which
-# no pull request does: it fails the run on a row flaky in two runs of 14 days that is not
-# quarantined, and on an entry held longer than 14 days.
+# The quarantine (packages/dispatch/e2e/quarantine.ts) has two parts here. The `dispatch-browser`
+# job's call passes `quarantine: true`, so dispatch-browser.yaml runs the quarantined rows in a
+# leg of their own, which reports how each ended and fails nothing, while its shard legs leave
+# them out as on every other call. And the `quarantine-check` job does the checks that depend on
+# the date, which no pull request does: it fails the run on a row flaky in two runs of 14 days
+# that is not quarantined, and on an entry held longer than 14 days.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
-# the same of its own nightly). A change to either is proven before main by ci.yaml's
-# dispatch-browser job: the pull-request lane on the pull request that makes it, and the full
-# lane in the merge group that lands it. It runs here only once it is on main.
+# the same of its own nightly). A change to either is proven before main by ci.yaml's two
+# callers of it: the pull-request lane on the pull request that makes it, and the full lane in the
+# merge group that lands it. It runs here only once it is on main.
 
 on:
   schedule:
@@ -73,15 +74,21 @@ jobs:
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
   # `ci-ok-changes`, so that step does not run and this workflow posts no check.
   #
+  # The job carries the id of ci.yaml's full-lane caller and passes it as `job`, so its jobs are
+  # named `dispatch-browser / <job>` and its artifacts carry the names that caller's do:
+  # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
+  # name `dispatch-browser-report-1`.
+  #
   # `quarantine: true` is this call's alone: the quarantined rows run in dispatch-browser.yaml's
   # `quarantine` job, which gates nothing, so their owner sees on main's tip whether a fix worked.
-  full:
+  dispatch-browser:
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+      job: dispatch-browser
       quarantine: true
   # why: .github/ci-notes/dispatch-browser-nightly.md#the-quarantine-check-what-it-reads-and-when-it-runs
   quarantine-check:
@@ -138,11 +145,11 @@ jobs:
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
   #
-  # Both crons start this job and the `full` one, since a schedule starts a workflow and not a
-  # job, so the 13:41 run also runs the full lane; the quarantine check's `if:` keeps it to the
-  # 02:17 one. That is a second full lane a day on a repository whose nightly is one, which is
-  # the price of keeping this job dispatchable before its own merge; it is the same eight runners
-  # for the same ten minutes, and `concurrency` keeps it from overlapping the 02:17 run.
+  # Both crons start this job and the `dispatch-browser` one, since a schedule starts a workflow
+  # and not a job, so the 13:41 run also runs the full lane; the quarantine check's `if:` keeps it
+  # to the 02:17 one. That is a second full lane a day on a repository whose nightly is one, which
+  # is the price of keeping this job dispatchable before its own merge; it is the same eight
+  # runners for the same ten minutes, and `concurrency` keeps it from overlapping the 02:17 run.
   #
   # The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

@@ -84,11 +84,31 @@ export const flakyRunsToQuarantine = 2;
 
 /** The runs whose flaky rows count, each with the workflow that holds them and the name of its
  *  merge job's check run: a called workflow's job is named `<the caller's job> / <its job>`, and
- *  the nightly calls dispatch-browser.yaml from its `full` job, ci.yaml from `dispatch-browser`. */
+ *  ci.yaml calls dispatch-browser.yaml from `dispatch-browser`. The nightly has called it from a
+ *  job of that id too since cybermonklabs/legion#5175 landed on main (4a3eb021, created
+ *  2026-11-23T21:37:21Z), and from `full` before it. A scheduled run runs main's copy of the
+ *  workflow as it stood when the run was created, so a nightly run created before that moment
+ *  named its merge job `full / merge`, and `before` reads such a run under that name: each run is
+ *  read under the one name it carries (`mergeJobOf`). The old name matters while a run created
+ *  before the rename is inside the `windowDays` window read back from now, which is until
+ *  2026-12-07T21:37:21Z; `before` can be deleted after that. */
 export const countedRuns = [
-  { event: "schedule", mergeJob: "full / merge", workflow: "dispatch-browser-nightly.yaml" },
+  {
+    before: { at: "2026-11-23T21:37:21Z", mergeJob: "full / merge" },
+    event: "schedule",
+    mergeJob: "dispatch-browser / merge",
+    workflow: "dispatch-browser-nightly.yaml",
+  },
   { event: "merge_group", mergeJob: "dispatch-browser / merge", workflow: "ci.yaml" },
 ] as const;
+
+/** The name of the merge job's check run of the run of `counted` created at `createdAt`:
+ *  `counted.before`'s for a run created before its moment, `counted.mergeJob` otherwise. */
+export function mergeJobOf(counted: (typeof countedRuns)[number], createdAt: string): string {
+  return "before" in counted && Date.parse(createdAt) < Date.parse(counted.before.at)
+    ? counted.before.mergeJob
+    : counted.mergeJob;
+}
 
 /** What one run's merge jobs said. */
 export interface RunReading {
@@ -1061,8 +1081,9 @@ async function readSuites(
  *  runs are then taken a day at a time, oldest first, which is the order its readings keep.
  *
  *  Each run's merge jobs are read from its check suite through GraphQL, `suitesPerCall` suites a
- *  call (`readSuites`): on 2026-11-22 at 03:15Z, from this issue's pod, this read 1,195 runs in 34
- *  REST calls and 13 GraphQL calls costing 132 points. */
+ *  call (`readSuites`), each call under one name of the merge job's check run, the name its runs
+ *  carry (`mergeJobOf`): on 2026-11-22 at 03:15Z, from this issue's pod, this read 1,195 runs in
+ *  34 REST calls and 13 GraphQL calls costing 132 points. */
 export async function readHistory(
   github: GitHub,
   repository: string,
@@ -1095,16 +1116,26 @@ export async function readHistory(
       for (const run of listed[index]) runs.set(run.id, run);
     });
     const ordered = [...runs.values()];
-    const batches = Array.from({ length: Math.ceil(ordered.length / suitesPerCall) }, (_, index) =>
-      ordered.slice(index * suitesPerCall, (index + 1) * suitesPerCall)
+    const named = new Map<string, ListedRun[]>();
+    for (const run of ordered) {
+      const name = mergeJobOf(counted, run.created_at);
+      const group = named.get(name);
+      if (group === undefined) named.set(name, [run]);
+      else group.push(run);
+    }
+    const batches = [...named].flatMap(([name, group]) =>
+      Array.from({ length: Math.ceil(group.length / suitesPerCall) }, (_, index) => ({
+        group: group.slice(index * suitesPerCall, (index + 1) * suitesPerCall),
+        name,
+      }))
     );
     const suites = new Map(
       (
-        await inTurn(batches, 4, (batch) =>
+        await inTurn(batches, 4, ({ group, name }) =>
           readSuites(
             github,
-            batch.map((run) => run.check_suite_node_id),
-            counted.mergeJob
+            group.map((run) => run.check_suite_node_id),
+            name
           )
         )
       ).flatMap((read) => [...read])

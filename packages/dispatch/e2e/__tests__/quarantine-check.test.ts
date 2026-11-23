@@ -27,6 +27,7 @@ import {
   gitHub,
   type Holds,
   lastChange,
+  mergeJobOf,
   pairKey,
   type RowChange,
   type RunReading,
@@ -471,6 +472,9 @@ interface StoodRun {
     readonly check_suite_node_id: string;
   };
   readonly checkRuns: readonly { readonly id: string; readonly annotations: readonly Note[] }[];
+  /** The name its merge job's check run carries: the name `mergeJobOf` gives for its creation
+   *  where this is absent. */
+  readonly mergeJob?: string;
 }
 
 /** An answer the stand-in gives in place of the one asked for. */
@@ -500,8 +504,10 @@ function gitHubStandIn(
   compares: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {}
 ) {
   const seen: { at: number; path: string; variables?: Record<string, unknown> }[] = [];
-  const mergeJob = (workflow: string) =>
-    countedRuns.find((counted) => counted.workflow === workflow)?.mergeJob;
+  const mergeJob = (run: StoodRun) => {
+    const counted = countedRuns.find((each) => each.workflow === run.workflow);
+    return run.mergeJob ?? (counted && mergeJobOf(counted, run.run.created_at));
+  };
   const page = <Node>(nodes: readonly Node[], from: number, size: number) => ({
     nodes: nodes.slice(from, from + size),
     pageInfo: {
@@ -510,7 +516,7 @@ function gitHubStandIn(
     },
   });
   const checkRunsOf = (run: StoodRun, checkName: unknown) =>
-    (mergeJob(run.workflow) === checkName ? run.checkRuns : []).map((checkRun) => ({
+    (mergeJob(run) === checkName ? run.checkRuns : []).map((checkRun) => ({
       annotations: page(checkRun.annotations, 0, annotationsPerPage),
       id: checkRun.id,
     }));
@@ -853,6 +859,45 @@ test("a reading costs the listings and a GraphQL call per hundred runs of a work
       .filter((request) => request.path === "/graphql")
       .map((request) => (request.variables?.ids as unknown[]).length);
     expect(batches.sort((a, b) => a - b)).toEqual([3, 50, 100, 100]);
+  } finally {
+    server.stop();
+  }
+});
+
+// The nightly's merge job was `full / merge` until cybermonklabs/legion#5175 gave its calling
+// job ci.yaml's id, `dispatch-browser` (countedRuns' `before`). One window holds a run of each
+// side of that moment, and each run's flaky row is read under the name its merge job carries: a
+// reading that asked one name of both runs would read one of the two rows and lose the other.
+test("a nightly run is read under the merge job name it carries, on either side of the rename", async () => {
+  const nightly = "dispatch-browser-nightly.yaml";
+  const before = flakyRow("a.e2e.ts:1 [chromium] in a run before the rename");
+  const after = flakyRow("b.e2e.ts:2 [chromium] in a run after the rename");
+  const server = gitHubStandIn([
+    {
+      ...stoodRun(nightly, 31, new Date("2026-11-23T02:17:30Z"), [[before]]),
+      mergeJob: "full / merge",
+    },
+    {
+      ...stoodRun(nightly, 32, new Date("2026-11-24T02:17:30Z"), [[after]]),
+      mergeJob: "dispatch-browser / merge",
+    },
+  ]);
+  try {
+    const readings = await readHistory(
+      gitHub(server.url, "t"),
+      repository,
+      new Date("2026-11-25T02:17:00Z")
+    );
+    expect(readings.map(({ event, flakyRows, id }) => ({ event, flakyRows, id }))).toEqual([
+      { event: "schedule", flakyRows: [before.message], id: 31 },
+      { event: "schedule", flakyRows: [after.message], id: 32 },
+    ]);
+    expect(
+      server.seen
+        .filter((request) => request.path === "/graphql")
+        .map((request) => `${request.variables?.checkName} ${request.variables?.ids}`)
+        .sort()
+    ).toEqual(["dispatch-browser / merge CS_32", "full / merge CS_31"]);
   } finally {
     server.stop();
   }
