@@ -622,6 +622,59 @@ test("a reply that reads another installed skill is answered from its installed 
   });
 });
 
+/** acme/tools' alpha, a copy of another source that shares the case skill's name. */
+const TOOLS_ALPHA_MD =
+  "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
+
+// Catches: a none run's read of the case skill's name answered with Oh My Pi's unknown-skill text
+// where the arm lists another source's copy under that name, which Oh My Pi reads instead.
+test("in none, a reply's skill:// read of the case's skill is answered from the copy of another source the profile lists under its name, and with the unknown-skill text where it lists none", async () => {
+  const tools = path.join(scratch, `tools-alpha-${Math.random()}`);
+  mkdirSync(tools, { recursive: true });
+  writeFileSync(path.join(tools, "SKILL.md"), TOOLS_ALPHA_MD);
+  const copies = [...betaCopy(), { name: "alpha", dir: tools }];
+  const relisted: Arm = {
+    ...noneArm(),
+    profileSkills: [
+      ...PROFILE_SKILLS.filter((skill) => skill.name !== "alpha"),
+      { repo: "acme/tools", commit: "0123456789abcdef", path: "skills/alpha", name: "alpha" },
+    ],
+    relisted: [{ from: "tools/alpha", to: "alpha" }],
+  };
+  const read = readCall("toolu_alpha", "skill://alpha");
+  const listed = scripted([[read], [ACT]]);
+  const answered = await replayOnce({ ...BODY, stream: false }, relisted, listed.gateway, {
+    copies,
+  });
+  expect(listed.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_alpha",
+        `[Skill file: ${INSTALLED}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
+        false
+      ),
+    ],
+  });
+  expect(answered.reads).toEqual([
+    [{ skill: "alpha", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+  ]);
+  expect(JSON.stringify(listed.bodies)).not.toContain(tools);
+
+  // A none that lists no copy under the name: Oh My Pi's answer to a skill it lacks.
+  const unlisted = scripted([[read], [ACT]]);
+  const absent = await replayOnce({ ...BODY, stream: false }, noneArm(), unlisted.gateway, {
+    copies,
+  });
+  expect(unlisted.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [toolResult("toolu_alpha", "Unknown skill: alpha\nAvailable: beta", true)],
+  });
+  expect(absent.reads).toEqual([
+    [{ skill: "alpha", file: "SKILL.md", by: "skill", from: "absent", isError: true }],
+  ]);
+});
+
 // Catches: a whole read by path of another installed skill's SKILL.md taken for the judged step.
 test("a whole read by path of another installed skill's SKILL.md is answered from its copy in Oh My Pi's form of a read by path; a file its copy lacks is not answered", async () => {
   const copies = betaCopy();

@@ -430,7 +430,10 @@ test("a second copy of a name whose text differs goes in a skills directory of i
   expect(built.skills[2]?.description).toBe("Use for the tools' own beta.");
 });
 
-test("each copy of the case's skill's source, a namespaced one at another commit too, is the arm's directory, and a copy of another source that shares the name is its repository's in every arm; none installs neither copy of the source", async () => {
+// Catches: a none arm that lists another source's copy under the case skill's name taken for the
+// arm's own copy (cases.ts's testedCopy finds the copy listed under the name), so its context
+// refused it as an arm with no skill; or that copy left in its namespace's directory.
+test("each copy of the case's skill's source, a namespaced one at another commit too, is the arm's directory, and a copy of another source that shares the name is its repository's in every arm; none installs neither copy of the source, and installs the other source's copy from its repository under the bare name it lists it under", async () => {
   const root = path.join(dir, "tested-copies");
   const c = aCase("devbox", {});
   c.profile.skills.push(
@@ -466,8 +469,17 @@ test("each copy of the case's skill's source, a namespaced one at another commit
     root
   );
   const without = await buildContext(c, none, options);
-  expect(without.skills.map((skill) => skill.name)).toEqual(["beta", "tools/alpha"]);
-  expect(readFileSync(namespaced("tools"), "utf8")).toBe(tools);
+  expect(without.skills.map((skill) => skill.name)).toEqual(["beta", "alpha"]);
+  expect(readFileSync(path.join(without.skillsDir, "alpha", "SKILL.md"), "utf8")).toBe(tools);
+  expect(without.namespacedDirs).toEqual([]);
+  expect(existsSync(namespaced("tools"))).toBe(false);
+  expect(without.record.skills.find((skill) => skill.name === "alpha")?.from).toEqual({
+    repo: "acme/tools",
+    commit: COMMIT,
+    path: "skills/alpha",
+    key: cacheKey("acme/tools", COMMIT, "skills/alpha"),
+  });
+  expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
 });
 
 test("a devbox profile's user-level .claude/CLAUDE.md (user: true) goes in the Claude Code config directory, and the root CLAUDE.md or AGENTS.md of its session's repository in the working directory; two user-level files are refused", async () => {

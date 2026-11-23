@@ -59,7 +59,9 @@ export function testedSource(
 /** Which of `skills` are copies of the source of the tested skill `name`: the repository and path
  *  (at any commit, under any namespace) of the copy listed under `name` itself (`testedSource`).
  *  An arm gives each of them its own text (`none` leaves each out); a copy of another source that
- *  shares the name stays as the profile has it. With no copy listed under `name`, none is. */
+ *  shares the name stays as the profile has it in every arm but `none`, which lists one such copy
+ *  under the bare name where no copy left holds that name bare (arms.ts's `Arm.relisted`). With
+ *  no copy listed under `name`, none is. */
 export function testedCopy(
   skills: readonly ProfileSkill[],
   name: string

@@ -6,10 +6,11 @@
  *
  * - `skills/`: the arm's installed skills (`arm.profileSkills`), one directory each under its
  *   name. Each copy of the case's skill's source (cases.ts's `testedCopy`) comes from the arm's
- *   own directory; every other skill is its repository's directory at its commit, read through
- *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A skill directory
- *   the repository holds as a symbolic link is read at the directory the link names in the
- *   repository (`skillReadDir`), and one whose link leads out of the repository, or to no
+ *   own directory, and none does in an arm with no skill directory (`none`; arms.ts's
+ *   `installedFromArm`); every other skill is its repository's directory at its commit, read
+ *   through `source` and kept under the cache (`skills/<key of repo, commit, path>`). A skill
+ *   directory the repository holds as a symbolic link is read at the directory the link names in
+ *   the repository (`skillReadDir`), and one whose link leads out of the repository, or to no
  *   directory of it, is an UnreadableDirectory naming the case, the link and its target. A
  *   second copy of a name, whose text differs (a profile skill's `namespace`), goes in
  *   `namespaced/<namespace>/skills/<name>`, one more skills directory of its own
@@ -107,8 +108,8 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { type Arm, type InstalledCopy, legionStore } from "./arms";
-import { type Case, listedName, type ProfileSkill, testedCopy } from "./cases";
+import { type Arm, type InstalledCopy, installedFromArm, legionStore } from "./arms";
+import { type Case, listedName, type ProfileSkill } from "./cases";
 import {
   eachChunk,
   firstLine,
@@ -2110,8 +2111,10 @@ export async function buildContext(
   mkdirSync(workspace, { recursive: true });
 
   // Each copy of the case's skill's source, under its own name or a namespace, is the arm's
-  // directory (cases.ts's `testedCopy`); every other skill is its repository's.
-  const tested = testedCopy(arm.profileSkills, arm.skill);
+  // directory (arms.ts's `installedFromArm`); every other skill is its repository's. An arm with
+  // no skill directory (`none`) installs no copy from it: a copy it lists under the case's skill's
+  // name is another source's (arms.ts's `Arm.relisted`).
+  const tested = installedFromArm(arm);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
   // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own. Each is read
   // at the directory `skillReadDir` gives, kept by its cache key: its own, or the one its link

@@ -15,16 +15,19 @@
  * file the arm lacks, or, in `none`, which installs no copy of the skill, Oh My Pi's unknown-skill
  * result; `pathFile` for a read by path: Oh My Pi's result for that path, its hashline line
  * naming the file under the directory the case's reads of the copy show, or its not-found result
- * for the path as read). Each read of another skill is answered from that skill's installed copy
- * (`ReplayOptions.copies`, context.ts's `installedCopies` of the arm's capture's record), the same
- * text in every arm, and a read of a skill the arm does not install gets Oh My Pi's unknown-skill
- * result. The answers go in the form Oh My Pi sends a tool result in the body's API, and the body
- * goes again with the reply and the answers added; at most `maxSkillRounds` times
- * (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's message and its answers as one
- * user message of `tool_result` blocks (F2); a Responses reply's output items go back as they came
- * (its reasoning items' encrypted content included), and after all of them, in the order of the
- * reply's calls, one `function_call_output` item per call holding the answer's text (F8: the
- * Responses API takes no error flag, and Oh My Pi sends none).
+ * for the path as read). In `none`, a `skill://` read of the case's skill is answered from the
+ * copy of another source the profile lists under the skill's name instead, where it lists one
+ * (arms.ts's `caseNameCopy`), as a read of another skill is. Each read of another skill is
+ * answered from that skill's installed copy (`ReplayOptions.copies`, context.ts's
+ * `installedCopies` of the arm's capture's record), the same text in every arm, and a read of a
+ * skill the arm does not install gets Oh My Pi's unknown-skill result. The answers go in the form
+ * Oh My Pi sends a tool result in the body's API, and the body goes again with the reply and the
+ * answers added; at most `maxSkillRounds` times (MAX_SKILL_ROUNDS). A Messages reply goes back as
+ * the assistant's message and its answers as one user message of `tool_result` blocks (F2); a
+ * Responses reply's output items go back as they came (its reasoning items' encrypted content
+ * included), and after all of them, in the order of the reply's calls, one `function_call_output`
+ * item per call holding the answer's text (F8: the Responses API takes no error flag, and Oh My
+ * Pi sends none).
  *
  * The first reply that holds no tool call, or any tool call that reads no skill file (a read of
  * another path on disk, a read of a directory of a skill, a read with a selector, a read by path
@@ -67,6 +70,7 @@ import { z } from "zod";
 import {
   type Arm,
   type ArmName,
+  caseNameCopy,
   type InstalledCopy,
   otherSkillRead,
   pathFile,
@@ -174,10 +178,11 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
 /** One read an answered round answered: the skill (the name the profile lists it under, or the
  *  name a `skill://` URL gives a skill the profile does not list), the file inside its directory,
  *  how it was read (`skill` for a `skill://` URL, `path` for a whole read by path), where the
- *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy;
- *  `absent`, Oh My Pi's unknown-skill or not-found result where the arm installs no copy of the
- *  skill: every read of the case's skill in `none`), and whether the answer is an error. A run
- *  record keeps each as it is (cli.ts's runs, load.ts's replies). */
+ *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy, or
+ *  in `none` the copy of another source listed under the case's skill's name; `absent`, Oh My
+ *  Pi's unknown-skill or not-found result where the arm installs no copy of the skill: every
+ *  other read of the case's skill in `none`), and whether the answer is an error. A run record
+ *  keeps each as it is (cli.ts's runs, load.ts's replies). */
 export const AnsweredRead = z.strictObject({
   skill: z.string(),
   file: z.string(),
@@ -244,9 +249,12 @@ export interface SkillRead {
 }
 
 /** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
- *  (see the file's header). A read of a directory of the case's skill is none: Oh My Pi answers it
- *  with a listing, which the arm does not rebuild; nor is a read by path that `pathFile` does not
- *  answer, nor one `otherSkillRead` does not. */
+ *  (see the file's header). In an arm with no skill directory whose profile lists a copy of
+ *  another source under the case's skill's name (arms.ts's `caseNameCopy`), a `skill://` read of
+ *  the case's skill is a read of that copy, which `otherSkillRead` answers. A read of a directory
+ *  of the case's skill is none: Oh My Pi answers it with a listing, which the arm does not
+ *  rebuild; nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead` does
+ *  not. */
 function skillRead(
   id: string,
   target: string,
@@ -254,7 +262,7 @@ function skillRead(
   copies: readonly InstalledCopy[]
 ): SkillRead | undefined {
   const from = arm.skillDir === undefined ? "absent" : "arm";
-  const file = skillReadFile(arm.skill, target);
+  const file = caseNameCopy(arm) === undefined ? skillReadFile(arm.skill, target) : undefined;
   if (file !== undefined) {
     if (arm.skillDir !== undefined) {
       const stats = statSync(path.resolve(arm.skillDir, file), { throwIfNoEntry: false });

@@ -17,6 +17,7 @@ import {
   type Capture,
   type CaptureOptions,
   captureBody,
+  extensionErrors,
   type HintWriter,
   listingOf,
   NEUTRAL_CLAUDE_CONFIG_DIR,
@@ -1012,6 +1013,76 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           leftOut: [],
         });
       }
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a none capture of a recording that lists the skill and another source's copy of its
+  // name as <namespace>/<name>, where Oh My Pi lists that copy bare once the tested copy is gone:
+  // the capture owed no hint of the bare name, refused Oh My Pi's request for it, and failed; or
+  // sent the <namespace>/<name> line, which Oh My Pi no longer lists.
+  test(
+    "a subagent case whose recording lists the skill and another source's copy of its name as <namespace>/<name> sends one line of the name in none, under that copy's hint, and no <namespace>/<name> line",
+    async () => {
+      await captures();
+      writeTree(path.join(dir, "repos/acme/tools", COMMIT), {
+        "skills/alpha/SKILL.md":
+          "---\nname: alpha\ndescription: Use for the tools' own alpha list of the made-up project.\n---\n\n# Alpha of tools\n\nOne line.\n",
+      });
+      // The recording lists tools/alpha after beta, as Oh My Pi sorts a listing by name.
+      const toolsLine = "- tools/alpha: Use for the tools' own alpha list, as recorded.";
+      const recorded = SUBAGENT_PROMPT.map((block) =>
+        block.replace(/^(- beta: .*)$/m, `$1\n${toolsLine}`)
+      );
+      expect([...listingOf(recorded).keys()]).toEqual(["alpha", "beta", "tools/alpha"]);
+      const base = f1Case("subagent-relisted");
+      const c: Case = {
+        ...base,
+        context: "subagent:task",
+        profile: {
+          ...base.profile,
+          skills: [
+            ...base.profile.skills,
+            {
+              repo: "acme/tools",
+              commit: COMMIT,
+              path: "skills/alpha",
+              name: "alpha",
+              namespace: "tools",
+            },
+          ],
+          contextFiles: [],
+          systemPrompt: recorded,
+          tools: SUBAGENT_TOOLS,
+        },
+      };
+      const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+      const none = buildArm(c, "none", dirs, path.join(dir, "arms-relisted"));
+      const { body, record } = await captureBody(c, none, {
+        omp: binary(),
+        outDir: path.join(dir, "out"),
+        scratchDir: path.join(dir, "scratch"),
+        cacheDir: path.join(dir, "cache"),
+        source: localSource(path.join(dir, "repos")),
+        models: path.join(dir, "models.yml"),
+        hints,
+        session: SESSION,
+      });
+      // acme/tools' alpha is listed under the bare name, and its hint was written for that name.
+      expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
+      expect(record.context.skills.map((skill) => skill.name)).toEqual(["beta", "delta", "alpha"]);
+      expect(record.hintCalls.map((call) => call.skill)).toEqual(["alpha"]);
+      const hint = record.hints.find((each) => each.skill === "alpha")?.hint;
+      expect(hint).toStartWith("Use for the alpha work, stand-in hint ");
+      // One line of alpha, under that hint, where the recording's alpha line was; no tools/alpha.
+      const sent = systemBlocks(body);
+      const alphaLines = sent
+        .flatMap((block) => block.split("\n"))
+        .filter((line) => /^- (tools\/)?alpha: /.test(line));
+      expect(alphaLines).toEqual([`- alpha: ${hint}`]);
+      expect(sent).toEqual(armPromptBlocks(SUBAGENT_PROMPT, "alpha", hint).blocks);
+      expect(record.recordedPrompt?.line).toBe("replaced");
+      expect(record.extensionErrors).toEqual([]);
     },
     ROW_TIMEOUT_MS
   );
@@ -2442,5 +2513,20 @@ test("each plugin tool left out is named with the reason its plugin was left out
   expect(tools.leftOut).toEqual([
     "pi-a: its package.json does not parse: Unexpected token",
     "pi-b: it could not be installed: a plugin named pi-b is installed already",
+  ]);
+});
+
+// Catches: the directory Oh My Pi writes a refused request into (`logs/http-400-requests/`) read
+// as a log file, which threw EISDIR and failed the capture after its turn was recorded.
+test("extensionErrors reads the log files directly under the profile's logs, passes over a directory there, and keeps each line on an extension that failed to load", () => {
+  const profileDir = path.join(dir, "logs-with-directory");
+  const failed = '{"level":"error","message":"Failed to load extension","path":"/plugins/pi-a"}';
+  writeTree(path.join(profileDir, "logs"), {
+    "omp.2026-11-20.log": `{"level":"info","message":"started"}\n${failed}\n`,
+    "http-400-requests/req-1.json": '{"status":400,"body":"refused by the stand-in"}\n',
+  });
+  expect(extensionErrors(profileDir, "pi-b: extension failed to load\nanother line\n")).toEqual([
+    "pi-b: extension failed to load",
+    failed,
   ]);
 });

@@ -222,7 +222,15 @@ test("none removes each read call of the skill and its result, and leaves the sk
   ]);
 });
 
-test("none leaves out every copy of the skill's source, a namespaced one too, and keeps a copy of another source that shares the name; each other arm keeps them all", () => {
+/** acme/tools' alpha, a copy of another source that shares the case skill's name, as the cache
+ *  holds the copy a capture installed. */
+const TOOLS_ALPHA =
+  "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
+
+// Catches: none listing another source's copy of the name as `<namespace>/<name>`, which Oh My Pi
+// lists bare once the tested copy is gone, so a capture refused the body; and a `skill://` read of
+// the name in none answered as a skill Oh My Pi does not have, though it resolves to that copy.
+test("none leaves out every copy of the skill's source, a namespaced one too, and lists a copy of another source that shares the name under the bare name, which answers a skill:// read of it; each other arm keeps them all as the profile has them", () => {
   const twice = structuredClone(f1Case);
   twice.profile.skills.push(
     // acme/skills' alpha again at another commit, which Oh My Pi lists as pack/alpha.
@@ -233,7 +241,7 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
       name: "alpha",
       namespace: "pack",
     },
-    // Another repository's alpha, listed as tools/alpha.
+    // Another repository's alpha, listed as tools/alpha beside the tested copy.
     {
       repo: "acme/tools",
       commit: "0123456789abcdef",
@@ -246,16 +254,70 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
   const none = buildArm(twice, "none", dirs, path.join(scratch, "twice"));
   expect(
     none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
-  ).toEqual(["acme/skills /beta", "acme/tools tools/alpha"]);
-  // Its not-found answer lists the names Oh My Pi lists.
-  expect(skillFile(none, "SKILL.md").text).toBe(
-    "Unknown skill: alpha\nAvailable: beta, tools/alpha"
+  ).toEqual(["acme/skills /beta", "acme/tools /alpha"]);
+  expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
+  // A skill://alpha read is answered from acme/tools' installed copy, at the directory beside
+  // the case's other skills, as a read of another listed skill is.
+  const copies = [
+    { name: "alpha", dir: skillDir("cache-tools-alpha", { "SKILL.md": TOOLS_ALPHA }) },
+  ];
+  const shown = path.join(path.dirname(INSTALLED), "alpha");
+  expect(otherSkillRead(none, copies, "skill://alpha")).toEqual({
+    skill: "alpha",
+    file: "SKILL.md",
+    by: "skill",
+    from: "copy",
+    text: `[Skill file: ${shown}/SKILL.md]\n${TOOLS_ALPHA.replace(/\n$/, "")}`,
+    isError: false,
+  });
+  expect(otherSkillRead(none, copies, "skill://alpha/references/x.md")).toMatchObject({
+    from: "copy",
+    text: `File not found: ${shown}/references/x.md`,
+    isError: true,
+  });
+  // Its unknown-skill answer lists the names Oh My Pi lists.
+  expect(otherSkillRead(none, copies, "skill://gamma")?.text).toBe(
+    "Unknown skill: gamma\nAvailable: beta, alpha"
   );
   for (const name of ["old", "new", "minus", "twin"] as const) {
-    expect(buildArm(twice, name, dirs, path.join(scratch, "twice")).profileSkills).toEqual(
-      twice.profile.skills
-    );
+    const each = buildArm(twice, name, dirs, path.join(scratch, "twice"));
+    expect(each.profileSkills).toEqual(twice.profile.skills);
+    expect(each.relisted).toBeUndefined();
+    // A read of the case's skill is the arm's own, which no other skill answers.
+    expect(otherSkillRead(each, copies, "skill://alpha")).toBeUndefined();
   }
+});
+
+// Catches: none listing bare the first copy of the name in profile order, where Oh My Pi lists
+// bare the copy in the namespace directory it reads first, so the listing names another copy.
+test("of two copies of other sources under two namespaces, none lists bare the one whose namespace's directory Oh My Pi reads first, the order of each namespace's first copy, and the other keeps its namespace", () => {
+  const kit = { repo: "acme/kit", commit: "0123456789abcdef" };
+  const c = structuredClone(f1Case);
+  c.profile.skills.push(
+    // kit's first copy, so the capture gives Oh My Pi kit's directory before tools'.
+    { ...kit, path: "skills/beta", name: "beta", namespace: "kit" },
+    // First in profile order of the two alpha copies, in the directory Oh My Pi reads second.
+    {
+      repo: "acme/tools",
+      commit: "0123456789abcdef",
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "tools",
+    },
+    { ...kit, path: "skills/alpha", name: "alpha", namespace: "kit" }
+  );
+  const none = buildArm(c, "none", { old: oldDir, new: newDir }, path.join(scratch, "two-ns"));
+  expect(
+    none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
+  ).toEqual([
+    "acme/skills /beta",
+    "acme/kit kit/beta",
+    "acme/tools tools/alpha",
+    "acme/kit /alpha",
+  ]);
+  expect(none.relisted).toEqual([{ from: "kit/alpha", to: "alpha" }]);
+  // The case's profile is as it was.
+  expect(c.profile.skills.at(-1)?.namespace).toBe("kit");
 });
 
 test("minus removes the case's line, or the planted line when one is given", () => {

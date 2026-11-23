@@ -103,14 +103,19 @@
  * **A recorded prompt.** A subagent's case carries the system prompt and tools its session
  * recorded (`profile.systemPrompt`, `profile.tools`), and its capture sends those blocks in place
  * of the prompt Oh My Pi builds: the replay hook's `before_agent_start` handler returns them
- * (`SKILL_CUTS_SYSTEM_PROMPT`), with only the case skill's line of the recorded skill listing
- * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the arm's hint, written and cached as above,
- * or its recorded line where one applies, where the arm lists the skill, and the line removed
- * where it does not (`none`, or an arm whose text hides the skill). A recording that does not
- * list the skill is sent as recorded in every arm. `--tools` restricts Oh My Pi's tools to the
- * recorded names. The body's system prompt must be those blocks byte for byte, or the capture is
- * refused; a recorded tool the body does not define, or one it defines beyond them, is kept in
- * the record (`tools`).
+ * (`SKILL_CUTS_SYSTEM_PROMPT`), with the case skill's line of the recorded skill listing
+ * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the hint of the skill the arm lists under
+ * that name, written and cached as above, or its recorded line where one applies, where the arm
+ * lists one, and the line removed where it does not (`none`, or an arm whose text hides the
+ * skill). An arm that lists a copy under its bare name in place of `<namespace>/<name>` (arms.ts's
+ * `Arm.relisted`: `none`, once the tested copy of that name is gone) also leaves out the recorded
+ * line of `<namespace>/<name>`, as Oh My Pi lists that copy under the bare name alone; where that
+ * name is the case skill's, the case skill's line is that copy's hint, in the recorded line's
+ * place, which is where Oh My Pi's listing, sorted by name, puts it. Every other byte is sent as
+ * recorded. `--tools` restricts Oh My Pi's tools to the recorded names.
+ * The body's system prompt must be those blocks byte for byte, or the capture is refused; a
+ * recorded tool the body does not define, or one it defines beyond them, is kept in the record
+ * (`tools`).
  *
  * **An injected skill.** A skill that reaches the session other than by its listing line and its
  * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
@@ -859,6 +864,16 @@ export function renamedListingBlocks(
   return changedListingLine(blocks, from, (text) => `- ${to}: ${text}`) ?? [...blocks];
 }
 
+/** The recorded system prompt `blocks` less the first `<skills>` listing line of each name of
+ *  `names`, every other byte as recorded. An arm that lists a copy under its bare name in place of
+ *  `<namespace>/<name>` (arms.ts's `Arm.relisted`) sends its recording less the line of
+ *  `<namespace>/<name>`, as Oh My Pi lists that copy under the bare name alone. */
+function withoutListingLines(blocks: readonly string[], names: readonly string[]): string[] {
+  let kept = [...blocks];
+  for (const name of names) kept = changedListingLine(kept, name, () => undefined) ?? kept;
+  return kept;
+}
+
 // The harness-string rule: what a captured body shows of the session it stands for.
 
 /** The working directory a capture shows when the store holds neither the session's header
@@ -1480,13 +1495,15 @@ function writeProfile(
   );
 }
 
-/** Oh My Pi's lines on extensions that failed to load: from its log files under `profileDir`,
- *  and from `stderr`. */
-function extensionErrors(profileDir: string, stderr: string): string[] {
+/** Oh My Pi's lines on extensions that failed to load: from its log files, the files directly
+ *  under `<profileDir>/logs` (a directory there, such as the `http-400-requests/` Oh My Pi writes
+ *  a refused request into, is passed over), and from `stderr`. */
+export function extensionErrors(profileDir: string, stderr: string): string[] {
   const errors = stderr.split("\n").filter((line) => /extension.*fail|fail.*extension/i.test(line));
   const logs = path.join(profileDir, "logs");
-  for (const file of existsSync(logs) ? readdirSync(logs) : []) {
-    for (const line of readFileSync(path.join(logs, file), "utf8").split("\n")) {
+  for (const entry of existsSync(logs) ? readdirSync(logs, { withFileTypes: true }) : []) {
+    if (!entry.isFile()) continue;
+    for (const line of readFileSync(path.join(logs, entry.name), "utf8").split("\n")) {
       if (line.includes('"Failed to load extension"')) errors.push(line);
     }
   }
@@ -1978,12 +1995,16 @@ export async function captureBody(
       // My Pi stored, so Oh My Pi lists exactly that line.
       if (learned.length > 0) putDescriptions(database, learned);
     }
-    // A recorded prompt: its blocks with the case skill's listing line as this arm lists it.
+    // A recorded prompt: its blocks with the case skill's listing line as this arm lists it, less
+    // the line of each name the arm lists under its bare name in place of the recorded one.
     const recorded =
       c.profile.systemPrompt === undefined
         ? undefined
         : armPromptBlocks(
-            c.profile.systemPrompt,
+            withoutListingLines(
+              c.profile.systemPrompt,
+              (arm.relisted ?? []).map((each) => each.from)
+            ),
             c.skill,
             listedText(hints.find((entry) => entry.skill.name === c.skill))
           );

@@ -213,7 +213,9 @@ skill file is a `skill://` read of any skill, a whole read by path of the cut's 
 whole read by path of another skill the profile lists (a path that ends `/<name>/SKILL.md` or holds
 `skills/<name>/references/`, as `count.sql` places a read). The case's skill is answered from the
 arm; another listed skill from the copy its capture installed (`<cache-dir>/skills/<key>`), the
-same text in every arm; a skill the arm does not install (the case's skill in `none`, or a skill the
+same text in every arm; in `none`, a `skill://` read of the case's skill from the copy of another
+source that `none` lists under the skill's name (below), where it lists one, as another listed
+skill's; a skill the arm does not install (the case's skill in `none` otherwise, or a skill the
 profile does not list) with Oh My Pi's `Unknown skill: <name>` text, and the run goes on. The judged
 step is each answered round's read calls, without their results, then the first reply that holds
 another call or none, so a case whose line governs a read of a file of the skill is judged on that
@@ -836,10 +838,18 @@ name (cases.ts's `testedCopy`: the repository and path of the copy listed under 
 name, at any commit, under any namespace). Each arm installs its own text in every copy of that
 source, and `none` leaves out every one, so no arm keeps the old text readable at another path; a
 copy of another source that shares the name (listed as `<namespace>/<name>`) stays as the profile
-has it in every arm. A load task's profile leaves out every copy of the tested source, which the
-load test installs once under `--name`, and keeps the other sources' copies; load reads a
-namespaced skill as `<namespace>/<name>` in every name check, and refuses one on Claude Code,
-whose layout places skills by their bare name. A profile holds each copy once, since it reads a
+has it in every arm but `none`. Oh My Pi 18.18.6 lists a copy under its bare name once it finds no
+other copy of that name, so for each name that no copy left in `none` holds bare and some copy
+holds under a namespace, `none` lists under the bare name the copy whose namespace's skills
+directory Oh My Pi reads first (a capture gives Oh My Pi `skills/` first, then each namespace's
+directory in the order of its first copy in the profile); every other copy keeps its namespace.
+The arm records each name it changed (`relisted`). A `skill://<name>` read in `none` is then
+answered from that copy, and a subagent's recorded prompt in `none` sends the `<name>` line under
+that copy's hint and leaves out the `<namespace>/<name>` line. A load task's profile leaves out
+every copy of the tested source, which the load test installs once under `--name`, and keeps the
+other sources' copies; load reads a namespaced skill as `<namespace>/<name>` in every name check,
+and refuses one on Claude Code, whose layout places skills by their bare name. A profile holds
+each copy once, since it reads a
 repository at one commit: where the session's host had the tested source at a second install path
 too (Oh My Pi lists that one as `<namespace>/<name>` when its text there differs), the task's
 evidence says so (`held once`), and the listing measure counts such a recorded name missing.
@@ -1098,7 +1108,9 @@ session's
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's
-listing line changed per arm. Once a step is found, two more readers decide whether the case is
+listing line changed per arm (and, in a `none` that lists another source's copy under its bare
+name, that copy's `<namespace>/<name>` line left out). Once a step is found, two more readers
+decide whether the case is
 kept. The `restate` reader reads every message the case keeps before the step, back to its first
 and less the skill's own read results, whole (a long message in overlapping parts), in windows of
 at most 100,000 characters and at most 10 windows; a restatement of the line in any window drops
