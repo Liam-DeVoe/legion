@@ -2569,13 +2569,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// role's own for a claim named by its role, a keyed agent's first role's for a step of
 		// another role, whose own resources the launch needs too, and a name of its own for a
 		// second agent of one role (`implementer-2`). A start with no task of an agent the plan in
-		// force no longer names finishes without a wait (roleWaitsForItsPod).
-		if err := r.roleWaitsForItsPod(ctx, row, issue, token, payload.Role, payload.Task); err != nil {
-			if errors.Is(err, errAgentLeftItsPlan) {
+		// force no longer names finishes without a wait (agentLeftItsPlan).
+		if payload.Task == "" {
+			left, err := r.agentLeftItsPlan(ctx, issue.Key, token, payload.Role)
+			if err != nil {
+				return err
+			}
+			if left {
 				r.log.Info("outbox start with no task of an agent the plan in force names at no step, whose slot the issue's pod lacks; finished without acting",
 					"row", row.ID, "issue", issue.Key, "role", payload.Role, "claim", token)
 				return nil
 			}
+		}
+		if err := r.roleWaitsForItsPod(ctx, row, issue, token, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -4074,12 +4080,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // drift — the start creates the claim, whose launch builds the new pod with every slot. A runtime
 // with no pods answers nothing, and the start goes on as before.
 //
-// A start that carries no task (task), as re-admission's walk starts each stored claim, of an
-// agent the plan in force names at no step whose slot the pod lacks (agentLeftItsPlan) waits for
-// nothing: a pod drifts on its slots toward the agents of the plan in force alone, so no round
-// opens for that slot. It answers errAgentLeftItsPlan, and the start finishes without acting; the
-// claim stays where it stood, and the start of a step a later version gives that agent carries its
-// task, and waits for the round that version's drift opens.
+// Its caller finishes, before it asks this, a start that carries no task of an agent the plan in
+// force names at no step (agentLeftItsPlan): no round opens for that agent's slot.
 //
 // Under a deployment with no idle release (idleReleases false) main's rule never ends the wait,
 // and where no claim of the issue records a process in the pod (podRecorded) no update round
@@ -4092,7 +4094,7 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // between two waits replaces the last error, and the next wait that finds no process tells it
 // again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
 // suspension that holds the pod (releaseUnownedPod).
-func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, role claim.Role, task string) error {
+func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
@@ -4100,15 +4102,6 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	pod, lacking := podLacking(podRoles, issue.Key, token, role)
 	if lacking == "" {
 		return nil
-	}
-	if task == "" {
-		left, err := r.agentLeftItsPlan(ctx, podRoles, issue, token, role)
-		if err != nil {
-			return err
-		}
-		if left {
-			return errAgentLeftItsPlan
-		}
 	}
 	told := strings.HasPrefix(row.LastError, startWaitToldPrefix)
 	if !told && !r.idleReleases {
@@ -4132,42 +4125,36 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 		prefix, role, issue.Key, pod, lacking, runtime.ErrAwaitsPodUpdate)
 }
 
-// errAgentLeftItsPlan is roleWaitsForItsPod's answer for a start with no task of an agent the plan
-// in force names at no step, whose slot the issue's pod lacks: no round opens for that slot, so the
-// start finishes without acting rather than waiting.
-var errAgentLeftItsPlan = errors.New("the start carries no task, and the plan in force names its agent at no step")
-
-// agentLeftItsPlan is whether token's claim, on a step of role, is of an agent whose slot is a
-// name of its own rather than the step's role — the second agent of a role, `implementer-2`, or a
-// keyed agent named for another role — that the issue's live pod lacks and that the plan in force,
-// the plan rows of the issue's generation, names at no step (record.PlanStep.AgentName, the rule
-// the runtime's drift reads its slots by). An issue with no plan rows names no agent.
-func (r *outbox) agentLeftItsPlan(ctx context.Context, podRoles runtime.IssuePodRoles, issue record.Issue, token claim.Token, role claim.Role) (bool, error) {
+// agentLeftItsPlan is whether a start that carries no task, as re-admission's walk starts each
+// stored claim, is of an agent that the plan in force names at no step and whose slot the issue's
+// live pod lacks. Such a start waits for nothing: a pod drifts on its slots toward the agents of
+// the plan in force alone, so no update round opens for that slot (roleWaitsForItsPod), and the
+// start finishes without acting. The claim stays where it stood, and the start of a step a later
+// version gives that agent carries its task, and waits for the round that version's drift opens.
+//
+// Only an agent whose slot is a name of its own rather than the step's role can be such an agent:
+// the second agent of a role, `implementer-2`, or a keyed agent named for another role. The plan's
+// agents are read as the runtime's drift reads its slots, by the one reader of them
+// (store.Store.PlanAgents); an issue with no plan rows names no agent. A runtime with no pods
+// answers false.
+func (r *outbox) agentLeftItsPlan(ctx context.Context, issue string, token claim.Token, role claim.Role) (bool, error) {
+	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
+	if !ok {
+		return false, nil
+	}
 	_, agent, ok := token.Cut()
 	if !ok || string(agent) == string(role) {
 		return false, nil
 	}
-	if _, lacks := podRoles.PodLacksSlot(issue.Key, token); !lacks {
+	if _, lacks := podRoles.PodLacksSlot(issue, token); !lacks {
 		return false, nil
 	}
-	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		stored, err = r.records.Plan(ctx, tx, issue.Key, issue.Generation)
-		return err
-	}); err != nil {
-		return false, fmt.Errorf("read the plan of %s for the start of %s: %w", issue.Key, token, err)
+	agents, err := r.supervisor.store.PlanAgents(ctx, r.project, issue)
+	if err != nil {
+		return false, fmt.Errorf("the start of %s: %w", token, err)
 	}
-	if stored != nil {
-		for _, steps := range stored.Steps {
-			for _, step := range steps {
-				if step.AgentName() == agent {
-					return false, nil
-				}
-			}
-		}
-	}
-	return true, nil
+	_, named := agents[agent]
+	return !named, nil
 }
 
 // podLacking is what the issue's live pod lacks of a start whose claim is token's, on a step of
