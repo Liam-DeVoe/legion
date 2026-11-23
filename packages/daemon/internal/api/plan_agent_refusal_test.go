@@ -44,6 +44,6 @@ func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
 		t.Fatalf("register version 1 = %d %s, want 200", recorder.Code, recorder.Body)
 	}
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), PlanReason{Task: "a",
-		Reason: "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer of its role from an earlier version; " +
+		Reason: "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer, which this step's agent would take, from an earlier version; " +
 			"this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."})
 }

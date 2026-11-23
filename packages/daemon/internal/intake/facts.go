@@ -1196,8 +1196,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
 // (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
-// AgentUnnamed for a version in which a fresh agent would need the name of its role that another
-// agent of the plan holds from an earlier version, refused before anything is written),
+// AgentUnnamed for a version in which an agent would need a name, its key's or its role's, that
+// another agent of the plan holds from an earlier version, refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1820,12 +1820,13 @@ func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
 }
 
-// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
-// a fresh agent of its own, would take name, its role's, which another agent of the plan holds from
-// an earlier version (record.NameAgents). This release runs one agent of each role for an issue,
-// so such a version is refused as a plan before anything is written, never as an error of the write.
+// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
+// would take name — the name its key held in an earlier version, or its role's — which another
+// agent of the plan holds from an earlier version (record.NameAgents, record.UnnamedAgents). This
+// release runs one agent of each role for an issue, so such a version is refused as a plan before
+// anything is written, never as an error of the write.
 func AgentUnnamed(task string, place int, name string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s of its role "+
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s, which this step's agent would take, "+
 		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
 }
 

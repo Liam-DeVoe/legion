@@ -124,6 +124,10 @@ func TestTwoKeysThatInheritOneNameAreNotBothNamed(t *testing.T) {
 	if want := []claim.Agent{"implementer", "", "reviewer"}; !slices.Equal(agentNames(got), want) {
 		t.Fatalf("the names = %q, want %q: key b keeps implementer, and key a, whose generation-1 name key b holds, gets none", agentNames(got), want)
 	}
+	unnamed := UnnamedAgents(earlier, got)
+	if len(unnamed) != 1 || unnamed[0].Step.Position != 2 || unnamed[0].Name != "implementer" {
+		t.Fatalf("UnnamedAgents = %+v, want step 2's agent, key a, which would take implementer, its generation-1 name", unnamed)
+	}
 }
 
 // A key's name is its newest: rows of an earlier generation that named it otherwise do not move it
@@ -183,5 +187,30 @@ func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
 	})
 	if want := []claim.Agent{"implementer", ""}; !slices.Equal(agentNames(got), want) {
 		t.Fatalf("the names = %q, want %q: the owner has no name whatever its earlier rows hold", agentNames(got), want)
+	}
+}
+
+// UnnamedAgents names each agent NameAgents left with no name once, at its first step, with the
+// name it would take: a key's newest earlier name, or else its role's. A named agent and the owner
+// are not named, nor is a later step of an unnamed key.
+func TestUnnamedAgentsNamesEachAgentWithNoNameAndTheNameItWouldTake(t *testing.T) {
+	earlier := []PlanStep{
+		{Generation: 1, Task: "t", Position: 1, Role: "implementer", AgentKey: "a", Agent: "tester"},
+		{Generation: 2, Task: "t", Position: 1, Role: "implementer", AgentKey: "a", Agent: "critic"},
+	}
+	named := []PlanStep{
+		{Task: "t", Position: 1, Role: "reviewer", AgentKey: "b", Agent: "reviewer"},
+		{Task: "t", Position: 2, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 4, Role: "reviewer"},
+		{Task: "t", Position: 5, Role: "acceptance", AgentKey: "owner"},
+	}
+	got := UnnamedAgents(earlier, named)
+	want := []UnnamedAgent{{Step: named[1], Name: "critic"}, {Step: named[3], Name: "reviewer"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("UnnamedAgents = %+v, want %+v", got, want)
+	}
+	if none := UnnamedAgents(nil, NameAgents(nil, named[:3])); len(none) != 0 {
+		t.Fatalf("UnnamedAgents of a version every agent of which has a name = %+v, want none", none)
 	}
 }
