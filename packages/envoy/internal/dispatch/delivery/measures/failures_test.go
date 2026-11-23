@@ -25,11 +25,11 @@ func TestAWindowOfDeploysAndFailuresFoldsToTheDORAValues(t *testing.T) {
 	parts = append(parts, RecoveryDay(failureDay, []RestoredFailure{{DeployFinishedAt: failureAt(failureDay, 9), RestoredAt: failureAt(failureDay, 9).Add(90 * time.Minute)}}, 0)...)
 	parts = append(parts, RecoveryDay(second, []RestoredFailure{{DeployFinishedAt: failureAt(second, 8), RestoredAt: failureAt(second, 8).Add(30 * time.Minute)}}, 0)...)
 
-	if rate := FoldChangeFailRate(parts); rate == nil || *rate != 0.5 {
-		t.Errorf("change fail rate = %v, want 0.5 (2 of 4 deploys)", rate)
+	if rate := FoldChangeFailRate(parts); rate == nil || rate.Failed != 2 || rate.Total != 4 || rate.Rate == nil || *rate.Rate != 0.5 {
+		t.Errorf("change fail rate = %+v, want 0.5 (2 of 4 deploys)", rate)
 	}
-	if rate := FoldReworkRate(parts); rate == nil || *rate != 0.25 {
-		t.Errorf("rework rate = %v, want 0.25 (1 of 4 deploys)", rate)
+	if rate := FoldReworkRate(parts); rate == nil || rate.Restoring != 1 || rate.Total != 4 || rate.Rate == nil || *rate.Rate != 0.25 {
+		t.Errorf("rework rate = %+v, want 0.25 (1 of 4 deploys)", rate)
 	}
 	recovery := FoldRecovery(parts)
 	if recovery == nil || recovery.N != 2 || recovery.MedianMinutes == nil || *recovery.MedianMinutes != 60 || recovery.NotRestored != 0 {
@@ -44,8 +44,8 @@ func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
 	before := FoldChangeFailRate(ChangeFailRateDay(failureDay, counted))
 	counted[1].Failures = 0 // b's one failure rejected
 	after := FoldChangeFailRate(ChangeFailRateDay(failureDay, counted))
-	if before == nil || after == nil || *before-*after != 1.0/5 {
-		t.Errorf("change fail rate moved from %v to %v, want down by 1/5", before, after)
+	if before == nil || after == nil || before.Failed-after.Failed != 1 || before.Total != after.Total || *before.Rate-*after.Rate != 1.0/5 {
+		t.Errorf("change fail rate moved from %+v to %+v, want down by 1/5", before, after)
 	}
 }
 
@@ -54,11 +54,11 @@ func TestARejectMovesChangeFailRateByThatDeploysShare(t *testing.T) {
 // window with no part of a series reads no value at all.
 func TestNoFailureIsZeroAndNothingRestoredIsNoMedian(t *testing.T) {
 	deploys := []FailureDeploy{{ID: "a"}, {ID: "b"}}
-	if rate := FoldChangeFailRate(ChangeFailRateDay(failureDay, deploys)); rate == nil || *rate != 0 {
-		t.Errorf("change fail rate with no failure = %v, want 0", rate)
+	if rate := FoldChangeFailRate(ChangeFailRateDay(failureDay, deploys)); rate == nil || rate.Failed != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
+		t.Errorf("change fail rate with no failure = %+v, want 0 of 2", rate)
 	}
-	if rate := FoldReworkRate(ReworkRateDay(failureDay, deploys)); rate == nil || *rate != 0 {
-		t.Errorf("rework rate with no restore = %v, want 0", rate)
+	if rate := FoldReworkRate(ReworkRateDay(failureDay, deploys)); rate == nil || rate.Restoring != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
+		t.Errorf("rework rate with no restore = %+v, want 0 of 2", rate)
 	}
 	recovery := FoldRecovery(RecoveryDay(failureDay, nil, 3))
 	if recovery == nil || recovery.MedianMinutes != nil || recovery.N != 0 || recovery.NotRestored != 3 {
@@ -67,7 +67,7 @@ func TestNoFailureIsZeroAndNothingRestoredIsNoMedian(t *testing.T) {
 	if FoldChangeFailRate(nil) != nil || FoldReworkRate(nil) != nil || FoldRecovery(nil) != nil {
 		t.Errorf("a window with no row read a value")
 	}
-	if rate := FoldChangeFailRate(ChangeFailRateDay(failureDay, nil)); rate == nil || *rate != 0 {
-		t.Errorf("a day row with no deploy = %v, want 0, a measured value", rate)
+	if rate := FoldChangeFailRate(ChangeFailRateDay(failureDay, nil)); rate == nil || rate.Total != 0 || rate.Rate == nil || *rate.Rate != 0 {
+		t.Errorf("a day row with no deploy = %+v, want a rate of 0, a measured value", rate)
 	}
 }

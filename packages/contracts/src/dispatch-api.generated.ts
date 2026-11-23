@@ -1108,7 +1108,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) every change_failure_rate count is 0 and every rate null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0; change_failure_rate itself is never null. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, "no data" with no verdict, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -4132,10 +4132,6 @@ export interface components {
       from?: number;
       id: string;
     };
-    ChangeFailureRate: {
-      per_deploy: components["schemas"]["DeliveryDeployFlagCounts"];
-      per_pr: components["schemas"]["DeliveryFlagCounts"];
-    };
     CheckBasis: {
       branch?: string;
       commit?: string;
@@ -4628,6 +4624,11 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       note?: null | string;
     };
+    DeliveryChangeFailRate: {
+      failed: number;
+      rate: null | number;
+      total: number;
+    };
     DeliveryComponent: {
       parent: null | string;
       title: string;
@@ -4641,16 +4642,6 @@ export interface components {
       reached_production: number;
       run_success_rate: null | number;
     };
-    DeliveryDeployFlagCounts: {
-      confirmed: number;
-      confirmed_or_pending: number;
-      pending: number;
-      rate: null | number;
-      rejected: number;
-      reverts: number;
-      total: number;
-      upper_bound_rate: null | number;
-    };
     DeliveryDeployJobTiming: {
       days: components["schemas"]["DeliveryTimingDay"][] | null;
       job: string;
@@ -4663,14 +4654,6 @@ export interface components {
       last_run_url: string;
       name: string;
       results: number;
-    };
-    DeliveryFlagCounts: {
-      confirmed: number;
-      pending: number;
-      rate: null | number;
-      rejected: number;
-      reverts: number;
-      total: number;
     };
     DeliveryFreshnessView: {
       last_error: null | string;
@@ -4687,7 +4670,6 @@ export interface components {
     };
     DeliveryKpiStatus: {
       change_failure_rate: null | boolean;
-      change_failure_rate_upper_bound: null | boolean;
       deploy_run_success: null | boolean;
       deploys_per_day: null | boolean;
       merge_to_production: null | boolean;
@@ -4714,19 +4696,19 @@ export interface components {
       total: components["schemas"]["DeliveryLeadTimeCell"];
     };
     DeliveryMeasures: {
-      change_failure_rate: components["schemas"]["ChangeFailureRate"];
+      change_failure_rate: components["schemas"]["DeliveryChangeFailRate"] | null;
       daily: components["schemas"]["DeliveryDailyPoint"][] | null;
       deploy_frequency: components["schemas"]["DeployFrequency"];
       deploy_run_success: components["schemas"]["DeployRunSuccess"];
+      deployment_rework_rate: components["schemas"]["DeliveryReworkRate"] | null;
       lead_time: components["schemas"]["LeadTime"];
       /** Format: double */
       rework_share: number;
-      time_to_restore: components["schemas"]["TimeToRestore"];
+      time_to_restore: components["schemas"]["DeliveryRecovery"] | null;
     };
     DeliveryMeasuresResponse: {
       /** Format: date-time */
       computed_at: string;
-      flags_source: string;
       freshness: components["schemas"]["DeliveryFreshnessView"];
       measures: components["schemas"]["DeliveryMeasures"];
       status: components["schemas"]["DeliveryKpiStatus"];
@@ -4786,6 +4768,16 @@ export interface components {
     DeliveryPipelineStatus: {
       merge_to_production: null | boolean;
       opened_to_merge: null | boolean;
+    };
+    DeliveryRecovery: {
+      median_minutes: null | number;
+      n: number;
+      not_restored: number;
+    };
+    DeliveryReworkRate: {
+      rate: null | number;
+      restoring: number;
+      total: number;
     };
     DeliveryRun: {
       /** Format: date-time */
@@ -4897,23 +4889,13 @@ export interface components {
             | "minutes.median"
             | "minutes.n"
             | "minutes.p90"
-            | "per_deploy.confirmed"
-            | "per_deploy.pending"
+            | "per_deploy.failed"
             | "per_deploy.rate"
-            | "per_deploy.rejected"
             | "per_deploy.total"
-            | "per_pr.confirmed"
-            | "per_pr.pending"
-            | "per_pr.rate"
-            | "per_pr.rejected"
-            | "per_pr.reverts"
-            | "per_pr.total"
             | "runs.cancelled"
             | "runs.concluded"
             | "runs.rate"
             | "runs.reached_production"
-            | "upper_bound.confirmed_or_pending"
-            | "upper_bound.rate"
           )[]
         | null;
       /** Format: double */
@@ -7303,9 +7285,6 @@ export interface components {
     };
     ThreadReadInput: {
       read_through: null | string;
-    };
-    TimeToRestore: {
-      median_minutes: null | number;
     };
     TmuxPlace: {
       layout?: string;
@@ -16142,7 +16121,6 @@ export type BroadcastRead = components["schemas"]["BroadcastRead"];
 export type BroadcastRecipient = components["schemas"]["BroadcastRecipient"];
 export type BroadcastSummary = components["schemas"]["BroadcastSummary"];
 export type CarriedBlock = components["schemas"]["CarriedBlock"];
-export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
 export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
 export type CheckCI = components["schemas"]["CheckCI"];
@@ -16194,12 +16172,11 @@ export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
+export type DeliveryChangeFailRate = components["schemas"]["DeliveryChangeFailRate"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
-export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
 export type DeliveryDeployJobTiming = components["schemas"]["DeliveryDeployJobTiming"];
 export type DeliveryFailingJob = components["schemas"]["DeliveryFailingJob"];
-export type DeliveryFlagCounts = components["schemas"]["DeliveryFlagCounts"];
 export type DeliveryFreshnessView = components["schemas"]["DeliveryFreshnessView"];
 export type DeliveryJobTiming = components["schemas"]["DeliveryJobTiming"];
 export type DeliveryKpiStatus = components["schemas"]["DeliveryKpiStatus"];
@@ -16212,6 +16189,8 @@ export type DeliveryPR = components["schemas"]["DeliveryPR"];
 export type DeliveryPipelinePRChecks = components["schemas"]["DeliveryPipelinePRChecks"];
 export type DeliveryPipelineResponse = components["schemas"]["DeliveryPipelineResponse"];
 export type DeliveryPipelineStatus = components["schemas"]["DeliveryPipelineStatus"];
+export type DeliveryRecovery = components["schemas"]["DeliveryRecovery"];
+export type DeliveryReworkRate = components["schemas"]["DeliveryReworkRate"];
 export type DeliveryRun = components["schemas"]["DeliveryRun"];
 export type DeliveryRunDetail = components["schemas"]["DeliveryRunDetail"];
 export type DeliveryRunJob = components["schemas"]["DeliveryRunJob"];
@@ -16480,7 +16459,6 @@ export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
-export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];
 export type ToolField = components["schemas"]["ToolField"];
 export type UnparsedOpeners = components["schemas"]["UnparsedOpeners"];

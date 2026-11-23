@@ -59,10 +59,9 @@ const (
 	SeriesRuns = "runs"
 	// SeriesPRs is rework-share's: the rework pull requests over every one (a share).
 	SeriesPRs = "prs"
-	// SeriesPerDeploy, SeriesUpperBound and SeriesPerPR are change-fail-rate's three shares.
-	SeriesPerDeploy  = "per_deploy"
-	SeriesUpperBound = "upper_bound"
-	SeriesPerPR      = "per_pr"
+	// SeriesPerDeploy is change-fail-rate's: the deploys with a counted failure over every deploy
+	// (a share).
+	SeriesPerDeploy = "per_deploy"
 	// SeriesMinutes is the minutes of every lead time, of failed-deploy-recovery and of each CI
 	// eval (a quantile).
 	SeriesMinutes = "minutes"
@@ -77,9 +76,6 @@ const (
 	CountCancelled = "cancelled"
 	CountSuccess   = "success"
 	CountFailure   = "failure"
-	CountPending   = "pending"
-	CountRejected  = "rejected"
-	CountReverts   = "reverts"
 )
 
 // CountPart is a sum's part: count rows, with counts beside them. The part helpers and the fold

@@ -80,24 +80,40 @@ type Recovery struct {
 	NotRestored   int      `json:"not_restored"`
 }
 
+// ChangeFailRate is change-fail-rate over a window: the deploys with at least one counted failure,
+// every deploy, and the first over the second, 0 where the window counts no deploy, so a measured
+// 0 stays 0.
+type ChangeFailRate struct {
+	Failed int      `json:"failed"`
+	Total  int      `json:"total"`
+	Rate   *float64 `json:"rate"`
+}
+
+// ReworkRate is deployment-rework-rate over a window: the deploys that restored a counted failure,
+// every deploy, and the first over the second, 0 where the window counts no deploy.
+type ReworkRate struct {
+	Restoring int      `json:"restoring"`
+	Total     int      `json:"total"`
+	Rate      *float64 `json:"rate"`
+}
+
 // FoldChangeFailRate is change-fail-rate over parts: the summed failed deploys over the summed
-// deploys, 0 where the parts count no deploy, so a measured 0 stays 0; nil when parts hold no part
-// of the series (no row: "no data").
-func FoldChangeFailRate(parts []DayPart) *float64 {
-	return foldRate(parts, SeriesPerDeploy)
-}
-
-// FoldReworkRate is deployment-rework-rate over parts, as FoldChangeFailRate folds its series.
-func FoldReworkRate(parts []DayPart) *float64 {
-	return foldRate(parts, SeriesReworkDeploys)
-}
-
-func foldRate(parts []DayPart, series string) *float64 {
-	folded := FoldSeries(parts, series)
+// deploys; nil when parts hold no part of the series (no row: "no data").
+func FoldChangeFailRate(parts []DayPart) *ChangeFailRate {
+	folded := FoldSeries(parts, SeriesPerDeploy)
 	if folded.Parts == 0 {
 		return nil
 	}
-	return new(ValueOrZero(folded.share()))
+	return &ChangeFailRate{Failed: int(folded.Num), Total: int(folded.Den), Rate: new(ValueOrZero(folded.share()))}
+}
+
+// FoldReworkRate is deployment-rework-rate over parts, as FoldChangeFailRate folds its series.
+func FoldReworkRate(parts []DayPart) *ReworkRate {
+	folded := FoldSeries(parts, SeriesReworkDeploys)
+	if folded.Parts == 0 {
+		return nil
+	}
+	return &ReworkRate{Restoring: int(folded.Num), Total: int(folded.Den), Rate: new(ValueOrZero(folded.share()))}
 }
 
 // FoldRecovery is failed-deploy-recovery over parts: the median of every part's samples and the

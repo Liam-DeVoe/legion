@@ -73,20 +73,21 @@ const (
 // each folds through. The catalogue names them, computedSources is keyed by them, and api's items
 // route answers each one's rows, so a source is spelled once.
 const (
-	SourceFoldDeployFrequency   = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
-	SourceFoldDeployRunSuccess  = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
-	SourceFoldLeadTime          = SourceComputedPrefix + "delivery/measures.FoldLeadTime"
-	SourceFoldReworkShare       = SourceComputedPrefix + "delivery/measures.FoldReworkShare"
-	SourceFoldChangeFailureRate = SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate"
-	SourceFoldTimeToRestore     = SourceComputedPrefix + "delivery/measures.FoldTimeToRestore"
-	SourceFoldTiming            = SourceComputedPrefix + "delivery/measures.FoldTiming"
-	SourceListUnownedP0         = SourceComputedPrefix + "delivery.ListUnownedP0"
-	SourceFoldWorkTime          = SourceComputedPrefix + "legion/metrics.FoldWorkTime"
-	SourceFoldPhaseTime         = SourceComputedPrefix + "legion/metrics.FoldPhaseTime"
-	SourceFoldIdleTime          = SourceComputedPrefix + "legion/metrics.FoldIdleTime"
-	SourceFoldSlotWait          = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
-	SourceFoldRework            = SourceComputedPrefix + "legion/metrics.FoldRework"
-	SourceFoldSplitting         = SourceComputedPrefix + "legion/metrics.FoldSplitting"
+	SourceFoldDeployFrequency  = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
+	SourceFoldDeployRunSuccess = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
+	SourceFoldLeadTime         = SourceComputedPrefix + "delivery/measures.FoldLeadTime"
+	SourceFoldReworkShare      = SourceComputedPrefix + "delivery/measures.FoldReworkShare"
+	SourceFoldChangeFailRate   = SourceComputedPrefix + "delivery/measures.FoldChangeFailRate"
+	SourceFoldRecovery         = SourceComputedPrefix + "delivery/measures.FoldRecovery"
+	SourceFoldReworkRate       = SourceComputedPrefix + "delivery/measures.FoldReworkRate"
+	SourceFoldTiming           = SourceComputedPrefix + "delivery/measures.FoldTiming"
+	SourceListUnownedP0        = SourceComputedPrefix + "delivery.ListUnownedP0"
+	SourceFoldWorkTime         = SourceComputedPrefix + "legion/metrics.FoldWorkTime"
+	SourceFoldPhaseTime        = SourceComputedPrefix + "legion/metrics.FoldPhaseTime"
+	SourceFoldIdleTime         = SourceComputedPrefix + "legion/metrics.FoldIdleTime"
+	SourceFoldSlotWait         = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
+	SourceFoldRework           = SourceComputedPrefix + "legion/metrics.FoldRework"
+	SourceFoldSplitting        = SourceComputedPrefix + "legion/metrics.FoldSplitting"
 )
 
 // RegistryActor is who the server's own writes to `evals-md` are by: the section a registration

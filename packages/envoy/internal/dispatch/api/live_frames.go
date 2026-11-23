@@ -353,7 +353,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	},
 	deliveryLiveMeasures: {
 		body:         reflect.TypeFor[deliveryMeasuresResponse](),
-		whole:        map[string][]string{"measures": nil, "flags_source": nil, "unowned_p0": nil, "targets": nil, "status": nil},
+		whole:        map[string][]string{"measures": nil, "unowned_p0": nil, "targets": nil, "status": nil},
 		withChanges:  []string{"window"},
 		out:          []string{"computed_at", "freshness"},
 		reads:        viewReadsDelivery,

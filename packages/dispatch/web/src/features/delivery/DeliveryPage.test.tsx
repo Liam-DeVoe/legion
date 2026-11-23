@@ -71,27 +71,15 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: null, p90_minutes: null, max_minutes: null },
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
-    // As the server answers it while no failure source exists (`flags_source: "none"`): every
-    // count 0 and every rate null.
-    change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 0,
-        rate: null,
-        confirmed_or_pending: 0,
-        upper_bound_rate: null,
-      },
-    },
-    time_to_restore: { median_minutes: null },
+    // As the server answers it while no day row of the three failure measures is stored: each
+    // null, "no data".
+    change_failure_rate: null,
+    time_to_restore: null,
+    deployment_rework_rate: null,
     rework_share: 0,
     deploy_run_success: { concluded: 0, reached_production: 0, cancelled: 0, rate: null },
     daily: [],
   },
-  flags_source: "none",
   unowned_p0: [],
   targets: {
     deploys_per_day: {
@@ -129,7 +117,6 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   status: {
     deploys_per_day: false,
     change_failure_rate: null,
-    change_failure_rate_upper_bound: null,
     merge_to_production_median: null,
     merge_to_production: null,
     opened_to_merge: null,

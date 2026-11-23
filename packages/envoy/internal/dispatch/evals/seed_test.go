@@ -354,6 +354,57 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 	}
 }
 
+// TestAReleaseThatDropsASeriesUnlistsIt: a series an earlier release stated and a later one no
+// longer states (as change-fail-rate's two shares beside per_deploy went with the pending state,
+// dispatch://INFRA-978) is not left current and listed, where every read would fold it and state
+// "no data": the later release's seed writes its next version unlisted and not primary, every
+// other field as it was, beside the eval's next version, and leaves the series it still states
+// as they are. A second seed writes nothing.
+func TestAReleaseThatDropsASeriesUnlistsIt(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	const dropped = "dropped"
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			if entries[i].definition.Slug == SlugDeployFrequency {
+				entries[i].series = append(entries[i].series, primary(headline(dropped, unitDeploys, AggSum)))
+			}
+		}
+	})
+	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
+		t.Fatalf("seed %s with the earlier release's catalogue: %v", r.project, err)
+	}
+	if _, series := r.currentOf(t, SlugDeployFrequency); !series[dropped].Listed || !series[dropped].IsPrimary {
+		t.Fatalf("the earlier release's series %s is %+v, want it listed and primary", dropped, series[dropped])
+	}
+
+	withCatalogue(t, func(entries []catalogueEntry) {
+		for i := range entries {
+			entries[i].series = slices.DeleteFunc(entries[i].series, func(one Series) bool { return one.Series == dropped })
+		}
+	})
+	released, err := r.registry.Ensure(ctx, r.project)
+	if err != nil {
+		t.Fatalf("seed %s with the later release's catalogue: %v", r.project, err)
+	}
+	definition, series := r.currentOf(t, SlugDeployFrequency)
+	gone, kept := series[dropped], series[measures.SeriesDeploys]
+	t.Logf("the later release's seed wrote %+v; %s is version %d, the dropped series %+v", released, SlugDeployFrequency, definition.Version, gone)
+	if released.Versions != 1 || released.Series != 1 || definition.Version != 2 || definition.WrittenVia != ViaSeed {
+		t.Errorf("the later release's seed wrote %+v and %s is version %d, want one version of the eval and one of the dropped series", released, SlugDeployFrequency, definition.Version)
+	}
+	if gone.Version != 2 || gone.Listed || gone.IsPrimary || gone.Unit != unitDeploys || gone.Agg != AggSum || gone.Role != RoleHeadline {
+		t.Errorf("the dropped series is %+v, want version 2 unlisted and not primary, its unit, agg and role as they were", gone)
+	}
+	if kept.Version != 1 || !kept.Listed || !kept.IsPrimary {
+		t.Errorf("%s's %s is %+v, want version 1, listed and primary, untouched", SlugDeployFrequency, measures.SeriesDeploys, kept)
+	}
+	again, err := r.registry.Ensure(ctx, r.project)
+	if err != nil || again != (Seeded{}) {
+		t.Fatalf("a second seed of the later release's catalogue wrote %+v, %v, want nothing", again, err)
+	}
+}
+
 // TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget: in a project the seed has not
 // reached, a reading under a slug of the catalogue registers it as a logged eval with no target,
 // and a section whose method says no one has written one. The seed then makes it the catalogue's

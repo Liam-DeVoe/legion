@@ -234,9 +234,9 @@ func leadSpread(parts []measures.DayPart) measures.Spread {
 }
 
 // foldedMeasures is the measures route's measures folded from parts, one cut's day rows of a
-// window, by the folds the route answers through, change-fail-rate's and failed-deploy-recovery's
-// over their own day rows, of which no failure source writes any; ok false, with what is missing,
-// where the parts hold no deploy-frequency or deploy-run-success part, which read "no data".
+// window, by the folds the route answers through, the three failure measures' over their own day
+// rows, of which no builder writes any yet; ok false, with what is missing, where the parts hold no
+// deploy-frequency or deploy-run-success part, which read "no data".
 func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window) (measures.Result, string) {
 	frequency := measures.FoldDeployFrequency(parts[evals.SlugDeployFrequency], window)
 	success := measures.FoldDeployRunSuccess(parts[evals.SlugDeployRunSuccess])
@@ -255,11 +255,12 @@ func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window)
 			OpenedToProduction:      leadSpread(parts[evals.SlugOpenToProduction]),
 			OpenedToMerge:           leadSpread(parts[evals.SlugPROpenToMerge]),
 		},
-		ChangeFailureRate: measures.FoldChangeFailureRate(parts[evals.SlugChangeFailRate]),
-		TimeToRestore:     measures.FoldTimeToRestore(parts[evals.SlugFailedDeployRecovery]),
-		ReworkShare:       *share,
-		DeployRunSuccess:  *success,
-		Daily:             measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
+		ChangeFailureRate:    measures.FoldChangeFailRate(parts[evals.SlugChangeFailRate]),
+		TimeToRestore:        measures.FoldRecovery(parts[evals.SlugFailedDeployRecovery]),
+		DeploymentReworkRate: measures.FoldReworkRate(parts[evals.SlugDeploymentReworkRate]),
+		ReworkShare:          *share,
+		DeployRunSuccess:     *success,
+		Daily:                measures.DailySeries(parts[evals.SlugDeployFrequency], parts[evals.SlugDeployRunSuccess], window),
 	}, ""
 }
 
@@ -499,8 +500,8 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
 	stored := storedDayRows(t, database.Pool, fixture.Project)
 	for _, row := range stored {
-		if slug := strings.TrimPrefix(row.EvalID, fixture.Project+"/"); slug == evals.SlugChangeFailRate || slug == evals.SlugFailedDeployRecovery {
-			t.Fatalf("%s holds a day row (%s on %s), want none: no failure source exists", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
+		if slug := strings.TrimPrefix(row.EvalID, fixture.Project+"/"); slug == evals.SlugChangeFailRate || slug == evals.SlugFailedDeployRecovery || slug == evals.SlugDeploymentReworkRate {
+			t.Fatalf("%s holds a day row (%s on %s), want none: no builder of the failure measures exists yet", row.EvalID, row.Series, row.Day.Format(time.DateOnly))
 		}
 	}
 	if other := storedDayRows(t, database.Pool, fixture.SecondProject); len(other) != 0 {

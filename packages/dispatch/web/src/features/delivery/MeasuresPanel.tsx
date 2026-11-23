@@ -8,11 +8,14 @@
 // value's side of the target (`judgeFigure`). Each such element names the eval, the statistic and
 // whether its value is one day's or the window's (`data-eval`, `data-statistic`, `data-span`), and
 // each card's caption names the statistics its target judges, so it reads as the badge beside it
-// is judged. Three differences, each from LEGION-567's slice 2 plan: the change-failure-rate card
-// says flags arrive with flag confirmation while the server stores none; the P0 card links each
-// issue inside Dispatch and dates its count by the response's computed_at; and the cards and the
-// strip lay themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower
-// than the prototype's page and a phone narrower still, where the prototype is desktop-only.
+// is judged. Three differences, each from LEGION-567's slice 2 plan or a later spec: the three
+// failure measures (change failure rate per deploy, failed deployment recovery time beside the
+// failures not restored, and deployment rework rate) are their evals' folds of the record of
+// deploys and failures (dispatch://INFRA-978, R11), and read "no data" where the window holds no
+// row of theirs; the P0 card links each issue inside Dispatch and dates its count by the
+// response's computed_at; and the cards and the strip lay themselves out for the panel's own
+// width, since Dispatch's sidebar leaves it narrower than the prototype's page and a phone
+// narrower still, where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -49,54 +52,25 @@ const UNOWNED_P0_SHOWN = 6;
 /** What a pending read shows in each number's place. */
 const PENDING = "\u2026";
 
-/** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
- *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
- *  prototype's web/src/lib/dora.ts:297-305). The confirmed count is the eval's
- *  per_deploy.confirmed, toned by its own verdict where the target judges it; the count of deploys
- *  with only unreviewed flags is confirmedOrPending less it, which no judge names
- *  (per_deploy.pending counts every deploy with a pending flag), so it takes no tone. */
-function FailureRateBreakdown(props: {
-  confirmed: number;
-  confirmedOrPending: number;
-  targets: DeliveryTargets;
-}): ReactNode {
-  const onlyPending = props.confirmedOrPending - props.confirmed;
-  return (
-    <>
-      <WindowFigure
-        measure="change_failure_rate"
-        statistic="per_deploy.confirmed"
-        targets={props.targets}
-        value={props.confirmed}
-        write={count(props.confirmed)}
-      />
-      {` ${props.confirmed === 1 ? "deploy" : "deploys"} with a confirmed break; `}
-      {onlyPending === 0 ? "none" : `${onlyPending} more`}
-      {" with only unreviewed flags"}
-    </>
-  );
-}
+/** What a failure measure shows where the window holds no row of its eval: "no data", never 0. */
+const NO_DATA = "No data for this window";
 
-type FailureRate = DeliveryMeasuresResponse["measures"]["change_failure_rate"];
-
-/** Whether a failure source measured the change failure rate. Every rate is null while no failure
- *  source exists (flags_source `none`): a rate nothing measured is no 0, so a card reads no value
- *  from it. */
-function measured(f: FailureRate): f is FailureRate & {
-  per_pr: { rate: number };
-  per_deploy: { rate: number; upper_bound_rate: number };
-} {
-  return (
-    f.per_pr.rate !== null && f.per_deploy.rate !== null && f.per_deploy.upper_bound_rate !== null
-  );
+/** A failure measure's rate as a figure, `NO_VALUE` where the window holds no row of its eval
+ *  (the measure is null) or it states no rate. */
+function failureRate(
+  measure: { rate: number | null } | null,
+  digits: number,
+  extra: number
+): string {
+  return measure?.rate == null ? NO_VALUE : pct(measure.rate, digits + extra);
 }
 
 /** A figure of the whole window that the target of `measure`'s eval may judge (`JudgedFigure`),
  *  toned by its own value and written on its side of the target. It reads `plain` where that
  *  target judges another statistic or is off, so a card judged by its p90 does not colour its
- *  median and change-fail-rate judged by its per-PR rate colours neither its per-deploy rate nor
- *  its upper bound; and `pending`, muted unless given, while the read is pending (`targets`
- *  undefined), when no target judges it. */
+ *  median and change-fail-rate judged by its rate colours neither its count of deploys with a
+ *  failure nor its count of deploys; and `pending`, muted unless given, while the read is pending
+ *  (`targets` undefined), when no target judges it. */
 function WindowFigure(props: {
   measure: Measure;
   statistic: Judge;
@@ -220,21 +194,21 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       },
     },
     {
-      label: "CFR (per PR)",
-      write: show((d, extra) =>
-        !measured(d.measures.change_failure_rate)
-          ? NO_VALUE
-          : pct(d.measures.change_failure_rate.per_pr.rate, 1 + extra)
-      ),
+      label: "CFR (per deploy)",
+      write: show((d, extra) => failureRate(d.measures.change_failure_rate, 1, extra)),
       judged: {
         measure: "change_failure_rate",
-        statistic: "per_pr.rate",
-        value: measures?.change_failure_rate.per_pr.rate,
+        statistic: "per_deploy.rate",
+        value: failures?.rate ?? null,
       },
     },
     {
-      label: "Time to restore",
-      write: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
+      label: "Recovery time",
+      write: show((d) => formatMinutes(d.measures.time_to_restore?.median_minutes ?? null)),
+    },
+    {
+      label: "Deploy rework",
+      write: show((d) => failureRate(d.measures.deployment_rework_rate, 1, 0)),
     },
     { label: "Rework share", write: show((d) => pct(d.measures.rework_share)) },
   ];
@@ -305,48 +279,32 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               measure="change_failure_rate"
               statistic="per_deploy.rate"
               targets={targets}
-              value={
-                measures === undefined || !measured(measures.change_failure_rate)
-                  ? null
-                  : measures.change_failure_rate.per_deploy.rate
-              }
-              write={show((d, extra) =>
-                !measured(d.measures.change_failure_rate)
-                  ? NO_VALUE
-                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2 + extra)
-              )}
+              value={failures?.rate ?? null}
+              write={show((d, extra) => failureRate(d.measures.change_failure_rate, 2, extra))}
             />
-            {data !== undefined && !measured(data.measures.change_failure_rate) ? null : (
-              <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
-            )}
+            <span className={`text-xs ${textMutedOnSurface}`}>per deploy</span>
           </div>
-          {failures === undefined || targets === undefined ? null : !measured(failures) ? (
-            <div className={`text-xs ${textMutedOnCanvas}`}>
-              Flags arrive with flag confirmation
-            </div>
+          {failures === undefined || targets === undefined ? null : failures === null ? (
+            <div className={`text-xs ${textMutedOnCanvas}`}>{NO_DATA}</div>
           ) : (
-            <>
-              <div className={`text-xs ${textMutedOnSurface}`}>
-                up to{" "}
-                <WindowFigure
-                  className="font-semibold"
-                  measure="change_failure_rate"
-                  plain={textPrimaryOnSurface}
-                  statistic="upper_bound.rate"
-                  targets={targets}
-                  value={failures.per_deploy.upper_bound_rate}
-                  write={(extra) => pct(failures.per_deploy.upper_bound_rate, 2 + extra)}
-                />{" "}
-                if every pending flag is confirmed
-              </div>
-              <div className={`text-[11px] ${textMutedOnSurface}`}>
-                <FailureRateBreakdown
-                  confirmed={failures.per_deploy.confirmed}
-                  confirmedOrPending={failures.per_deploy.confirmed_or_pending}
-                  targets={targets}
-                />
-              </div>
-            </>
+            <div className={`text-[11px] ${textMutedOnSurface}`}>
+              <WindowFigure
+                measure="change_failure_rate"
+                statistic="per_deploy.failed"
+                targets={targets}
+                value={failures.failed}
+                write={count(failures.failed)}
+              />{" "}
+              of{" "}
+              <WindowFigure
+                measure="change_failure_rate"
+                statistic="per_deploy.total"
+                targets={targets}
+                value={failures.total}
+                write={count(failures.total)}
+              />{" "}
+              deploys with a failure
+            </div>
           )}
         </KpiCard>
 
@@ -621,8 +579,9 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   // Newest first, copied once per answer rather than on every render of the open fold.
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
   // Each card's figure of a statistic a delivery eval's target may judge is toned by its own value
-  // under that target (`WindowFigure`); a figure of no eval's statistic (the lead times from first
-  // commit and from PR opened, the time to restore, the rework share) takes no tone.
+  // under that target (`WindowFigure`); a figure of no such statistic (the lead times from first
+  // commit and from PR opened, the recovery time, the deployment rework rate, the rework share)
+  // takes no tone.
   const figure = (
     measure: Measure,
     statistic: Judge,
@@ -641,6 +600,8 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const merge = measures.lead_time.merge_to_production;
   const lead = measures.lead_time;
   const failures = measures.change_failure_rate;
+  const recovery = measures.time_to_restore;
+  const rework = measures.deployment_rework_rate;
   return (
     <>
       <div
@@ -711,99 +672,47 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        {!measured(failures) ? (
-          <>
-            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
-              No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
-            </DefinitionCard>
-            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
-              No failure source yet: flags arrive with flag confirmation.
-            </DefinitionCard>
-          </>
-        ) : (
-          <>
-            <DefinitionCard
-              title="Change failure rate (per PR)"
-              value={figure("change_failure_rate", "per_pr.rate", failures.per_pr.rate, (extra) =>
-                pct(failures.per_pr.rate, 1 + extra)
-              )}
-            >
+        <DefinitionCard
+          title="Change failure rate (per deploy)"
+          value={figure("change_failure_rate", "per_deploy.rate", failures?.rate ?? null, (extra) =>
+            failureRate(failures, 1, extra)
+          )}
+        >
+          {failures === null ? (
+            NO_DATA
+          ) : (
+            <>
               {figure(
                 "change_failure_rate",
-                "per_pr.confirmed",
-                failures.per_pr.confirmed,
-                count(failures.per_pr.confirmed)
-              )}{" "}
-              confirmed (
-              {figure(
-                "change_failure_rate",
-                "per_pr.reverts",
-                failures.per_pr.reverts,
-                count(failures.per_pr.reverts)
-              )}{" "}
-              reverts),{" "}
-              {figure(
-                "change_failure_rate",
-                "per_pr.pending",
-                failures.per_pr.pending,
-                count(failures.per_pr.pending)
-              )}{" "}
-              pending,{" "}
-              {figure(
-                "change_failure_rate",
-                "per_pr.rejected",
-                failures.per_pr.rejected,
-                count(failures.per_pr.rejected)
-              )}{" "}
-              rejected of{" "}
-              {figure(
-                "change_failure_rate",
-                "per_pr.total",
-                failures.per_pr.total,
-                count(failures.per_pr.total)
-              )}{" "}
-              PRs. Incidents: no source yet.
-            </DefinitionCard>
-
-            <DefinitionCard
-              title="Change failure rate (per deploy)"
-              value={figure(
-                "change_failure_rate",
-                "per_deploy.rate",
-                failures.per_deploy.rate,
-                (extra) => pct(failures.per_deploy.rate, 1 + extra)
-              )}
-            >
-              {figure(
-                "change_failure_rate",
-                "per_deploy.confirmed",
-                failures.per_deploy.confirmed,
-                count(failures.per_deploy.confirmed)
+                "per_deploy.failed",
+                failures.failed,
+                count(failures.failed)
               )}{" "}
               of{" "}
               {figure(
                 "change_failure_rate",
                 "per_deploy.total",
-                failures.per_deploy.total,
-                count(failures.per_deploy.total)
+                failures.total,
+                count(failures.total)
               )}{" "}
-              deploys;{" "}
-              {figure(
-                "change_failure_rate",
-                "upper_bound.rate",
-                failures.per_deploy.upper_bound_rate,
-                (extra) => pct(failures.per_deploy.upper_bound_rate, 1 + extra)
-              )}{" "}
-              if every pending flag is confirmed
-            </DefinitionCard>
-          </>
-        )}
+              deploys with an unrejected failure
+            </>
+          )}
+        </DefinitionCard>
 
         <DefinitionCard
-          title="Time to restore"
-          value={formatMinutes(measures.time_to_restore.median_minutes)}
+          title="Failed deployment recovery time"
+          value={formatMinutes(recovery?.median_minutes ?? null)}
         >
-          median, broken PR deploy {"\u2192"} fix deploy
+          {recovery === null
+            ? NO_DATA
+            : `median, deploy ${"\u2192"} restore, of ${recovery.n} restored; ${recovery.not_restored} not restored`}
+        </DefinitionCard>
+
+        <DefinitionCard title="Deployment rework rate" value={failureRate(rework, 1, 0)}>
+          {rework === null
+            ? NO_DATA
+            : `${rework.restoring} of ${rework.total} deploys restored a failure`}
         </DefinitionCard>
 
         <DefinitionCard title="Rework share" value={pct(measures.rework_share)}>
