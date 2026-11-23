@@ -1680,10 +1680,12 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at): the phase worker it names is woken whatever else did or did not happen since
-// the release. It is never decoded from an event — the daemon's own pass reads the due rows and
-// applies one fact per row, under the row's id, so a backstop that came due while the daemon was
-// down fires once after it starts.
+// at its due_at). The claim it was armed for is woken whatever else did or did not happen since
+// the release: the agent of the step its role names, or the owner for an architect's backstop,
+// which a release arms at a step or a retro of the owner's other than its acceptance. It is never
+// decoded from an event — the daemon's own pass reads the due rows and applies one fact per row,
+// under the row's id, so a backstop that came due while the daemon was down fires once after it
+// starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string

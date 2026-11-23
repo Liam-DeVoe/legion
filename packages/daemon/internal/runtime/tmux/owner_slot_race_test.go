@@ -56,8 +56,10 @@ func (g *ownerPaneRig) held(t *testing.T) string {
 	return readHostsToken(t, ghconfig.Dir(runtime.GHConfigDir(g.stateDir, g.spec.Claim), "acme"))
 }
 
-// stepTold is what the outbox does before it tells the owner its step: the write of the owner's
-// slot, then the ask whether its gh files hold the step's App, answering the ask's error.
+// stepTold is what the outbox does before it tells the owner its implementer step, a step of
+// another App than the owner's own. It writes the owner's slot, then asks whether its gh files hold
+// the implement App, and answers the ask's error. Before a step of the owner's own App the outbox
+// only asks (internal/daemon's ownerSlotHolds).
 func (g *ownerPaneRig) stepTold(ctx context.Context, t *testing.T) error {
 	t.Helper()
 	if err := g.WriteSlotCredential(ctx, g.spec.Claim); err != nil {
