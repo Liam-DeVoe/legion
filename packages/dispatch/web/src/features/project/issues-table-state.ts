@@ -279,6 +279,11 @@ export function useIssueTable({
     sorting,
     mode
   );
+  // The headings' order is read once, when the table is made (`groupOrder`), so it reads the
+  // order each column's filter lists its values in from the columns of the latest draw: Legion
+  // phase lists the board's columns (`IssueTableMode`), which a later board may change.
+  const drawnColumns = useRef(columns);
+  drawnColumns.current = columns;
   const model = useDataTable<Item>({
     rows: items,
     columns,
@@ -302,7 +307,16 @@ export function useIssueTable({
     viewKey,
     selection: { state: selection, onChange: setSelection, onMark: recordMark },
     search: { column: "title", filterFn: fuzzy },
-    groupOrder: { compare: compareGroups, heading: groupValue },
+    groupOrder: {
+      compare: (id, a, b) =>
+        compareGroups(
+          id,
+          a,
+          b,
+          drawnColumns.current.find((column) => column.id === id)?.meta?.order
+        ),
+      heading: groupValue,
+    },
     // A server's page: the table pages by the count of every row it holds.
     ...(serverRowCount === undefined ? {} : { serverPage: { rowCount: serverRowCount } }),
   });

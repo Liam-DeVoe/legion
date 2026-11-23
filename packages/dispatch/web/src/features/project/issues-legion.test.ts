@@ -8,7 +8,12 @@ import { answerRequests } from "../../__tests__/network";
 import { ApiError } from "../../api/client";
 import { legionItemsQuery } from "../../api/queries";
 import { queryRetry, queryRetryDelay } from "../../api/query-client";
-import type { EvalItemRow, LegionBoardFacts, LegionBoardResponse } from "../../api/types";
+import type {
+  EvalItemRow,
+  LegionBoardColumn,
+  LegionBoardFacts,
+  LegionBoardResponse,
+} from "../../api/types";
 import {
   boardFactsAt,
   closedDaysWindows,
@@ -20,6 +25,7 @@ import {
   LEGION_PHASES,
   type LegionFacts,
   legionFactsOf,
+  legionPhasesOf,
   legionPhaseTitle,
   listedDoneRows,
   readLegionItems,
@@ -144,6 +150,24 @@ test("the Legion phases are each column id of the board route's contract, and no
   };
   const columns = contract.components.schemas.LegionBoardColumn.properties.id.enum;
   expect(LEGION_PHASES.map(({ id }): string => id).sort()).toEqual([...columns].sort());
+});
+
+test("the page's Legion phases are the board route's columns in its order under its labels, today's until it answers", () => {
+  expect(legionPhasesOf(undefined)).toBe(LEGION_PHASES);
+  const columns = [
+    ...LEGION_PHASES.map(({ id, title }) => ({ id, label: title, cards: [] })),
+    // The generated column ids name today's eleven: a newer server's column is none of them.
+    { id: "x_phase" as string as LegionBoardColumn["id"], label: "X phase", cards: [] },
+  ];
+  const phases = legionPhasesOf({ columns });
+  expect(phases.map(({ id, title }) => [id, title])).toEqual([
+    ...LEGION_PHASES.map(({ id, title }) => [id, title]),
+    ["x_phase", "X phase"],
+  ]);
+  // A later frame of the same columns, whatever cards they hold, is the same list.
+  expect(legionPhasesOf({ columns: columns.map((column) => ({ ...column, cards: null })) })).toBe(
+    phases
+  );
 });
 
 test("the time in a phase and the work time read in minutes, hours and minutes, then days", () => {

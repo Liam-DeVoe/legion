@@ -297,10 +297,10 @@ export function IssueTableFrame({
                 columns={visibleColumns}
                 viewportWidth={boxWidth}
                 continued={entry.continued}
-                grouping={grouping}
                 index={index}
                 legionQueue={legionQueue}
                 measure={measure}
+                show={table.getColumn(grouping)?.columnDef.meta?.show}
                 shown={entry.shown}
                 row={entry.row}
               />

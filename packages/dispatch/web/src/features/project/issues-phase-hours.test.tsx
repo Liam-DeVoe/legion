@@ -3,8 +3,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { legionPhaseFill } from "../../theme/classes";
+import { WORK_PHASES } from "./issues-legion";
 import { PhaseHoursCell, type PhaseHoursMode, PhaseHoursModeControl } from "./issues-phase-hours";
-import { WORK_PHASES } from "./issues-table-model";
 
 /** The Design's colour for each phase, in the board's order with Other last: one in both
  *  schemes, but Waiting on a person's. Retro's `#666666` is from the spec's correction
@@ -94,6 +94,28 @@ test("Queue draws no segment: hours under a key this build does not draw count a
   expect(segments().map(({ phase }) => phase)).toEqual(["implementing", "other"]);
   const other = document.querySelector<HTMLElement>('[data-phase-segment="other"]');
   expect(Number(other?.style.flexGrow)).toBeCloseTo(4 / 6, 5);
+});
+
+test("hours under a phase a newer server adds have no colour and no line of their own: they are Other's", async () => {
+  const user = userEvent.setup();
+  cell({ implementing: 2, x_phase: 2 });
+  expect(segments()).toEqual([
+    { className: DESIGN_COLOURS.implementing, phase: "implementing" },
+    { className: DESIGN_COLOURS.other, phase: "other" },
+  ]);
+  await user.hover(screen.getByRole("button", { name: "Time per phase, 4.0 h" }));
+  const lines = [
+    ...screen.getByRole("tooltip").querySelectorAll<HTMLElement>("[data-phase-hours-line]"),
+  ];
+  expect(
+    lines.map((line) => [
+      line.dataset.phaseHoursLine,
+      ...[...line.children].slice(1).map((part) => part.textContent),
+    ])
+  ).toEqual([
+    ["implementing", "Implementing", "2.0 h", "50%"],
+    ["other", "Other", "2.0 h", "50%"],
+  ]);
 });
 
 test("Hours draws the bar against the page's longest total and writes the total in hours", () => {

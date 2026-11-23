@@ -13,7 +13,7 @@ import {
 } from "../../theme/classes";
 import { statusLabel } from "./board-model";
 import { countStatuses, statusSegments } from "./issues-table-bar";
-import { columnFilterSpec, type Item } from "./issues-table-model";
+import type { Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
  *  held while a table action is out (`busy`, `heldPress`) as a `StepButton` is, and for the same
@@ -71,12 +71,12 @@ export function IssueRow({
 /** A group's header row: its value, how many issues, and its issues by status. */
 export function GroupRow({
   row,
-  grouping,
   columns,
   continued,
   index,
   legionQueue,
   measure,
+  show,
   shown,
   viewportWidth,
 }: {
@@ -91,15 +91,16 @@ export function GroupRow({
   legionQueue: boolean;
   measure: (element: Element | null) => void;
   row: Row<Item>;
-  grouping: string;
   columns: number;
+  /** A value as the grouped column's filter shows it (its `meta.show`): Legion phase's, the
+   *  board's own label. A column with none shows the value as it is. */
+  show: ((value: string) => string) | undefined;
   viewportWidth: number;
 }): ReactNode {
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
   const value = String(row.groupingValue ?? "");
-  // A heading reads as the column's filter does: the registry holds that text once.
-  const groupedBy = columnFilterSpec(grouping);
-  const heading = groupedBy?.kind === "picks" && groupedBy.show ? groupedBy.show(value) : value;
+  // A heading reads as the column's filter does.
+  const heading = show === undefined ? value : show(value);
   // What the reader can see under this heading, which a page boundary can make fewer than the
   // group holds: "3 of 5 issues" rather than a count of rows that are not on this page.
   const here = shown ?? leaves.length;

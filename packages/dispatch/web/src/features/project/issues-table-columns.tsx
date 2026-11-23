@@ -43,12 +43,19 @@ import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 import {
-  LEGION_PHASE_PICKS,
+  legionPhasePicks,
   ROLE_PICKS,
   WAITING_REASON_PICKS,
   WORKER_STATE_PICKS,
 } from "./issues-filter-picks";
-import { formatPhaseTime, formatWorkTime, type LegionFacts, sinceMs } from "./issues-legion";
+import {
+  formatPhaseTime,
+  formatWorkTime,
+  LEGION_PHASES,
+  type LegionFacts,
+  type LegionPhaseColumn,
+  sinceMs,
+} from "./issues-legion";
 import {
   PhaseHoursCell,
   type PhaseHoursMode,
@@ -67,6 +74,7 @@ import {
   ISSUE_TABLE_COLUMNS,
   type Item,
   isBoardFedColumn,
+  legionPhaseFilter,
   MEASURE_METHODS,
   matchesFilters,
   phaseHoursTotal,
@@ -292,13 +300,15 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
  *  can have no value sorts those rows last whichever way the table sorts it (`descending`), and
  *  by the next sort key among themselves (`emptyLast`).
  *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
- *  switches. */
+ *  switches. Legion phase sorts in the order of `phaseOrder`, the board's columns.
+ */
 const renderings = (
   userState: UserState | undefined,
   onMark: (key: string) => void,
   phaseMode: PhaseHoursMode,
   setPhaseMode: (mode: PhaseHoursMode) => void,
-  descending: SortsDescending
+  descending: SortsDescending,
+  phaseOrder: readonly string[]
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -424,8 +434,9 @@ const renderings = (
   },
   legion_phase: {
     header: "Legion phase",
-    // The board's order, the rows with no card last.
-    accessorFn: (item) => placeIn(LEGION_PHASE_PICKS, item.card?.column),
+    // The board's order, the rows with no card last. The cell reads the board's own label of the
+    // card's column, so a column a newer server adds reads as that server names it.
+    accessorFn: (item) => placeIn(phaseOrder, item.card?.column),
     ...smallestFirst(descending),
     sortDescFirst: false,
     cell: ({ row }) =>
@@ -861,7 +872,8 @@ export function issueTableLayout(
 /** Which table the columns are drawn for: a table another page draws over a listing of its own
  *  (`embedded`), which draws today's cells at today's widths, or the Issues tab's own (`tab`),
  *  whose board-fed columns are neither in the Columns menu nor in Group by in a project with no
- *  Legion daemon (`hasLegion`). */
+ *  Legion daemon (`hasLegion`), and whose Legion phase column offers, sorts and groups by the
+ *  board's columns (`phases`, `legionPhasesOf`). */
 export type IssueTableMode =
   | {
       readonly kind: "embedded";
@@ -869,7 +881,11 @@ export type IssueTableMode =
        *  this map does not hold, a priority deleted since it was read, is named by its id. */
       readonly priorityTitles?: ReadonlyMap<string, string>;
     }
-  | { readonly kind: "tab"; readonly hasLegion: boolean };
+  | {
+      readonly kind: "tab";
+      readonly hasLegion: boolean;
+      readonly phases: readonly LegionPhaseColumn[];
+    };
 
 /**
  * The columns of `layout`, in its order: the registry's (`viewLayoutColumns` on the Issues tab,
@@ -878,9 +894,10 @@ export type IssueTableMode =
  * stable one, as it does `layout` and the embedded mode's `priorityTitles`. A column starts at
  * the layout's width and goes no narrower than its minimum there (`compact`: a phone's). `mode`
  * says which table they are drawn for. Time per phase's mode is the reader's
- * (`usePhaseHoursMode`), and a switch of it draws the columns anew. A column whose cells can be
- * empty reads the direction it is sorted in from `sorting` (`emptyLast`), through a ref set at
- * each draw, so a change of sort draws no column anew.
+ * (`usePhaseHoursMode`), and a switch of it draws the columns anew, as a change of the board's
+ * phases does. A column whose cells can be empty reads the direction it is sorted in from
+ * `sorting` (`emptyLast`), through a ref set at each draw, so a change of sort draws no column
+ * anew.
  */
 export function useIssueTableColumns(
   userState: UserState | undefined,
@@ -899,15 +916,26 @@ export function useIssueTableColumns(
   const priorityTitles = mode.kind === "embedded" ? mode.priorityTitles : undefined;
   // A board-fed column of a project with no Legion daemon has nothing to draw.
   const noLegion = mode.kind === "tab" && !mode.hasLegion;
+  // A table another page draws has no Legion phase column: today's phases stand in.
+  const phases = mode.kind === "tab" ? mode.phases : LEGION_PHASES;
   return useMemo<ColumnDef<Item>[]>(() => {
     const descending = (id: string) => sorted.current.find((sort) => sort.id === id)?.desc === true;
-    const rendering = renderings(userState, onMark, phaseMode, setPhaseMode, descending);
+    const rendering = renderings(
+      userState,
+      onMark,
+      phaseMode,
+      setPhaseMode,
+      descending,
+      legionPhasePicks(phases)
+    );
+    const phaseFilter = legionPhaseFilter(phases);
     const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
     const embeddedRendering = embedded ? embeddedRenderings(descending) : undefined;
     const registered = layout.ids.flatMap((id): ColumnDef<Item>[] => {
       const column = columnSpec.get(id);
       if (column === undefined) return [];
-      const filter = column.filter;
+      // Legion phase offers the board's columns, in its order and under its labels.
+      const filter = column.id === "legion_phase" ? phaseFilter : column.filter;
       const picks = filter?.kind === "picks" ? filter : undefined;
       const unfed = noLegion && isBoardFedColumn(column.id);
       // Today's Queue filter names its values as they are, Queued and Not queued.
@@ -973,6 +1001,7 @@ export function useIssueTableColumns(
     priorityTitles,
     embedded,
     noLegion,
+    phases,
     phaseMode,
     setPhaseMode,
   ]);

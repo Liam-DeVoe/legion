@@ -22,8 +22,8 @@ import {
   DURATION_PICKS,
   type DurationPick,
   durationPick,
-  LEGION_PHASE_PICKS,
   LEGION_TREE_PICKS,
+  legionPhasePicks,
   legionPick,
   ME,
   NONE_PICK,
@@ -41,7 +41,15 @@ import {
   waitingReasonPick,
   workerPicks,
 } from "./issues-filter-picks";
-import { LEGION_PHASES, type LegionFacts, legionFactsOf, legionPhaseTitle } from "./issues-legion";
+import {
+  LEGION_PHASES,
+  type LegionFacts,
+  type LegionPhaseColumn,
+  legionFactsOf,
+  legionPhaseTitle,
+  OTHER_PHASE,
+  WORK_PHASES,
+} from "./issues-legion";
 
 /** An issue's card on the Legion board: the card, and the board column it is in, by its id and
  *  the board's own label for it. That column is the issue's Legion phase. */
@@ -321,19 +329,26 @@ export const waitingReasonWords = wordsOf({
 export const workerName = (role: string): string =>
   role === NONE_PICK ? NONE_WORD : `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
 
-/** The part of `hours_by_phase` that no phase took (`breakdownOther` on #3578). */
-const OTHER_PHASE = "other";
-
-/** Time per phase's phases, in the board's order and Other last: the Legion phases from Design
- *  to Held, since Queue never has hours. */
-export const WORK_PHASES: readonly string[] = [
-  ...LEGION_PHASES.flatMap((phase) => (phase.id === "queue" ? [] : [phase.id])),
-  OTHER_PHASE,
-];
-
-/** A phase of `hours_by_phase` by its name: a Legion phase's title, or Other. */
+/** A phase of `hours_by_phase` that Time per phase draws (`WORK_PHASES`) by its name: a Legion
+ *  phase's title, or Other. */
 export const workPhaseTitle = (phase: string): string =>
   phase === OTHER_PHASE ? "Other" : legionPhaseTitle(phase);
+
+/**
+ * The Legion phase filter over `phases`, the board's columns: the board column a row's card is
+ * in, None with no card, every phase offered in the board's order under its title whatever the
+ * rows hold, then None. The registry's is over today's phases (`LEGION_PHASES`), which the page
+ * draws until the board answers; the Issues tab draws the board's own (`IssueTableMode`).
+ */
+export function legionPhaseFilter(phases: readonly LegionPhaseColumn[]): ColumnFilterSpec {
+  const picks = legionPhasePicks(phases);
+  const titles = new Map(phases.map(({ id, title }) => [id, title]));
+  return one((item) => phaseColumnPick(item.card?.column), {
+    order: picks,
+    show: (value) => (value === NONE_PICK ? NONE_WORD : (titles.get(value) ?? value)),
+    always: picks,
+  });
+}
 
 /** The sum of a row's hours by phase, 0 where its facts hold none: Time per phase's total, which
  *  its sort reads. */
@@ -475,11 +490,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     min: 168,
     boardFed: true,
     // Every Legion phase is offered in the board's order, then None, whatever the rows hold.
-    filter: one((item) => phaseColumnPick(item.card?.column), {
-      order: LEGION_PHASE_PICKS,
-      show: (value) => (value === NONE_PICK ? NONE_WORD : legionPhaseTitle(value)),
-      always: LEGION_PHASE_PICKS,
-    }),
+    filter: legionPhaseFilter(LEGION_PHASES),
   },
   {
     id: "assignee",
@@ -1121,13 +1132,19 @@ export function matchesFilters(
  *  every named group. */
 const EMPTY_GROUPS: readonly string[] = ["Nobody", "Unassigned"];
 /** Which of two of column `id`'s groups comes first: the order its filter lists its values in,
- *  and by name where the registry gives none — numbers inside a name counted as numbers, so
+ *  the drawn column's (`listed`, the board's phases for Legion phase) where it is given, else the
+ *  registry's, and by name where there is none — numbers inside a name counted as numbers, so
  *  `CORE-2` reads before `CORE-10`, and the empty group last. A group's place is its column's,
  *  not the row sort's, so the headings read P0, P1, P2, P3 however the rows are sorted. */
-export function compareGroups(id: string, a: string, b: string): number {
+export function compareGroups(
+  id: string,
+  a: string,
+  b: string,
+  listed?: readonly string[]
+): number {
   const filter = columnFilterSpec(id);
   if (filter?.kind !== "picks" || filter.group === undefined) return 0;
-  const order = filter.order;
+  const order = listed ?? filter.order;
   if (order === undefined) {
     const empty = Number(EMPTY_GROUPS.includes(a)) - Number(EMPTY_GROUPS.includes(b));
     return empty !== 0 ? empty : a.localeCompare(b, undefined, { numeric: true });

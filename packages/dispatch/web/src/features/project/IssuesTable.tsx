@@ -27,6 +27,7 @@ import {
   ViewControls,
   viewTabButtonId,
 } from "./IssueViewTabs";
+import { legionPhasesOf } from "./issues-legion";
 import { type BoardToggles, IssuesTabBoard } from "./issues-tab-board";
 import { type HeldDoneRead, useHeldDone, useTabCounts } from "./issues-tab-counts";
 import { useTabTableLayout } from "./issues-tab-layout";
@@ -316,6 +317,9 @@ function IssuesTabView({
     viewer,
   });
   const { board, done, doneRead, doneTotal, issues, items: factsRead, readsOpen } = reads;
+  // The Legion phases are the board's columns once it answers, today's until then and in a
+  // project with no daemon, which reads no board.
+  const phases = legionPhasesOf(board.data);
   const state = useIssueTable({
     actions,
     address,
@@ -327,7 +331,7 @@ function IssuesTabView({
     layout,
     listingIn: reads.listingIn,
     loaded: reads.loaded,
-    mode: { kind: "tab", hasLegion },
+    mode: { kind: "tab", hasLegion, phases },
     moveFrom: "page",
     onBoard,
     panel,
@@ -477,6 +481,7 @@ function IssuesTabView({
         name={NAME}
         notices={notices}
         own={own}
+        phases={phases}
         project={project}
         readStates={readStates}
         state={state}

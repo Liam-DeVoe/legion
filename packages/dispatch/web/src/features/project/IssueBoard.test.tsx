@@ -26,6 +26,7 @@ import type {
   IssueClaim,
   IssueSummary,
   LegionBoardCard,
+  LegionBoardColumn,
   LegionBoardFacts,
   LegionBoardResponse,
   LegionSetting,
@@ -409,6 +410,35 @@ test("by Legion phase the Board draws the eleven phases and the None rail, and n
   expect(screen.queryByRole("button", { name: "Show Icebox" })).toBeNull();
   expect(screen.getByRole("button", { name: "Lanes" })).toBeDefined();
   expectNoFullListing(listing);
+});
+
+// A column a newer server adds after Held is a Board column under the route's label, holding its
+// card: the Board draws the board route's columns, so no card of a column it does not know is
+// dropped.
+test("by Legion phase a column the board route adds after Held is a Board column under its label, holding its card", async () => {
+  const sockets = liveSockets(restores);
+  board(PHASE_ROWS(), "?layout=board&group=legion_phase", DAEMON);
+  const routed = PHASE_BOARD();
+  await answerBoard(sockets, {
+    ...routed,
+    columns: [
+      ...(routed.columns ?? []),
+      {
+        // The generated column ids name today's eleven: a newer server's column is none of them.
+        id: "x_phase" as string as LegionBoardColumn["id"],
+        label: "X phase",
+        cards: [legionCard("CORE-3", { phase: "x_phase" })],
+      },
+    ],
+  });
+  const region = await boardRegion();
+  expect(columnIds(region)).toEqual([...LEGION_PHASES.map((phase) => phase.id), "x_phase", "none"]);
+  const added = within(region).getByRole("region", { name: "X phase" });
+  expect(cardKeys(added)).toEqual(["CORE-3"]);
+  expect(added.querySelector("[data-testid=board-column-header]")?.textContent).toBe("X phase1");
+  expect(within(region).getByRole("region", { name: "None (collapsed)" }).textContent).toBe(
+    "1None"
+  );
 });
 
 test.each([

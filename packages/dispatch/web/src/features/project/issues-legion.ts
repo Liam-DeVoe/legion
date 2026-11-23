@@ -24,14 +24,15 @@ export function sinceMs(since: string | null | undefined): number | undefined {
 }
 
 /**
- * The Legion phases, in the board's order (`legionBoardColumnOrder` in
- * `packages/envoy/internal/dispatch/api/legion_board.go`): every column of the board route, each
- * by its id and its title, with Retro between Accepting and Merging. The Legion phase column,
- * its filter, the Board grouped by Legion phase and Time per phase follow this order. An issue
- * is in a phase only while the daemon holds a card for it, and its Dispatch status is a column
- * of its own. Each id is one of the generated column ids (`LegionBoardColumn["id"]`), and
- * `issues-legion.test.ts` holds this list to that whole set: a column that the board adds and
- * this list lacks fails that test.
+ * The Legion phases of today's board route, in its order (`legionBoardColumnOrder` in
+ * `packages/envoy/internal/dispatch/api/legion_board.go`): every column of the route, each by its
+ * id and its title, with Retro between Accepting and Merging. An issue is in a phase only while
+ * the daemon holds a card for it, and its Dispatch status is a column of its own. Once the board
+ * answers, the page takes the phases from the route's own columns (`legionPhasesOf`), so a column
+ * a newer server adds is a phase too; until then, and in a project with no daemon, it draws these.
+ * Time per phase draws the ones from Design to Held (`WORK_PHASES`). Each id is one of the
+ * generated column ids (`LegionBoardColumn["id"]`), and `issues-legion.test.ts` holds this list to
+ * that whole set: a column that the route adds and this list lacks fails that test.
  */
 export const LEGION_PHASES = [
   { id: "queue", title: "Queue" },
@@ -50,14 +51,53 @@ export const LEGION_PHASES = [
 /** A board column's id: the address value of a Legion phase (`f.legion_phase=implementing`). */
 export type LegionPhase = (typeof LEGION_PHASES)[number]["id"];
 
+/** One Legion phase as the page draws it: its board column's id, which the address keeps, and
+ *  the title it reads by. */
+export interface LegionPhaseColumn {
+  readonly id: string;
+  readonly title: string;
+}
+
+/** Each list `legionPhasesOf` made, by its ids and titles: every frame of one board's columns is
+ *  the same list, so what the page draws from it is drawn again only when the columns change. */
+const phaseLists = new Map<string, readonly LegionPhaseColumn[]>();
+
+/** The Legion phases of `board`: its columns, in its order and under its labels, a column a newer
+ *  server adds among them. Until the board answers, and in a project with no daemon, which reads
+ *  none, they are the phases of today's route (`LEGION_PHASES`). */
+export function legionPhasesOf(
+  board: Pick<LegionBoardResponse, "columns"> | undefined
+): readonly LegionPhaseColumn[] {
+  if (board === undefined) return LEGION_PHASES;
+  const columns = board.columns ?? [];
+  const key = JSON.stringify(columns.map(({ id, label }) => [id, label]));
+  const held = phaseLists.get(key);
+  if (held !== undefined) return held;
+  const phases = columns.map(({ id, label }) => ({ id, title: label }));
+  phaseLists.set(key, phases);
+  return phases;
+}
+
 const phaseTitles: ReadonlyMap<string, string> = new Map(
   LEGION_PHASES.map((phase) => [phase.id, phase.title])
 );
 
-/** A phase's title, or the id as it is for a phase this build does not know. */
+/** A phase's title in today's route, or the id as it is for a phase that route does not have. */
 export function legionPhaseTitle(phase: string): string {
   return phaseTitles.get(phase) ?? phase;
 }
+
+/** The part of `hours_by_phase` that no phase took (`breakdownOther` on #3578). */
+export const OTHER_PHASE = "other";
+
+/** Time per phase's phases, in the board's order and Other last: today's Legion phases from
+ *  Design to Held, since Queue never has hours, each with its fixed colour. A key of
+ *  `hours_by_phase` that is none of these, such as a phase a newer server adds, has no colour of
+ *  its own: its hours count as Other's. */
+export const WORK_PHASES: readonly string[] = [
+  ...LEGION_PHASES.flatMap((phase) => (phase.id === "queue" ? [] : [phase.id])),
+  OTHER_PHASE,
+];
 
 /** How long the issue has been in its phase, from the moment the daemon's state first showed it
  *  there: minutes under an hour, hours and minutes under a day, then days and hours. An issue

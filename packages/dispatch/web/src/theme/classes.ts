@@ -241,7 +241,7 @@ for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_S
   );
 /**
  * One fixed fill for each phase Time per phase draws (`WORK_PHASES` in
- * `features/project/issues-table-model.ts`), in the board's order with Other last: eight from
+ * `features/project/issues-legion.ts`), in the board's order with Other last: eight from
  * the Okabe-Ito palette, which readers with each common colour-vision deficiency can tell apart
  * (https://jfly.uni-koeln.de/color/#pallet), and three grays, Retro, Held and Other. No two
  * phases share a fill. Each is the same in both colour schemes but Waiting on a person's, black

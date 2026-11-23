@@ -18,6 +18,7 @@ import type {
   Issue,
   IssueSummary,
   LegionBoardCard,
+  LegionBoardColumn,
   LegionBoardFacts,
   LegionBoardResponse,
   LegionSetting,
@@ -30,6 +31,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
+import { LEGION_PHASES } from "./issues-legion";
 import { type AdvancesListing, CLOSE_ITEMS_AGAIN_MS } from "./issues-table-data";
 import { ALL_ROWS, ISSUE_TABLE_COLUMNS, tableStorageKey } from "./issues-table-model";
 import { ListingTable } from "./ListingTable";
@@ -3471,6 +3473,62 @@ test("a project with no daemon has no (i) hint", async () => {
   table(VIEW_ROWS());
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(screen.queryByRole("button", { name: "Legion daemon" })).toBeNull();
+});
+
+// A column a newer server adds after Held is a Legion phase under the route's label: the Legion
+// phase filter offers it after Held and before None, its card's cell reads that label, and Group
+// by heads its group in the board's order, before None.
+test("a column the board route adds after Held is a Legion phase pick, cell and group under its label", async () => {
+  const user = userEvent.setup();
+  const sockets = liveSockets(restores);
+  table(
+    [issue("CORE-1"), issue("CORE-2"), issue("CORE-3")],
+    "?cols=key,title,legion_phase&group=legion_phase",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  const placed = (key: string, phase: string): LegionBoardCard => ({
+    ...waitingCard(key),
+    phase,
+    waiting: null,
+    waiting_place: null,
+  });
+  await answerBoard(sockets, {
+    ...legionBoard(),
+    columns: [
+      ...LEGION_PHASES.map(({ id, title }) => ({
+        id,
+        label: title,
+        cards: id === "held" ? [placed("CORE-1", "held")] : [],
+      })),
+      {
+        // The generated column ids name today's eleven: a newer server's column is none of them.
+        id: "x_phase" as string as LegionBoardColumn["id"],
+        label: "X phase",
+        cards: [placed("CORE-2", "x_phase")],
+      },
+    ],
+  });
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(within(row).getByText("X phase")).toBeDefined();
+
+  await user.click(screen.getByRole("button", { name: "Filter Legion phase" }));
+  const options = within(screen.getByRole("listbox", { name: "Legion phase options" }))
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label"));
+  expect(options).toEqual([
+    ...LEGION_PHASES.map(({ id, title }) => `${title}, ${id === "held" ? "1 issue" : "0 issues"}`),
+    "X phase, 1 issue",
+    "None, 1 issue",
+  ]);
+  await user.keyboard("{Escape}");
+
+  expect(
+    screen
+      .getAllByRole("button", { name: /^Collapse / })
+      .map((heading) => heading.getAttribute("aria-label"))
+  ).toEqual(["Collapse Held, 1 issue", "Collapse X phase, 1 issue", "Collapse None, 1 issue"]);
 });
 
 /** The height of each row of the table in the geometry below. */

@@ -12,8 +12,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
-import type { LegionFacts } from "./issues-legion";
-import { WORK_PHASES, workPhaseTitle } from "./issues-table-model";
+import { type LegionFacts, WORK_PHASES } from "./issues-legion";
+import { workPhaseTitle } from "./issues-table-model";
 
 /** How Time per phase draws its bars: each phase's part of that row's own total (Share), or each
  *  bar against the longest total on the current page, with the total written beside it (Hours). */
@@ -38,7 +38,8 @@ const isDrawn = (phase: string): phase is DrawnPhase => Object.hasOwn(legionPhas
 const DRAWN_PHASES: readonly DrawnPhase[] = WORK_PHASES.filter(isDrawn);
 
 /** A row's hours by phase: each phase with hours in `DRAWN_PHASES`' order, the hours of a key
- *  this build does not know counted as Other's, and their total. */
+ *  Time per phase does not draw, a phase a newer server adds among them, counted as Other's, and
+ *  their total. */
 function phaseHours(facts: Pick<LegionFacts, "hours_by_phase">): {
   readonly phases: readonly (readonly [DrawnPhase, number])[];
   readonly total: number;

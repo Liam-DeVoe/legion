@@ -1,7 +1,7 @@
 import { ISSUE_STATUSES, type IssueStatus } from "@legion/contracts/dispatch-tools";
 import type { IssuePriority, UpdateIssueInput } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
-import { LEGION_PHASES, legionPhaseTitle } from "./issues-legion";
+import type { LegionPhaseColumn } from "./issues-legion";
 import type { Item } from "./issues-table-model";
 
 /** The Go server's `model.IssueStatuses`, in lifecycle order: the board's columns. */
@@ -63,11 +63,12 @@ const QUEUE_COLUMN = "queue";
 /** What a refused move by Legion phase says: the daemon puts each card in its phase. */
 export const DAEMON_SETS_PHASE = "The Legion daemon sets the Legion phase.";
 
-/** One column the Board draws, in its order. A rail holds its cards out of sight: Icebox until
- *  Show Icebox is on, Done while the view lists no done issue, and None. */
+/** One column the Board draws, in its order, under its title. A rail holds its cards out of
+ *  sight: Icebox until Show Icebox is on, Done while the view lists no done issue, and None. */
 export interface BoardColumn {
   readonly id: string;
   readonly rail: boolean;
+  readonly title: string;
 }
 
 /**
@@ -79,14 +80,16 @@ export interface BoardColumn {
  * column of the view's done cards where the view lists done issues, and a rail otherwise, which
  * still takes a drop that closes an issue.
  *
- * By Legion phase there is one column for each phase, in the board's order, empty ones included,
- * and the None rail of the rows that have no card. A Legion phase filter keeps only its picks,
- * and the None rail only where it picks None.
+ * By Legion phase there is one column for each of `phases`, the board's columns, in its order and
+ * under its labels, empty ones included, so a column a newer server adds holds its cards too; then
+ * the None rail of the rows that have no card. A Legion phase filter keeps only its picks, and the
+ * None rail only where it picks None.
  */
 export function boardColumns({
   by,
   listsDone,
   phaseFilterPicks,
+  phases,
   rows,
   showIcebox,
   statusPicks,
@@ -94,6 +97,7 @@ export function boardColumns({
   by: BoardBy;
   listsDone: boolean;
   phaseFilterPicks: readonly string[];
+  phases: readonly LegionPhaseColumn[];
   rows: readonly Item[];
   showIcebox: boolean;
   statusPicks: readonly string[];
@@ -101,11 +105,10 @@ export function boardColumns({
   if (by === "legion_phase") {
     const picked = (id: string) => phaseFilterPicks.length === 0 || phaseFilterPicks.includes(id);
     return [
-      ...LEGION_PHASES.filter((phase) => picked(phase.id)).map((phase) => ({
-        id: phase.id,
-        rail: false,
-      })),
-      ...(picked(NONE_COLUMN) ? [{ id: NONE_COLUMN, rail: true }] : []),
+      ...phases
+        .filter((phase) => picked(phase.id))
+        .map((phase) => ({ id: phase.id, rail: false, title: phase.title })),
+      ...(picked(NONE_COLUMN) ? [{ id: NONE_COLUMN, rail: true, title: "None" }] : []),
     ];
   }
   const named = new Set<string>(
@@ -114,8 +117,12 @@ export function boardColumns({
   return [
     ...issueStatuses
       .filter((status) => status !== "done" && named.has(status))
-      .map((status) => ({ id: status, rail: status === "icebox" && !showIcebox })),
-    { id: "done", rail: !listsDone },
+      .map((status) => ({
+        id: status,
+        rail: status === "icebox" && !showIcebox,
+        title: statusLabel(status),
+      })),
+    { id: "done", rail: !listsDone, title: statusLabel("done") },
   ];
 }
 
@@ -125,10 +132,9 @@ function columnOf(item: Item, by: BoardBy): string {
   return by === "status" ? item.issue.status : (item.card?.column ?? NONE_COLUMN);
 }
 
-/** A column's title: the status label, or the Legion phase's title, and None. */
-export function columnTitle(id: string, by: BoardBy): string {
-  if (by === "status") return statusText(id);
-  return id === NONE_COLUMN ? "None" : legionPhaseTitle(id);
+/** The title of the column `id` among `columns`, or the id where the Board draws no such column. */
+export function columnTitle(columns: readonly BoardColumn[], id: string): string {
+  return columns.find((column) => column.id === id)?.title ?? id;
 }
 
 /** One cell of the Board: a column, inside a lane where the Board has lanes, with its rows in

@@ -9,8 +9,8 @@ import {
   createdByReader,
   DURATION_PICKS,
   durationPick,
-  LEGION_PHASE_PICKS,
   LEGION_TREE_PICKS,
+  legionPhasePicks,
   legionPick,
   phaseColumnPick,
   phaseHoursPicks,
@@ -25,6 +25,7 @@ import {
   waitingReasonPick,
   workerPicks,
 } from "./issues-filter-picks";
+import { LEGION_PHASES } from "./issues-legion";
 import { expandView } from "./issues-views";
 
 const at = (query: string) => copyAddress(query);
@@ -108,7 +109,7 @@ test("Legion tree's picks are root, child and none, and two of them select their
 });
 
 test("Legion phase's picks are the board's column ids in its order, Retro between Accepting and Merging, and None last", () => {
-  expect(LEGION_PHASE_PICKS).toEqual([
+  expect(legionPhasePicks(LEGION_PHASES)).toEqual([
     "queue",
     "design",
     "planning",
@@ -152,6 +153,16 @@ test("f.phase_hours picks the phases with hours, several picking the rows with h
   expect(phaseHoursPicks({ implementing: 2.5 }).some((phase) => picked.includes(phase))).toBe(
     false
   );
+});
+
+test("f.phase_hours offers only the phases Time per phase draws and other: a key it does not draw is other", () => {
+  expect(phaseHoursPicks({ x_phase: 2 })).toEqual(["other"]);
+  expect(phaseHoursPicks({ implementing: 1, x_phase: 2, other: 1 })).toEqual([
+    "implementing",
+    "other",
+  ]);
+  const picked = expandView(at("view=done&f.phase_hours=other")).getAll("f.phase_hours");
+  expect(phaseHoursPicks({ x_phase: 2 }).some((phase) => picked.includes(phase))).toBe(true);
 });
 
 test("the Queue filter keeps its address values Queued and Not queued", () => {

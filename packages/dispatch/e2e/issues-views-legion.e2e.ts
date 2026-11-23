@@ -10,7 +10,12 @@
 // API (`GET /api/v1/issues`, the board route, the items route), never with the web code's
 // filters. A row that reads an issue's Legion work writes a role event on it and waits for the
 // facts consumer's row (`waitForIssueFacts`, up to 75 s), each such wait a row of its own.
-import type { LegionBoardResponse as Board, IssueSummary } from "../web/src/api/types";
+import type {
+  LegionBoardResponse as Board,
+  LegionBoardCard as Card,
+  LegionBoardColumn as Column,
+  IssueSummary,
+} from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import {
   claimIssue,
@@ -425,9 +430,65 @@ async function columnsMenuNames(page: Page): Promise<string[]> {
   return names;
 }
 
+/** k2's twelfth column, which a newer server adds after Held, by its id and its label. */
+const X_PHASE = { id: "x_phase", label: "X phase" } as const;
+
+/** The hours k2 gives the issue in the twelfth column under that column's own key. */
+const X_PHASE_HOURS = 2;
+
+/** Adds the twelfth column after Held to a board snapshot, holding the card of `key`, with the
+ *  column's hours in that issue's facts: what a newer server sends for an issue in a phase this
+ *  build does not know. The route's last column is Held, which the row asserts. */
+function addTwelfthColumn(board: Board, key: string): void {
+  const card: Card = {
+    blocked_by: null,
+    children: 0,
+    key,
+    phase: X_PHASE.id,
+    phase_since: null,
+    priority: null,
+    roles: null,
+    slot: null,
+    slot_since: null,
+    slot_use: null,
+    title: key,
+    tree: key,
+    tree_slot: null,
+    waiting: null,
+    waiting_on: null,
+    waiting_place: null,
+  };
+  board.columns = [
+    ...(board.columns ?? []),
+    // The generated column ids name today's eleven: a newer server's column is none of them.
+    { id: X_PHASE.id as string as Column["id"], label: X_PHASE.label, cards: [card] },
+  ];
+  const now = new Date().toISOString();
+  board.issues = {
+    ...board.issues,
+    [key]: {
+      as_of: null,
+      closed_at: null,
+      growth: null,
+      hours_by_phase: { [X_PHASE.id]: X_PHASE_HOURS },
+      opened_at: now,
+      review_rounds: 0,
+      root_key: key,
+      slot_hours: 0,
+      tree_depth: 0,
+      updated_at: now,
+      waiting_reason: "",
+      work_first_at: null,
+      work_hours: 0,
+      work_last_at: null,
+    },
+  };
+}
+
 // SLOW(>=2s): ACME seeded with two more issues through later reads, then Open read in the table
-// with the Queue filter and on the Board by Legion phase.
-test("Open's Legion queue lists the Queue column's cards in the board's order, and its Board by Legion phase draws the board's eleven columns", async ({
+// with the Queue filter and on the Board by Legion phase, then a third issue and Open read again
+// under one board frame that adds a twelfth column.
+test("Open's Legion queue lists the Queue column's cards in the board's order, and its Board by Legion phase draws the board's eleven columns and a twelfth one a newer server adds", async ({
   browser,
 }) => {
   const daemon = await seedAcme();
@@ -490,6 +551,85 @@ test("Open's Legion queue lists the Queue column's cards in the board's order, a
         );
     }
     expect(await columnCount(page, "queue")).toBe(board.header.queue_length);
+
+    // One board frame, the snapshot, with a twelfth column after Held that holds the card of C,
+    // an open issue with hours under that column's key; no later frame reaches the page. The
+    // Board draws it as a column, the table names it in C's cell and in the Legion phase filter,
+    // and Time per phase, which has no colour for it, counts its hours as Other.
+    const c = (await createIssue({ project: ACME, title: "Worked in a twelfth column" })).key;
+    const routed = await context.newPage();
+    await routeLive(routed, {
+      hold: true,
+      edit: (frame) => {
+        if (frame.body !== undefined) addTwelfthColumn(frame.body, c);
+      },
+    });
+    await routed.setViewportSize({ height: 1600, width: 1440 });
+    await routed.goto(
+      `/projects/${ACME}/issues?layout=board&group=legion_phase&cols=key,title,legion_phase,phase_hours`
+    );
+    await expect(routed.getByRole("region", { name: "Project board" })).toBeVisible();
+    await expect
+      .poll(async () =>
+        (await drawnColumns(routed))
+          .filter((column) => !column.rail)
+          .map(({ id, title }) => [id, title])
+      )
+      .toEqual([...BOARD_COLUMNS, [X_PHASE.id, X_PHASE.label]]);
+    await expect
+      .poll(async () => (await drawnColumns(routed)).find(({ id }) => id === X_PHASE.id)?.cards)
+      .toEqual([c]);
+
+    await routed.getByRole("button", { exact: true, name: "Table" }).click();
+    const routedTable = issuesTable(routed);
+    await expect(routedTable.locator(`tr[data-issue-row="${c}"]`)).toBeVisible();
+    await expect
+      .poll(async () => (await readRows(routedTable))[c]?.["Legion phase"]?.text)
+      .toBe(X_PHASE.label);
+    const phasePicks = (await readFilter(routed, "Legion phase")).options;
+    expect(
+      phasePicks.map(([words]) => words),
+      "the Legion phase filter: the board's columns in its order, then None"
+    ).toEqual([...BOARD_COLUMNS.map(([, label]) => label), X_PHASE.label, "None"]);
+    expect(phasePicks.find(([words]) => words === X_PHASE.label)?.[1]).toBe(1);
+
+    // C's Time per phase: its hours under the twelfth column's key are Other's, with no line of
+    // their own.
+    const cHours = routedTable.locator(`tr[data-issue-row="${c}"] [data-phase-hours]`);
+    await expect(cHours).toHaveAttribute(
+      "aria-label",
+      `Time per phase, ${hoursWords(X_PHASE_HOURS)}`
+    );
+    await cHours.hover();
+    const lines = routed.getByRole("tooltip").locator("[data-phase-hours-line]");
+    await expect(lines).toHaveCount(1);
+    // The count wait above drew the one line this read takes.
+    expect(
+      await lines.evaluateAll((drawn) =>
+        drawn.map((line) => [
+          line.getAttribute("data-phase-hours-line"),
+          ...[...line.children].slice(1).map((part) => (part.textContent ?? "").trim()),
+        ])
+      )
+    ).toEqual([["other", "Other", hoursWords(X_PHASE_HOURS), "100%"]]);
+    await routed.mouse.move(5, 5);
+    await expect(routed.getByRole("tooltip")).toHaveCount(0);
+
+    // Time per phase's filter offers no pick for the twelfth column, and its Other pick lists C.
+    const hourPicks = (await readFilter(routed, "Time per phase")).options.map(([words]) => words);
+    expect(hourPicks).toContain("Other");
+    expect(hourPicks).not.toContain(X_PHASE.label);
+    expect(hourPicks).not.toContain(X_PHASE.id);
+    await routed.getByRole("button", { exact: true, name: "Filter Time per phase" }).click();
+    await routed
+      .getByRole("listbox", { name: "Time per phase options" })
+      .getByRole("option", { name: /^Other, \d+ issues?$/ })
+      .click();
+    await routed.keyboard.press("Escape");
+    await expect
+      .poll(() => new URL(routed.url()).searchParams.getAll("f.phase_hours"))
+      .toEqual(["other"]);
+    await expect.poll(() => rowKeys(routedTable)).toContain(c);
   } finally {
     await context.close();
     await daemon.close();

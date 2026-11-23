@@ -436,7 +436,7 @@ function BoardColumnView({
 }): ReactNode {
   const place = cellId(cell.column.id, cell.lane);
   const { isOver, setNodeRef } = useDroppable({ id: place });
-  const title = columnTitle(cell.column.id, by);
+  const title = cell.column.title;
   return (
     <section
       aria-label={title}
@@ -493,9 +493,9 @@ function BoardColumnView({
  * dropped on the Done rail closes its issue. Like a column it is a `tabIndex={-1}` focus target
  * for the Board's `h`/`l` keys, and a card moved into it by `Shift+H/L` hands the focus to it.
  */
-function Rail({ by, cell }: { by: BoardBy; cell: BoardCell }): ReactNode {
+function Rail({ cell }: { cell: BoardCell }): ReactNode {
   const { isOver, setNodeRef } = useDroppable({ id: cellId(cell.column.id, cell.lane) });
-  const title = columnTitle(cell.column.id, by);
+  const title = cell.column.title;
   return (
     <section
       aria-label={`${title} (collapsed)`}
@@ -551,7 +551,7 @@ function BoardLineView({
       <div className="flex w-max items-stretch gap-4">
         {line.cells.map((cell) =>
           cell.column.rail ? (
-            <Rail by={by} cell={cell} key={cell.column.id} />
+            <Rail cell={cell} key={cell.column.id} />
           ) : (
             <BoardColumnView by={by} cell={cell} key={cell.column.id} userState={userState} />
           )
@@ -931,7 +931,7 @@ export function IssueBoard({
         announceMove(
           pending.key,
           pending.column,
-          columnTitle(pending.column, by),
+          columnTitle(columns, pending.column),
           cell === undefined ? undefined : { at: index + 1, of: cell.items.length }
         )
       );
@@ -1034,7 +1034,9 @@ export function IssueBoard({
     // is known now; elsewhere the view's sort puts it, which the drawn move tells.
     const { position } = plan;
     if (position !== undefined)
-      setAnnouncement(announceMove(key, target.column, columnTitle(target.column, by), position));
+      setAnnouncement(
+        announceMove(key, target.column, columnTitle(columns, target.column), position)
+      );
     const follow: MoveFollow = {
       key,
       column: target.column,

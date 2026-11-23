@@ -8,7 +8,13 @@ import { LEGION_ROLES } from "@legion/contracts";
 import type { Actor } from "../../api/types";
 import { HOUR_MS } from "../../lib/closed-window";
 import { isViewer } from "../refs/actor";
-import { LEGION_PHASES, type LegionFacts, sinceMs } from "./issues-legion";
+import {
+  type LegionFacts,
+  type LegionPhaseColumn,
+  OTHER_PHASE,
+  sinceMs,
+  WORK_PHASES,
+} from "./issues-legion";
 
 /** Whether `a` and `b` hold as many values, each value of `a` one of `b`'s: the same set of
  *  picks, in any order. */
@@ -61,12 +67,11 @@ export function legionPick(facts: Pick<LegionFacts, "tree_depth"> | undefined): 
   return facts.tree_depth === 0 ? "root" : "child";
 }
 
-/** Legion phase's picks (`f.legion_phase`): the board's column ids, in its order, then None for
- *  an issue with no card. */
-export const LEGION_PHASE_PICKS: readonly string[] = [
-  ...LEGION_PHASES.map((phase) => phase.id),
-  NONE_PICK,
-];
+/** Legion phase's picks (`f.legion_phase`) over `phases`, the board's columns: their ids, in the
+ *  board's order, then None for an issue with no card. */
+export function legionPhasePicks(phases: readonly LegionPhaseColumn[]): readonly string[] {
+  return [...phases.map((phase) => phase.id), NONE_PICK];
+}
 
 /** The pick of the board column an issue's card is in, None with no card. */
 export function phaseColumnPick(column: string | undefined): string {
@@ -126,15 +131,17 @@ export function readAsksPick(value: string): string {
   return Number(value) > 0 ? "any" : NONE_PICK;
 }
 
-/** The picks of an issue's hours by phase (`f.phase_hours=<phase>`): each phase with hours, and
- *  no None, so a row with no hours is in no pick. Several picks select the rows with hours in
- *  any of them. */
+/** The picks of an issue's hours by phase (`f.phase_hours=<phase>`): each phase Time per phase
+ *  draws that has hours, Other for the hours of Other and of a key it does not draw, and no None,
+ *  so a row with no hours is in no pick. Several picks select the rows with hours in any of
+ *  them. */
 export function phaseHoursPicks(
   hours: Readonly<Record<string, number>> | null | undefined
 ): readonly string[] {
-  return Object.entries(hours ?? {})
-    .filter(([, spent]) => spent > 0)
-    .map(([phase]) => phase);
+  const picks = new Set<string>();
+  for (const [phase, spent] of Object.entries(hours ?? {}))
+    if (spent > 0) picks.add(WORK_PHASES.includes(phase) ? phase : OTHER_PHASE);
+  return [...picks];
 }
 
 /** Queue's picks (`f.queue`), the words today's links carry: In Legion queue, Not in Legion

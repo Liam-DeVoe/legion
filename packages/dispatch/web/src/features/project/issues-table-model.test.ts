@@ -748,6 +748,32 @@ test("the facts columns pick counted zeros, Root or Child, and only the phases w
   expect(hours?.kind === "picks" ? hours.order : []).not.toContain("none");
 });
 
+// Time per phase draws no phase a newer server adds: such a key's hours are Other's in its filter
+// as in its cell, so it offers no pick for the key, and its Other pick lists the row.
+test("Time per phase's filter counts a key it does not draw as Other, and its Other pick lists that row", () => {
+  const added: ItemContext = {
+    legion: {
+      board: {
+        ...LEGION_BOARD,
+        issues: { ...LEGION_BOARD.issues, "CORE-6": facts({ hours_by_phase: { x_phase: 2 } }) },
+      },
+      boardStatus: "success",
+      items: { "CORE-7": CLOSED_FACTS },
+      itemsStatus: "success",
+    },
+  };
+  expect(countsOf("phase_hours", added)).toEqual({
+    implementing: 1,
+    reviewing: 1,
+    design: 1,
+    other: 2,
+  });
+  expect(keysWhere([{ id: "phase_hours", value: ["other"] }], added).sort()).toEqual([
+    "CORE-6",
+    "CORE-7",
+  ]);
+});
+
 test("a facts read that is out or failed is no missing measure: its rows are in no pick", () => {
   const boardOut: ItemContext = {
     legion: { board: undefined, boardStatus: "pending", items: undefined, itemsStatus: "pending" },

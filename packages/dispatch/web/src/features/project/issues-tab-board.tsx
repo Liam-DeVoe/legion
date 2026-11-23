@@ -6,6 +6,7 @@ import { type BoardBy, boardColumns, rankRefusal } from "./board-model";
 import { BoardControlRow, IssueBoard } from "./IssueBoard";
 import { ToggleButton } from "./IssueViewTabs";
 import type { IssueFiltersState } from "./issue-filters";
+import type { LegionPhaseColumn } from "./issues-legion";
 import { type OwnNarrowings, viewChips } from "./issues-table-chips";
 import type { Item, View } from "./issues-table-model";
 import { type IssueTableState, picksOf } from "./issues-table-state";
@@ -21,12 +22,13 @@ export interface BoardToggles {
 /**
  * The Board of a view of the Issues tab, in the table's place: the view's rows, in columns by
  * status or, in a project with a Legion daemon (`hasLegion`), by Legion phase
- * (`group=legion_phase`, which the table groups by too). Over it `header` (the view tabs), the
- * listing's `notices` and the control row, whose chips are the table's (`viewChips`) and the
- * view's search where it differs from the view's own, since the Board has no header to show a
- * column's filter (the spec's Design, "The Board"); `readStates` stand in its place while the rows
- * are out. Its cards are every row the view lists, in the view's sort, on no page: the table is
- * held ungrouped on the Board (`useIssueTable`), so its sorted rows are those rows alone.
+ * (`group=legion_phase`, which the table groups by too), one column for each of the board's
+ * columns (`phases`). Over it `header` (the view tabs), the listing's `notices` and the control
+ * row, whose chips are the table's (`viewChips`) and the view's search where it differs from the
+ * view's own, since the Board has no header to show a column's filter (the spec's Design, "The
+ * Board"); `readStates` stand in its place while the rows are out. Its cards are every row the
+ * view lists, in the view's sort, on no page: the table is held ungrouped on the Board
+ * (`useIssueTable`), so its sorted rows are those rows alone.
  */
 export function IssuesTabBoard({
   address,
@@ -42,6 +44,7 @@ export function IssuesTabBoard({
   name,
   notices,
   own,
+  phases,
   project,
   readStates,
   state,
@@ -67,6 +70,8 @@ export function IssuesTabBoard({
   name: string;
   notices: ReactNode;
   own: OwnNarrowings;
+  /** The board's columns, in its order and under its labels (`legionPhasesOf`). */
+  phases: readonly LegionPhaseColumn[];
   project: string;
   readStates: ReactNode;
   state: IssueTableState;
@@ -145,6 +150,7 @@ export function IssuesTabBoard({
             by,
             listsDone,
             phaseFilterPicks: picksOf(filters, "legion_phase"),
+            phases,
             rows,
             showIcebox: toggles.showIcebox,
             statusPicks: picksOf(filters, "status"),
