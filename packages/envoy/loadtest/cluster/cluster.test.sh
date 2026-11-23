@@ -3549,21 +3549,23 @@ kill -KILL "$kill_step"
 # The zombie reaped, so the pid the watcher and the wait hold names no process any more. A watcher
 # that is gone takes no 30 s nap and reads the volume no more; the step's runner_wait, in a
 # command substitution the kill leaves behind too, naps at the gate and reads no volume, so the
-# fake kubectl's df is the watcher's read alone. The wait here is for the watcher's own poll after
-# the kill, which it says it stops at, and it gives up as soon as both subshells are gone; it is no
-# assertion, since a watcher that polls on fails the counts below.
+# fake kubectl's df is the watcher's read alone.
 wait "$kill_step" 2>/dev/null || true
-until grep -q 'disk watcher' "$tmp/out" || all_gone "${kill_kids[@]}"; do
-  sleep 0.05
-done
+# The wait's reads of its job's .rc so far, every one made before the kill: it naps at the gate
+# until the gate opens just below, so its next poll is its first after the kill.
+kill_rcs=$(grep -c -- 'exec runner -c runner -- cat /work/logs/step-pgkill.rc' "$fake/kubectl.log" || true)
+: >"$fake/root-watchkill.gate"
+# The watcher's own poll after the kill, which it says it stops at, or both subshells gone: no
+# assertion, since a watcher that polls on fails the counts below.
+# watcher_stopped_or_gone: the watcher said it stops, or the watcher and the wait have both ended.
+watcher_stopped_or_gone() { grep -q 'disk watcher' "$tmp/out" || all_gone "${kill_kids[@]}"; }
+wait_for "the killed step's disk watcher to say it stops at its poll after the kill, or it and the wait on the runner job (pids ${kill_kids[*]}) to end" \
+  watcher_stopped_or_gone
 # From here the volume is under the threshold: a watcher still polling records the dead step
 # failed and stops the job step-pgkill, which a later run of a step of that name would be.
 df_seq "$pg_size $pg_used_high $pg_free_high"
 : >"$fake/sleep.log"
 kill_dfs=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
-# The wait's reads of its job's .rc so far: the gate opens below, and the wait's next poll is its
-# first after the kill.
-kill_rcs=$(grep -c -- 'exec runner -c runner -- cat /work/logs/step-pgkill.rc' "$fake/kubectl.log" || true)
 # The step's wait on its runner job is a command substitution, a subshell of its own that the
 # SIGKILL does not reach either. Left alone it polls /work/logs/step-pgkill.rc on and, at the
 # step's deadline, TERMs the pid that job's .pid file names in whatever pod is named runner --
@@ -3578,7 +3580,6 @@ own_kids_gone() {
   own_steps
   return 1
 }
-: >"$fake/root-watchkill.gate"
 wait_for "the killed step's disk watcher and its wait on the runner job (pids ${kill_kids[*]}) to end at their next poll; polling on, the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be" \
   own_kids_gone "${kill_kids[@]}"
 kill_rcs_after=$(grep -c -- 'exec runner -c runner -- cat /work/logs/step-pgkill.rc' "$fake/kubectl.log" || true)
@@ -4228,8 +4229,9 @@ stop_watchdog_end() {
   # watcher takes the TERM as a flag and leaves at the end of the act, its three tries, recording
   # nothing: a TERM ignored there would leave pg_disk_watch_stop waiting on a watcher that polls on.
   # pg_disk_watch_stop then sends its own TERM, which finds the watcher leaving or gone, and waits
-  # for it to go.
-  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_HOLD=1 FAKE_FAST_SLEEP="2 30"
+  # for it to go. Its 1 s naps are fast ones on FAKE_DIR/clock, so a watcher that stays reaches the
+  # stop's 300 s bound at the stop's 300th reading, whatever the watcher itself does meanwhile.
+  export FAKE_RC_UNTIL_STOP=1 FAKE_LOCK_GET_FAIL=1 FAKE_LOCK_GET_HOLD=1 FAKE_FAST_SLEEP="1 2 30"
   rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
@@ -4560,8 +4562,11 @@ printf '%s\n' "$clock_start" >"$fake/clock"
 # step has nothing but this wait left. The step's heartbeat is gated as in (o) until its pid is
 # read below: with fast periods it could otherwise stop, and take its pidfile with it, as soon as
 # the step command has ended. The disk watcher's 30 s nap is a real one, which the step's EXIT
-# trap ends.
-FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_RUNNER_EXEC_FAIL_AT_START=1 FAKE_FAST_SLEEP="15 60" \
+# trap ends. The stop of that watcher in the EXIT trap (pg_disk_watch_stop) naps 1 s between its
+# readings, and that nap is a fast one that moves the fake clock too, so a watcher that ignores its
+# TERM reaches the stop's 300 s bound at the stop's 300th reading and fails below by name, where a
+# frozen clock would leave the stop polling until the CI step's deadline.
+FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_RUNNER_EXEC_FAIL_AT_START=1 FAKE_FAST_SLEEP="1 15 60" \
   FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
