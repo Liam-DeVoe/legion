@@ -1201,41 +1201,75 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // a document's every block, or of the 5,000 blocks a list of links points from, answers thousands
 // of them at once.
 //
-// Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
+// It reads the rows blockNodesStatement answers that who may see.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	held, args := blockNodesAddressed(ids, who)
-	storedJoin, storedColumns, seen := visibleStoredKind("block", "d.node_id", "$2")
-	rows, err := q.Query(ctx, `
-		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
-		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+recordedAuthorsSQL("d.node_id")+`,
-		       `+storedColumns+`
-		from document_blocks d
-		cross join lateral (select `+BlockDocumentSQL("d")+` as id) owner
-		cross join lateral (
-			select a.id, a.issue_key, a.project_key, a.session_id, a.slug, a.kind, a.is_primary
-			from artifacts a where a.id = owner.id limit 1
-		) a
-		left join lateral (
-			select changed.authors from artifact_versions changed
-			where changed.artifact_id = owner.id and changed.number = d.changed_version limit 1
-		) changed on true
-		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
-		`+storedJoin+`
-		where `+held+` and `+seen, args...)
+	return readBlockNodeRows(ctx, q, who, ids, true, func(row blockNodeRow) {
+		nodes[[2]string{"block", row.node.ID}] = row.node
+	})
+}
+
+// BlockRow is what a block node's document_blocks row says of it beside its node: its block id,
+// its type, the text sum and changed version of its words, and the document it is a block of
+// (BlockDocumentSQL), with that document's slug and band (DocumentBandSQL).
+type BlockRow struct {
+	BlockID, Type, TextSHA256 string
+	ChangedVersion            int
+	Document, Slug            string
+	Band                      byte
+}
+
+// BlockNodesAndRows is, for who, each block of ids as the registry's block loader answers it
+// (loadBlockNodes), with the excerpt an edge at it shows (ExcerptedNodes), where who may see it,
+// and the document_blocks row of each block of ids whether or not who may see it (BlockRow), each
+// keyed by the block's node id: the one read (blockNodesStatement) a reader of both - the issue
+// tree's - makes rather than reading the rows twice. A block with no row is in neither.
+func BlockNodesAndRows(ctx context.Context, q Queryer, who model.Actor, ids []string) (map[string]ExcerptedNode, map[string]BlockRow, error) {
+	nodes := make(map[string]ExcerptedNode, len(ids))
+	blocks := make(map[string]BlockRow, len(ids))
+	if len(ids) == 0 {
+		return nodes, blocks, nil
+	}
+	err := readBlockNodeRows(ctx, q, who, ids, false, func(row blockNodeRow) {
+		blocks[row.node.ID] = row.block
+		if row.seen {
+			nodes[row.node.ID] = ExcerptedNode{Node: row.node.GraphNode, Excerpt: excerptOf(row.node)}
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return nodes, blocks, nil
+}
+
+// blockNodeRow is one row of blockNodesStatement: the block's node, its row and whether who may
+// see it.
+type blockNodeRow struct {
+	node  resolvedNode
+	block BlockRow
+	seen  bool
+}
+
+// readBlockNodeRows reads the blocks of ids for who (blockNodesStatement), each row handed to
+// visit, only the rows who may see where seenOnly.
+func readBlockNodeRows(ctx context.Context, q Queryer, who model.Actor, ids []string, seenOnly bool, visit func(blockNodeRow)) error {
+	named, args := blockNodesAddressed(ids, who)
+	rows, err := q.Query(ctx, blockNodesStatement(named, seenOnly), args...)
 	if err != nil {
 		return fmt.Errorf("load block nodes: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var nodeID, blockID, excerpt string
+		var nodeID, blockID, excerpt, band string
 		var changedVersion int
 		var changedAt time.Time
 		var changedBy, recorded []byte
 		var document documentParent
 		var first blockFirst
 		var stored StoredNode
+		var row blockNodeRow
 		targets := append([]any{&nodeID, &blockID, &excerpt, &changedVersion, &changedAt, &changedBy}, document.targets()...)
-		if err := rows.Scan(append(append(targets, first.targets()...), &recorded, &stored.State, &stored.Visibility)...); err != nil {
+		targets = append(append(targets, first.targets()...), &recorded, &stored.State, &stored.Visibility)
+		if err := rows.Scan(append(targets, &row.block.Type, &row.block.TextSHA256, &band, &row.seen)...); err != nil {
 			return fmt.Errorf("scan block node: %w", err)
 		}
 		changers, err := storedActors(changedBy)
@@ -1266,26 +1300,94 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 			}
 		}
 		setStored(&node, stored)
-		nodes[[2]string{"block", nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
+		row.node = resolvedNode{GraphNode: node, text: excerpt}
+		row.block.BlockID, row.block.ChangedVersion = blockID, changedVersion
+		row.block.Document, row.block.Slug = *document.id, *document.slug
+		if band != "" {
+			row.block.Band = band[0]
+		}
+		visit(row)
 	}
 	return rows.Err()
 }
 
-// recordedAuthorsSQL is the who of each authored_by the block node whose address the SQL text
-// address names states now (graphstore.CurrentTupleRead, through graph_tuples_current), in their
-// sequence order, as one jsonb array, and null where it states none: the authors the node records
-// (T7 of dispatch://INFRA-1253's plan), each the author's whole stored actor.
-func recordedAuthorsSQL(address string) string {
-	return `(select jsonb_agg(held.who order by held.seq) from (
-			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.who, t.seq, t.asserted`,
-		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = `+address+` and t.kind = '`+graphstore.TupleAuthoredBy+`'
+// blockNodesStatement is the one read of the blocks named names (blockNodesAddressed), $2 the
+// acting credential, each row's columns in blockNodeRow's scan order: the block's document_blocks
+// row; its document (BlockDocumentSQL), the document its issue_room_blocks row names for a block of
+// an issue room, read by one join on the row's key; that document's version the block last
+// changed in; the version that first held the block (blockFirstVersion's columns), the lowest
+// version of its text rows, by one probe of their primary key a block, and none for a block of a
+// room whose node has stood in more than one of the room's documents (MovedRoomBlockSQL), read for
+// every block as one grouped read of in_document; the who of each authored_by the block's node
+// states now, in sequence order (graphstore.CurrentTupleRead), as one grouped read; its stored
+// state and visibility and whether who may see it, in one probe of its graph_nodes row
+// (visibleStoredKind); its type, its text sum and its document's band. Read a block at a time, as
+// probes and sub-plans of each row - the room's block row read three times a block, its moves
+// grouped a block - those cost a read of the 2,000 blocks of the read-cost corpus's tree document
+// 287 ms at the median against 106 ms read so, JIT off. The first version is a probe and not a
+// grouped read of the blocks' text rows joined back to the blocks: Postgres estimates a few dozen
+// blocks where a document's thousands are read and joins that read's rows to each block in turn,
+// which read the same 2,000 blocks in 410 ms. With seenOnly it answers only the blocks who may
+// see, as the registry's loader does; otherwise every block, as a read that holds every row to the
+// reader's predicate itself does.
+func blockNodesStatement(named blockNodesNamed, seenOnly bool) string {
+	storedJoin, storedColumns, seen := visibleStoredKind(BlockNodeKind, "d.node_id", "$2")
+	where := ""
+	if seenOnly {
+		where = `where ` + seen
+	}
+	return `
+		with blocks as (
+			select d.node_id, d.artifact_id, d.block_id, d.type, d.text_sha256, d.excerpt, d.changed_version, d.changed_at
+			from document_blocks d
+			where ` + named.held() + `
+		), owned as (
+			select listed.*, coalesce(room_block.document_id, listed.artifact_id) as owner_id
+			from blocks listed
+			left join issue_room_blocks room_block on room_block.tree_artifact_id = listed.artifact_id
+			  and block_id_key(room_block.block_id) = block_id_key(listed.block_id) and room_block.block_id = listed.block_id
+		), moved as (
+			select owned.artifact_id, owned.block_id
+			from owned
+			join artifacts moved_tree on moved_tree.id = owned.artifact_id and moved_tree.kind = 'tree'
+			join graph_tuples stood on stood.from_kind = '` + BlockNodeKind + `' and stood.from_id = moved_tree.ref_key || '#' || owned.block_id
+			  and stood.kind = '` + TupleInDocument + `' and stood.asserted
+			group by owned.artifact_id, owned.block_id
+			having count(distinct stood.to_id) > 1
+		), recorded as (
+			select held.from_id, jsonb_agg(held.who order by held.seq) as authors
+			from (` + graphstore.CurrentTupleRead(`t.from_id, t.to_kind, t.to_id`, `t.from_id, t.who, t.seq, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and `+named.is(`t.from_id`)+` and t.kind = '`+graphstore.TupleAuthoredBy+`'
 			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) held where held.asserted)`
+			) held
+			where held.asserted
+			group by held.from_id
+		)
+		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
+		       ` + documentColumns("a") + `,
+		       first_text.version, first_text.version = 1 or exists (
+		         select 1 from document_indexed_versions i where i.artifact_id = d.owner_id and i.version = first_text.version - 1
+		       ), first_version.authors, first_version.created_at,
+		       recorded.authors, ` + storedColumns + `,
+		       d.type, d.text_sha256, ` + DocumentBandSQL("a") + `, ` + seen + `
+		from owned d
+		join artifacts a on a.id = d.owner_id
+		left join artifact_versions changed on changed.artifact_id = d.owner_id and changed.number = d.changed_version
+		left join moved on moved.artifact_id = d.artifact_id and moved.block_id = d.block_id
+		left join lateral (
+			select t.version from document_block_texts t
+			where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null and moved.block_id is null
+			order by t.version limit 1
+		) first_text on true
+		left join artifact_versions first_version on first_version.artifact_id = d.owner_id and first_version.number = first_text.version
+		left join recorded on recorded.from_id = d.node_id
+		` + storedJoin + `
+		` + where
 }
 
-// blockNodesAddressed is how loadBlockNodes names the blocks it reads, and the arguments that
-// go with it: the node ids bound as $1, the acting credential as $2, and for two or more ids the
-// documents they name as $3.
+// blockNodesAddressed is how loadBlockNodes names the blocks it reads (blockNodesNamed), and the
+// arguments that go with it: the node ids bound as $1, the acting credential as $2, and for two or
+// more ids the documents they name as $3.
 //
 // One block is bound as itself. That is what every read of one node asks for - the node a
 // `dispatch://...#b-...` address names, and the far end of a chain step's one edge - and a
@@ -1315,25 +1417,46 @@ func recordedAuthorsSQL(address string) string {
 // paying to plan it again. That plan reads the ids through the node_id index, as the plan made with
 // the values does for so few: the far ends of the edges into one node, the 7 blocks citing a node
 // of the read-cost corpus, are read in 0.4 ms against 2.3 ms planned each time.
-func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
+func blockNodesAddressed(ids []string, who model.Actor) (blockNodesNamed, []any) {
 	switch {
 	case len(ids) == 1:
-		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
+		return blockNodesNamed{}, []any{ids[0], VisibilityArg(who)}
 	case len(ids) <= blockNodesKeptPlan:
-		return blockNodesKeptPlanPredicate, []any{ids, VisibilityArg(who), blockDocuments(ids)}
+		return blockNodesKeptPlanNamed, []any{ids, VisibilityArg(who), blockDocuments(ids)}
 	}
-	return blockNodesDescribedPredicate, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
+	return blockNodesDescribedNamed, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
 }
 
-// blockNodesByIDs is the predicate of a read of two or more blocks: the ids, $1, held to the
-// documents they name, $3 (blockDocuments). blockNodesKeptPlanPredicate reads each array as a
-// value Postgres reads once, before the read; blockNodesDescribedPredicate binds them as they are.
-const blockNodesByIDs = `d.node_id = any(%[1]s) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(%[2]s))`
+// blockNodesNamed is how a read of the blocks blockNodesAddressed binds names them: ids and
+// documents are SQL text answering the array of the ids, $1, and of the documents they name, $3
+// (blockDocuments), both "" where one block is bound as itself, $1.
+// blockNodesKeptPlanNamed reads each array as a value Postgres reads once, before the read;
+// blockNodesDescribedNamed binds them as they are.
+type blockNodesNamed struct {
+	ids, documents string
+}
 
 var (
-	blockNodesKeptPlanPredicate  = fmt.Sprintf(blockNodesByIDs, `(select $1::text[])::text[]`, `(select $3::text[])::text[]`)
-	blockNodesDescribedPredicate = fmt.Sprintf(blockNodesByIDs, `$1`, `$3`)
+	blockNodesKeptPlanNamed  = blockNodesNamed{ids: `(select $1::text[])::text[]`, documents: `(select $3::text[])::text[]`}
+	blockNodesDescribedNamed = blockNodesNamed{ids: `$1`, documents: `$3`}
 )
+
+// is is the predicate that the SQL text column is one of the blocks' ids.
+func (named blockNodesNamed) is(column string) string {
+	if named.ids == "" {
+		return column + ` = $1`
+	}
+	return column + ` = any(` + named.ids + `)`
+}
+
+// held is the predicate the document_blocks rows aliased d of the blocks meet: their node ids,
+// and for two or more blocks the documents they name.
+func (named blockNodesNamed) held() string {
+	if named.documents == "" {
+		return named.is(`d.node_id`)
+	}
+	return named.is(`d.node_id`) + ` and d.artifact_id in (select named.id from artifacts named where named.ref_key = any(` + named.documents + `))`
+}
 
 // blockNodesKeptPlan is the most blocks loadBlockNodes reads under one plan Postgres keeps rather
 // than one it makes for the values in hand (blockNodesAddressed). Measured on this pod over the

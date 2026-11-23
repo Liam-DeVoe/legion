@@ -105,8 +105,12 @@ func decisionsTakes(tree IssueTree, index int) bool {
 // TreeNode is one node of an issue's tree as a walk takes it: its kind and its id, as the store
 // keys it; the node it stands under in the walk; its type (refs.TreeNodeType: its supertag, or for
 // a block the typed block its text opens), which a query takes it by; its rank, and whether it
-// holds one; when it was made, which orders it among its unranked siblings; and whether it stands
-// in the walk's second part, under a node of an issue above or in such a node's subtree.
+// holds one; when it was made, which orders it among its unranked siblings; whether it stands in
+// the walk's second part, under a node of an issue above or in such a node's subtree; and its
+// supertag and whether the walk read its row (Row). The walk reads the row of each node it takes
+// off a children read (refs.TreeChild), so Supertag and MadeAt are then what refs.TreeNodeRows
+// answers of it - the empty supertag and the zero time where the store holds no row; it reads no
+// row of the issue's node, nor of its conversation's items and their blocks.
 type TreeNode struct {
 	Kind, ID string
 	Parent   refs.Target
@@ -115,6 +119,8 @@ type TreeNode struct {
 	Ranked   bool
 	MadeAt   time.Time
 	Above    bool
+	Supertag string
+	Row      bool
 }
 
 // Address is the node's store address, `<kind>:<id>`, which no other node holds: the record names
@@ -126,14 +132,22 @@ func (node TreeNode) target() refs.Target { return refs.Target{Kind: node.Kind, 
 
 // IssueTree is the walk of one issue's tree at one cut: the issue's key, the cut, every node in
 // the walk's order - the issue's own node first - the index of the memo among them, -1 where the
-// issue's first child is no callout, and the issue it is a view of (ViewOf), "" where it is none.
+// issue's first child is no callout, the issue it is a view of (ViewOf), "" where it is none, the
+// issues above it, parent first (refs.IssueAncestors), which the walk's second part reads, and
+// every row the walk's reads of the subtrees answered (refs.TreeSubtrees), keyed by the parent, in
+// the order those reads answer them: the children of each node the walk took, those it does not
+// enter - an issue's node, a node of another issue - among them, as refs.TreeChildren answers the
+// children of the walk's nodes at the walk's cut. A reader of the walk in the same transaction
+// takes these from here rather than reading them again.
 type IssueTree struct {
-	Issue  string
-	Cut    refs.TreeCut
-	Nodes  []TreeNode
-	Memo   int
-	ViewOf string
-	index  map[refs.Target]int
+	Issue     string
+	Cut       refs.TreeCut
+	Nodes     []TreeNode
+	Memo      int
+	ViewOf    string
+	Ancestors []string
+	Children  map[refs.Target][]refs.TreeChild
+	index     map[refs.Target]int
 }
 
 // WalkIssueTree walks the tree of the issue issueKey at cut, the head's where cut is zero
@@ -180,6 +194,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		cut:      cut,
 		nodes:    map[refs.Target]TreeNode{},
 		children: map[refs.Target][]refs.Target{},
+		under:    map[refs.Target][]refs.TreeChild{},
 		blocks:   map[refs.Target][]refs.Target{},
 	}
 	if err := walk.readConversation(ctx, q); err != nil {
@@ -212,7 +227,7 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		return IssueTree{}, err
 	}
 
-	tree := IssueTree{Issue: issueKey, Cut: cut, Memo: -1, index: map[refs.Target]int{}}
+	tree := IssueTree{Issue: issueKey, Cut: cut, Memo: -1, Ancestors: ancestors, Children: walk.under, index: map[refs.Target]int{}}
 	// Whether the issue is a view is no fact of the tree: it is read from the issue's record as it
 	// stands (ViewOf), as every reader of it reads it, whatever the cut.
 	if tree.ViewOf, err = ViewOf(ctx, q, issueKey); err != nil {
@@ -232,7 +247,8 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 // treeWalk is what a walk has read of the issue's tree: its root, the issue's node, and the owner
 // every address of the issue's own nodes begins with, the issue's key (refs.TreeOwns); every node it
 // took, by its address; the part_of children of each node, ranked first, in the order the children
-// read answers them; the conversation's items and their blocks, in the order the conversation read
+// read answers them; every row its reads of the subtrees answered, by the parent (IssueTree's
+// Children); the conversation's items and their blocks, in the order the conversation read
 // answers them, the items alone, the blocks of each item, and the parent each item's loader names;
 // and the items that hang under each node.
 type treeWalk struct {
@@ -241,6 +257,7 @@ type treeWalk struct {
 	cut          refs.TreeCut
 	nodes        map[refs.Target]TreeNode
 	children     map[refs.Target][]refs.Target
+	under        map[refs.Target][]refs.TreeChild
 	conversation []refs.Target
 	items        []refs.Target
 	blocks       map[refs.Target][]refs.Target
@@ -298,7 +315,8 @@ func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 // issue, and over an issue's node, and so over everything under either (refs.TreeOwns). Every
 // level is read in one statement (refs.TreeSubtrees), so the walk's reads do not grow with the
 // tree's depth; the levels are then taken here, in the order a read of each level answers them.
-// above marks each node it takes as one of the walk's second part.
+// above marks each node it takes as one of the walk's second part. Every row the read answers is
+// kept under its parent (under), the rows of a parent an earlier read answered aside.
 func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.Target, above bool) error {
 	if len(frontier) == 0 {
 		return nil
@@ -306,6 +324,11 @@ func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.
 	under, err := refs.TreeSubtrees(ctx, q, frontier, w.owner, w.cut)
 	if err != nil {
 		return err
+	}
+	for parent, children := range under {
+		if _, held := w.under[parent]; !held {
+			w.under[parent] = children
+		}
 	}
 	for len(frontier) > 0 {
 		next := frontier[:0:0]
@@ -324,11 +347,13 @@ func (w *treeWalk) readSubtrees(ctx context.Context, q Queryer, frontier []refs.
 	return nil
 }
 
-// treeNodeOf is the node child names, as the walk takes it.
+// treeNodeOf is the node child names, as the walk takes it, with the row the children read read
+// of it.
 func treeNodeOf(child refs.TreeChild, above bool) TreeNode {
 	return TreeNode{
 		Kind: child.Node.Kind, ID: child.Node.ID, Parent: child.Parent, Type: child.Type,
 		Rank: child.Rank, Ranked: child.Ranked, MadeAt: child.MadeAt, Above: above,
+		Supertag: child.Supertag, Row: true,
 	}
 }
 
@@ -483,10 +508,14 @@ type QueryRecord struct {
 
 // ReadQueryRecord is the record of query of the issue issueKey at cut, the head's where cut is
 // zero: the walk of the issue's tree (WalkIssueTree) and the one builder of its record
-// (IssueTree.QueryRecord).
+// (IssueTree.QueryRecord), with JIT off for the rest of the transaction q reads in
+// (refs.TurnJITOff).
 func ReadQueryRecord(ctx context.Context, q Queryer, issueKey, query string, cut refs.TreeCut) (QueryRecord, error) {
 	if _, defined := queryDefinitions[query]; !defined {
 		return QueryRecord{}, fmt.Errorf("the query %q has no record", query)
+	}
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return QueryRecord{}, err
 	}
 	tree, err := WalkIssueTree(ctx, q, issueKey, cut)
 	if err != nil {

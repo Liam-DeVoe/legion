@@ -54,9 +54,13 @@ type tupleCheck struct {
 // view and the issues under it hold; and it names each requirement node of the view's own tree,
 // unless it is closed, in the one line `<block id> is a requirement on a view` of the gaps, with
 // no entry among the requirements. A block the block index has not reached has no node, so the
-// read answers it once that index runs.
+// read answers it once that index runs. Its first statement turns JIT off for the rest of the
+// transaction q reads in (refs.TurnJITOff), as every read that walks a tree does.
 func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return model.IssueCoverage{}, err
+	}
 	if err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
 		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
@@ -400,8 +404,13 @@ func blockDocuments(ctx context.Context, q queryer, ids []string) (map[string]st
 // query takes, in the tree's order (docs' IssueTree.Takes), each read off its node - its words and
 // attributes from its text value, its version and text sum from its document_blocks row, its
 // document from the block's own (refs.BlockDocumentSQL) - with no document's markdown walked.
-// trees is the request's reader, nil for a caller that asked for none.
+// trees is the request's reader, nil for a caller that asked for none. Its first statement turns
+// JIT off for the rest of the transaction q reads in (refs.TurnJITOff), as every read that walks a
+// tree does.
 func verificationChecksOverTuples(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return nil, err
+	}
 	tree, err := docs.WalkIssueTree(ctx, q, issueKey, refs.TreeCut{})
 	if err != nil {
 		return nil, err

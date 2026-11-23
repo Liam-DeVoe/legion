@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -107,15 +108,19 @@ func (s *server) getIssueTree(w http.ResponseWriter, r *http.Request) {
 // readIssueTree is the tree read of the issue key for who: the view's query and its context, or
 // the whole tree where view is "", at version of the view's query node or at the head where it is
 // 0, from cursor on. Every read of the store is made in one read-only transaction at repeatable
-// read, so the answer is one state of the store; the documents' block lists, which the live rooms
-// answer, are read after it (issueTreeBuilder.documentPositions). trees is the request's reader of
-// the display trees, nil for a caller that asked for none.
+// read, with JIT off (refs.TurnJITOff), so the answer is one state of the store; the documents'
+// block lists, which the live rooms answer, are read after it
+// (issueTreeBuilder.documentPositions). trees is the request's reader of the display trees, nil
+// for a caller that asked for none.
 func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view string, version int, cursor string, trees *displayTreeReader) (model.IssueTreeRead, error) {
 	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return model.IssueTreeRead{}, fmt.Errorf("open the tree read of %s: %w", key, err)
 	}
 	defer tx.Rollback(ctx)
+	if err := refs.TurnJITOff(ctx, tx); err != nil {
+		return model.IssueTreeRead{}, err
+	}
 	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view}
 	if err := builder.build(version); err != nil {
 		return model.IssueTreeRead{}, err
@@ -152,16 +157,6 @@ type treeEntry struct {
 	role string
 }
 
-// blockRow is what a block node's document_blocks row says of it: its block id, its type, the
-// text sum and version of its words, and the document it is a block of, with that document's
-// slug and band (refs.DocumentBandSQL).
-type blockRow struct {
-	blockID, typ, sum string
-	version           int
-	document, slug    string
-	band              byte
-}
-
 // issueTreeBuilder builds one tree read.
 type issueTreeBuilder struct {
 	ctx  context.Context
@@ -177,10 +172,13 @@ type issueTreeBuilder struct {
 	extras  []refs.Target
 	context []refs.Target
 
+	// facts, loaded, rows and blocks are what readFacts read of each node of read, every node it
+	// has read.
 	facts  map[refs.Target]refs.TreeFacts
 	loaded map[refs.Target]refs.ExcerptedNode
 	rows   map[refs.Target]refs.TreeNodeRow
-	blocks map[string]blockRow
+	blocks map[string]refs.BlockRow
+	read   map[refs.Target]bool
 
 	kept      map[refs.Target]bool
 	effective map[refs.Target]refs.Target
@@ -246,9 +244,7 @@ func (b *issueTreeBuilder) build(version int) error {
 		}
 		b.walked = append(b.walked, target)
 	}
-	if b.ancestors, err = refs.IssueAncestors(b.ctx, b.q, b.key); err != nil {
-		return err
-	}
+	b.ancestors = b.tree.Ancestors
 	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
 		return err
 	}
@@ -331,7 +327,8 @@ func treeIssueOf(target refs.Target) string {
 // serves names one of the issue's requirements, with the results under each such check, reached
 // through serves (R3, R23), which the spec and the decisions views carry none of; and in the plan
 // view every plan node of the whole tree's ordered read (refs.PlanOrder). Each is read-only,
-// marked with its issue.
+// marked with its issue. The children of the walk's nodes are the rows the walk read them in
+// (docs' IssueTree.Children), taken in the walk's order and each parent's in the order read.
 func (b *issueTreeBuilder) readOthers() error {
 	rows, err := b.q.Query(b.ctx, `select key from issues where parent_key = $1 order by key`, b.key)
 	if err != nil {
@@ -346,20 +343,18 @@ func (b *issueTreeBuilder) readOthers() error {
 			b.add(refs.Target{Kind: graphstore.KindIssue, ID: child}, b.root(), child, treeRoleTree)
 		}
 	}
-	placed, err := refs.TreeChildren(b.ctx, b.q, b.walked, b.cut)
-	if err != nil {
-		return err
-	}
-	for _, child := range placed {
-		if _, walked := b.entries[child.Node]; walked && b.entries[child.Node].walk >= 0 {
-			continue
+	for _, parent := range b.walked {
+		for _, child := range b.tree.Children[parent] {
+			if _, walked := b.entries[child.Node]; walked && b.entries[child.Node].walk >= 0 {
+				continue
+			}
+			owner := treeIssueOf(child.Node)
+			if owner == "" || owner == b.key || !slices.Contains(b.descend, owner) {
+				continue
+			}
+			entry := b.add(child.Node, child.Parent, owner, treeRoleTree)
+			entry.parent, entry.typ, entry.rank, entry.ranked, entry.madeAt = child.Parent, child.Type, child.Rank, child.Ranked, child.MadeAt
 		}
-		owner := treeIssueOf(child.Node)
-		if owner == "" || owner == b.key || !slices.Contains(b.descend, owner) {
-			continue
-		}
-		entry := b.add(child.Node, child.Parent, owner, treeRoleTree)
-		entry.parent, entry.typ, entry.rank, entry.ranked, entry.madeAt = child.Parent, child.Type, child.Rank, child.Ranked, child.MadeAt
 	}
 	if b.view != graphstore.QuerySpec && b.view != graphstore.QueryDecisions {
 		if err := b.readServing(); err != nil {
@@ -534,16 +529,19 @@ func (b *issueTreeBuilder) candidates() []refs.Target {
 }
 
 // readFacts reads what each of targets states at the read's cut (refs.TreeFactsOf), each node's
-// row (refs.TreeNodeRows), each block's document_blocks row, and each node as the registry's
-// loader of its kind answers it for the reader (refs.ExcerptedNodes), which is the one test of
-// whether the reader may see it, beside what those maps already hold.
+// row, each block's document_blocks row, and each node as the registry's loader of its kind
+// answers it for the reader (refs.ExcerptedNodes), which is the one test of whether the reader may
+// see it, for each target it has not read yet (read). A node of the walk whose row the walk read
+// (docs' TreeNode.Row) takes its row from there, and every other node's is read
+// (refs.TreeNodeRows): the issue's own, its conversation's, the others' and the context's.
 func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	if b.facts == nil {
-		b.facts, b.loaded, b.rows, b.blocks = map[refs.Target]refs.TreeFacts{}, map[refs.Target]refs.ExcerptedNode{}, map[refs.Target]refs.TreeNodeRow{}, map[string]blockRow{}
+		b.facts, b.loaded, b.rows, b.blocks = map[refs.Target]refs.TreeFacts{}, map[refs.Target]refs.ExcerptedNode{}, map[refs.Target]refs.TreeNodeRow{}, map[string]refs.BlockRow{}
+		b.read = map[refs.Target]bool{}
 	}
 	var unread []refs.Target
 	for _, target := range targets {
-		if _, held := b.rows[target]; !held {
+		if !b.read[target] {
 			unread = append(unread, target)
 		}
 	}
@@ -557,70 +555,61 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	for target, held := range facts {
 		b.facts[target] = held
 	}
-	rows, err := refs.TreeNodeRows(b.ctx, b.q, unread)
+	var unrowed []refs.Target
+	for _, target := range unread {
+		b.read[target] = true
+		if entry, held := b.entries[target]; held && entry.walk >= 0 && b.tree.Nodes[entry.walk].Row {
+			node := b.tree.Nodes[entry.walk]
+			b.rows[target] = refs.TreeNodeRow{Supertag: node.Supertag, MadeAt: node.MadeAt}
+			continue
+		}
+		unrowed = append(unrowed, target)
+	}
+	rows, err := refs.TreeNodeRows(b.ctx, b.q, unrowed)
 	if err != nil {
 		return err
 	}
-	loaderTargets := make([]refs.Target, 0, len(unread))
-	for _, target := range unread {
+	for _, target := range unrowed {
 		b.rows[target] = rows[target]
-		if refs.ResolvesNodeKind(loaderKind(target)) {
-			loaderTargets = append(loaderTargets, refs.Target{Kind: loaderKind(target), ID: target.ID})
+	}
+	// A block's node and its document_blocks row are read in one statement
+	// (refs.BlockNodesAndRows), the node where the reader may see it and the row whether or not;
+	// every other node through its kind's loader.
+	loaderTargets := make([]refs.Target, 0, len(unread))
+	var blocks []string
+	for _, target := range unread {
+		if target.Kind == refs.BlockNodeKind {
+			blocks = append(blocks, target.ID)
+		}
+		if kind := loaderKind(target); kind != refs.BlockNodeKind && refs.ResolvesNodeKind(kind) {
+			loaderTargets = append(loaderTargets, refs.Target{Kind: kind, ID: target.ID})
 		}
 	}
 	loaded, err := refs.ExcerptedNodes(b.ctx, b.q, b.who, true, loaderTargets)
 	if err != nil {
 		return err
 	}
+	blockNodes, blockRows, err := refs.BlockNodesAndRows(b.ctx, b.q, b.who, blocks)
+	if err != nil {
+		return fmt.Errorf("read the blocks of the tree of %s: %w", b.key, err)
+	}
 	for _, target := range unread {
-		if node, held := loaded[refs.Target{Kind: loaderKind(target), ID: target.ID}]; held {
+		node, held := loaded[refs.Target{Kind: loaderKind(target), ID: target.ID}]
+		if loaderKind(target) == refs.BlockNodeKind {
+			node, held = blockNodes[target.ID]
+		}
+		if held {
 			b.loaded[target] = node
 		}
 	}
-	return b.readBlockRows(unread)
+	maps.Copy(b.blocks, blockRows)
+	return nil
 }
 
 // loaderKind is the kind the registry resolves the node target names by: a finding of a lens,
 // which the store keys as a block, is a lens_block (graphstore.AddressKind).
 func loaderKind(target refs.Target) string {
 	return graphstore.AddressKind(target.Kind, target.ID)
-}
-
-// readBlockRows reads the document_blocks row of each block node of targets: its block id, type,
-// text sum and changed version, and the document it is a block of (refs.BlockDocumentSQL) with that
-// document's slug and band (refs.DocumentBandSQL).
-func (b *issueTreeBuilder) readBlockRows(targets []refs.Target) error {
-	var ids []string
-	for _, target := range targets {
-		if target.Kind == refs.BlockNodeKind {
-			ids = append(ids, target.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := b.q.Query(b.ctx, `
-		select d.node_id, d.block_id, d.type, d.text_sha256, d.changed_version, doc.id::text, doc.slug, `+refs.DocumentBandSQL("doc")+`
-		from document_blocks d
-		cross join lateral (select `+refs.BlockDocumentSQL("d")+` as id) owner
-		join artifacts doc on doc.id = owner.id
-		where d.node_id = any($1)`, ids)
-	if err != nil {
-		return fmt.Errorf("read the rows of the blocks of %s: %w", b.key, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var node, band string
-		var row blockRow
-		if err := rows.Scan(&node, &row.blockID, &row.typ, &row.sum, &row.version, &row.document, &row.slug, &band); err != nil {
-			return fmt.Errorf("read the rows of the blocks of %s: %w", b.key, err)
-		}
-		if band != "" {
-			row.band = band[0]
-		}
-		b.blocks[node] = row
-	}
-	return rows.Err()
 }
 
 // placeOthers gives each node the walk does not take what its facts and its row say: a child
@@ -688,7 +677,7 @@ func (b *issueTreeBuilder) excluded(target refs.Target) bool {
 		if !held {
 			return false
 		}
-		switch row.band {
+		switch row.Band {
 		case refs.RankBandSpec, refs.RankBandVerification, refs.RankBandPlan:
 			return !pmdoc.IsTypedBlock(b.entries[target].typ)
 		}
@@ -971,7 +960,7 @@ const requirementBlockType = "requirement"
 func (b *issueTreeBuilder) readMembers() error {
 	answer := b.answered()
 	b.issues = map[string]*model.IssueTreeIssue{}
-	root, err := readIssueTreeIssue(b.ctx, b.q, b.key)
+	root, err := readIssueTreeIssue(b.ctx, b.q, b.key, &b.tree.ViewOf)
 	if err != nil {
 		return err
 	}
@@ -980,7 +969,7 @@ func (b *issueTreeBuilder) readMembers() error {
 		if target.Kind != graphstore.KindIssue || target.ID == b.key {
 			continue
 		}
-		state, err := readIssueTreeIssue(b.ctx, b.q, target.ID)
+		state, err := readIssueTreeIssue(b.ctx, b.q, target.ID, nil)
 		if err != nil {
 			return err
 		}
@@ -1129,9 +1118,11 @@ func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
 }
 
 // readIssueTreeIssue is what the issue key answers of itself in a tree read (model.IssueTreeIssue):
-// whether it is converted and its tree, whose view it is (docs.ViewOf), and while it has not
-// converted the ids of its role documents, as the role predicates find them.
-func readIssueTreeIssue(ctx context.Context, q pgx.Tx, key string) (*model.IssueTreeIssue, error) {
+// whether it is converted and its tree, whose view it is (docs.ViewOf: view where the caller read
+// it already, as the walk of the issue read reads it for its own key, and read here where view is
+// nil), and while it has not converted the ids of its role documents, as the role predicates find
+// them.
+func readIssueTreeIssue(ctx context.Context, q pgx.Tx, key string, view *string) (*model.IssueTreeIssue, error) {
 	state := &model.IssueTreeIssue{}
 	tree, err := issueTreeOf(ctx, q, key)
 	if err != nil {
@@ -1150,8 +1141,10 @@ func readIssueTreeIssue(ctx context.Context, q pgx.Tx, key string) (*model.Issue
 		}
 		state.Documents = documents
 	}
-	ancestor, err := docs.ViewOf(ctx, q, key)
-	if err != nil {
+	ancestor := ""
+	if view != nil {
+		ancestor = *view
+	} else if ancestor, err = docs.ViewOf(ctx, q, key); err != nil {
 		return nil, err
 	}
 	if ancestor != "" {
@@ -1196,7 +1189,7 @@ func (b *issueTreeBuilder) inView(target refs.Target) (string, bool) {
 	switch b.view {
 	case graphstore.QuerySpec:
 		if entry.walk >= 0 && target.Kind == refs.BlockNodeKind && !pmdoc.IsTypedBlock(entry.typ) &&
-			b.blocks[target.ID].band == refs.RankBandTree && len(b.ancestors) > 0 {
+			b.blocks[target.ID].Band == refs.RankBandTree && len(b.ancestors) > 0 {
 			return treeRoleContext, true
 		}
 	case graphstore.QueryVerification:
@@ -1395,9 +1388,9 @@ func (b *issueTreeBuilder) documentPositions(s *server) error {
 		if !documented {
 			continue
 		}
-		positions, read := listed[row.document]
+		positions, read := listed[row.Document]
 		if !read {
-			blocks, err := s.deps.Docs.Blocks(b.ctx, row.document)
+			blocks, err := s.deps.Docs.Blocks(b.ctx, row.Document)
 			if err != nil {
 				return err
 			}
@@ -1407,9 +1400,9 @@ func (b *issueTreeBuilder) documentPositions(s *server) error {
 					positions[block.ID] = index
 				}
 			}
-			listed[row.document] = positions
+			listed[row.Document] = positions
 		}
-		if position, held := positions[row.blockID]; held {
+		if position, held := positions[row.BlockID]; held {
 			b.positions[target] = position
 		}
 	}
@@ -1418,19 +1411,19 @@ func (b *issueTreeBuilder) documentPositions(s *server) error {
 
 // roleBlock is the document_blocks row of a typed block of a role document, and whether target is
 // one.
-func (b *issueTreeBuilder) roleBlock(target refs.Target) (blockRow, bool) {
+func (b *issueTreeBuilder) roleBlock(target refs.Target) (refs.BlockRow, bool) {
 	if target.Kind != refs.BlockNodeKind {
-		return blockRow{}, false
+		return refs.BlockRow{}, false
 	}
 	row, held := b.blocks[target.ID]
 	if !held || !pmdoc.IsTypedBlock(b.entries[target].typ) {
-		return blockRow{}, false
+		return refs.BlockRow{}, false
 	}
-	switch row.band {
+	switch row.Band {
 	case refs.RankBandSpec, refs.RankBandVerification, refs.RankBandPlan:
 		return row, true
 	}
-	return blockRow{}, false
+	return refs.BlockRow{}, false
 }
 
 // answer is the read's answer from cursor on: the page of the tree's order that starts there, the
@@ -1538,7 +1531,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 	}
 	if row, documented := b.roleBlock(target); documented {
 		if position, held := b.positions[target]; held {
-			node.Document = &model.IssueTreeDocument{ArtifactID: row.document, Slug: row.slug, Position: position}
+			node.Document = &model.IssueTreeDocument{ArtifactID: row.Document, Slug: row.Slug, Position: position}
 		}
 	}
 	if ask, held := b.asks[target.ID]; held && target.Kind == graphstore.KindAsk {
@@ -1559,7 +1552,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 		}
 	case entry.typ == graphstore.BlockTypeCheck:
 		if row, held := b.blocks[target.ID]; held {
-			node.Check = &model.IssueTreeCheck{TextSHA256: row.sum, ChangedVersion: row.version}
+			node.Check = &model.IssueTreeCheck{TextSHA256: row.TextSHA256, ChangedVersion: row.ChangedVersion}
 		}
 	}
 	if plan, planned := b.plans[target]; planned && b.view == graphstore.QueryPlan {
@@ -1619,20 +1612,23 @@ func (b *issueTreeBuilder) parentOf(parent refs.Target) *model.IssueTreeParent {
 }
 
 // treeFirstLine is the first line of a node's words that says something: past a typed block's opening
-// line, its first line that is not blank, its leading space and markdown marks trimmed.
+// line, its first line that is not blank, its leading space and markdown marks trimmed. It reads
+// the words a line at a time and stops at that line, since a list's words are the whole list and
+// every item of it names the list as its parent.
 func treeFirstLine(text string) string {
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), ":::") {
-		lines = lines[1:]
-	}
-	for _, line := range lines {
+	for opening := true; ; opening = false {
+		line, rest, more := strings.Cut(text, "\n")
+		text = rest
 		line = strings.TrimSpace(line)
-		if line == "" || line == ":::" {
-			continue
+		switch {
+		case opening && strings.HasPrefix(line, ":::"), line == "", line == ":::":
+		default:
+			return strings.TrimSpace(strings.TrimLeft(line, "#>-*+ "))
 		}
-		return strings.TrimSpace(strings.TrimLeft(line, "#>-*+ "))
+		if !more {
+			return ""
+		}
 	}
-	return ""
 }
 
 // noConversation reports whether target is a node of the issue read that no conversation node -

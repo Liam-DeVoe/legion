@@ -244,6 +244,7 @@ var readsWithoutAViewer = map[string]string{
 	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
 	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
 	"TreeSubtrees":    treeWalk + " - every level of the children under the walk's frontier, read in one statement",
+	"TurnJITOff":      treeWalk + " - it answers nothing: it turns JIT off for the rest of the transaction the walk reads in",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -406,6 +407,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		return err
+	})
+	record("BlockNodesAndRows", "BlockNodesAndRows of a block", func() error {
+		_, _, err := BlockNodesAndRows(ctx, recorder, who, []string{"no-such-node"})
 		return err
 	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
