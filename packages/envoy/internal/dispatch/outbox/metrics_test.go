@@ -81,7 +81,7 @@ func TestPublishedCountsTheEventsTheBatchMarksPublished(t *testing.T) {
 		{id: second, state: published},
 		{id: failed, state: backedOff, attempts: 1, failure: "nats refused it", delay: new(time.Minute)},
 		{id: already, state: published},
-	}, uuid.New())
+	}, uuid.New(), graphWrite{})
 	if err != nil {
 		t.Fatal(err)
 	}

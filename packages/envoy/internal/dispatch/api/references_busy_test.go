@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // An issue's references read that cannot get a request-pool connection within the pool's acquire
@@ -27,7 +28,7 @@ func TestAReferenceClosureOnABusyRequestPoolIsRefusedDatabaseBusy(t *testing.T) 
 	defer held.Release()
 
 	started := time.Now()
-	_, err = served.boundedClosure(context.Background(), "CORE-1")
+	_, err = served.boundedClosure(context.Background(), model.Actor{}, "CORE-1")
 	if err == nil {
 		t.Fatal("the read on a full request pool answered no error, want the pool's busy refusal")
 	}

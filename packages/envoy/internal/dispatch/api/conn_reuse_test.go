@@ -90,8 +90,8 @@ func TestAnEarlyRefusalLeavesAConnectionAnsweringOrSayingItCloses(t *testing.T) 
 			if response.Close {
 				// The client was told: it opens a connection of its own for the next
 				// request, and this one must be gone rather than left half alive.
-				if !connection.closedByServer(10 * time.Second) {
-					t.Fatalf("the answer said Connection: close and the connection was still open 10 s later")
+				if !connection.closedByServer() {
+					t.Fatalf("the answer said Connection: close and the connection stayed open")
 				}
 				return
 			}
@@ -173,8 +173,8 @@ func assertAgedConnectionClosed(t *testing.T, connection *heldBackBody, response
 		t.Fatalf("the refusal on a connection the age limit marked carries Connection: %q, want close: the refusal cleared the header the limit set, so the client keeps the aged connection",
 			response.Header.Get("Connection"))
 	}
-	if !connection.closedByServer(10 * time.Second) {
-		t.Fatal("the aged connection was still open 10 s after its refusal")
+	if !connection.closedByServer() {
+		t.Fatal("the aged connection stayed open after its refusal")
 	}
 }
 

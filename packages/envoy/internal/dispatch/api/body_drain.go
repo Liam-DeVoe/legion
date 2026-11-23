@@ -227,6 +227,26 @@ func connectionControl(w http.ResponseWriter) http.ResponseController {
 	return *http.NewResponseController(w)
 }
 
+// bodyReadDeadline is how a request's body sets the read deadline it arms (drainedBody's
+// movingDeadline.set): the connection controller's own method, as an answer's write deadline is
+// set, and, in a test that set drainDeadlineSet, that method behind a report of each deadline
+// armed with the moment it was armed from. A body's reads add nothing to the idle bound
+// (movingDeadline.drain), so that moment is the deadline less bounds.idle. The lift's zero
+// deadline arms nothing and is not reported. Only the test's server pays for the report's
+// closure; every other body sets its deadline through the method itself.
+func (s *server) bodyReadDeadline(bounds transferBounds) func(*http.ResponseController, time.Time) error {
+	report := s.drainDeadlineSet
+	if report == nil {
+		return (*http.ResponseController).SetReadDeadline
+	}
+	return func(control *http.ResponseController, deadline time.Time) error {
+		if !deadline.IsZero() {
+			report(deadline.Add(-bounds.idle), deadline)
+		}
+		return control.SetReadDeadline(deadline)
+	}
+}
+
 // expectsContinue reports whether r's client asked to be told to continue before it sends its body
 // (Expect: 100-continue). net/http tells it so at the body's first read, so a layer that answers
 // such a request without reading the body asks the client for none of it.
@@ -285,11 +305,12 @@ func (s *server) drainBeforeAnswer(route apiRoute, handler http.HandlerFunc) htt
 			handler(w, r)
 			return
 		}
+		bounds := s.transfer.orDefault()
 		body := &drainedBody{
 			ReadCloser: r.Body,
 			movingDeadline: movingDeadline{
-				control: connectionControl(w), set: (*http.ResponseController).SetReadDeadline,
-				bounds: s.transfer.orDefault(),
+				control: connectionControl(w), set: s.bodyReadDeadline(bounds),
+				bounds: bounds,
 			},
 			ctx:           r.Context(),
 			length:        r.ContentLength,

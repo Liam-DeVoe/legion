@@ -458,7 +458,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {
@@ -567,7 +567,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {

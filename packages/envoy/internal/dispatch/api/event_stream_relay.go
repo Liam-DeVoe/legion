@@ -588,11 +588,14 @@ func (r *eventStreamRelay) gap(horizon *events.Horizon, safe int64) events.Gap {
 // rows, the read an events subscription's replay also pages through (readEventsAfterID). It goes
 // through the generation's live pool, so a commit reaches the open streams while the requests
 // hold every connection of theirs.
+//
+// The relay reads one page for every subscriber at once and resolves no credential, so it reads
+// as one that proves no author (refs' visibility registry).
 func (r *eventStreamRelay) page(ctx context.Context, g *relayGeneration, after, through int64) ([]model.Event, error) {
 	if r.readAfter != nil {
 		return r.readAfter(ctx, g.live, after, through)
 	}
-	return r.server.readEventsAfterID(ctx, g.live, after, through, maxEventReplay)
+	return r.server.readEventsAfterID(ctx, g.live, model.Actor{}, after, through, maxEventReplay)
 }
 
 // publish fans one page out to g's subscribers and moves g's cursor to its last event, under mu.
