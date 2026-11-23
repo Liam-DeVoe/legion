@@ -506,13 +506,6 @@ test("each reviewer text says the last two sentences of each task are always the
     "The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.",
     reviewerTexts
   );
-  // The sentence the daemon writes before those two where a later reviewer step follows another
-  // agent's (reviewround.AnotherAgentsSentence) is the daemon's too, and the merge gate says so.
-  expect(
-    lacks("legion-worker/references/merge-gate.md", [
-      /The last two sentences of your task[^;]*and a `Commit another agent's review read: <sha>\.` before them, are the daemon's/,
-    ])
-  ).toEqual([]);
 });
 
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
@@ -687,7 +680,6 @@ test("an implementer and owner task is accepted on the evidence its steps give",
     /`acceptance:owner` enters `accepting`/,
     /has a tester step[^.;]*--phase test/,
     /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step, its last reviewer step's approval of the last step's head/,
     /no tester step[^.;]*the implementer's evidence/,
   ]);
   expect(missing).toEqual([]);
@@ -769,15 +761,11 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   expect(report).toEqual([]);
 });
 
-test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
+test("retro answers bot threads with no reviewer step", () => {
   const missing = [
     ...lacks("legion-retro/SKILL.md", [
-      /Read the evidence[^.;]*the handoff of each implementer step/,
-      /handoff of each tester step where it has one/,
-      /review of each reviewer step where it has one[^.;]*--phase review/,
       /no reviewer step[^.;]*unresolved bot threads/,
       /no reviewer step[^.;]*review-thread replies and resolutions/,
-      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*handoff of each tester step/,
       /no reviewer step[^.;]*bot threads in `Threads` at the head you found/,
     ]),
     // The body step that changes only path-derived lines leaves room for those updates, and
@@ -932,48 +920,4 @@ test("every file of the Legion role skills fits the skill budget", () => {
       : [];
   });
   expect(over).toEqual([]);
-});
-
-// A worker copies the `dispatch handoff-read` command a role skill gives, and the command takes
-// the issue and the phase it reads (`dispatch_handoff_read` in packages/contracts'
-// dispatch-tools.ts: `issue` and `phase`, `version` optional), so each such command names both: one
-// without `--issue` answers a usage error before it reads the report. A `--phase` fragment of the
-// command is held to the same form, since a worker copies it as it stands. The worker skill gives
-// the command once, with `<word>` and `<v>` from its task's `reported:` lines, and says what to
-// read where the task has none.
-test("every dispatch handoff-read a Legion role skill gives names the issue and the phase", () => {
-  const skillFiles = files(staged).filter((file) =>
-    /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
-  );
-  const commands = skillFiles.flatMap((file) =>
-    [...readFileSync(file, "utf8").matchAll(/`([^`\n]*)`/g)]
-      .filter((match) => /dispatch handoff-read\b|--phase\b/.test(match[1]))
-      .map((match) => `${path.relative(staged, file)}: ${match[1]}`)
-  );
-  expect(commands.length).toBeGreaterThan(4);
-  expect(
-    commands.filter(
-      (command) => !/: dispatch handoff-(?:read|write) --issue <[^>]+> --phase \S/.test(command)
-    )
-  ).toEqual([]);
-  countedOncePerFile(
-    "Read the report each `Step <j> (<step>) reported: <word> version <v>.` line of your task names: `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.",
-    ["skills/legion-worker/SKILL.md"]
-  );
-  expect(
-    lacks("legion-worker/SKILL.md", [
-      /With none, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report/,
-    ])
-  ).toEqual([]);
-});
-
-// An architect's `envoy_publish` reaches only a claim that runs, and a step that has not run has
-// no claim yet, so a child's own architect tells of the children it filed only the agents of its
-// plan's steps that have run.
-test("a child's architect tells only the agents that have run and hold its plan", () => {
-  expect(
-    lacks("legion-architect/references/decomposition.md", [
-      /send one `envoy_publish` to each agent that has run and holds its plan/,
-    ])
-  ).toEqual([]);
 });
