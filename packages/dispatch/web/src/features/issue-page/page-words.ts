@@ -1174,6 +1174,9 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The role a plan task names as its sub-owner, which writes and changes the task's parts. The
+   *  issue has an owner of its own, so "owner" alone would read as that one. */
+  owner: "sub-owner",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
