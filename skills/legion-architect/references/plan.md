@@ -45,7 +45,8 @@ So on a task with no reviewer step and no `acceptance:owner` or `acceptance` ste
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A reason that ends `This release of Legion does not carry it out yet.` names what a later release takes, more than one task or a task block's attribute `needs`, `owner`, `part_of` or `merges` (a step's key `owner` is no such attribute): write it again as one task without them.
+A reason that ends `This release of Legion does not carry it out yet.` names what a later release takes, more than one task or a task block's attribute `needs`, `owner`, `part_of` or `merges`: write it again as one task without them.
+A step's key `owner` is no such attribute.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 

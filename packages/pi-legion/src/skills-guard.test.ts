@@ -984,12 +984,12 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
 test("the skills say how the owner's retro and review read an issue, and when a refused completion is sent again", () => {
   expect([
     ...lacks("legion-architect/references/own-steps.md", [
-      /a child's own architect sends that question to the architect above it/,
+      /A child's own architect sends that question to the architect above it instead\./,
       /An issue with no pull request, such as one whose plan is `tester` alone, has no merge\./,
     ]),
     ...lacks("legion-architect/references/plan.md", [
       /approves, or passes with no pull request, only once a pass stands/,
-      /a task block's attribute `needs`, `owner`, `part_of` or `merges` \(a step's key `owner` is no such attribute\)/,
+      /a task block's attribute `needs`, `owner`, `part_of` or `merges`: write it again[^.]*\. A step's key `owner` is no such attribute\./,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
       /`dispatch results --issue <issue>` \(`--at <head>` with no pull request\)/,

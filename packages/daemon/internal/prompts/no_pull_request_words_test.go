@@ -139,7 +139,7 @@ func saysAndRetires(t *testing.T, read func(*testing.T, string) string, says, re
 // (review.go reviewRound), and an issue's agents share one pod.
 func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t *testing.T) {
 	saysAndRetires(t, repoFile, [][2]string{
-		{"docs/site/src/content/docs/legion/concepts.md", "another agent's refused pass is taken when it sends it again once they have left."},
+		{"docs/site/src/content/docs/legion/concepts.md", "Another agent's refused pass is taken when it sends it again once they have left."},
 		{"docs/site/src/content/docs/legion/concepts.md", "as one comment on the issue where a point qualifies"},
 		{"docs/site/src/content/docs/legion/concepts.md", "ends the round whatever the CI verdict at that commit, once GitHub reports that head one the issue may advance on"},
 		{"docs/site/src/content/docs/legion/concepts.md", "an issue with no pull request, such as one whose only step is `tester`, is done when its retro ends"},
@@ -179,7 +179,7 @@ func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) 
 	saysAndRetires(t, promptPart, [][2]string{
 		{"mechanics/headless.md", "A copy of the head under `$TMPDIR` that you only read or run checks from is no workspace: commit nothing in it."},
 		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself, in its `phase-finished` notice."},
-		{"core/tester.md", "report the missing surface to whoever owns the plan, and hold your completion until it exists."},
+		{"core/tester.md", "Report the missing surface to whoever owns the plan, and hold your completion until it exists."},
 		{"core/planner.md", "nothing refuses a plan handoff without them, so check them yourself before you record it."},
 		{"core/reviewer.md", "Run the thermonuclear pair over that diff as the paragraph above says."},
 		{"go/reviewer.md", "name the threads you accepted to the implementer, which resolves them, as the thread rule above says."},
@@ -194,7 +194,7 @@ func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) 
 // from the default branch, as the reviewer's prompt reads it.
 func TestTheAcceptancePromptSaysReturnToIsOptionalAndWhatItsDiffIs(t *testing.T) {
 	saysAndRetires(t, promptPart, [][2]string{
-		{"acceptance.md", "and a fail when one is unmet, which may name the earlier step whose work must change (the daemon part below)."},
+		{"acceptance.md", "and a fail when one is unmet. The fail may name the earlier step whose work must change (the daemon part below)."},
 		{"acceptance.md", "its diff runs from the default branch to the head you read."},
 	}, [][2]string{
 		{"acceptance.md", "and a fail, naming the earlier step whose work must change, when one is unmet"},
@@ -210,7 +210,7 @@ func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *te
 		{"architect-root.md", "Each round after a push records every check of a large pull request again"},
 		{"architect.md", "and the retro holds or sends the issue back for one with no pass standing (`skill://legion-retro`)."},
 		{"go/architect-common.md", "Its approval of the head ends the round whatever the CI verdict, once GitHub reports that head one the issue may advance on"},
-		{"go/architect-common.md", "Submit one where the base requires an approving review, approving the head you passed, and where the daemon asks for it after a merge forward (below)."},
+		{"go/architect-common.md", "Submit one where the base requires an approving review, approving the head you passed, and where the daemon asks for one after a merge forward."},
 		{"go/architect-common.md", "In `retro` or `merging` the agent of that phase holds `request_backward_move`, so a request for changes there, yours included, is its to act on."},
 	}, [][2]string{
 		{"architect-root.md", "Each round tests a large pull request whole again"},
