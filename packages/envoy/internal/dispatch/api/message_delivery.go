@@ -1211,9 +1211,11 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 // keptMessageReplier is who may answer attempt of a targeted message when that attempt is one
 // Dispatch kept for a role (keptRoleAttempt), and nobody otherwise. It reads the attempt through
 // the pool and then the listener, before the reply's transaction opens; the transaction judges the
-// row again under its lock (keptRoleReplier.takes).
+// row again under its lock (keptRoleReplier.takes). An attempt past message_deliveries.attempt's
+// range names no delivery and is read for nobody, as the role-holder read above it skips one
+// (fitsIntegerColumn): the transaction answers it not found.
 func (s *server) keptMessageReplier(ctx context.Context, messageID string, attempt int) (keptRoleReplier, error) {
-	if _, err := uuid.Parse(messageID); err != nil {
+	if _, err := uuid.Parse(messageID); err != nil || !fitsIntegerColumn(attempt) {
 		return keptRoleReplier{}, nil
 	}
 	var target *string

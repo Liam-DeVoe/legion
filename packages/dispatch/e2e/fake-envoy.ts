@@ -480,8 +480,13 @@ const server = Bun.serve({
     if (request.method === "GET" && url.pathname.startsWith("/v1/roles/")) {
       const role = decodeURIComponent(url.pathname.slice("/v1/roles/".length));
       const holder = liveHolder(role);
+      // No holder is the real listener's unclaimed refusal, reason and claim revision included:
+      // Dispatch reads a role lookup's 404 as no holder only where its body names a reason.
       if (holder === undefined)
-        return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
+        return Response.json(
+          { claim_revision: 0, error: `no holder for role ${role}`, reason: "unclaimed" },
+          { status: 404 }
+        );
       const holderState = stateOf(holder.session_id);
       // An unresponsive holder keeps the role: the lookup refuses to answer with it unless the
       // caller asked for that state, and it releases nothing either way, as the real listener's

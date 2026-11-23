@@ -400,9 +400,11 @@ func (s *server) keptRoleHolder(ctx context.Context, target string) (keptRoleRep
 // keptMentionReplier is who may answer attempt of a comment's mention of target (nil: the
 // comment's one mention) when that attempt is one Dispatch kept for a role (keptRoleAttempt), and
 // nobody otherwise. It reads the attempt through the pool and then the listener, before the
-// reply's transaction opens; the transaction judges the row again under its lock (takes).
+// reply's transaction opens; the transaction judges the row again under its lock (takes). An
+// attempt past comment_deliveries.attempt's range names no delivery and is read for nobody, as the
+// role-holder read above it skips one (fitsIntegerColumn): the transaction answers it not found.
 func (s *server) keptMentionReplier(ctx context.Context, commentID string, attempt int, target *string) (keptRoleReplier, error) {
-	if _, err := uuid.Parse(commentID); err != nil {
+	if _, err := uuid.Parse(commentID); err != nil || !fitsIntegerColumn(attempt) {
 		return keptRoleReplier{}, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
