@@ -407,6 +407,7 @@ function LegionChart({
       ) : (
         <EvalChart
           model={model}
+          opensPanel={chart.slug}
           renderer={chart.by === "day" ? chart.renderer : CategoryBars}
           rowLink={rowLink}
         />

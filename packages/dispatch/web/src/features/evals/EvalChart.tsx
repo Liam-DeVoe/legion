@@ -21,6 +21,7 @@ import type {
   ChartValue,
   ValueState,
 } from "./chart-model";
+import { EvalTitle } from "./EvalPanel";
 import { EvalTable } from "./EvalTable";
 
 /** A drawn value's colour by its state: its own verdict, or muted where there is nothing to
@@ -253,17 +254,21 @@ function ChartTable({
  * default where the header names one and drawn as a muted second series; a chart that takes no
  * compare (`pending`, the merge timeline) has no such control. Both modes keep the reader's
  * compare choice. Each series' window figures stand above, with what the series says of its input
- * and of the rows it counts by default repository beside them, in a section as on a card.
+ * and of the rows it counts by default repository beside them, in a section as on a card. On the
+ * Evals tab the title opens the number's panel of the eval `opensPanel` names (`EvalTitle`).
  */
 export function EvalChart({
   beside,
   model,
+  opensPanel,
   renderer: Renderer,
   rowLink,
 }: {
   /** What stands beside the chart's title: a card's verdict. */
   beside?: ReactNode;
   model: ChartModel;
+  /** The eval whose panel the title opens, where the chart draws one eval. */
+  opensPanel?: string;
   renderer: ChartRenderer;
   /** What each row of the table holds after its values, where the chart's rows link anywhere. */
   rowLink?: RowLink;
@@ -291,7 +296,7 @@ export function EvalChart({
     >
       <div className="flex flex-wrap items-center gap-2">
         <figcaption className={`mr-auto text-xs ${textMutedOnSurface}`} id={titleId}>
-          {model.title}
+          <EvalTitle slug={opensPanel} title={model.title} />
         </figcaption>
         {beside}
         <ChartModeToggle mode={mode} onChange={setMode} />

@@ -156,6 +156,7 @@ export type {
   EvalDetailResponse,
   EvalItemRow,
   EvalItemsResponse,
+  EvalLink,
   EvalListItem,
   EvalListResponse,
   Event,

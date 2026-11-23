@@ -26,9 +26,9 @@ export interface EvalsViewState {
   readonly retry: () => void;
 }
 
-/** The offsets past the first page that a kind's first answer says it needs: one view more for
- *  each EVALS_VIEW_LIMIT evals past the first page's, up to its total. */
-function laterOffsets(total: number): number[] {
+/** The offsets past the first page that a first answer of `total` evals says a read needs: one
+ *  page more for each EVALS_VIEW_LIMIT evals past the first page's, up to its total. */
+export function laterOffsets(total: number): number[] {
   const offsets: number[] = [];
   for (let offset = EVALS_VIEW_LIMIT; offset < total; offset += EVALS_VIEW_LIMIT) {
     offsets.push(offset);
@@ -36,22 +36,37 @@ function laterOffsets(total: number): number[] {
   return offsets;
 }
 
+/** What a reader keeps of each page of a view: the page as answered, or the part of it the reader
+ *  draws. One function for the reader's life (a module's, or memoized), since each new function
+ *  reads every page again. */
+export type EvalsViewSelect = (answer: EvalListResponse) => EvalListResponse;
+
 /**
  * The evals views of `kinds` over `scope`, all subscribed at once (dispatch://INFRA-2918/
  * artifact/plan-md, D3): one view per kind, and, for a kind whose first answer counts more than a
  * page holds, one view more per page at the next offset. Every component that asks for the same
  * view shares its one subscription, through its query key, so two sections that read one kind
  * cost one view; and only the components that read a view render again when its delta lands.
+ * `select` keeps the part of each page a reader draws (the Logged section's logged evals, the
+ * panel's one eval), so a delta that moves nothing of that part renders that reader not at all;
+ * a page's `total` stays the kind's.
  */
-export function useEvalsViews(scope: EvalsScope, kinds: readonly EvalKind[]): EvalsViewState[] {
+export function useEvalsViews(
+  scope: EvalsScope,
+  kinds: readonly EvalKind[],
+  select?: EvalsViewSelect
+): EvalsViewState[] {
   const firsts = useQueries({
-    queries: kinds.map((kind) => evalsViewQuery({ ...scope, kind, offset: 0 })),
+    queries: kinds.map((kind) => ({ ...evalsViewQuery({ ...scope, kind, offset: 0 }), select })),
   });
   const later = kinds.flatMap((kind, index) =>
     laterOffsets(firsts[index]?.data?.total ?? 0).map((offset) => ({ kind, offset }))
   );
   const rest = useQueries({
-    queries: later.map(({ kind, offset }) => evalsViewQuery({ ...scope, kind, offset })),
+    queries: later.map(({ kind, offset }) => ({
+      ...evalsViewQuery({ ...scope, kind, offset }),
+      select,
+    })),
   });
   return kinds.map((kind, index) => {
     const first = firsts[index];
