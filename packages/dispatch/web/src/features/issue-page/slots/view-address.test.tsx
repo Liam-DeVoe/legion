@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor } from "@testing-library/react";
 import type { NavigateFunction } from "react-router-dom";
 
+import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import type { ArtifactBlock, Comment, IssueDetails } from "../../../api/types";
 import {
@@ -553,4 +554,61 @@ test("the spec's blocks out, a comment of the issue named on the Spec view's add
     ),
     "the statement's row does not stand above the comment's"
   ).toEqual([blockNodeId(SPEC_SLUG, STATEMENT), "head-b"]);
+});
+
+// The Spec view lands on the row an address names until the reader's first act since they
+// followed the address, as the outline does. With the messages read out the stage puts the focus
+// on the statement's row, the view's tab stop, and the reader then presses a control outside the
+// stage, which takes the focus. Once the messages answer every read has settled, and the
+// comment's row is drawn without the focus: the control keeps it. Watched only from the landing's
+// start, the comment's row took the focus from the control.
+test("a press outside the stage before the Spec view's reads settle keeps the focus on the control pressed, off the comment's row the address names", async () => {
+  answerVerificationReads();
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const control = document.body.appendChild(document.createElement("button"));
+  try {
+    const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
+    await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view with the messages out");
+    act(() => {
+      control.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      control.focus();
+    });
+    await act(async () => messagesOut.resolve([]));
+    // The frame a landing asked for as the reads settled.
+    await act(() => nextFrame());
+    expect(
+      view.container.querySelector(SPEC_COMMENT_ROW),
+      `the Spec view drew no row for the comment; the stage drew ${drawnSlot(view)}`
+    ).toBeInTheDocument();
+    expect(
+      control,
+      `the reads settling after the press moved the focus to ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toHaveFocus();
+    for (const row of view.container.querySelectorAll("[data-spec-body] [data-node-row]")) {
+      expect(row, `the Spec view's row ${focusedRow()} took the focus`).not.toHaveFocus();
+    }
+  } finally {
+    control.remove();
+  }
+});
+
+// Each following of the address lands on its row, as the outline's does. The comment's address
+// lands on the comment's row, and a press on the statement's row above it moves the focus there,
+// an act of that following. The same address followed again is a following of its own, with a
+// watch of the reader's acts of its own, so it lands on the comment's row again. Keyed on the node
+// alone, it landed nowhere.
+test("the comment's address followed again under the Spec view, after a press moved the focus to the statement's row, lands on the comment's row again", async () => {
+  answerVerificationReads();
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("?comment=head-b", { held, issue: verifiedIssue(), preset: "spec" });
+  await rowTakesFocus(view, SPEC_COMMENT_ROW, "the comment's address under Spec");
+  const statement = view.container.querySelector<HTMLElement>(SPEC_STATEMENT_ROW);
+  act(() => {
+    statement?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    statement?.focus();
+  });
+  await rowTakesFocus(view, SPEC_STATEMENT_ROW, "a press on the statement's row");
+  await act(async () => held.navigate?.(`${presetPath(KEY, "spec")}?comment=head-b`));
+  await rowTakesFocus(view, SPEC_COMMENT_ROW, "the comment's address followed again");
 });

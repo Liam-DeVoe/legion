@@ -68,7 +68,9 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
+import { ReaderActsWatch } from "../slots/body";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
@@ -165,7 +167,8 @@ export function SpecFilterBody({
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
    *  whichever outline or body took it (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
-  /** The node the address names, which takes the focus once per address (R19). */
+  /** The node the address names, which takes the focus once per following of the address (R19),
+   *  unless the reader has acted since they followed it. */
   reveal?: string;
   /** The whole tree, which holds the asks, the decisions and each statement's checks. */
   root: TreeNode;
@@ -435,26 +438,42 @@ export function SpecFilterBody({
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
-  // An address that names a row puts the focus on it, once per address (R19), and only after
-  // every read the tree's rows come from has settled (`readsSettled`): a row drawn above it after
-  // it took the focus would push it out of view, as the statements are drawn above a comment's
-  // row once the spec's blocks answer. It lands on the row as the outline does (`IssueTree.tsx`'s
-  // `landOnRow`): the focus comes in the next frame and brings the row on screen, and the hold
-  // keeps it there, until the reader acts, while what the page draws after the reads (the names,
-  // the cuts once measured) still grows the rows above it. The row is not on the page until the
-  // reads that hold it have answered, so this looks again on every drawing of the columns, and
-  // the address is taken only once its row is found.
+  // An address that names a row puts the focus on it, once per following of the address (R19),
+  // and only after every read the tree's rows come from has settled (`readsSettled`): a row drawn
+  // above it after it took the focus would push it out of view, as the statements are drawn above
+  // a comment's row once the spec's blocks answer. It lands on the row as the outline does
+  // (`IssueTree.tsx`'s `landOnRow`): the focus comes in the next frame and brings the row on
+  // screen, and the hold keeps it there, until the reader acts, while what the page draws after
+  // the reads (the names, the cuts once measured) still grows the rows above it. The row is not on
+  // the page until the reads that hold it have answered, so this looks again on every drawing of
+  // the columns, and the address is taken only once its row is found. The reader's first act
+  // since they followed the address ends the landing (`acts`), as it ends the outline's: a reader
+  // who acted before the reads settled - a key, a turn of the wheel, a press on another control,
+  // while the stage held the focus on the first statement - keeps the focus where they put it and
+  // the page where they had it, and the landing does nothing to the page: no focus, no scroll, no
+  // hold. Watched only from the landing's start, a read that answered late pulled them back to
+  // the address's row. The landing is keyed on the following and the node (`landingKey`), as the
+  // outline's is: a link to the node the reader moved away from, followed again, lands again, and
+  // the columns drawn again at the same following land nowhere again.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
+  // The reader's acts since they followed the address: a controller their first act aborts,
+  // started once for each following (`ReaderActsWatch`, drawn below keyed on it).
+  const following = useFollowing();
+  const acts = useRef<AbortController | undefined>(undefined);
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (reveal === undefined || taken.current === reveal) return;
-    if (!readsSettled || statements.length === 0) return;
+    if (reveal === undefined || !readsSettled || statements.length === 0) return;
+    const landingKey = `${following}:${reveal}`;
+    if (taken.current === landingKey) return;
     const row = treeItemOf(tree.current, reveal);
     if (row === null) return;
-    taken.current = reveal;
+    taken.current = landingKey;
+    // The landing ends as it starts: the reader has acted since the following, and the page
+    // stays as they left it.
+    if (acts.current?.signal.aborted === true) return;
     landOnRow(row, landingHold);
-  }, [readsSettled, reveal, statements]);
+  }, [following, readsSettled, reveal, statements]);
 
   useTreeKeymap({
     container: tree,
@@ -514,7 +533,11 @@ export function SpecFilterBody({
   // stop from the render that lands on it, as the Plan view's is: the stage gives a focus that
   // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
   // landing's frame, and a landing whose row lost the focus to another row by then leaves the
-  // focus there (`landOnRow`).
+  // focus there (`landOnRow`). It is the tab stop where the reader has acted since the following
+  // as well, and moves no focus then: the stage gives the tab-stop row only a focus that rests on
+  // nothing, and a row the reader moved to holds the tab stop itself (`stop`). No render reads
+  // whether they have acted - an act aborts `acts` and draws nothing - so a tab stop that read it
+  // would move at whatever render came next.
   const addressed = readsSettled ? statements.find((node) => node.id === reveal) : undefined;
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop)
@@ -522,6 +545,7 @@ export function SpecFilterBody({
       : (addressed ?? statements[0])?.id;
   return (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
+      <ReaderActsWatch into={acts} key={following} />
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
           the stage says one (`FailedReadLine`): over the tree and never in it, since an alert
           inside a tree would break the tree's own structure of rows. The view's own reads'
