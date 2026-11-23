@@ -138,7 +138,9 @@ review App otherwise, and a role the deployment defines in `roles` works as the 
 an implementer step, and as its own App again once the step ends. Where the step's App is not the
 architect's own (the implement App, say), the daemon writes the slot, judging its App as it writes,
 so a step that has ended by then leaves the architect's own App there; a step of the review App,
-the architect's own (its acceptance, a tester or reviewer step, its retro), needs no write. Either
+the architect's own (its acceptance, a tester or reviewer step, the retro of a task with no
+implementation step), needs no write. The retro of a task whose last implementation step is the
+architect's own acts as the implement App, as that step did. Either
 way the daemon tells the architect the step only once the slot's gh files hold the step's App: the
 pane's files under tmux, and under Kubernetes the pod's, so it waits for the pod to carry a write
 back as well. Where the pod's launcher cannot say what its gh files hold (an image from before

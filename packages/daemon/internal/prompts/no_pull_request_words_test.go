@@ -217,3 +217,21 @@ func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *te
 		{"go/architect-common.md", "ends the round whatever CI says there"},
 	})
 }
+
+// The owner's retro of a task whose last implementation step is its own acts as that step's App,
+// the implement App, which alone resolves the pull request's review threads (record.OwnerActsAs,
+// record.RetroActsAs), and its end queues the owner's slot back to its own App (workflow's endStep,
+// endOffWalk, ownerSlotCredential). The owner's own retro of a task with no such step stays on the
+// owner's App.
+func TestTheOwnersRetroOfItsImplementationStepActsAsTheImplementApp(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"reviewer.md", "where the implementer step is the owner's, the owner does, at its next implementer step or at its retro."},
+	}, nil)
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/kubernetes.md", "queued at the end of a step or a retro an architect ran for the owner. Its writers are `endStep` in `workflow/steps.go` and `endOffWalk` in `workflow/run_end.go`."},
+		{"docs/site/src/content/docs/legion/running-legion.md", "The retro of a task whose last implementation step is the architect's own acts as the implement App, as that step did."},
+		{"docs/site/src/content/docs/legion/concepts.md", "The architect acts as that role where the step was its own, and keeps its own App where the task has none"},
+	}, [][2]string{
+		{"docs/site/src/content/docs/legion/running-legion.md", "(its acceptance, a tester or reviewer step, its retro), needs no write"},
+	})
+}
