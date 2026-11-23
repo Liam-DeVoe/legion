@@ -1,0 +1,16 @@
+kind: Added
+custom:
+  Issue: pr5162
+body: |-
+  The owner of an issue, its own architect, can do a step of the issue's plan itself. A step
+  keyed `owner` (for example `implementer:owner` or `acceptance:owner`) starts no worker: the
+  owner is told it in an `owner-step` notice, and reports it with `complete_step`. While the owner
+  does a step its gh acts as the App of the step's role, and the notice waits until it does,
+  except where that App is the owner's own; every end of the step writes the owner's own App back,
+  and the next notice to the owner waits for that write. A notice of a run that has ended is not
+  delivered. An owner's step that started and has not ended is told to the owner again when the
+  owner is idle past the silence bound, and at each launch of the owner. A step `acceptance` with
+  no key gets a fresh agent of the role `acceptance`, and `sign_off` of an acceptance another agent
+  works is refused `SIGNOFF_NOT_THE_OWNERS`. The default steps end with `acceptance:owner`. A task
+  with no pull request is done when its retro ends, and the retro runs as the role of its agent.
+  An issue with no plan rows walks today's steps as before. Daemon API contract 227.
