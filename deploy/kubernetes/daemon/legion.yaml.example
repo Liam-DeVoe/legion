@@ -569,7 +569,7 @@ runtime:
         # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
-# capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets
+# capability the deployment's own configuration closes or leaves open: the secrets
 # broker (runtime.kubernetes.agent_secrets), model fallback (retry.modelFallback in the operator's
 # overlay, read by the image probe) and every pod's reservation (resources above, which the
 # daemon's defaults fill for every pod, so that row is present on every Kubernetes deployment). A
