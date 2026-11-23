@@ -1179,14 +1179,16 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
-// TestCensusAdmitsTheBackfillIndexes holds the census to admitting the indexes envoy-dispatch
-// backfill-graph-store reads events through for each batch (20261119020700 on the document and the
-// version an artifact.version event names, 20261119020800 on the comment a comment.created event
-// names) over production as the release before them leaves it (requireCensusAdmitsLateIndexes):
-// production's events is above the table limit, so only a concurrent build's exemption admits an
-// index on it.
+// TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch
+// backfill-graph-store reads through for each batch: two on events (20261119020700 on the document
+// and the version an artifact.version event names, 20261119020800 on the comment a comment.created
+// event names), and the two its walks read in their order (20261119020900 on the block rows naming
+// no node, 20261119021000 on the block references naming no node), over production as the release
+// before them leaves it (requireCensusAdmitsLateIndexes): production's events is above the table
+// limit, so only a concurrent build's exemption admits an index on it, and so would a block table
+// that grows past it.
 func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
-	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800)
+	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
 }
 
 // requireCensusAdmitsLateIndexes holds the census to admitting each of versions, the ascending

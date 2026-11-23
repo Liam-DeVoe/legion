@@ -52,9 +52,11 @@ type eventPlanRead struct {
 // event that recorded it, so the plans below are of reads that find their events. Then, with hash
 // and merge joins off and under each plan-cache mode, every read of events in the analyzed plan
 // must be a probe of the read's index by its first key, run once for each event the batch resolves
-// (eventReads). The control is the same read with that index dropped inside the explaining
+// (relationReads). The control is the same read with that index dropped inside the explaining
 // transaction, as the database stood before its migration: it must plan, run, and fail the check
-// under both modes.
+// under both modes with a read of events that ran. The block batch is explained from the empty
+// address, as the backfill starts it, which explaintest once wrote as null, an empty batch whose
+// events read never ran: the count of probes is what tells the two apart.
 func TestTheBackfillsEventReadsProbeTheirIndexes(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -103,44 +105,54 @@ func TestTheBackfillsEventReadsProbeTheirIndexes(t *testing.T) {
 			dropped := []explaintest.Statement{{SQL: "set local lock_timeout = '10s'"}, {SQL: "drop index " + read.index}}
 			for _, mode := range explaintest.PlanCacheModes {
 				plan := explaintest.ExplainAfter(t, ctx, pool, nil, read.statement, mode, "json")
-				probed, unprobed, loops := eventReads(t, keys, plan, read.index)
+				reads := relationReads(t, keys, plan, "events", read.index)
 				switch {
-				case len(unprobed) > 0:
+				case len(reads.unprobed) > 0:
 					t.Errorf("%s under %s reads events other than by a probe of %s:\n  %s\nplan:\n%s", read.name, mode, read.index,
-						strings.Join(unprobed, "\n  "), explaintest.ExplainAfter(t, ctx, pool, nil, read.statement, mode, "text"))
-				case loops != read.probes:
-					t.Errorf("%s under %s probes %s %.0f time(s), want %.0f, once for each event its batch resolves:\n  %s",
-						read.name, mode, read.index, loops, read.probes, strings.Join(probed, "\n  "))
+						strings.Join(reads.unprobed, "\n  "), explaintest.ExplainAfter(t, ctx, pool, nil, read.statement, mode, "text"))
+				case reads.probeLoops != read.probes:
+					t.Errorf("%s under %s probes %s %.0f time(s), want %.0f, once for each event its batch resolves:\n  %s\nplan:\n%s",
+						read.name, mode, read.index, reads.probeLoops, read.probes, strings.Join(reads.probed, "\n  "),
+						explaintest.ExplainAfter(t, ctx, pool, nil, read.statement, mode, "text"))
 				default:
-					t.Logf("%s under %s:\n  %s", read.name, mode, strings.Join(probed, "\n  "))
+					t.Logf("%s under %s:\n  %s", read.name, mode, strings.Join(reads.probed, "\n  "))
 				}
 
-				control := explaintest.ExplainAfter(t, ctx, pool, dropped, read.statement, mode, "json")
-				if _, unprobed, _ := eventReads(t, keys, control, read.index); len(unprobed) == 0 {
-					t.Errorf("%s with %s dropped, the control, passes the check under %s, so the check cannot tell a read of events whole from a probe:\n%s",
+				control := relationReads(t, keys, explaintest.ExplainAfter(t, ctx, pool, dropped, read.statement, mode, "json"), "events", read.index)
+				if len(control.unprobed) == 0 || control.unprobedLoops == 0 {
+					t.Errorf("%s with %s dropped, the control, reads events by no other way that ran under %s, so the check cannot tell a read of events whole from a probe:\n%s",
 						read.name, read.index, mode, explaintest.ExplainAfter(t, ctx, pool, dropped, read.statement, mode, "text"))
 				} else {
-					t.Logf("%s with %s dropped under %s fails the check, as the control must:\n  %s", read.name, read.index, mode, strings.Join(unprobed, "\n  "))
+					t.Logf("%s with %s dropped under %s fails the check, as the control must:\n  %s", read.name, read.index, mode, strings.Join(control.unprobed, "\n  "))
 				}
 			}
 		})
 	}
 }
 
-// eventReads judges every node of plan, one "Plan" node of EXPLAIN (ANALYZE, FORMAT JSON), that
-// reads events. A probe is an index scan of index, or a bitmap heap scan whose bitmap is one
+// planReads is what relationReads found of one relation's reads in a plan: each probe and each
+// other read, as a failure or a log names it; how many times the probes and the other reads ran
+// in all; and how many rows the reads answered in all, over every time each ran.
+type planReads struct {
+	probed, unprobed          []string
+	probeLoops, unprobedLoops float64
+	rows                      float64
+}
+
+// relationReads judges every node of plan, one "Plan" node of EXPLAIN (ANALYZE, FORMAT JSON),
+// that reads relation. A probe is an index scan of index, or a bitmap heap scan whose bitmap is one
 // Bitmap Index Scan of index, whose condition names that index's first key column
 // (explaintest.CondNamesFirstKey); anything else - a sequential scan, a scan of another index, an
-// index read end to end - reads events other than by the event the row asks for. It answers each
-// probe, each other read, and how many times the probes ran in all.
-func eventReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawMessage, index string) (probed, unprobed []string, loops float64) {
+// index read end to end - reads relation other than by the key the statement asks for.
+func relationReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawMessage, relation, index string) planReads {
 	t.Helper()
-	bitmaps := explaintest.BitmapHeapScans(t, plan, "events")
+	var reads planReads
+	bitmaps := explaintest.BitmapHeapScans(t, plan, relation)
 	for _, node := range explaintest.Nodes(t, plan) {
-		if node.Relation != "events" {
+		if node.Relation != relation {
 			continue
 		}
-		read := fmt.Sprintf("%s ran %.0f time(s)", node, node.Loops)
+		read := fmt.Sprintf("%s ran %.0f time(s), %.0f row(s) each", node, node.Loops, node.Rows)
 		through, cond := node.Index, node.IndexCond
 		probe := node.Type == "Index Scan" || node.Type == "Index Only Scan"
 		if node.Type == "Bitmap Heap Scan" {
@@ -151,14 +163,16 @@ func eventReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawMessage,
 				read += " through " + through
 			}
 		}
+		reads.rows += node.Rows * node.Loops
 		if !probe || through != index || cond == "" || !explaintest.CondNamesFirstKey(cond, keys.FirstKey(t, index)) {
-			unprobed = append(unprobed, read+": events is read other than by a probe of "+index+"'s key")
+			reads.unprobed = append(reads.unprobed, read+": "+relation+" is read other than by a probe of "+index+"'s key")
+			reads.unprobedLoops += node.Loops
 			continue
 		}
-		probed = append(probed, read+" under "+cond)
-		loops += node.Loops
+		reads.probed = append(reads.probed, read+" under "+cond)
+		reads.probeLoops += node.Loops
 	}
-	return probed, unprobed, loops
+	return reads
 }
 
 // seedEventPlan writes the seed TestTheBackfillsEventReadsProbeTheirIndexes reads (the constants
