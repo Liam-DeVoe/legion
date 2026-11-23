@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -112,7 +112,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// or an outage (oauthrefusal.Outage, RFC 9110: a 408, a 429 or a 5xx), after the wait the response
+// or an outage (httpoutage.Is, RFC 9110: a 408, a 429 or a 5xx), after the wait the response
 // names, read through serverwait.Read, or a second when it names none. A wait of an hour is one a
 // run bounded under an hour, such as the judge's 20 s modelBound, has no time for, so the call is
 // not made again (waitable). The providers this package speaks to name their own limits under
@@ -123,7 +123,7 @@ func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if err != nil {
 		return defaultRetryWait, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}
-	if !oauthrefusal.Outage(resp.StatusCode) {
+	if !httpoutage.Is(resp.StatusCode) {
 		return 0, false
 	}
 	if wait, named := serverwait.Read(resp.Header, time.Now()); named {

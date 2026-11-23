@@ -81,7 +81,7 @@ func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query
 // 504). Everything else -- a 404, a rate limit, a decode failure, a response past the size cap,
 // the caller's own context ending -- is the answer, not a reason to ask again.
 //
-// The other outage statuses (a 408, a 500, a 503: oauthrefusal.Outage) go back to the caller,
+// The other outage statuses (a 408, a 500, a 503: httpoutage.Is) go back to the caller,
 // whose retry is the next reconcile pass: a step that fails a page fails its window, and the next
 // pass, at most ReconcileInterval later, asks for it again from the last window it recorded; an
 // intake handler logs the failed fetch and acknowledges it, leaving the event to that pass. Asking

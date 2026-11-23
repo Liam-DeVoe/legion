@@ -14,13 +14,10 @@
 // GitHub's and Google's statuses by Refuses and Outage too (internal/cipher/secrets,
 // mintStatusError and classify), beside their own rate-limit reading.
 //
-// Outage is this module's one rule for any service's status, not a token endpoint's alone: every
-// envoy reader that decides on a status whether the same request may be answered if asked again
-// reads it - beside those, the agent loop's model calls (agentloop), the Azure embedder
-// (internal/dispatch/embed), Dispatch's listener client (internal/dispatch/envoy) and the load
-// test - and it is httpoutage.Is, the public door the Legion daemon reads the same definition
-// through. It imports only the standard library, golang.org/x/oauth2 and httpoutage, so a command
-// that links no OpenID Connect verifier can use it.
+// Outage is httpoutage.Is under the name these OAuth readers use; a reader of any other service's
+// status calls httpoutage.Is itself. The package imports only the standard library,
+// golang.org/x/oauth2 and httpoutage, so a command that links no OpenID Connect verifier can use
+// it.
 package oauthrefusal
 
 import (

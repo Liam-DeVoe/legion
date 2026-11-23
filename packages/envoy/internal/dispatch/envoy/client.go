@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
@@ -52,14 +52,14 @@ func (e unreachableError) Unwrap() error { return e.error }
 func unreachable(err error) error { return unreachableError{err} }
 
 // outageStatus reports whether a listener answered with a status that says it could not answer
-// now rather than a decision about the request: an outage (oauthrefusal.Outage, RFC 9110: a 408,
+// now rather than a decision about the request: an outage (httpoutage.Is, RFC 9110: a 408,
 // a 429, a 5xx), but for listenerwire.FaultStatus, the 500 that is the listener's own lasting
 // answer (its doc names each cause). A 502, 503 or 504 also comes from a gateway in front of a
 // listener that is gone, and a 408 or a 429 only from something in front of it: the listener, a
 // Go server, answers no 408, and its 429s reach no Bearer caller such as this one (a DPoP token
 // presented too often, an agent sender's limit, the relay socket's).
 func outageStatus(code int) bool {
-	return oauthrefusal.Outage(code) && code != listenerwire.FaultStatus
+	return httpoutage.Is(code) && code != listenerwire.FaultStatus
 }
 
 // unavailableStatus is the ErrUnavailable failure err a non-200 answer reads as, marked

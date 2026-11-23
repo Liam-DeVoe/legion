@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
@@ -68,9 +68,9 @@ func (r callResult) errorCode() string {
 }
 
 // transient is a failure worth retrying: a transport error or an outage status
-// (oauthrefusal.Outage: a 408, a 429 or a 5xx).
+// (httpoutage.Is: a 408, a 429 or a 5xx).
 func (r callResult) transient() bool {
-	return r.err != nil || oauthrefusal.Outage(r.status)
+	return r.err != nil || httpoutage.Is(r.status)
 }
 
 // arrival is when the request reached Dispatch's socket, or its start when the trace never saw

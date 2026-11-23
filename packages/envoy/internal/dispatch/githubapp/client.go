@@ -25,12 +25,12 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
-	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -1004,12 +1004,12 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
-	// An outage status (oauthrefusal.Outage: a 408 or a 5xx) and a 401 say GitHub could not answer
+	// An outage status (httpoutage.Is: a 408 or a 5xx) and a 401 say GitHub could not answer
 	// or did not take the App's credentials; its 429 is a limit, noted as one. Every other status, a
 	// limit aside, is left to the caller, because the same answer is data at one point and a failure
 	// at another (a 404 is a deleted repository to one caller and a wrong workflow path to the
 	// next), and only the caller can tell the two apart.
-	if status := response.StatusCode; status != http.StatusTooManyRequests && oauthrefusal.Outage(status) || status == http.StatusUnauthorized {
+	if status := response.StatusCode; status != http.StatusTooManyRequests && httpoutage.Is(status) || status == http.StatusUnauthorized {
 		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil

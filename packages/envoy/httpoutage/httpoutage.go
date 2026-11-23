@@ -6,9 +6,9 @@
 //
 // It is public so that the Legion daemon (packages/daemon, module github.com/sjawhar/legion/daemon),
 // which Go's internal rule bars from this module's internal packages, reads the definition the
-// envoy module reads: oauthrefusal.Outage, which every envoy reader calls, is this one. It imports
-// only the standard library. Its TypeScript twin, the same set, is outage in
-// @legion/contracts/http-status (packages/contracts/src/http-status.ts).
+// envoy module reads: envoy's readers call Is, and its OAuth readers call it as
+// oauthrefusal.Outage. It imports only the standard library. Its TypeScript twin, the same set,
+// is outage in @legion/contracts/http-status (packages/contracts/src/http-status.ts).
 package httpoutage
 
 import "net/http"

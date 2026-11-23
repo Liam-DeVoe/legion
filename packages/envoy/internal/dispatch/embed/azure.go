@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -264,10 +264,10 @@ func azureThrottled(status int) bool {
 
 // azureOutage reports whether an HTTP status that is no throttle is Azure failing to answer now:
 // a 408 (a request it did not take in time) or a 5xx (RFC 9110 sections 15.5.9 and 15.6,
-// oauthrefusal.Outage). Unlike a throttle it may be one text Azure fails on every time, so it
+// httpoutage.Is). Unlike a throttle it may be one text Azure fails on every time, so it
 // stays a failure embedqueue bisects and confirms with its canary (IsOutage).
 func azureOutage(status int) bool {
-	return oauthrefusal.Outage(status) && !azureThrottled(status)
+	return httpoutage.Is(status) && !azureThrottled(status)
 }
 
 // placeAzureVectors puts each vector at the index Azure gave it, refusing an answer that does not
