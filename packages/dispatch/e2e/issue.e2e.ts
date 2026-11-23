@@ -788,10 +788,9 @@ test("issue header keeps each group whole, its properties in Details, and the wh
     expect(await inView(indicator, 1280)).toBe(true);
     // Two labels leave room for Close and Details on their line.
     expect(await middle(close)).toBe(await middle(detailsButton));
-    // Measured 134 px at 1280 px (2026-11-23). A line of this header is at least 32 px tall here,
-    // so one line piled on reaches 166 px and fails.
+    // Measured 134 px at 1280 px (2026-11-23), under the bound the header had before.
     const desktopHeader = await header.boundingBox();
-    expect(desktopHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(166);
+    expect(desktopHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(140);
     await expect(pageFits()).resolves.toBe(true);
 
     await page.setViewportSize({ height: 900, width: 1536 });

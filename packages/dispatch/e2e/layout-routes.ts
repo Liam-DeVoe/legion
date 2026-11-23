@@ -234,9 +234,14 @@ const additions: Readonly<
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },
   "credentials-machine": { minElements: shortPage(24) },
+  // Each child's links are a capped group of their own, in every state: a state's groups replace
+  // the route's.
   "issue-children": {
     requiredGroups: [...ISSUE_HEADER_GROUPS, "child-links"],
-    states: ISSUE_STATES,
+    states: ISSUE_STATES.map((state) => ({
+      ...state,
+      requiredGroups: [...(state.requiredGroups ?? []), "child-links"],
+    })),
   },
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },

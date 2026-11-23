@@ -247,7 +247,7 @@ export function IssueComponentsLine({
       )}
       {write.error === null ? null : (
         <span
-          className={`${page === null ? "shrink-0" : value} text-xs ${page === null ? dangerText : pageFailedText}`}
+          className={`${value} text-xs ${page === null ? dangerText : pageFailedText}`}
           role="alert"
           {...page?.authorText}
         >

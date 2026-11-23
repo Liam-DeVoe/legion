@@ -443,7 +443,8 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    const details = await openIssueDetails(userEvent.setup());
+    expect(within(details).queryByTestId("issue-details-opened-by")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -537,10 +538,8 @@ test("IssuePage's Details, closed over a route edit not saved, gives the edit up
     const routeInput = await screen.findByLabelText("Message route");
     await user.clear(routeInput);
     await user.type(routeInput, "role:draft");
-    // The draft hides the saved route's warning, which speaks for the saved route alone.
-    await waitFor(() =>
-      expect(within(stateRow).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument()
-    );
+    // A draft changes nothing saved, so the saved route's warning stays on the header.
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
 
     const details = within(screen.getByTestId("issue-header")).getByRole("button", {
       name: "Details",
@@ -620,7 +619,8 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    const details = await openIssueDetails(userEvent.setup());
+    expect(within(details).queryByTestId("issue-details-opened-by")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();

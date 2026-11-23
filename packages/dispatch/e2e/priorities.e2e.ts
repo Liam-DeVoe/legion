@@ -738,12 +738,11 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
 
-    // An issue that advances none carries no line at all: no label, no name, only the control
-    // that places it under a priority.
+    // An issue that advances none links no priority: its Advances row in Details holds only the
+    // control that places it under one.
     await page.goto(`/issues/${seed.clock}`);
     await openIssueDetails(page);
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
-    await expect(page.getByTestId("issue-advances")).not.toContainText("Advances");
     await expect(
       page.getByRole("button", { name: `Add a priority to ${seed.clock}` })
     ).toBeVisible();

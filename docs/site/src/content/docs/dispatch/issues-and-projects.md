@@ -222,8 +222,8 @@ too narrow, a whole group moves to the next line:
 - **State**: status, priority, assignee, progress, and an approval chip once someone has asked for
   the spec to be approved (or the steps of the project's approval gate).
 - **Attention**: whose turn it is (`Waiting on you (N)` or `Waiting on agents (N)`, counting the
-  issue's open asks), a warning when the issue's message route reaches nobody, and the claim with
-  **Release** beside it.
+  issue's open asks), a warning when nobody holds the issue's message route, or its holder has
+  stopped answering, and the claim with **Release** beside it.
 - **Labels**, at most ten and then **+N**, which shows the rest.
 - **Close issue** and **Details**. A closed issue says so above its key, with **Reopen**.
 

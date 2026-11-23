@@ -820,9 +820,10 @@ export function IssueHeader({
                 {whoseTurn}
               </span>
             )}
-            {/* The route's warnings speak for the saved route only, so a route being saved hides
-                them until the next read judges it. */}
-            {drafts.route === (issue.route ?? "") ? (
+            {/* The route's warnings speak for the saved route, so they hide only while a route
+                save is in flight; a draft or a refused save leaves the saved route, and its
+                warnings, as they are. */}
+            {!(updateIssue.isPending && updateIssue.variables?.route !== undefined) ? (
               <>
                 <UnreachableRouteMarker issue={issue} showRoute />
                 <UnresponsiveRouteMarker issue={issue} showRoute />
