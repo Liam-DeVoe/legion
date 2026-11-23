@@ -622,6 +622,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 // token (workflow.Engine.ReviewerSession), so the controller's approval it lists is set aside and
 // kept as refused, and the round stays undecided, as in a later round.
 func TestTheReadSetsAsideAnotherSessionsReviewInTheReviewersFirstRound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer})
 	captureHeadAt(t, pool, captureHead)

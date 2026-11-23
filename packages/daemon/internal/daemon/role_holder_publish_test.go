@@ -186,6 +186,7 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 // set as a retired claim of one of Legion's roles does: the set is the live claims, whatever their
 // role.
 func TestTheExecutorPublishesTheSessionOfARoleTheDeploymentDefines(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
 	r.seedClaim(issue, claim.RoleTester, "ses-t", supervise.StateWorking, time.Minute)

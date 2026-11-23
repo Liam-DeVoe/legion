@@ -28,6 +28,7 @@ import (
 // the owner's stop_task (intake.TaskStopped), and its row runs on the outbox's executor; the
 // restart is modelled as the write its entry makes. The control is the row run with no restart.
 func TestAStepStopSuspendsTheAgentThatRanTheStoppedStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		restart bool

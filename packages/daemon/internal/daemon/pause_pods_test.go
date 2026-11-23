@@ -107,6 +107,7 @@ func podHoldEnd(t *testing.T, pool *store.Pool, issue string) string {
 // runs under its own project and the pause holds, is passed over the same way: the pause is the
 // daemon's project's, not its issue key's.
 func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing.T) {
+	t.Parallel()
 	w, pool, logged := wakeRuntime(t)
 	ctx := context.Background()
 	woke := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
@@ -824,6 +825,7 @@ func TestTheLastWordRefusesAReplacementWhileAPauseHoldsThePod(t *testing.T) {
 // 2), the pause keeps the pod for the reviewer too: the sweep replaces nothing before the bound,
 // and the reviewer's launch goes into the round's pod.
 func TestAPodlessRoundIsNotKeptForAPauseResumeWhoseRoleCameUp(t *testing.T) {
+	t.Parallel()
 	const stopped, idle = pauseStoppedRole, claim.RoleReviewer
 	members := []claim.Role{stopped, idle, claim.RoleTester}
 	// cameUpThenARoundOpened is a rig of its own, taken to the moment where the daemon has

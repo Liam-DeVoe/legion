@@ -213,6 +213,7 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 // the review App's. A role nothing defines gets no identity: the mint is refused before any
 // lease is asked for.
 func TestTheGitIdentityOfADeploymentRoleIsItsAppsBot(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	tc := transferStates[0]
 	owner := ghrepo.MustParse(tc.want).Owner()

@@ -318,6 +318,7 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 // is taken before the pause, so it is no wake of the pause: a wake taken while the project is
 // paused is the open pause's (store.PodRecords.PauseOfWake).
 func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	if taken, err := r.st.TakePodWake(r.ctx, "legion", pauseIssue, mustClaimToken(t, pauseIssue, claim.RoleTester), claim.RoleTester,
 		pods.WakeChecks, time.Now(), 0); err != nil || !taken {
@@ -939,6 +940,7 @@ func TestANoticeThatMeetsThePausesHeldWakeAtTheResumeWarnsOfNoStuckResume(t *tes
 // claim the daemon suspended stays suspended by the daemon. The same row over a role still
 // released resumes it, which is what tells the fence from a row that starts nothing anyway.
 func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	runner, sup, _ := hookRunner(t, &outboxPublisher{})
 	parked := releasedClaim(t, sup, claim.RoleImplementer)
@@ -1065,6 +1067,7 @@ func (r *pauseRig) backstopsDue() []string {
 // key, on the checker's step, whose token names the implementer. The pause's stop of that claim
 // arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
 func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	held := r.pauseLegion()
@@ -1084,6 +1087,7 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 // does: at step, the claim the record gives the running step (workflow.OpenWorkers), here the agent
 // of a key, and not the checker's own claim beside it.
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases

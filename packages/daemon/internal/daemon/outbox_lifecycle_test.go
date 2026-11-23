@@ -150,6 +150,7 @@ func TestSuspendingAClaimThatRunsNothingIsDone(t *testing.T) {
 // implementing and nothing relaunched; a completion it reports for a phase it no longer works is
 // refused. Only the issue's close stops it, and its session is kept.
 func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -327,6 +328,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 // no stop; once the turn ends the worker is suspended once with its session kept, and the row's
 // retry finishes it.
 func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -413,6 +415,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 // reroleForStep; each claim here is named for its role.) The tester's turn is its own — nothing
 // interrupts it and nothing stops it — and it keeps its launch, its session and its capability.
 func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -733,6 +736,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 // are suspended and its phase parked, so its tester's next completion advances nothing and no
 // status write lands over the human's backlog.
 func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1017,6 +1021,7 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 // suspended with the root in done, a phase no role works. Found by #1347's review, whose test this
 // extends.
 func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

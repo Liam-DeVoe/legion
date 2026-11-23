@@ -80,6 +80,7 @@ const (
 // rows are deleted before its gate opens starts a planner, and the walk's assertion fails on it;
 // (3) with checker taken out of the settings, register_plan of B's plan is refused naming checker.
 func TestEachIssueWalksItsOwnStepsWithADeploymentRole(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Default walk lands its change", "Checker verifies widget output", "Reviewer precedes tester ordering",
@@ -233,6 +234,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // place of plan_tasks.position, as a store that lost slice 4's place would answer; the tester's pass
 // then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueOfSliceFourGoesOnUnderThisRelease(t *testing.T) {
+	t.Parallel()
 	r := newSliceFourRig(t)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {

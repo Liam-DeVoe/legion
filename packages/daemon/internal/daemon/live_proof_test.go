@@ -59,7 +59,8 @@ const liveSettle = 3 * time.Second
 // liveProof is what a run of a live proof holds whatever it proves: the booted daemon, the
 // configuration it was booted with, a JetStream client of the script's broker, the Dispatch and
 // Envoy listener stand-ins the steps read the daemon's own writes back from, and the daemon's own
-// store, which seeds the fixture.
+// store, which seeds the fixture. logPath, when set, is the file the booted daemon's log is
+// written to in place of the one liveDaemonLogEnv names (log).
 type liveProof struct {
 	t       *testing.T
 	cfg     config.Config
@@ -70,6 +71,7 @@ type liveProof struct {
 	st      *store.Store
 	records record.Store
 	project string
+	logPath string
 }
 
 // newLiveProof is newLiveProofOn over the broker liveNATSURLEnv names, which boot refuses to run
@@ -114,11 +116,14 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	return p
 }
 
-// log is where the booted daemon writes its own log: the file liveDaemonLogEnv names, appended to
-// across a restart, and nowhere when it names none.
+// log is where the booted daemon writes its own log: the file logPath names, else the file
+// liveDaemonLogEnv names, appended to across a restart, and nowhere when neither names one.
 func (p *liveProof) log() *slog.Logger {
 	p.t.Helper()
-	path := os.Getenv(liveDaemonLogEnv)
+	path := p.logPath
+	if path == "" {
+		path = os.Getenv(liveDaemonLogEnv)
+	}
 	if path == "" {
 		return quietLogger()
 	}

@@ -829,6 +829,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
 	// park this door needs: a running root holding its admission slot, the tree's one child under

@@ -370,6 +370,7 @@ func hostWorkspace(t *testing.T, stateDir, repo, issue string) {
 // CloneLock of this process, which a flock excludes as another process's would; the store lock is
 // seen waiting on it in the kernel's own list of locks, and is taken once it lets go.
 func TestTheStoreLockOfACloneWaitsForTheClonesLockAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	clone := filepath.Join(t.TempDir(), "repos", "github.com", "acme", "widgets")
 	if err := os.MkdirAll(filepath.Join(clone, ".git"), 0o700); err != nil {
 		t.Fatal(err)

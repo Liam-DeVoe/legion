@@ -212,6 +212,7 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
 // a claim an earlier release left `released`.
 func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the pod of an issue whose one claim failed", func(t *testing.T) {

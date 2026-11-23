@@ -32,6 +32,7 @@ var firedHook = record.HookPrompt{Hook: "back-to-implementing", Role: claim.Role
 // claim, under the row's own key and with keep, so the listener keeps it for a claim no live
 // session holds, and the row ends there.
 func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)
@@ -167,6 +168,7 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // Only a role with no live holder ends the row.
 func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The prompt names the claim of the implementer's step, as the workflow writes it (fireHook):
 	// this runner has no record to read the step from.

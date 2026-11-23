@@ -38,6 +38,7 @@ import (
 // another role than its claim holds (the outbox's reroleForStep), writes no row of its own and is
 // never asked here: every claim of this tree is named for its role and runs its role's steps.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
+	t.Parallel()
 	const (
 		root     = "LEGION-800"
 		forward  = "LEGION-801"
@@ -276,6 +277,7 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes
 // none of these.
 func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
+	t.Parallel()
 
 	t.Run("tree move", func(t *testing.T) {
 		carriedChildStops(t, "LEGION-811", "LEGION-812", func(apply func(string, intake.Fact)) {

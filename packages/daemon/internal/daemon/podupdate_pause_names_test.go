@@ -202,6 +202,7 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 // for the claims the round asks (waitingClaims), the implementer stops the read. Then the line
 // says that no read was made, and the issue is not told what the reviewer left on the disk.
 func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	t.Parallel()
 	const reviewer = claim.RoleReviewer
 	rig := forgottenOwedLaunch(t, suspendedRole(reviewer, supervise.SuspendedByDaemon))
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})

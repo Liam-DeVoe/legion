@@ -172,6 +172,7 @@ func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
 // A body that is not the whole set of an issue is refused before the database sees it, and an
 // issue that Dispatch does not know is refused with the code the daemon ends a publication on.
 func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -222,6 +223,7 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 // every other role by name. The controller, a name with a capital and a name of 33 characters are
 // each refused 400 INVALID_ROLE_HOLDER naming the grammar, and the stored set stays as it was.
 func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	longest := "a" + strings.Repeat("b", 31)
@@ -420,6 +422,7 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 // each shape, and lists no enum of roles: the route takes a role the deployment defines, which no
 // list names. The tag must spell the pattern legionclaim.IsRole matches.
 func TestTheRoleHolderShapesSpellTheRoleGrammar(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
 		field, ok := reflect.TypeOf(shape).FieldByName("Role")
 		if !ok {
@@ -482,6 +485,7 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 // held to the same rule: a role the deployment defines and a name of 32 characters are stored, and
 // the controller, a name with a capital and a name of 33 characters are refused by the check.
 func TestTheRoleHoldersTableChecksTheRoleGrammar(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	insert := func(role, session string) error {

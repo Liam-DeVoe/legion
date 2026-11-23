@@ -210,6 +210,7 @@ func (w *wakeCountingTrees) taken() int {
 // negative control is c-one-channel's: an executor that called wakeForDelivery first, as
 // hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)

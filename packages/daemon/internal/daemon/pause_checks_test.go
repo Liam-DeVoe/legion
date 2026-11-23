@@ -43,6 +43,7 @@ import (
 // (admit.Admission.promoteHolds): Z is then admitted while P is paused, and the test fails at that
 // admission.
 func TestPauseHoldsEveryStart(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	X, Y, U, W, V, Z := r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5), r.issue(6)
 	A, B := r.token(X, claim.RolePlanner), r.token(X, claim.RoleArchitect)

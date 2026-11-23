@@ -2599,6 +2599,7 @@ func TestTheControllersTerminalStatesNeverReachTheWorkflow(t *testing.T) {
 // role runs several phases — and a task of no phase never reaches this answer at all, which is
 // supervise's own rule. The step is TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep's.
 func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{
@@ -2963,6 +2964,7 @@ func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *
 // again and relaunch the kept session. Before, the start met a retired claim and finished having
 // done nothing: the tree held a slot, in_progress, with no architect.
 func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

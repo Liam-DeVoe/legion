@@ -739,6 +739,7 @@ func TestTheBootsListingAsksGitHubNothingForARepositoryNoRecordNamesAndItsRecove
 // is repaired like any other (R5). The read mints on that repository's owner account, which is
 // what lets it reach that repository.
 func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var listed []string
 	var mu atomic.Pointer[[]string]

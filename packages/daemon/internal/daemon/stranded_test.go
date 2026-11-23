@@ -207,6 +207,7 @@ func keysOf(state map[string]json.RawMessage) []string {
 // start is still queued. A slot whose worker has neither is not stranded but repaired, since
 // admission starts that worker's phase again on its first pass (admit's resumeSlottedWorkers).
 func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	key := func(n string) string { return cfg.Project + "-" + n }
 	implementing, reviewing, tested, lingering, lingeringChild, planning := key("1"), key("2"), key("3"), key("4"), key("5"), key("6")
@@ -429,6 +430,7 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 // worker view says `retired` and the report names it, since only a start of its phase relaunches
 // it and no rule queues one.
 func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
 	retiredIssue := cfg.Project + "-2"

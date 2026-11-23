@@ -40,14 +40,13 @@ func TestRoleConfigFilesReachEitherRuntime(t *testing.T) {
 // the boot, naming the role, the file and Oh My Pi's error line, rather than failing each launch of
 // that role; a role file Oh My Pi starts on, or no key at all, passes.
 func TestTheTmuxBootGateRefusesARoleOverlayOhMyPiCannotParse(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	script := "#!/bin/sh\nIFS=:\nfor f in $PI_CONFIG_FILES; do case \"$f\" in *malformed*)\n" +
 		"  echo \"error: Failed to parse config overlay $f: SyntaxError\" >&2; exit 1;; esac; done\n" +
 		"echo '{\"value\": false}'\n"
-	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, omp, script, 0o755)
 	operator, good, malformed := filepath.Join(dir, "operator.yml"), filepath.Join(dir, "fallback.yml"), filepath.Join(dir, "malformed.yml")
 	for _, file := range []string{operator, good, malformed} {
 		if err := os.WriteFile(file, []byte("{}\n"), 0o644); err != nil {

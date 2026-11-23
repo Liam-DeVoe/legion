@@ -37,6 +37,7 @@ const taskCopiesMigration = "_task_copies.up.sql"
 // hand: record.PlanTask.BranchOf answering legion/<KEY>.default for a row that holds none; the
 // reviewer's task then names that branch, and the check of its working copy line fails.
 func TestAnIssueThatRunsAtTheReleaseKeepsItsWorkingCopy(t *testing.T) {
+	t.Parallel()
 	r := newCopiesUpgradeRig(t)
 	ctx := context.Background()
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)

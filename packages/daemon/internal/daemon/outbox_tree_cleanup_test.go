@@ -256,6 +256,7 @@ func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
 // Before, the reservation refused the absent lifecycle, and every close row retried on its backoff
 // forever, logged as a failure each time.
 func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

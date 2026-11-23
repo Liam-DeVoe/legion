@@ -72,6 +72,7 @@ func storeRoleClaims(t *testing.T, pool *store.Pool, tree, issue string) {
 // open, and the workspace removal acts. Close rows by role reached the claim of the worker on the
 // tester's step twice and left `…-tester` running, so the cleanup and the removal waited for ever.
 func TestALingersCloseRetiresAnEarlierVersionsClaimAndTheTreeIsCleanedUp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())

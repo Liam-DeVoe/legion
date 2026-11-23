@@ -159,6 +159,7 @@ func (r *ownerStepsRig) waitBoots(count int) {
 // stop is a fact of the task, so the step it ended is no running step while the task stands
 // stopped), and the boot's resume by rule then starts the tester again.
 func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
+	t.Parallel()
 	t.Run("the boot", func(t *testing.T) {
 		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 		stopped := r.stopAtTesting()

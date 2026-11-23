@@ -219,6 +219,7 @@ func repairedJoin(t *testing.T, own map[string]string) joinRepair {
 // shows c's work as d's. Its control is that repair, done by hand: the pull request of d lists c.txt,
 // so the files the test reads can show the work of a need.
 func TestAJoinThatConflictsIsRepairedOnTheJoinBranch(t *testing.T) {
+	t.Parallel()
 	t.Run("the repair the task of the first step tells", func(t *testing.T) {
 		r := repairedJoin(t, map[string]string{"d.txt": "d\n"})
 		if files := r.rig.pullRequestFiles(t, r.join, r.branch); !slices.Equal(files, []string{"d.txt"}) {
@@ -265,6 +266,7 @@ func TestAJoinThatConflictsIsRepairedOnTheJoinBranch(t *testing.T) {
 // holds their work already (its control: the executor recording every need as a conflict, as it
 // did, under which the record holds a and c).
 func TestAJoinBranchThatCannotMergeIntoTheTasksBranchIsMergedThere(t *testing.T) {
+	t.Parallel()
 	r := repairedJoin(t, map[string]string{"d.txt": "d\n", "y.txt": "from d\n"})
 	moved := r.rig.github.Commit(t, r.rig.branch(t, "c"), map[string]string{"y.txt": "from c\n"}, "c again")
 	if err := pgx.BeginFunc(context.Background(), r.rig.pool, func(tx pgx.Tx) error {
@@ -318,6 +320,7 @@ func TestAJoinBranchThatCannotMergeIntoTheTasksBranchIsMergedThere(t *testing.T)
 // commit, so its next push rewrites that commit (its control: the text without its last `jj new`,
 // under which d's head no longer holds the join it pushed).
 func TestAJoinOfATaskThatMergesIsRepairedOnItsBranch(t *testing.T) {
+	t.Parallel()
 	copies := t.TempDir()
 	rig, issue := seedJoin(t, func(_ record.Issue, branch string) string { return taskCopyDir(copies, branch) })
 	runJoinOfD(t, rig, issue)

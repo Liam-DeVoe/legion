@@ -65,6 +65,7 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 // reaches it. The control is the same row with the task at the linter's own step 3, which starts
 // the linter.
 func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	const lintTask = "Lint it. Issue: LEGION-208. Phase: step."
 	for _, tc := range []struct {
 		name   string
@@ -135,6 +136,7 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // as every role whose step has ended does. The control is the same start with the task left at
 // step 3, which starts the linter and hands it its task.
 func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
+	t.Parallel()
 	const lintTask = "Lint it. Issue: LEGION-208. Phase: step."
 	for _, tc := range []struct {
 		name   string
@@ -218,6 +220,7 @@ func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
 // its own step 3; the checker's task is held at step 2. The rest of the rule is
 // TestPhaseHoldsAnswersFromTheIssuesCurrentPhase's.
 func TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		at   int

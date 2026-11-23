@@ -158,6 +158,7 @@ func stuckMark(t *testing.T, pool *store.Pool, id int64) bool {
 // starts. The row is read from the database the restarted daemon opens, and the pass applies one
 // fact per row under the row's own id, so the backstop fires once.
 func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.T) {
+	t.Parallel()
 	w, pool, _ := wakeRuntime(t)
 	ctx := context.Background()
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
@@ -195,6 +196,7 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 // is read as the release's teardown reads it before it arms (outbox.issue, releaseIssue), so its
 // running role comes from its plan rows.
 func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
+	t.Parallel()
 	const key, checker = "LEGION-208", claim.Role("checker")
 	for _, c := range []struct {
 		name    string
@@ -274,6 +276,7 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 // that claim over and leave the worker's backstop due: nothing else brings the worker back while it
 // waits on a deploy run.
 func TestAWakeOrAStopOfAnotherClaimOfTheRoleLeavesTheWorkersBackstop(t *testing.T) {
+	t.Parallel()
 	const key, checker = "LEGION-208", claim.Role("checker")
 	ctx := context.Background()
 	runner, sup, pool := runnerIn(t, phase.Step, "in_progress", &outboxPublisher{}, quietLogger())

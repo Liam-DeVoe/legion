@@ -31,6 +31,7 @@ func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
 // observation rather than a turn end and is told by the count of turns the machine has ended
 // (supervise.Machine.TurnsEnded, wakeIssue). The tester's task is sent then, and not a sweep later.
 func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// end is what ends the implementer's turn once its agent stops streaming, posted through

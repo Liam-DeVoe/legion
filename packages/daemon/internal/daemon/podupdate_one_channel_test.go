@@ -71,6 +71,7 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion},

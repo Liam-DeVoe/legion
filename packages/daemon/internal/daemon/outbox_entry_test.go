@@ -214,6 +214,7 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 // (workflow.Engine.SendOwedEntry), and the worker is given what the deleted row carried, at the
 // entry it carried.
 func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -393,6 +394,7 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
 func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -545,6 +547,7 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // tests' in-memory claim store, because what the admission pass weighs against the phases row is
 // the claim the record holds (record.RoleClaim.GivenEntry, workflow.OwedEntry).
 func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	// The supervisor's own store, over the rig's database, with the issue's tree admitted as the

@@ -208,6 +208,7 @@ var stepRecordsSeven = []stepWant{
 // record of its own at the next count, started when its entry was raised, and the tester's run
 // this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()

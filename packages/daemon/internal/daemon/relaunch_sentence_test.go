@@ -510,6 +510,7 @@ func (r *readyWorkerRig) dueNow() {
 // was in no turn of the stopped process, and the sentence says that the turn the agent was in
 // was interrupted, never its previous turn on this task (supervise's EndedWork.inFrontOf).
 func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	ctx := context.Background()
 	// The operator's own routes over this rig's supervisor and workflow, wired as the daemon wires

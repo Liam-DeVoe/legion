@@ -1372,6 +1372,7 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 // model its agent starts with where the settings give one. A root architect's addressing still
 // ends with its design gate's line; no other launch is told the roles.
 func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

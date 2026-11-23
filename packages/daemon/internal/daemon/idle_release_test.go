@@ -545,6 +545,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // claim back. No pause held that resume, so the wake says at Warn that it stands open with no
 // process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -604,6 +605,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 // the bundle is saved before any claim's process is stopped — only a shim can build it — and the
 // Sandbox teardown runs last.
 func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -906,6 +908,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 // finish the close without acting, and leave the roles of a parked issue running in a Sandbox
 // nothing deletes.
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),

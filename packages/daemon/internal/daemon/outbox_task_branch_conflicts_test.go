@@ -165,6 +165,7 @@ func holdsOnlyItsNeeds(t *testing.T, rig *taskBranchRig) {
 // row joins the needs the task holds then. The controls: a conflict of a need the task holds is
 // recorded, and a later version taken before the row runs is joined as it stands.
 func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
+	t.Parallel()
 	t.Run("control: a conflict of a need d holds is recorded", func(t *testing.T) {
 		rig := newWindowRig(t, nil, twoNeeds...)
 		conflictingNeeds(t, rig)
@@ -220,6 +221,7 @@ func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 // re-admission after the row carries the conflicts the row wrote, and a re-admission that starts
 // the plan from its start gets none, since its task's first start there joins its needs itself.
 func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
+	t.Parallel()
 	next := taskBranchIssue.Generation + 1
 	t.Run("control: the re-admission after the row", func(t *testing.T) {
 		rig := newWindowRig(t, nil, twoNeeds...)
@@ -273,6 +275,7 @@ func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 // no longer waits for that join. An end read beside the lock would read the version the fact has
 // not committed yet, and write c's conflict onto a task that no longer needs c.
 func TestTheJoinsConflictsAreJudgedUnderTheFactLock(t *testing.T) {
+	t.Parallel()
 	held := make(chan pgx.Tx, 1)
 	rig := newWindowRig(t, func(rig *taskBranchRig) {
 		ctx := context.Background()

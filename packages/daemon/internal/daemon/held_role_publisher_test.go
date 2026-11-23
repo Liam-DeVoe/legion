@@ -64,6 +64,7 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // PublishKept directly, as #4088 wrote it, publishes the row to the claim whose session another
 // claim holds as well.
 func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
 		{Token: mustClaimToken(t, "LEGION-941", claim.RoleTester), Tree: "LEGION-941", Issue: "LEGION-941", Role: claim.RoleTester, Session: "ses_941", State: supervise.StateReady},

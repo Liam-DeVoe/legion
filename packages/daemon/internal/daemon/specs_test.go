@@ -31,6 +31,7 @@ func noAppOwners(claim.Role) []string { return nil }
 // worker is told, and with the model its settings give it; one of Legion's roles names no model;
 // a role the deployment does not define is refused, with no prompt and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +235,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
 func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

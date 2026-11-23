@@ -347,6 +347,7 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 // the round passed over a claim that has not answered, through the role whose process the pod is
 // replaced through, and once every claim the round asks has answered and no turn runs.
 func TestAnUpdateRoundReadsTheWorkspaceOncePerRound(t *testing.T) {
+	t.Parallel()
 	// No claim is passed over: two workers that answer, and a failed claim the round does not
 	// wait for either. The line names the failed claim, and nothing is read: no role the round
 	// passed over left work that no role was asked to push.

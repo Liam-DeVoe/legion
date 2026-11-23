@@ -154,6 +154,7 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 // replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
 // applied exactly once.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
+	t.Parallel()
 	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
