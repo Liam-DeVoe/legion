@@ -123,12 +123,16 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 		}
 	}
 	interactionRef := func(run string) string { return "dispatch://interaction/" + run }
-	// readsAt answers the status the run's address answers login, and whether the stream of the
-	// run answers login: both are reads of the run, and a run no read shows answers neither.
-	readsAt := func(run, login string) (int, int) {
+	// readsAt answers what the run's address and the run's stream each answer login, as the status
+	// and the error code: both are reads of the run, and a run no read shows answers each with the
+	// route's own not-found (addressGone, streamGone), not some other 404.
+	readsAt := func(run, login string) (string, string) {
 		t.Helper()
-		return referencesAt(t, routes.handler, "from", interactionRef(run), login).Code, routes.stream(t, run, login, "").Code
+		address := referencesAt(t, routes.handler, "from", interactionRef(run), login)
+		stream := routes.stream(t, run, login, "")
+		return fmt.Sprintf("%d %s", address.Code, responseCode(t, address)), fmt.Sprintf("%d %s", stream.Code, responseCode(t, stream))
 	}
+	addressGone, streamGone := "404 NOT_FOUND", "404 "+codeGoingRequestNotFound
 	// namesRun reports whether login's references out of ref name the run.
 	namesRun := func(ref, login, run string) bool {
 		t.Helper()
@@ -213,9 +217,9 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 		t.Errorf("run %s, asked an hour and a minute ago, reads its node row held %t at state %q (%v) after the sweep, want its node row standing at state gone",
 			gone.ID, held, node.State, err)
 	}
-	if address, stream := readsAt(gone.ID, author); address != http.StatusNotFound || stream != http.StatusNotFound {
-		t.Errorf("run %s, asked an hour and a minute ago, still reads after the sweep: its address answers its author %d and its stream %d, want 404 from both",
-			gone.ID, address, stream)
+	if address, stream := readsAt(gone.ID, author); address != addressGone || stream != streamGone {
+		t.Errorf("run %s, asked an hour and a minute ago, still reads after the sweep: its address answers its author %q and its stream %q, want %q and %q",
+			gone.ID, address, stream, addressGone, streamGone)
 	}
 	if namesRun(commentRef, author, gone.ID) {
 		t.Errorf("after the sweep, the author's references of the comment %s still name run %s, which is gone", comment, gone.ID)
@@ -266,9 +270,9 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 		t.Errorf("run %s, asked fifty-nine minutes ago, streams its author %d %q after the sweep, want 200 and %q",
 			live.ID, streamed.Code, streamed.Body.String(), wantStream)
 	}
-	if address, stream := readsAt(live.ID, other); address != http.StatusNotFound || stream != http.StatusNotFound {
-		t.Errorf("run %s, asked fifty-nine minutes ago, answers %s %d at its address and %d through its stream after the sweep, want 404 from both: it is its author's alone",
-			live.ID, other, address, stream)
+	if address, stream := readsAt(live.ID, other); address != addressGone || stream != streamGone {
+		t.Errorf("run %s, asked fifty-nine minutes ago, answers %s %q at its address and %q through its stream after the sweep, want %q and %q: it is its author's alone",
+			live.ID, other, address, stream, addressGone, streamGone)
 	}
 	requireRunSource(t, rig.database, live.ID, "after the sweep")
 
@@ -277,9 +281,9 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 		t.Errorf("run %s, asked an hour and a minute ago and its rows deleted before the sweep, reads its node row held %t at state %q (%v) after the sweep, want its node row standing at state gone",
 			rowless.ID, held, node.State, err)
 	}
-	if address, _ := readsAt(rowless.ID, author); address != http.StatusNotFound {
-		t.Errorf("run %s, its rows deleted before the sweep, still reads after the sweep: its address answers its author %d, want 404",
-			rowless.ID, address)
+	if address, _ := readsAt(rowless.ID, author); address != addressGone {
+		t.Errorf("run %s, its rows deleted before the sweep, still reads after the sweep: its address answers its author %q, want %q",
+			rowless.ID, address, addressGone)
 	}
 	if count := tuplesOutOfRun(t, rig.database, rowless.ID, graphstore.AttributeWords); count != 1 {
 		t.Errorf("graph_tuples holds %d words tuples of run %s after the sweep, want its one kept", count, rowless.ID)
