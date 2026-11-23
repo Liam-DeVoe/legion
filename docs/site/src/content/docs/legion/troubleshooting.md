@@ -1633,9 +1633,9 @@ legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<rol
 ```
 
 In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents. When one
-of them is a head that `workflow: the merge forward landed` names as replaced, the step judged the
-code before the merge. The role that works the issue's phase now sends the task back to that step
-with `request_backward_move`, its `returnTo` naming the step's place.
+of them is the `head` a `workflow: the merge forward landed` line names, the step judged the code
+before the merge. The role that works the issue's phase now sends the task back to that step with
+`request_backward_move`, its `returnTo` naming the step's place.
 
 The pull request's state as the daemon sees it:
 
