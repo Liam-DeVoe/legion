@@ -2741,6 +2741,10 @@ SCRIPT_TEST_GATES = [
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
+    harness("architecture_check_test", "Test the architecture-check action's go-path mode",
+            ".github/actions/architecture-check/check.test.sh", [
+        (".github/actions/architecture-check/check.sh", "the script under test"),
+    ]),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
@@ -3646,20 +3650,20 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+         ".github/actions/architecture-check/action.yml:70, :135 and :161 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:69 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:79 reads"),
+         "(.github/actions/architecture-check/action.yml:23), which check.sh:75 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:87 reads"),
         (".github/actions/spec-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
         (".github/actions/spec-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/spec-check/action.yml:90 and :115 run it"),
+         ".github/actions/spec-check/action.yml:92 and :117 run it"),
         (".github/scripts/build-envoy-command.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/architecture-check/check.sh:61 and .github/actions/spec-check/check.sh:63 run it"),
+         ".github/actions/architecture-check/check.sh:69 and .github/actions/spec-check/check.sh:63 run it"),
         (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
         # The step judges the action's default path, .dispatch/spec, which holds no file on main;
         # the read names .dispatch whole because a read that matches no file is refused, and the
