@@ -189,3 +189,15 @@ func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) 
 		{"mechanics/headless.md", "Send your evidence-backed report to the architect"},
 	})
 }
+
+// return_to is optional on a fail (api's returnToRefusal), and a task with no pull request has a diff
+// from the default branch, as the reviewer's prompt reads it.
+func TestTheAcceptancePromptSaysReturnToIsOptionalAndWhatItsDiffIs(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"acceptance.md", "and a fail when one is unmet, which may name the earlier step whose work must change (the daemon part below)."},
+		{"acceptance.md", "its diff runs from the default branch to the head you read."},
+	}, [][2]string{
+		{"acceptance.md", "and a fail, naming the earlier step whose work must change, when one is unmet"},
+		{"acceptance.md", "has no pull request body and no diff to read"},
+	})
+}
