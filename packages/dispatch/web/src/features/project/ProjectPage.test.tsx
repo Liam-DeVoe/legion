@@ -342,6 +342,38 @@ test("the Evals tab shows on a project with no source, and /evals selects it", a
   }
 });
 
+test("/settings selects the Settings tab, which holds the project's delivery settings", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  // A project that names a default repository, which the section shows read-only.
+  const core = {
+    created_at: "2026-09-10T00:00:00Z",
+    default_repo: "acme/core",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+  };
+  const page = renderPage("/projects/CORE", [core]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/settings");
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "Settings" });
+    expect(await within(panel).findByRole("heading", { name: "Delivery" })).toBeDefined();
+    // The section reads the project's own settings, and shows its default repository.
+    expect(await within(panel).findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(within(panel).getByLabelText("Default repository")).toHaveValue("acme/core");
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+  }
+});
+
 test("shows a compact blocker link only when asks await the viewer", async () => {
   const waiting = renderPage("/projects/CORE", undefined, "alice", [inboxRow()]);
   try {

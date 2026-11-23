@@ -1099,6 +1099,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
                 <Route element={<ProjectPage />} path="/projects/:key/evals" />
+                <Route element={<ProjectPage />} path="/projects/:key/settings" />
                 <Route element={<EvalsAcrossProjects />} path="/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />

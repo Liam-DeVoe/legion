@@ -320,21 +320,15 @@ Sign in, then open **Settings**:
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
-- **Delivery timeline**: name the repository that deploys, its deploy and pull-request-check
-  workflows, the job whose success is a production deploy, and whose merged pull requests count.
-  Three job names are optional and feed the [Pipeline](/legion/dispatch/delivery/#pipeline) page:
-  the deploy workflow's staging end-to-end job and staging deploy job (each left empty when the
-  pipeline has no such step, and the page then omits its card), and the PR-checks workflow's
-  roll-up job, which only reports the other jobs' result and which the failing-jobs table leaves
-  out. Saving checks that the GitHub App can read the repository. Until it is set, the
-  [Delivery](/legion/dispatch/delivery/) page shows the same form. Every save, of any field,
-  starts the delivery import over: what is already stored stays on both pages, the freshness line
-  reads "never checked" until the next five-minute pass, that pass lists the last 28 days from
-  GitHub again, and two re-listings walk those 28 days a day per pass, about 28 passes in all:
-  one of each run's branch and event, and one of each deploy run's creation time, which decides
-  the deploy a pull request is credited to.
 - **Agent tokens**: make a token for each agent you run.
   [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
+
+Delivery is set on each project's own **Settings** tab (`/projects/<KEY>/settings`), not on this page.
+There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [Pipeline](/legion/dispatch/delivery/#pipeline) page, or the deploys a system posts to Dispatch.
+It also names whose merged pull requests count, the failure sources its failure measures count, and the targets of its delivery evals; [Delivery settings](/legion/dispatch/delivery/#delivery-settings) says what each field does.
+With delivery on, saving checks that the GitHub App can read each source's repository.
+A save that changes a source's repository or rule starts that repository's import over, and the next five-minute pass lists its last 28 days from GitHub again.
+Until a project has delivery on, the [Delivery](/legion/dispatch/delivery/) and Pipeline pages have nothing to show.
 
 ## Health check
 

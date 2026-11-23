@@ -26,12 +26,13 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
+import { DeliverySettingsSection } from "./DeliverySettingsSection";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
-type ProjectTab = "architecture" | "issues" | "documents" | "evals";
+type ProjectTab = "architecture" | "issues" | "documents" | "evals" | "settings";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
 // Evals is every project's: its numbers need no source to have a page (dispatch://INFRA-2918 R1).
@@ -39,6 +40,7 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
   { id: "evals", label: "Evals" },
+  { id: "settings", label: "Settings" },
 ];
 
 type IssueView = "list" | "board";
@@ -306,6 +308,22 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "evals" ? <EvalsTab key={route.project} project={route.project} /> : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "settings"}
+        aria-labelledby="project-settings-tab"
+        className="mt-3"
+        hidden={activeTab !== "settings"}
+        id="project-settings-panel"
+        role="tabpanel"
+      >
+        {activeTab === "settings" ? (
+          // A project with no default repository carries no `default_repo`.
+          <DeliverySettingsSection
+            defaultRepo={project.default_repo ?? null}
+            project={route.project}
+          />
+        ) : null}
       </div>
     </section>
   );

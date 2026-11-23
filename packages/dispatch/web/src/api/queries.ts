@@ -756,22 +756,19 @@ export const evalsAcrossProjectsQuery = (params: EvalsAcrossProjectsParams) =>
       }),
   });
 
-/** The delivery timeline's configuration record, or `null` until someone sets it: the Settings
- *  section's form reads it, while the Delivery page's setup form starts from the `null` the
- *  timeline's `DELIVERY_NOT_CONFIGURED` already implies and reads nothing. */
-export const deliverySettingsQuery = () =>
-  queryOptions({
-    queryKey: ["delivery-settings"],
-    queryFn: () => api.getDeliverySettings(),
-  });
-
-/** One project's delivery settings, or `null` for a project that has none: the Evals tab reads
- *  them to decide its delivery and CI sections, and `/delivery` its default project. */
+/** One project's delivery settings, or `null` for a project that has none: its settings tab's
+ *  delivery section reads and edits them (`DeliverySettingsSection`), the Evals tab reads them to
+ *  decide its delivery and CI sections, and `/delivery` its default project. */
 export const projectDeliverySettingsQuery = (project: string) =>
   queryOptions({
     queryKey: ["project-delivery-settings", project],
     queryFn: () => api.getProjectDeliverySettings(project),
   });
+
+/** The prefix of every read of one project's evals, which a write of the project's eval rows
+ *  invalidates: a delivery settings save writes each target it changes as a new version of that
+ *  project's eval. */
+export const projectEvalsQueryKey = (project: string) => ["evals", project] as const;
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project

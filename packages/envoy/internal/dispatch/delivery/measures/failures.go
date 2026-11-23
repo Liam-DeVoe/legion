@@ -22,7 +22,8 @@ const CountNotRestored = "not_restored"
 
 // FailureDeploy is one deploy row that finished on the day and counts for the project: how many
 // counted failures blame it, and whether it restored a counted failure (it is the
-// restored_by_deploy of one, a revert's own deploy or the one a person or a posted update names).
+// restored_by_deploy of one: a revert's own deploy, or the one a person names with the drill-down's
+// Mark restored).
 type FailureDeploy struct {
 	ID         string
 	FinishedAt time.Time

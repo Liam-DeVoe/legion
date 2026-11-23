@@ -371,6 +371,18 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    // Scanned and not shot: the tab is a form whose first state depends on the seeded
+    // project's stored settings, and its scan reads the DOM, which needs no baseline image.
+    layers: ["scan"],
+    name: "project-settings",
+    path: (seed) => `/projects/${seed.project}/settings`,
+    pattern: "/projects/:key/settings",
+    // The switch is drawn only once the project's settings have answered
+    // (`DeliverySettingsSection.tsx`, "Loading delivery settings…" until then).
+    ready: (page) => [page.locator("#project-settings-panel").getByRole("switch")],
+  },
+  {
+    kind: "reviewed",
     layers: bothLayers,
     name: "project-document",
     path: (seed) => `/projects/${seed.project}/documents/${seed.projectDocumentSlug}`,

@@ -133,8 +133,6 @@ export type {
   DeliveryRunJobDetail,
   DeliveryRunProduction,
   DeliverySessionGroup,
-  DeliverySettings,
-  DeliverySettingsInput,
   DeliverySpread,
   DeliveryTargets,
   DeliveryTimelineWithMeasures,
