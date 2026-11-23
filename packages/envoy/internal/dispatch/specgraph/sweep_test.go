@@ -144,18 +144,20 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 // comparing each one's states with what the sweep wants of them, how many the reader or the
 // derivation refused, how many it read with no state moved toward true or with a state moved by the
 // input's right, how many of those moved a state toward true by a right, with what each of them
-// changed; and judged, the key of the base's line, the bytes that the reader's process read of the
-// base (readerLine), then each judged input's key, kind ('r' read, 'x' refused), right and allowed
+// changed; and judged, the key of the line that the reader's reply for the base answers, the bytes that
+// the reader's process read of the base (readerLine, readerReply), then each judged input's key: for a
+// read input, the key of the line that the reply that the judgment read for it answers (judgeAnswer's
+// answered), and for a refused one its line's; its kind ('r' read, 'x' refused), right and allowed
 // places (counted), in the order of the inputs. An input that fails the comparison fails the test and
 // is counted nowhere. So the floors (atFloor), which count the inputs judged and hold the digest of
 // judged, fail by name where the sweep skips an input that it built, drops one that it judged, writes
-// an input's bytes otherwise, reads a base of other bytes, or judges an input by another right. known
-// holds the lines that the sweep reported of each of its known positives (knownPositives), by its
-// words, which no floor counts: a sweep that skips the judgment (judgeAnswer) for them, hands the
-// judgment the base's states for the reader's answer, or hands it a right wider than the input's at
-// the places that a known positive moves, fails by that known positive's name (sweepAgainst); one that
-// hands it no right, or a right narrower than the input's, fails by the inputs that move a state toward
-// true by their right.
+// an input's bytes otherwise, reads a base of other bytes, hands the judgment the reader's reply to
+// another line than an input's, or judges an input by another right. known holds the lines that the
+// sweep reported of each of its known positives (knownPositives), by its words, which no floor counts:
+// a sweep that skips the judgment (judgeAnswer) for them, hands the judgment the base's states for the
+// reader's answer, or hands it a right wider than the input's at the places that a known positive
+// moves, fails by that known positive's name (sweepAgainst); one that hands it no right, or a right
+// narrower than the input's, fails by the inputs that move a state toward true by their right.
 type sweepCount struct {
 	inputs, refused, read, byRight int
 	rights                         []string
@@ -163,8 +165,9 @@ type sweepCount struct {
 	known                          map[string][]string
 }
 
-// counted counts the judged input in, whose key is key, as of the kind kind, and is whether it
-// counted it: it counts no known positive, which the floors do not hold. It appends to judged the
+// counted counts the judged input in, whose key is key (for a read input, the key that judgeAnswer
+// gives back), as of the kind kind, and is whether it counted it: it counts no known positive, which
+// the floors do not hold. It appends to judged the
 // key, the kind, the input's right, and each place that the right allows with the state that it
 // allows there, in the order of the places (nil, a right that covers each place, written apart from
 // a right that allows no place), so that a right that any code gives an input, takes from it, widens
@@ -203,15 +206,21 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 // states with those of the base, as the process reads it: an input that moves a state toward true
 // fails the test, unless the input has a right to it, by the judgment (judgeAnswer), which it hands,
 // for each input that the process reads, the process's reply for the base and for the input as the
-// process wrote them (readerReply, a string, which no code changes and judgeAnswer reads itself),
-// whether the input has a right and the places that its right names, in one call. No branch of it
-// decides an answer that the process read apart from the judgment, and it holds the replies that it
-// hands the judgment in no form that it could change (the base's states that it reads for its known
-// positives are a copy of their own): what it does with the reply is that call, and with the call's
-// result, the report of each line beyond the input's right and the count of the rest as read.
-// The floor's digest holds the key of the base's line, the bytes that the process read of it
-// (sweepCount.judged), so a base that a writer or code of the sweep changed, whose change the sweep
-// would read both as its input's and as its want's, fails by the base's name. A right with allowed
+// process wrote them, each with the key of the line that it answers (readerReply), whether the input
+// has a right and the places that its right names, in one call; the judgment reads the replies' states
+// itself and gives back the key of the input's reply, by which the sweep counts the input as read. No
+// branch of it decides an answer that the process read apart from the judgment (the base's states that
+// it reads for its known positives are a map of their own): what it does with the reply is that call,
+// and with the call's result, the report of each line beyond the input's right and the count of the
+// rest as read. The floor's digest holds the key of the line that the base's reply answers, the bytes
+// that the process read of the base, and the key of the reply that the judgment read for each read
+// input (sweepCount.judged), so a base that a writer or code of the sweep changed, whose change the
+// sweep would read both as its input's and as its want's, fails by the base's name, and so does a sweep
+// that hands the judgment the reader's reply to another line than the input's, the base's or another
+// input's. What the digest cannot see, and shows only in the sweep's code: a reply that the sweep's
+// code writes, or whose text it sets (replyOf); another reply handed as the base's, at other inputs
+// than the known positives; a second call of the judgment for an input, whose result the sweep uses in
+// place of the first's; and a count by a key that the judgment did not give back. A right with allowed
 // covers only the places where the input reads the state that allowed holds there. Two rights name
 // no place, so an input that has one is judged by its right alone: a repository path of a tree
 // written " " (pathOfOneSpace), whose tree then changed at a path that a tie covers, so the carry of
@@ -229,7 +238,7 @@ func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure
 // or a place that the judgment does not know fails the input by name.
 func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
-	line, baseKey := readerLine(t, base)
+	line, _ := readerLine(t, base)
 	whole, err := reader.ask(t, line)
 	if err != nil {
 		t.Fatalf("the base: %v", err)
@@ -239,7 +248,7 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 		t.Fatalf("the base: %v", err)
 	}
 	n := sweepCount{inputs: len(inputs), known: map[string][]string{}}
-	n.judged = append(n.judged, baseKey[:]...)
+	n.judged = append(n.judged, whole.line[:]...)
 	known := knownPositives(t, name, base, states)
 	inputs = append(slices.Clone(inputs), known...)
 	seen := map[[sha256.Size]byte]string{}
@@ -261,7 +270,7 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 			}
 			continue
 		}
-		toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
+		toward, beyond, answered, err := judgeAnswer(whole, got, in.right != "", in.allowed)
 		switch {
 		case err != nil:
 			t.Errorf("%s: %v", in.what, err)
@@ -269,7 +278,7 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 			n.report(t, in, beyond, fmt.Sprintf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; ")))
 		case len(beyond) > 0:
 			n.report(t, in, beyond, fmt.Sprintf("%s: %s", in.what, strings.Join(beyond, "; ")))
-		case n.counted(in, key, 'r'):
+		case n.counted(in, answered, 'r'):
 			n.read++
 			if len(toward) > 0 {
 				n.byRight++
