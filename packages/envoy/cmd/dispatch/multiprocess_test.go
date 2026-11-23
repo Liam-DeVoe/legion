@@ -5595,50 +5595,72 @@ func dialEditor(t *testing.T, url, login, artifactID string) (editor *docstest.P
 	return docstest.Dial(lenientT{t}, url, asUser(login), artifactID, crdt.New()), nil
 }
 
-// awaitDocument asks the room for its document until the editor's copy renders one.
-func awaitDocument(t *testing.T, editor *docstest.Peer) error {
-	t.Helper()
-	var failed error
-	testwait.Eventually(t, "the room to send the editor its document", func() bool {
-		if markdown(editor) != "" {
-			return true
+// documentTry is one tab's connection while reconnectEditor waits for the room to send it the
+// document: the peer, and whether an ask for the document is still unanswered on it.
+type documentTry struct {
+	editor *docstest.Peer
+	asked  bool
+}
+
+// read reads, without waiting, whether the room has sent the tab its document: done once the
+// tab's copy renders one, and an error once the connection closed first or an ask failed. It asks
+// the room for the document when no ask is unanswered, and again after each answer that rendered
+// none, as main's loop did; the room answers in order on the connection (docstest.AskForDocument).
+func (d *documentTry) read() (done bool, err error) {
+	if markdown(d.editor) != "" {
+		return true, nil
+	}
+	if !d.asked {
+		if err := d.editor.AskForDocument(); err != nil {
+			return false, fmt.Errorf("ask the room for the document: %w", err)
 		}
-		if err := editor.AskForDocument(); err != nil {
-			failed = fmt.Errorf("ask the room for the document: %w", err)
-			return true
-		}
-		select {
-		case <-editor.Answers:
-		case <-editor.Ended:
-			failed = fmt.Errorf("the connection closed (code %d) before the room sent the document", editor.CloseCode())
-			return true
-		default:
-		}
-		return markdown(editor) != ""
-	})
-	return failed
+		d.asked = true
+	}
+	select {
+	case <-d.editor.Answers:
+		d.asked = false
+	case <-d.editor.Ended:
+		return false, fmt.Errorf("the connection closed (code %d) before the room sent the document", d.editor.CloseCode())
+	default:
+	}
+	return markdown(d.editor) != "", nil
 }
 
 // reconnectEditor connects login's tab to the document on this process again, as the dashboard's
-// provider does once its socket closed: it dials again after a refusal, with no limit on its tries
-// (@hocuspocus/provider's maxAttempts is 0), and returns once the room has sent the tab a
-// document. A tab that never gets back fails the test through the shared wait, which prints the
-// last refusal and this process's output.
+// provider does once its socket closed: it dials again after a refusal or a connection that
+// closed before the room sent the document, with no limit on its tries (@hocuspocus/provider's
+// maxAttempts is 0), and returns once the room has sent the tab a document. One shared wait holds
+// every try, and each poll reads the open connection once without waiting (documentTry.read). A
+// connection the room holds open and never answers is not dialled again after ten seconds on the
+// wall clock, as main's loop did: a room that closes ends its sockets, which dials again (the
+// close rows require that end, requireEndsWithin), so a room that keeps a socket open and never
+// sends its document is a defect, which the row names at the give-up. A tab that never gets back
+// fails the test through the shared wait, which prints what the last try read and this process's
+// output.
 func (p *dispatchProcess) reconnectEditor(t *testing.T, login, artifactID string) *docstest.Peer {
 	t.Helper()
-	var editor *docstest.Peer
+	var try *documentTry
 	testwait.Until(t, fmt.Sprintf("%s's tab to reconnect to the document and be sent it", login), func() (reconnectRefused, bool) {
-		dialed, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
-		if err == nil {
-			if err = awaitDocument(t, dialed); err == nil {
-				editor = dialed
-				return reconnectRefused{}, true
+		if try == nil {
+			dialed, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
+			if err != nil {
+				return reconnectRefused{err: err, process: p}, false
 			}
-			dialed.Close()
+			try = &documentTry{editor: dialed}
 		}
-		return reconnectRefused{err: err, process: p}, false
+		done, err := try.read()
+		switch {
+		case done:
+			return reconnectRefused{}, true
+		case err != nil:
+			try.editor.Close()
+			try = nil
+			return reconnectRefused{err: err, process: p}, false
+		default:
+			return reconnectRefused{err: errors.New("the tab is connected and the room has sent it no document yet"), process: p}, false
+		}
 	})
-	return editor
+	return try.editor
 }
 
 // reconnectRefused is what reconnectEditor last read: the refusal, and the process that refused,

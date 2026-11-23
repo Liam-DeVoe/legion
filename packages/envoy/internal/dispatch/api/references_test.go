@@ -1023,12 +1023,16 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	if response := graphRequest(t, handler, url.Values{"to": {askRef}}); strings.Contains(response.Body.String(), "unknown_kinds") {
 		t.Fatalf("a read naming no kind answered %s; want no unknown_kinds", response.Body.String())
 	}
-	if since := graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}}); len(since.Edges) != 0 {
-		t.Fatalf("since the introducing event kept %#v; want no edges", since.Edges)
-	}
-	// The read waits for an observation taken after it to be proven safe, so it answers the
-	// message committed before it: the server's clock never reaches referencesSinceWait, so an open
-	// transaction elsewhere on the shared test cluster only delays the answer (awaitSinceRead).
+	// A since read waits for an observation taken after it to be proven safe; the server's clock
+	// never reaches referencesSinceWait, so an open transaction elsewhere on the shared test
+	// cluster only delays the answer, and each such read runs on the shared wait's context
+	// (awaitSinceRead). Since the introducing event, the read owes no edge; since the event before
+	// the message, it answers the message committed before it.
+	awaitSinceRead(t, "since the introducing event, ?to= "+askRef+", wanting no edges", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}})
+		},
+		func(read model.GraphReferences) bool { return len(read.Edges) == 0 })
 	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink", handler,
 		func(bounded http.Handler) model.GraphReferences {
 			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})

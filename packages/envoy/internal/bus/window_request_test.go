@@ -215,9 +215,13 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 
 	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 24 * time.Hour})
 	server.Stop(t)
-	testwait.Until(t, "the client to see the stopped server's connection lost", func() (bool, bool) {
-		connected := client.Connected()
-		return connected, !connected
+	testwait.Until(t, "the client to see the stopped server's connection lost", func() (string, bool) {
+		conn := client.Connection()
+		if conn == nil {
+			return "the client holds no connection", true
+		}
+		status := conn.Status()
+		return "the client's connection is " + status.String(), status != natsgo.CONNECTED
 	})
 	close(lost)
 	if err := answerOf(t, pending); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {

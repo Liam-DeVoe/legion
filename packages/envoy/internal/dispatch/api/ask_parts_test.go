@@ -742,12 +742,13 @@ func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 
 	// The awaited read listed the answer's mention, so the horizon had passed the ask.answered
 	// event; the horizon only grows, so a read since that same event, the poller's own next read,
-	// answers nothing because of the since filter and not because of a stale horizon.
-	if edges := readGraph(t, handler, url.Values{
-		"from": {askRef}, "since": {strconv.FormatInt(theAnswer, 10)},
-	}).Edges; len(edges) != 0 {
-		t.Fatalf("?from= the ask since the answer's own event lists %#v, want none", edges)
-	}
+	// answers nothing because of the since filter and not because of a stale horizon. It too waits
+	// for an observation taken after it, so it runs on the shared wait's context (awaitSinceRead).
+	awaitSinceRead(t, "?from= the ask since the answer's own event, wanting no edges", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return readGraph(t, bounded, url.Values{"from": {askRef}, "since": {strconv.FormatInt(theAnswer, 10)}})
+		},
+		func(read model.GraphReferences) bool { return len(read.Edges) == 0 })
 }
 
 // readPartAsk reads GET /api/v1/asks/<id> as a human: the ask as its own read carries it, with
