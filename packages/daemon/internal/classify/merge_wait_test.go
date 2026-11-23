@@ -23,7 +23,8 @@ import (
 // its round whatever GitHub's state (dispatch://INFRA-4374 R0). It is true for the stuck round,
 // whose head GitHub has answered `blocked` or `behind` for, for the round still waiting for a
 // first answer, whose state is unread, and for a `dirty` head whose first conflicting read waits
-// for its second, alike: each waits on GitHub's next answer about the same head.
+// for its second, alike: each waits on GitHub's next answer about the same head. At a review step
+// the owner does, the engine settles no round whatever this answers (workflow's settleRound).
 func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNotMergeFrom(t *testing.T) {
 	const issue, head = "LEGION-208", "h2"
 	reviewing := record.Issue{Key: issue, Tree: issue, Phase: phase.Reviewing}
@@ -93,7 +94,8 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 // (ApprovalSetAside), since nothing more is coming. A real push from the head is on its way in
 // either state, beside a deletion or not. A merged record holds one only where its merge did not
 // name the head, and that push can be the code that merged. While a push is on its way no approval
-// stands, and none is set aside, since the push's new head decides the round.
+// stands, and none is set aside, since the push's new head decides the round, where a review on
+// GitHub decides it: not at a review step the owner does (workflow's settleRound).
 func TestAPushToNoCommitIsNeverCodeOnItsWay(t *testing.T) {
 	const head, other = "h2", "h1"
 	deletion := record.ClassifiedPush{SHA: record.NoCommit, Before: head, Sender: "author"}

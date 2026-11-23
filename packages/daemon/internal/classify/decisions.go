@@ -1117,7 +1117,8 @@ func ApprovalStands(pr record.PullRequest, reviewed string) bool {
 // approval of the head itself (ApprovalStands), and no push is on its way to replace that head
 // (CodeOnItsWay), whose arrival would decide it. The branch has moved past the code the reviewer
 // read and nothing more is coming, so only a review of the head itself ends the round (workflow's
-// stuckApprovedOtherCode).
+// stuckApprovedOtherCode). A review step the owner does has no such round: it ends by the owner's
+// report, and no review on GitHub decides it (workflow's settleRound).
 func ApprovalSetAside(pr record.PullRequest, reviewed string) bool {
 	return reviewed != "" && !ApprovalStands(pr, reviewed) && !CodeOnItsWay(pr)
 }
@@ -1190,9 +1191,12 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the implementer merges the base forward, and the issue's move into
-// accepting is what asks for that merge (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read
-// here, the state build shows no mergeWait for the round the engine has just ended.
+// head will change until the base is merged forward, by the agent of the task's last step of the
+// type implementation before its place (workflow's mergeForward), and the issue's move into
+// accepting, retro or merging is what asks for that merge (dispatch://INFRA-4374 R0,
+// record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the
+// engine has just ended. At a review step the owner does no round ends by a review on GitHub: the
+// engine settles nothing there (workflow's settleRound), and the step ends by the owner's report.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1237,8 +1241,8 @@ const (
 //     of the two reads that confirm a conflict (R2).
 //   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
 //     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. Past the review the merge is next
-//     (record.ConflictMergeNext), so a conflict there is acted on at once (R0). In testing and
+//     still merges into the moved base. In accepting, retro and merging (past the review, in the
+//     default steps) a conflict is acted on at once (record.ConflictMergeNext, R0). In testing and
 //     reviewing the record otherwise keeps the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
@@ -1266,9 +1270,10 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 // and the conflict is recorded and nothing else is done. The reasons are read in this order, and
 // the first that holds is the answer:
 //
-//   - record.ConflictMergeNext: the issue stands past its review, in accepting, retro or merging,
-//     or is held from one of them (record.PastReview). Its next step is the merge, and GitHub
-//     merges no head that conflicts with its base.
+//   - record.ConflictMergeNext: the issue stands in accepting, retro or merging (in the default
+//     steps, past its review), or is held from one of them (record.PastReview). The merge is near
+//     there, in the default steps its next step, and GitHub merges no head that conflicts with its
+//     base.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1285,8 +1290,8 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //     once rather than wait for it.
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
-// be current: the tester and the reviewer go on at that head, and the merge forward waits for the
-// step that needs it, the issue's move past its review, where record.ConflictMergeNext holds.
+// be current: the steps go on at that head, and the merge forward waits for the issue's move into
+// accepting, retro or merging, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
@@ -1351,8 +1356,10 @@ func GreenContexts(pr record.PullRequest) []string {
 // workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
 // rather than on the cause, because every way back out of a conflicting head is the same round of
 // work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
-// implementer answers each of them with the one forward merge the conflict needs. That merge moves
-// the recorded head, the mark no longer equals it, and the next rejection counts, which is how the
+// agent of the task's last implementation step before its place (the implementer in the default
+// steps) answers each of them with the one forward merge the conflict needs. That merge moves the
+// recorded head, the mark no longer equals it, and the next rejection counts (a rejection at a
+// review step the owner does counts none, workflow's transition), which is how the
 // exemption ends without a write of its own. The same mark is what says a head needs merging
 // forward before it can merge at all: an approval of it ends its review round (workflow's
 // reviewRound), and a move into accepting, retro or merging at it asks for the merge forward
