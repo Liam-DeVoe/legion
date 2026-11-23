@@ -1,7 +1,6 @@
 package docs
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -67,7 +66,7 @@ const (
 
 const (
 	// roomQueryWait is the longest an asker waits for the other members' answers, and a member's
-	// flush for its room's appends to answer one (roomQueries.answerWait).
+	// flush for its room's appends to answer one (roomQueries.answerBy).
 	roomQueryWait = 500 * time.Millisecond
 	// roomShareLimit bounds the updates one member shares (bytes of the merged Yjs update, before
 	// base64): more is answered too_large, and the asker judges without them. It is about twelve
@@ -114,18 +113,25 @@ type roomAnswer struct {
 // lanes call them, roomSync.handlers).
 type roomQueries struct {
 	service *Service
-	// wait is answerWait's bound, roomQueryWait where it is zero, as it is in production. A test
-	// of what an answer holds sets a bound of its own: roomQueryWait is a latency budget, and on a
-	// loaded machine an answer can take longer than that to cross Postgres twice.
-	wait    time.Duration
-	mu      sync.Mutex
-	pending map[string]*pendingRoomQuery
+	// deadline, where it is set, is when every wait these queries make ends: the asker's for the
+	// other members' answers, and the wait of a flush this process answers for its room's appends.
+	// Where it is the zero time, as it is in production, each wait ends roomQueryWait after its own
+	// start. A test of what an answer holds sets one: roomQueryWait is a latency budget, and on a
+	// loaded machine an answer can take longer than that to cross Postgres twice. A deadline is a
+	// moment rather than a span, so a wait that begins late still ends at it.
+	deadline time.Time
+	mu       sync.Mutex
+	pending  map[string]*pendingRoomQuery
 }
 
-// answerWait is how long this process's queries wait for the other members' answers, and how
-// long a flush it answers waits for its room's appends.
-func (r *roomQueries) answerWait() time.Duration {
-	return cmp.Or(r.wait, roomQueryWait)
+// answerBy is when a wait of these queries that begins at start ends: roomQueryWait after start,
+// or the deadline a test set (roomQueries.deadline). The waits run on the service's clock
+// (Deps.Clock), which start is read from.
+func (r *roomQueries) answerBy(start time.Time) time.Time {
+	if r.deadline.IsZero() {
+		return start.Add(roomQueryWait)
+	}
+	return r.deadline
 }
 
 // pendingRoomQuery is one query of this process's waiting on answers: the parts of each member's
@@ -173,10 +179,10 @@ func readRoomQueryMembers(ctx context.Context, q Queryer, room string, checkLock
 }
 
 // ask sends a kind query about room to every other member, read through q, and returns the whole
-// answers that arrive within answerWait. asked says whether any other member was there to ask.
-// A query this process could not send, or whose answers it could not hear - its own listener is
-// not connected, so it is no member - is logged and answered by nobody; only a failed read of the
-// members, which leaves a transaction q belongs to aborted, is an error.
+// answers that arrive before its wait ends (answerBy). asked says whether any other member was
+// there to ask. A query this process could not send, or whose answers it could not hear - its own
+// listener is not connected, so it is no member - is logged and answered by nobody; only a failed
+// read of the members, which leaves a transaction q belongs to aborted, is an error.
 //
 // A flush is never sent while q's connection holds room's advisory lock: every member's append
 // waits for that lock, so no member could answer before the wait ran out. A caller that asks for a
@@ -219,7 +225,8 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 		delete(r.pending, query.ID)
 		r.mu.Unlock()
 	}()
-	started := time.Now()
+	clk := r.service.clock
+	started := clk.Now()
 	if err := r.service.roomSyncSender.Notify(ctx, documentQueryChannel, string(payload)); err != nil {
 		if ctx.Err() != nil {
 			return nil, true, ctx.Err()
@@ -228,11 +235,12 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 			"room", room, "kind", kind, "error", err)
 		return nil, true, nil
 	}
-	timer := time.NewTimer(r.answerWait())
+	waiting := clk.Now()
+	timer := clk.NewTimer(r.answerBy(waiting).Sub(waiting))
 	defer timer.Stop()
 	select {
 	case <-pending.done:
-	case <-timer.C:
+	case <-timer.C():
 	case <-ctx.Done():
 		return nil, true, ctx.Err()
 	}
@@ -243,7 +251,7 @@ func (r *roomQueries) ask(ctx context.Context, q Queryer, room, kind string) (an
 	if len(missing) > 0 {
 		slices.Sort(missing)
 		slog.Warn("dispatch: other processes did not answer a document room query in time; going on without them",
-			"room", room, "kind", kind, "members", missing, "waited", time.Since(started))
+			"room", room, "kind", kind, "members", missing, "waited", clk.Now().Sub(started))
 	}
 	for _, answer := range answers {
 		if answer.tooLarge {
@@ -321,7 +329,7 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 
 // query is documentQueryChannel's handler, on room sync's query lane. This process's own queries
 // are dropped. A holds or share query is answered here; a flush waits for the room's appends on a
-// goroutine of its own, bounded by answerWait, so a slow flush never holds up the next query.
+// goroutine of its own, bounded by answerBy, so a slow flush never holds up the next query.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -359,7 +367,7 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 		done := s.askRoomAppends(query.Room)
 		go func() {
 			defer done()
-			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
+			flushed, cancel := s.clock.WithDeadline(ctx, r.answerBy(s.clock.Now()))
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
 				slog.Warn("dispatch: a document room's updates were not stored in time to answer another process's flush; it is left unanswered",

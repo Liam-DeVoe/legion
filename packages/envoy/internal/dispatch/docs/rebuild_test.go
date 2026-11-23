@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -580,9 +581,10 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
-	// Task A's holds query waits for task B's answer for roomWait, not production's roomQueryWait,
-	// as the process pair's do (newSeededProcessPair): the refusal is what this test reads.
-	taskA.roomQueries.wait = roomWait(t)
+	// Task A's holds query waits for task B's answer until roomWait from here, not production's
+	// roomQueryWait from the query's start, as the process pair's wait until a moment of their own
+	// (newSeededProcessPair): the refusal is what this test reads.
+	taskA.roomQueries.deadline = time.Now().Add(roomWait(t))
 	seedServiceText(t, taskA, artifactID, "before\n")
 	runRoomSync(t, newRoomSync(taskA))
 	runRoomSync(t, newRoomSync(taskB))
