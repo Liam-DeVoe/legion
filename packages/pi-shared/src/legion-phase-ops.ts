@@ -395,7 +395,7 @@ export function legionToolDescription(host: {
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
-    "nothing, so fix what it names and complete again. " +
+    "nothing, so fix what it names and complete again, unless it says to end this turn without completing or not to complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
