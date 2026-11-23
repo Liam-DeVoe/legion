@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
@@ -31,6 +32,7 @@ const raceDeadline = 10 * time.Second
 // 409 ISSUE_CLOSED and the ask reads withdrawn naming the closer. Either way the ask has exactly
 // one ask.resolved event, and a decision block's block reads resolved, as its row does.
 func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
+	t.Parallel()
 	resolver := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	for _, block := range []bool{false, true} {
 		name := "a plain ask"
@@ -124,6 +126,7 @@ func (d *afterCloseSettlementDocs) SettleIssueDocuments(ctx context.Context, iss
 // The close's sweep writes the copy from its source's row instead, so it reads resolved, as the
 // source does, without waiting for that settlement.
 func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -154,6 +157,7 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 // that closed issue writes the copy from its source's row, as the close's own sweep does, so it
 // reads resolved without waiting for that settlement.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
@@ -179,6 +183,7 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // block is left as the answer route wrote it. The settlement the reopen leaves owed writes the
 // answer into the copy.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -217,6 +222,7 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 // answered with the answer left out, and leaves the decision's own block as the answer route
 // wrote it.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue, decision, copied := decisionWithCopy(t, f.handler, f.documents)
@@ -235,6 +241,7 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 // The close's sweep writes an answered decision's copies with the answer left out only where they
 // do not already hold it, so this copy keeps its answer.
 func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		// An hour, so the only settlements are the ones this test runs.
@@ -375,6 +382,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // close's write of the block resolved leaves the document owing a settlement, which runs on the
 // closed issue and writes exactly one version more, the newest, holding the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	// hold names the document whose next settlement is held at its owner row, until release.
 	var hold atomic.Pointer[string]
@@ -490,6 +498,7 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
+	t.Parallel()
 	// cancelOn names the document whose next settlement cancels the close's request once it holds
 	// the issue's row.
 	var cancelOn atomic.Pointer[string]
@@ -590,7 +599,7 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 	var waiting int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from pg_stat_activity
-		where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
+		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 	`).Scan(&waiting); err != nil {
 		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}

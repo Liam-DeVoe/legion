@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // repoProjectsDefaultVersion is the migration that adds a project's default repository and an
@@ -22,10 +23,7 @@ const repoProjectsDefaultVersion = 113
 // TestMigrationLetsAnIssueNameAnyRepository proves that.
 func TestMigrationAddsADefaultMappingAndTheIssueRepository(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OTHER', 'Other');
 		insert into repo_projects (repo, project, created_by) values
@@ -91,10 +89,7 @@ func censusCount(t *testing.T, store *Store, version int) int64 {
 // and applies nothing.
 func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "DEEP", 34) // DEEP-34 is 33 links below DEEP-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 1 {
 		t.Fatalf("census = %d, want 1: DEEP-34 alone sits more than 32 links below its root", got)
@@ -128,10 +123,7 @@ func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
 // answers 0 and the migration applies.
 func TestMigrationAppliesOverAChain32LinksDeep(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "EDGE", 33) // EDGE-33 is 32 links below EDGE-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 0 {
 		t.Fatalf("census = %d, want 0", got)
@@ -155,7 +147,7 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 		var waiting int
 		if err := store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
+			where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 		}
@@ -174,10 +166,7 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 // count, and an issue 33 links down refuses the migration as it would have before it began.
 func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "EDGE", 33) // EDGE-33 is 32 links below EDGE-1, within the cap
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 0 {
 		t.Fatalf("census = %d, want 0", got)

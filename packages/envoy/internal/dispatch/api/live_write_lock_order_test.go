@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // A project document upload and another write to the same document, started together, both
@@ -24,6 +25,7 @@ import (
 // row by then) or queued behind a lock. A write that waits for the in-memory writer slot while
 // holding a lock the slot's holder needs is a cycle Postgres cannot see, so both would hang.
 func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		write func(f *uploadRaceFixture, ctx context.Context, token string) *httptest.ResponseRecorder
@@ -162,7 +164,7 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and pid in (select pid from pg_locks where not granted)
+			where datname = current_database() and `+lockwaittest.Waiting+`
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}

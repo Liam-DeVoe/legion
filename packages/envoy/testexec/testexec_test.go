@@ -67,17 +67,22 @@ func writeUnder(t *testing.T, root, path, body string) {
 // a mode it cannot read as holding no execute bit, a mask that leaves one included. It names an
 // open by os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same function gives
 // an execute bit by os.Chmod of its path or of its file's Name(), or by the file's Chmod method, in
-// a closure too. It follows the file kept in a variable or a field, handed through a call that
-// wraps the open, or renamed by os.Rename before the Chmod. It names a use of one of those
+// a closure too. It follows the file through calls that wrap the open, one or two deep, a Chmod or
+// a Name() called on such a call, a variable or a field the file is assigned to, by itself or
+// beside other values, a copy of one, assigned or declared, a field a keyed composite literal or
+// its address sets, in a nested literal too, a field written or read through (*h).f, and an
+// os.Rename, which moves to its new path the opens made before it. It names a use of one of those
 // functions as a value, and a dot import of os. It leaves out a mode with no execute bit, a mode
 // masked so it cannot hold one (mode&^0o111, mode&0o644), a Chmod with none or of a path no open
-// of the function names, a test file of a package whose tests do not run beside each other, a
-// write by testexec.WriteFile, another module below root, and programfile.Write itself, the Write
-// function of github.com/sjawhar/envoy/programfile: another function of that package is named,
-// and so is a Write of a package of that name elsewhere. The code a deployment runs is planted in
-// daemonish: the shapes the daemon's own program files had before programfile.Write, the git
-// helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to 0o700,
-// and a copy that keeps a file's mode.
+// of the function names, a Chmod of a copy made before the open or of a variable that never held
+// one, a Chmod on a call that opens no file for writing, the old path of an os.Rename that moved
+// another file onto the open's path, a test file of a package whose tests do not run beside each
+// other, a write by testexec.WriteFile, another module below root, and programfile.Write itself,
+// the Write function of github.com/sjawhar/envoy/programfile: another function of that package is
+// named, and so is a Write of a package of that name elsewhere. The code a deployment runs is
+// planted in daemonish: the shapes the daemon's own program files had before programfile.Write,
+// the git helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to
+// 0o700, and a copy that keeps a file's mode.
 func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -289,8 +294,66 @@ func held(t *testing.T, dir string) {
 	_ = os.Rename(e.Name(), filepath.Join(dir, "run"))
 	_ = os.Chmod(filepath.Join(dir, "run"), 0o755)
 	k, _ := os.CreateTemp(dir, "k")
-	_ = os.Rename(k.Name(), filepath.Join(dir, "log"))
-	_ = os.Chmod(filepath.Join(dir, "log"), 0o600)
+	_ = os.Rename(filepath.Join(dir, "old"), k.Name())
+	_ = os.Chmod(filepath.Join(dir, "old"), 0o755)
+}
+`)
+	write("beside/followed_test.go", `package beside
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+type nest struct{ h holder }
+
+func wrap(f *os.File, err error) (*os.File, error) { return f, err }
+
+func followed(t *testing.T, dir string) {
+	f, _ := os.CreateTemp(dir, "f")
+	g := f
+	_ = g.Chmod(0o755)
+	a, _ := os.Create(filepath.Join(dir, "a"))
+	var b = a
+	_ = os.Chmod(b.Name(), 0o755)
+	c, d := must(os.CreateTemp(dir, "c")),
+		must(os.CreateTemp(dir, "d"))
+	_ = d.Chmod(0o755)
+	h := holder{f: must(os.CreateTemp(dir, "h"))}
+	_ = h.f.Chmod(0o755)
+	p := &holder{f: must(os.CreateTemp(dir, "p"))}
+	_ = p.f.Chmod(0o755)
+	e, _ := os.CreateTemp(dir, "e")
+	r := holder{f: e}
+	_ = r.f.Chmod(0o755)
+	n := nest{h: holder{f: must(os.CreateTemp(dir, "n"))}}
+	_ = n.h.f.Chmod(0o755)
+	v := holder{f: must(os.CreateTemp(dir, "v"))}
+	y := v.f
+	_ = y.Chmod(0o755)
+	s := &holder{f: must(os.CreateTemp(dir, "s"))}
+	_ = (*s).f.Chmod(0o755)
+	u := &holder{f: must(os.CreateTemp(dir, "u"))}
+	_ = os.Chmod((*u).f.Name(), 0o755)
+	w := &holder{}
+	(*w).f, _ = os.CreateTemp(dir, "w")
+	_ = w.f.Chmod(0o755)
+	_ = must(os.CreateTemp(dir, "chained")).Chmod(0o755)
+	_ = os.Chmod(must(os.CreateTemp(dir, "named")).Name(), 0o755)
+	_ = os.Rename(must(os.CreateTemp(dir, "moved")).Name(), filepath.Join(dir, "moved"))
+	_ = os.Chmod(filepath.Join(dir, "moved"), 0o755)
+	x := must(wrap(os.CreateTemp(dir, "x")))
+	_ = x.Chmod(0o755)
+	var none *os.File
+	copied := none
+	_ = copied.Chmod(0o755)
+	var late *os.File
+	early := late
+	late, _ = os.CreateTemp(dir, "late")
+	_ = early.Chmod(0o755)
+	_ = must(os.Open(filepath.Join(dir, "read"))).Chmod(0o755)
+	_ = c
 }
 `)
 	got, err := Unguarded(root)
@@ -304,6 +367,11 @@ func held(t *testing.T, dir string) {
 		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
 		"beside/createtemp_test.go:11", "beside/createtemp_test.go:15", "beside/createtemp_test.go:9",
 		"beside/dot_test.go:4",
+		"beside/followed_test.go:14", "beside/followed_test.go:17", "beside/followed_test.go:21",
+		"beside/followed_test.go:23", "beside/followed_test.go:25", "beside/followed_test.go:27",
+		"beside/followed_test.go:30", "beside/followed_test.go:32", "beside/followed_test.go:35",
+		"beside/followed_test.go:37", "beside/followed_test.go:40", "beside/followed_test.go:42",
+		"beside/followed_test.go:43", "beside/followed_test.go:44", "beside/followed_test.go:46",
 		"beside/held_test.go:14", "beside/held_test.go:16", "beside/held_test.go:19", "beside/held_test.go:21",
 		"beside/held_test.go:23",
 		"daemonish/install.go:17", "daemonish/install.go:27", "daemonish/install.go:29",

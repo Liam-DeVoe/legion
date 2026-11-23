@@ -20,6 +20,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   Every such clock uses it, because it ends as the real one does: once its `pass` runs, its `Err` is `context.DeadlineExceeded` and `context.Cause` reads the cause it was given, for it and for each context derived from it; its cancel and its parent's end end it as they end a real one, and it reads its parent's end at once.
   Its `Deadline` is its parent's until it passes and the moment it passed from then on, so code that reads the time against `Deadline` sees it past, as against a real deadline; this is the one place it differs from a real deadline on purpose, whose `Deadline` never changes.
   A clock built on `context.WithCancelCause` keeps the cause and gives `Err` `context.Canceled`, which no real limit gives, so code that tells one end from another by `Err` passes a test it should fail.
+  In `packages/envoy`, `Until` waits until a reading holds and returns it, at `Poll`, `UntilPolling` is `Until` at a pace of the caller's, and `Context` is a context for a call that takes one, or for a socket's deadline. Like `Receive`, they end at the binary's own deadline less 30 s, the time the failing test's cleanups run in, and take no bound of their own, so a step that is only slow on a loaded machine fails nothing. Under a `-timeout` of 30 s or less that moment has passed before the test starts, so each of them fails at once.
   A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
 
 - A fifo that the code under test must replace without opening it for writing is planted with the daemon module's `internal/testfifo`.
@@ -40,7 +41,8 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
-  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
@@ -172,6 +174,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test that requires a command to have left in place a signal it was started ignoring, as
+  `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
+  `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
+  signal clears the bit, so the read shows whether the command undid the ignore. gVisor's
+  `/proc/<pid>/status` has no `SigIgn` line, and macOS has no `/proc`, so such a file calls
+  `skipWithoutIgnoreMasks(file)` once, at module scope, as it would `skipWithout`, and hands the
+  answer to the `test.skipIf` of each row that reads the mask or rests on what is read from it. On
+  GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
+  broken, and the rows run and fail rather than pass in silence.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
@@ -197,6 +209,21 @@ itself, whose tests import its sources by relative path.
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
+- The real-binary harness's stand-in server (`serveStandin` in
+  `packages/pi-shared/test/omp-harness.ts`, and claude-envoy's copy of it) takes two pieces of
+  `@legion/test-fixtures`. It listens at `loopbackHost()` (`loopback-host`): on Linux an address
+  of `127.0.0.0/8` chosen at random and never `127.0.0.1`, as the Go tests' listeners have
+  (`LoopbackIP`, above), and `127.0.0.1` elsewhere, with its clients' URLs built from the address
+  the server reports (`server.url`). A client of a test that has ended keeps dialing the address
+  its own server had, and the kernel gives that port to the next listener on the same address: an
+  OAuth client's form POST reached that stand-in on `127.0.0.1` and failed the row that was
+  running. On Linux such a client no longer reaches it; elsewhere it still can. And it reads each
+  POST body with `readStandinBody` (`standin-body`), which refuses a non-empty body that is no
+  JSON object with a 400 naming the request, prints the same line, and leaves the request
+  unrecorded, where a parse that throws out of `Bun.serve`'s `fetch` fails whichever test is
+  running. A request with a JSON object body, an empty body or no body is recorded and answered as
+  the case's own answer decides.
 
 ## A test that looks for a process it started
 
@@ -407,6 +434,29 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
+## A test in `internal/dispatch/api` runs beside the others
+
+Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
+statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
+and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
+Postgres while the machine's other cores sit idle.
+
+A test stays serial when it, or a helper it calls, changes or measures something the whole test
+process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
+(`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
+counts, or pmdoc's schema manifest, display tree version or block ID generator
+(`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
+test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
+not a call in its own body or a helper of the package's says why on its first line: a wall-clock
+bound that missed under parallel load, or a write through another package's test hook.
+
+A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
+(`database = (select oid from pg_database where datname = current_database())`, or
+`datname = current_database()`). The tests beside it hold the same tables, OIDs and lock keys in
+databases cloned from the same template, so a predicate on a relation or a lock key alone counts
+their waiters as its own.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -520,6 +570,12 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
+Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
+need the schema as it stood at some earlier version, so its own tests take
+`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through
+that version, built once per version from the nearest template below it, and dropped by the
+package's `TestMain`. A test moving such a database further forward applies only the migrations
+past its version (`migrateAbove`), not the whole history again.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
@@ -555,18 +611,43 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 ## A test reads a lock wait from pg_locks
 
-A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads
-`pg_locks`: `pid in (select pid from pg_locks where not granted)`, with `and locktype = '…'` for
-one kind of lock, or `pg_blocking_pids`, which reads the same queue. It never reads
-`pg_stat_activity`'s `wait_event_type` or `wait_event`. A waiting backend's request stays queued
-in `pg_locks` until the lock is granted or the wait is cancelled. Its wait event reads `Lock` only
-while the backend sleeps on its latch. Each time the backend is woken, by its deadlock check at
-`deadlock_timeout` or by a signal, the wait event reads nothing until it sleeps again. Beside the
-whole of `internal/daemon` under `-race`, one waiting backend read so 1.007 to 1.011 s into its
-wait, with `deadlock_timeout` at its default of 1 s. `TestReadyzIsFalseUntilTheDaemonServes` took
-one such read and counted 0 of the daemon's backends waiting while its one connection waited (CI
-run 45206462019). Each module's `internal/textcheck` (`lock_wait_reads_test.go`) fails on a
-comparison of `wait_event_type` with `Lock`, or of `wait_event` with a lock type.
+A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
+through `packages/envoy/lockwaittest`: `lockwaittest.Waiting` is the condition, on a row of
+`pg_stat_activity`, that `pg_locks` holds an ungranted request of its pid, and
+`lockwaittest.WaitingOn("advisory")` is the same for one kind of lock. `pg_blocking_pids` reads the
+same queue. A test never reads `pg_stat_activity`'s `wait_event_type` or `wait_event` for it. A
+waiting backend's request stays queued in `pg_locks` until the lock is granted or the wait is
+cancelled. Its wait event reads `Lock` only while the backend sleeps on its latch. Each time the
+backend is woken, by its deadlock check at `deadlock_timeout` or by a signal, the wait event reads
+nothing until it sleeps again.
+
+What was measured: a probe sampled one waiting backend's wait event and its `pg_locks` request
+together, beside the whole of `internal/daemon` under `-race`, with `deadlock_timeout` at its
+default of 1 s. In 2 of 10 waits it read no wait event at 1.007, 1.009 and 1.011 s into the wait,
+with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once,
+about 1 s into its wait, and counted 0 of the daemon's backends waiting while its one connection
+waited (CI run 45206462019).
+
+Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
+Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
+that writes `lockwaittest`'s predicate out (`select pid from pg_locks where not granted`), and on
+one that compares a wait event with a lock: `wait_event_type = 'Lock'`, the reverse
+`'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like`, `wait_event`
+with a lock type such as `'advisory'`, and each of those with the column qualified
+(`a.wait_event_type`), in a `coalesce` or cast (`::text`). It fails too on a root that holds no
+`go.mod`, and on a module in which it read no Go file. It does not see:
+
+- a comparison made in Go, of a `wait_event_type` the test scanned;
+- a statement built from pieces: a value passed as a bind parameter (`wait_event_type = $1`), a
+  column and a value in two literals joined by `+`, or a format verb;
+- another operator, such as `= any(…)`, or a literal in a `testdata` directory;
+- a test that decides on one sample of a wait event other than a lock's, such as an idle
+  holder's `Client/ClientRead`, which a signal blanks the same way. Such a test reads the
+  sample again, within a bound, until it holds.
+
+A read of one lock from `pg_locks`, by relation or by advisory key, a read of one backend's
+request by its pid, and a read of the waiters behind one backend (`pg_blocking_pids`) do not write
+the predicate out, and the check leaves them alone.
 
 ## A file a test runs
 
@@ -612,9 +693,12 @@ Each module's `internal/textcheck` holds those three kinds of file to the rule w
 - an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
   function gives an execute bit, or a mode it cannot read as holding none, with a `Chmod`:
   `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
-  the function moved it to, or the file's own `Chmod` method, or `os.Chmod` of the file's
-  `Name()`. The last two follow the variable or field the open's own call assigns the file to,
-  and an open wrapped in a call, as `must(os.CreateTemp(dir, ""))`;
+  the function moved it to after the open, or the `Chmod` method of an expression that holds the
+  file, or `os.Chmod` of that one's `Name()`. The open holds its file, and so does a call that
+  wraps it at any depth, as `must(wrap(os.CreateTemp(dir, "")))`. So does a variable or field an
+  assignment of the function gives one of those, or a variable or field that held the file at
+  that point (`g := f`), and each field a keyed composite literal sets to one, nested too
+  (`h := &holder{f: f}` gives `h.f` the file). `(*h).f` is read as `h.f`;
 - a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
 - a dot import of `os`.
 
@@ -625,6 +709,11 @@ does not see:
 
 - a `Chmod` in another function than the open, or of the same path spelled another way, such as
   a variable that holds the open's `filepath.Join` or its file's `Name()`;
+- a file handed to a name other than one an assignment of the open's own function gives it, from
+  the open, from a call that wraps it, or from a variable or field that holds it, directly or
+  through a keyed composite literal: a parameter of another function, a channel, a positional
+  composite literal, a slice that `append` adds it to, the address of a variable that holds it,
+  or a copy of a struct value that holds it in a field;
 - a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
   and returns the file, which its caller then gives an execute bit;
 - a file written by another function of `os` (`os.CopyFS`) or by another package's function

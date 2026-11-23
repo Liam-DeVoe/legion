@@ -261,6 +261,10 @@ class TagRun:
     workflow: str = WORKFLOW
 
 
+# A why's citation of the line a call is on: `<file>.go:<line> calls <name>`, or a line range
+# `<line>-<line>`. check_table holds each one that cites its own row's file to that file's line.
+OWN_CALL_CITATION = re.compile(r"([\w./-]+\.go):(\d+)(?:-(\d+))? calls ([\w.]+)")
+
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
 # Each entry is (the workflow file that holds the step, the job, the step).
 CITED: list = []
@@ -1217,16 +1221,19 @@ def reduce_line(line: str) -> tuple:
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
 # reduced, or a step an exact entry pins stays unrefused: names that cannot change what the command
 # compiles or which tests it runs. Any other name falls to everything, or refuses the pinned step,
-# among them GO* and CGO_*, BASH_ENV and ENV (which bash sources before the script), HOME and
-# XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from $XDG_CONFIG_HOME/go/env or else
-# $HOME/.config/go/env) and PATH (which chooses the go binary). Add a name here only when go
-# compiles the same files with it set as without, and runs the same tests.
+# among them every other GO* name and CGO_*, BASH_ENV and ENV (which bash sources before the
+# script), HOME and XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from
+# $XDG_CONFIG_HOME/go/env or else $HOME/.config/go/env) and PATH (which chooses the go binary).
+# Add a name here only when go compiles the same files with it set as without, and runs the same
+# tests.
 #
-# GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
-# never which version: the module files this check already reads decide that, and go.sum holds
-# each module's hash whichever source serves it. This check's own go commands run with
-# GOPROXY=off over an empty module cache (Go.env below), so a workflow's value never reaches
-# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
+# GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
+# keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
+# where a module's bytes come from, never which version: the module files this check already
+# reads decide that, and go.sum holds each module's hash whichever source serves it. This check's
+# own go commands run with GOPROXY=off over an empty module cache (Go.env below), so a workflow's
+# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN
+# and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
@@ -1248,6 +1255,11 @@ ENV_ALLOWED = frozenset({
     # without this name here every go command of that script would count as unreduced and
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
+    # Where go keeps what it compiled and the test results it caches, both found by a hash of
+    # their inputs, so go compiles the same files and runs the same tests whatever directory it
+    # names. envoy-go-checks' darwin vet sets it in its step's env, so that vet's darwin objects
+    # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
+    "GOCACHE",
     "GOPROXY",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
@@ -1657,6 +1669,30 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
         if source not in files:
             problems.append(error(".github/scripts/ci_job_reads.py", f"RULES names {source}, which is not "
                                                                       f"in the repository; update or remove the rule"))
+    # A why that cites the line of its own row's file a call is on - `<file>:<line> calls <name>`,
+    # or a range `<line>-<line>`, with <file> the end of the row's path - names a line that calls
+    # <name>: ci_job_reads.py's header asks for the line that performs the read, and a line added
+    # above the call moves the call while the citation stays where it was.
+    for source, entries in data.RULES.items():
+        if source not in files:
+            continue
+        held = None
+        for entry in entries:
+            for cited, first, last, name in OWN_CALL_CITATION.findall(entry.why):
+                if source != cited and not source.endswith("/" + cited):
+                    continue
+                if held is None:
+                    held = (REPO / source).read_text(encoding="utf-8").splitlines()
+                name = name.rstrip(".")
+                call = re.compile(re.escape(name) + r"\s*\(")
+                if any(call.search(held[n - 1]) for n in range(int(first), int(last or first) + 1) if 0 < n <= len(held)):
+                    continue
+                at = [str(n) for n, line in enumerate(held, 1) if call.search(line)]
+                problems.append(error(".github/scripts/ci_job_reads.py",
+                                      f"RULES' row for {source} cites {cited}:{first}{'-' + last if last else ''} as "
+                                      f"calling {name}, which that line does not; "
+                                      + (f"the call is at :{', :'.join(at)}" if at else f"no line of the file calls {name}")
+                                      + ", so cite the line the call is on"))
     # A citation names the workflow file that holds the step: ci.yaml, or a workflow one of its
     # jobs calls. The step must still be there, so a rename or a move fails here. The set already
     # holds every workflow ci.yaml calls, so only a citation naming another file is read here.
@@ -1738,12 +1774,15 @@ DISPATCH_NAMES = {
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
-# `if:` it carries: it runs after a failed verdict (always()) and on no dispatch but one of
-# exactly refs/heads/main, since every other ci-ok on such a head is a pull request's or the
-# queue's.
+# `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
+# refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
+# not where the hold step runs (HOLD_TERM): a merge group's first attempt whose verdict failed,
+# where every ci-ok posted on the head is failure already and the hold must be the job's last
+# step (.github/scripts/ci-ok-hold.sh's header).
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+HOLD_TERM = "steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
 RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
-                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') && !({HOLD_TERM}) }}}}")
 
 
 def dispatch_name(job_id: str) -> str:
@@ -1881,9 +1920,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
         if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
             problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
                                             f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
-                                            f"it runs after a failed verdict and on no workflow_dispatch run but one of "
+                                            f"it runs after a failed verdict, on no workflow_dispatch run but one of "
                                             f"exactly refs/heads/main, since any other dispatch's verdict is no pull "
-                                            f"request's and must set none of a pull request's ci-ok check runs"))
+                                            f"request's and must set none of a pull request's ci-ok check runs, and not "
+                                            f"after the hold step, which must end the job"))
     # The output the name and the reconcile step read, and the one step that writes it.
     changes = jobs.get("changes") or {}
     have_output = (changes.get("outputs") or {}).get(REF_OUTPUT)

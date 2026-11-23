@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -1842,7 +1843,7 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}()
 	testwait.Eventually(t, "the second fact to wait for the first", func() bool {
 		var waiting int
-		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'advisory')`).Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and `+lockwaittest.WaitingOn("advisory")).Scan(&waiting); err != nil {
 			return false
 		}
 		return waiting == 1

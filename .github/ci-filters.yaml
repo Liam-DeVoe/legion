@@ -111,6 +111,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/steprecord/*'
   - 'packages/envoy/testexec/*'
   - 'packages/envoy/programfile/*'
+  - 'packages/envoy/lockwaittest/*'
 dispatch_server: &dispatch_server
   - 'packages/envoy/cmd/dispatch/*'
   - 'packages/envoy/going/*'
@@ -240,6 +241,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/ompsessions/*'
   - 'packages/daemon/internal/pause/*'
   - 'packages/daemon/internal/phase/*'
+  - 'packages/daemon/internal/plan/*'
   - 'packages/daemon/internal/pods/**'
   - 'packages/daemon/internal/podsafety/**'
   - 'packages/daemon/internal/procgroup/*'
@@ -265,6 +267,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
   - 'packages/daemon/internal/tlsalert/*'
+  - 'packages/daemon/internal/termsafe/*'
   - 'packages/daemon/internal/treelifecycle/*'
   - 'packages/daemon/internal/volumestat/*'
   - 'packages/daemon/internal/wait/*'
@@ -420,6 +423,8 @@ daemon_go_tests:
   - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
   - '!packages/daemon/internal/daemon/localruntime_live_test.go'
   - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
@@ -467,6 +472,7 @@ plugin_pack:
   - 'packages/envoy/testnatsinprocess/*'
   - 'packages/envoy/testexec/*'
   - 'packages/envoy/programfile/*'
+  - 'packages/envoy/lockwaittest/*'
   - 'packages/contracts/**'
   - 'packages/envoy-client/**'
   - 'packages/pi-envoy/**'
@@ -516,6 +522,8 @@ plugin_pack:
   - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
   - '!packages/daemon/internal/daemon/localruntime_live_test.go'
   - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
@@ -545,6 +553,7 @@ plugin_pack:
   - '!packages/daemon/internal/ompsessions/**/*_test.go'
   - '!packages/daemon/internal/pause/**/*_test.go'
   - '!packages/daemon/internal/phase/**/*_test.go'
+  - '!packages/daemon/internal/plan/**/*_test.go'
   - '!packages/daemon/internal/podsafety/**/*_test.go'
   - '!packages/daemon/internal/procgroup/**/*_test.go'
   - '!packages/daemon/internal/programbound/**/*_test.go'
@@ -564,6 +573,7 @@ plugin_pack:
   - '!packages/daemon/internal/store/**/*_test.go'
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
+  - '!packages/daemon/internal/termsafe/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
   - '!packages/daemon/internal/testfifo/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
@@ -927,6 +937,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
+  - '.github/scripts/ci-ok-hold.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/runner-shutdown.sh'
@@ -977,6 +988,14 @@ dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+dispatch_browser_reading_rows_test: &dispatch_browser_reading_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.test.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/workflows/dispatch-browser.yaml'
 dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - *ci_router
   - *ci_filters_data
@@ -1020,6 +1039,13 @@ priorities_seed_check_test: &priorities_seed_check_test
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/priorities-seed-check.test.sh'
   - 'scripts/priorities-seed-check.sh'
+architecture_check_test: &architecture_check_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/actions/architecture-check/check.test.sh'
+  - '.github/actions/architecture-check/check.sh'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1114,12 +1140,14 @@ test:
   - *main_bypass_check_test
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
+  - *dispatch_browser_reading_rows_test
   - *dispatch_browser_run_reads_test
   - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
+  - *architecture_check_test
   - *check_ci_filters_test
   - *check_ts_filters_test
   - *go_test_step_expansion_test
@@ -1294,6 +1322,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/cipher/oauthwire/*'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/dispatch/**'
+  - 'packages/envoy/lockwaittest/*'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/buildversion/*'
@@ -2580,6 +2609,7 @@ worker_image:
   - 'packages/envoy/testnatsinprocess/**'
   - 'packages/envoy/testexec/**'
   - 'packages/envoy/programfile/**'
+  - 'packages/envoy/lockwaittest/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
@@ -2653,6 +2683,7 @@ tool_fallback:
   - '.github/actions/install-uv/**'
   - '.github/actions/install-pulumi/**'
   - '.github/actions/install-docker-plugin/**'
+  - '.github/actions/install-helm/**'
   - '.bun-version'
   - 'packages/daemon/docker/worker.Dockerfile'
   - *ci_router
@@ -3029,6 +3060,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/store/searchtest/*'
   - 'packages/envoy/internal/dispatch/store/storetest/*'
+  - 'packages/envoy/lockwaittest/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'
@@ -3342,6 +3374,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/store/searchtest/*'
   - 'packages/envoy/internal/dispatch/store/storetest/*'
+  - 'packages/envoy/lockwaittest/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'

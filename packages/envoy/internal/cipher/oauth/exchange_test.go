@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The listed identities every exchange test is written against: pods of three accounts of one
@@ -734,7 +735,7 @@ func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, r
 		}
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where pid = $1 and pid in (select pid from pg_locks where not granted) and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
+			where pid = $1 and `+lockwaittest.Waiting+` and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0

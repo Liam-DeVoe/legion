@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // StoredKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
@@ -284,7 +285,7 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		}
 		var waited string
 		if err := database.Pool.QueryRow(ctx, `
-			select query from pg_stat_activity where datname = current_database() and pid in (select pid from pg_locks where not granted)
+			select query from pg_stat_activity where datname = current_database() and `+lockwaittest.Waiting+`
 		`).Scan(&waited); err != nil {
 			t.Fatalf("read the statement the seed waits at behind the hold on %s: %v", table, err)
 		}
