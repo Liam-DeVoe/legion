@@ -15,13 +15,16 @@ package main
 // acknowledged undelivered and counted under project_not_held.
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // withheldProjectNotHeld is the reason envoy_edge_github_withheld_total counts a frame under that
@@ -72,7 +75,10 @@ func frameAnswerUnknownVerdict() frameVerdict {
 }
 
 // edgeFrameVerdict is whether the edge withholds from sessionID, whose token lists projects, a
-// frame of the message stored on subject with data, and why:
+// frame of the message stored on subject with data, and why. Every field of data it judges by is
+// read by its exact top-level key, as the session's plugin reads the frame (exactFrameField), and
+// a frame that holds such a field under more than one key, or under a key that differs from the
+// field's name only in case, is withheld: readers disagree on which of those keys a field is.
 //
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
@@ -83,15 +89,18 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //     another project's role's message on the session's own subject; any other frame passes by
 //     the topic its envelope names: the session's own agent subject is a message to the session,
 //     a send or a dead letter, which passes, and any other topic is judged as a frame of that
-//     topic. A forward of a GitHub event or of another agent subject, and an envelope that does
-//     not decode, are withheld;
+//     topic. A forward of a GitHub event or of another agent subject, and an envelope that names
+//     no topic, are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
 //     subject writes, so a frame whose envelope names another project's event under a header of
 //     the token's project is withheld.
 func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects []string, subject string, data []byte) frameVerdict {
-	topic, named := envelopeTopic(data)
+	topic, named, err := exactFrameTopic(data)
+	if err != nil {
+		return frameDrops(withheldProjectNotHeld)
+	}
 	if strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
 		if named && !strings.HasPrefix(topic, contracts.GithubTopicPrefix) {
 			return frameDrops(withheldProjectNotHeld)
@@ -106,7 +115,7 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 			return frameDrops(withheldProjectNotHeld)
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
-		// send, whose role mark names the role (roleOfMessage.role) - is judged by the project
+		// send, whose role mark names the role (exactFrameRole) - is judged by the project
 		// its role's claim works for (roleOfProjects), not by the
 		// subject the frame is stored on. A forged role claim can name the session for another
 		// project's role and have Dispatch send that role's message on the session's own subject,
@@ -114,8 +123,8 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// holder's subject as its topic; both reach the session on its own agent subject. Reading
 		// the role is how the role lane, the relay and a takeover read one, and it holds a role
 		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
-		if role, _, isRole := decodeRoleMark(data); isRole {
-			if roleOfProjects(role, projects) {
+		if role, isRole, err := exactFrameRole(data, topic); err != nil || isRole {
+			if err == nil && roleOfProjects(role, projects) {
 				return framePasses()
 			}
 			return frameDrops(withheldProjectNotHeld)
@@ -140,16 +149,205 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 	return framePasses()
 }
 
-// envelopeTopic is the topic of the envelope that data holds, and false when data decodes as no
-// envelope or its envelope names no topic.
-func envelopeTopic(data []byte) (string, bool) {
-	var envelope struct {
-		Topic string `json:"topic"`
+// exactFrameTopic is the topic of the envelope that data holds, read by its exact top-level key
+// (exactFrameField), and false when data holds no JSON object or its object names no topic. It
+// answers errAmbiguousFrameKey for a frame whose topic readers disagree on: the session's plugin
+// reads the last "topic" key (JSON.parse), and encoding/json, which the edge read the topic with
+// before, the last key equal to "topic" ignoring case, so a later "Topic" key passed a frame under
+// one topic that the session then read under another.
+func exactFrameTopic(data []byte) (string, bool, error) {
+	return exactFrameField(data, "topic")
+}
+
+// exactFrameRole is the role a frame whose exact topic is topic is a message of, keyed as its
+// claim is, and whether it is a role message, as roleOfMessage.role tells one: a role-lane topic
+// (roleOfLaneTopic) names its role, and a role mark (the "role" field, read by its exact key)
+// names one otherwise. It answers errAmbiguousFrameKey for a frame whose role mark readers
+// disagree on, as exactFrameField does.
+func exactFrameRole(data []byte, topic string) (string, bool, error) {
+	mark, marked, err := exactFrameField(data, "role")
+	if err != nil {
+		return "", false, err
 	}
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Topic == "" {
-		return "", false
+	if role, ok := roleOfLaneTopic(topic); ok {
+		return role, true, nil
 	}
-	return envelope.Topic, true
+	if !marked {
+		return "", false, nil
+	}
+	role := store.RoleClaimKeyOf(mark)
+	return role, role != "", nil
+}
+
+// frameByteOrderMark is the UTF-8 byte order mark a frame's JSON may start with. The plugins'
+// transport decodes a frame's bytes with TextDecoder, which drops one, before JSON.parse reads
+// them, so the edge reads a frame past it too.
+var frameByteOrderMark = []byte("\xef\xbb\xbf")
+
+// errAmbiguousFrameKey is exactFrameField's answer for a field that a frame names under more than
+// one top-level key, or under a key that differs from the field's name only in case.
+var errAmbiguousFrameKey = errors.New("a frame names the field under more than one key, or under a key that differs from its name in case")
+
+// exactFrameField is the string value of the top-level field key of the JSON object that data
+// holds past one leading byte order mark, as the plugins read a frame, and whether data names it
+// (exactJSONString).
+func exactFrameField(data []byte, key string) (string, bool, error) {
+	return exactJSONString(bytes.TrimPrefix(data, frameByteOrderMark), key)
+}
+
+// exactJSONString is the string value of the top-level field key of the JSON object doc, read by
+// its exact key as JSON.parse reads one, and whether doc names it: false for a doc that is no JSON
+// object (topLevelJSONFields), that has no key, or whose value under it is null, empty or no
+// string. A doc whose top-level keys hold key more than once, or hold a key that equals key
+// ignoring case as encoding/json matches a key into a struct field (strings.EqualFold) and is not
+// key, is errAmbiguousFrameKey whatever its values: JSON.parse takes the last key, encoding/json
+// the last of any case, and another reader the first, so no read of such a field is the one
+// every reader of the frame makes.
+func exactJSONString(doc []byte, key string) (string, bool, error) {
+	var value []byte
+	found, ambiguous := false, false
+	readable := topLevelJSONFields(doc, func(name string, raw []byte) {
+		if !strings.EqualFold(name, key) {
+			return
+		}
+		if name != key || found {
+			ambiguous = true
+			return
+		}
+		found, value = true, raw
+	})
+	switch {
+	case !readable:
+		return "", false, nil
+	case ambiguous:
+		return "", false, errAmbiguousFrameKey
+	case !found:
+		return "", false, nil
+	}
+	var text string
+	if err := json.Unmarshal(value, &text); err != nil || text == "" {
+		return "", false, nil
+	}
+	return text, true, nil
+}
+
+// topLevelJSONFields calls visit with each top-level key of the JSON object doc, its escapes read,
+// and the raw text of the key's value, in the order doc holds them, a repeated key each time, and
+// reports whether doc reads as a JSON object: past JSON whitespace, an opening brace, then string
+// keys, each followed by a colon and a value, separated by commas, up to the closing brace. It
+// finds each value's end by its brackets and strings alone, with no limit on depth: encoding/json
+// refuses a document nested deeper than 10,000 and JSON.parse does not, so a reader with that limit
+// names no topic for a frame whose topic the plugin reads. It checks no more of a value than where
+// it ends, and nothing after the closing brace, so it reads some documents JSON.parse refuses; the
+// plugin reads no field of such a document.
+func topLevelJSONFields(doc []byte, visit func(key string, value []byte)) bool {
+	i := skipTopLevelJSONSpace(doc, 0)
+	if i == len(doc) || doc[i] != '{' {
+		return false
+	}
+	i = skipTopLevelJSONSpace(doc, i+1)
+	if i < len(doc) && doc[i] == '}' {
+		return true
+	}
+	for {
+		if i == len(doc) || doc[i] != '"' {
+			return false
+		}
+		keyEnd, ok := topLevelJSONStringEnd(doc, i)
+		if !ok {
+			return false
+		}
+		key := doc[i+1 : keyEnd-1]
+		if bytes.IndexByte(key, '\\') >= 0 {
+			var unescaped string
+			if json.Unmarshal(doc[i:keyEnd], &unescaped) != nil {
+				return false
+			}
+			key = []byte(unescaped)
+		}
+		i = skipTopLevelJSONSpace(doc, keyEnd)
+		if i == len(doc) || doc[i] != ':' {
+			return false
+		}
+		start := skipTopLevelJSONSpace(doc, i+1)
+		end, ok := topLevelJSONValueEnd(doc, start)
+		if !ok {
+			return false
+		}
+		visit(string(key), doc[start:end])
+		i = skipTopLevelJSONSpace(doc, end)
+		if i == len(doc) {
+			return false
+		}
+		switch doc[i] {
+		case ',':
+			i = skipTopLevelJSONSpace(doc, i+1)
+		case '}':
+			return true
+		default:
+			return false
+		}
+	}
+}
+
+// topLevelJSONValueEnd is the index just past the JSON value that starts at doc[i], and false when
+// there is none: a string, an object or array found by counting its brackets outside strings, or a
+// scalar that runs to the next comma, closing bracket or whitespace.
+func topLevelJSONValueEnd(doc []byte, i int) (int, bool) {
+	if i == len(doc) {
+		return 0, false
+	}
+	switch doc[i] {
+	case '"':
+		return topLevelJSONStringEnd(doc, i)
+	case '{', '[':
+		depth := 0
+		for j := i; j < len(doc); j++ {
+			switch doc[j] {
+			case '"':
+				end, ok := topLevelJSONStringEnd(doc, j)
+				if !ok {
+					return 0, false
+				}
+				j = end - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return j + 1, true
+				}
+			}
+		}
+		return 0, false
+	}
+	j := i
+	for j < len(doc) && strings.IndexByte(",}] \t\n\r", doc[j]) < 0 {
+		j++
+	}
+	return j, j > i
+}
+
+// topLevelJSONStringEnd is the index just past the JSON string whose opening quote is doc[i], an
+// escaped character skipped, and false when the string has no end.
+func topLevelJSONStringEnd(doc []byte, i int) (int, bool) {
+	for j := i + 1; j < len(doc); j++ {
+		switch doc[j] {
+		case '\\':
+			j++
+		case '"':
+			return j + 1, true
+		}
+	}
+	return 0, false
+}
+
+// skipTopLevelJSONSpace is the index of the first byte at or after i that is no JSON whitespace.
+func skipTopLevelJSONSpace(doc []byte, i int) int {
+	for i < len(doc) && strings.IndexByte(" \t\n\r", doc[i]) >= 0 {
+		i++
+	}
+	return i
 }
 
 // ownFrameAgentSubject reports whether subject is sessionID's own agent subject in a form a

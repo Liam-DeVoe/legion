@@ -328,21 +328,22 @@ func (e *edgeRepositories) relayVerdict(projects []string, subject string, data 
 // eventRepository is the owner and name of the repository a GitHub event names, data being its
 // stored envelope: the payload's repo, which every GitHub event carries (contracts' githubPayload,
 // and the CI settlement's summary), and false for an event that names none, whose envelope or
-// payload does not decode or whose repo is no owner/name.
+// payload is no JSON object or whose repo is no owner/name. The payload and its repo are each read
+// by their exact keys, as the plugin reads the event it shows the session (exactFrameField,
+// exactJSONString), and an event that names either under more than one key, or under a key that
+// differs from its name only in case, names none: encoding/json, which read both before, takes
+// the last key of any case, so a later "Payload" or "Repo" key passed an event under a repository
+// of the session's projects that the session then read as another repository's.
 func eventRepository(data []byte) (owner, name string, ok bool) {
-	var envelope struct {
-		Payload string `json:"payload"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Payload == "" {
+	payload, named, err := exactFrameField(data, "payload")
+	if err != nil || !named {
 		return "", "", false
 	}
-	var payload struct {
-		Repo string `json:"repo"`
-	}
-	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+	repo, named, err := exactJSONString([]byte(payload), "repo")
+	if err != nil || !named {
 		return "", "", false
 	}
-	owner, name, found := strings.Cut(payload.Repo, "/")
+	owner, name, found := strings.Cut(repo, "/")
 	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
 		return "", "", false
 	}

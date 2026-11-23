@@ -10,7 +10,9 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -71,6 +73,194 @@ func TestEdgeFrameVerdict(t *testing.T) {
 			if verdict != tc.want {
 				t.Fatalf("edgeFrameVerdict(subject=%q, topic=%q, role=%q) = {action %d, reason %q}, want {action %d, reason %q}",
 					tc.subject, tc.topic, tc.role, verdict.action, verdict.reason, tc.want.action, tc.want.reason)
+			}
+		})
+	}
+}
+
+// TestEdgeFrameVerdictReadsEachFieldByItsExactKey holds the edge's frame rule to the fields the
+// session's plugin reads: JSON.parse takes a frame's topic, role mark, payload and the payload's
+// repo by their exact keys, past one byte order mark (TextDecoder) and at any depth, while
+// encoding/json takes the last key of any case and refuses a byte order mark and a document nested
+// deeper than 10,000. A frame that names one of those fields under more than one key, or under a
+// key that differs from its name only in case, is withheld on every branch: the probe frame, which
+// encoding/json read as the session's own message and the plugin as another project's event,
+// repeated keys, and "Topic", "TOPIC" and "tOpIc" beside "topic" on the generic, GitHub and role
+// branches. The controls, each with one exact key, get the verdict main gives them. A row that
+// names goTopic, goRole or goRepo first checks that encoding/json, the read main judged by, reads
+// the frame that way, so no row passes on a frame that does not split the readers as it says.
+func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
+	const session = "ses_v"
+	own := contracts.LegacyAgentSubject(session)
+	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"
+	privLane, pubLane := contracts.RoleTopicPrefix+privRole, contracts.RoleTopicPrefix+pubRole
+	const ownIssue = "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
+	const otherIssue = "notifications.dispatch.issue.PUB.PUB-1.comment.created"
+	const github = "notifications.github.acme.pub.pr.1"
+	projects := []string{"PRIV"}
+	repositories := &edgeRepositories{now: time.Now, answers: map[string]repositoryAnswer{
+		"PRIV": {repositories: []string{"acme/pub"}, readAt: time.Now()},
+	}}
+
+	// object writes a JSON object of fields in order, each a key's text as it sits between its
+	// quotes and a raw JSON value, so a row can repeat a key or write one with an escape.
+	type field struct{ key, value string }
+	object := func(fields ...field) []byte {
+		parts := make([]string, len(fields))
+		for i, f := range fields {
+			parts[i] = `"` + f.key + `":` + f.value
+		}
+		return []byte("{" + strings.Join(parts, ",") + "}")
+	}
+	text := func(s string) string {
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	payload := func(fields ...field) string { return text(string(object(fields...))) }
+	const bom = "\xef\xbb\xbf"
+	deep := strings.Repeat("[", 10_001) + strings.Repeat("]", 10_001)
+	if json.Valid([]byte(deep)) {
+		t.Fatal("encoding/json reads a value nested 10,001 deep; the deep rows test nothing")
+	}
+	pubRepo := payload(field{"repo", text("acme/pub")})
+	secretRepo := payload(field{"repo", text("acme/secret")})
+	passed := frameVerdict{action: framePass, answered: true}
+	notHeld := frameDrops(withheldProjectNotHeld)
+	notInProject := frameDrops(withheldNotInProject)
+
+	type row struct {
+		name    string
+		subject string
+		data    []byte
+		want    frameVerdict
+		// goTopic, goRole and goRepo are what encoding/json reads of the frame's topic, role mark
+		// and repository, when the row names one.
+		goTopic, goRole, goRepo string
+	}
+	rows := []row{
+		{name: "the probe: another project's topic and a later Topic naming the session's own subject", subject: own,
+			data: object(field{"topic", text(otherIssue)}, field{"Topic", text(own)}), want: notHeld, goTopic: own},
+		{name: "the probe without its Topic key (control)", subject: own,
+			data: object(field{"topic", text(otherIssue)}), want: notHeld},
+		{name: "the probe's keys the other way round", subject: own,
+			data: object(field{"Topic", text(own)}, field{"topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+		{name: "a lone Topic key naming the session's own subject", subject: own,
+			data: object(field{"Topic", text(own)}), want: notHeld, goTopic: own},
+		{name: "a lone Topic key naming another project under the token's project", subject: ownIssue,
+			data: object(field{"Topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+		{name: "a topic key written top\\u0069c after topic", subject: own,
+			data: object(field{"topic", text(otherIssue)}, field{`top\u0069c`, text(own)}), want: notHeld, goTopic: own},
+		{name: "a key written \\u0054opic after topic", subject: own,
+			data: object(field{"topic", text(otherIssue)}, field{`\u0054opic`, text(own)}), want: notHeld, goTopic: own},
+
+		{name: "repeated topic keys on the session's own subject", subject: own,
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(own)}), want: notHeld, goTopic: own},
+		{name: "repeated topic keys under the token's project", subject: ownIssue,
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(ownIssue)}), want: notHeld, goTopic: ownIssue},
+		{name: "repeated topic keys of a GitHub event", subject: github,
+			data: object(field{"topic", text(otherIssue)}, field{"topic", text(github)}, field{"payload", pubRepo}), want: notHeld, goTopic: github},
+		{name: "repeated topic keys of role lanes", subject: own,
+			data: object(field{"topic", text(pubLane)}, field{"topic", text(privLane)}), want: notHeld, goTopic: privLane},
+
+		{name: "a byte order mark before another project's topic under the token's project", subject: ownIssue,
+			data: append([]byte(bom), object(field{"topic", text(otherIssue)})...), want: notHeld},
+		{name: "another project's topic beside a value nested 10,001 deep under the token's project", subject: ownIssue,
+			data: object(field{"topic", text(otherIssue)}, field{"deep", deep}), want: notHeld},
+		{name: "a byte order mark before the session's own message", subject: own,
+			data: append([]byte(bom), object(field{"topic", text(own)})...), want: framePasses()},
+		{name: "a byte order mark before another project's role mark", subject: own,
+			data: append([]byte(bom), object(field{"topic", text(own)}, field{"role", text(pubRole)})...), want: notHeld},
+		{name: "another project's role mark beside a value nested 10,001 deep", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"deep", deep}), want: notHeld},
+
+		{name: "another project's role mark and a later Role of the token's project", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"Role", text(privRole)}), want: notHeld, goRole: privRole},
+		{name: "repeated role marks, the last of the token's project", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"role", text(privRole)}), want: notHeld, goRole: privRole},
+		{name: "the token's project's role mark and a later ROLE of another project", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(privRole)}, field{"ROLE", text(pubRole)}), want: notHeld, goRole: pubRole},
+		{name: "another project's role mark beside an event id written as a number", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"event_id", "4626"}), want: notHeld},
+
+		{name: "a GitHub event of another repository and a later Payload of the token's", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"Payload", pubRepo}), want: notInProject, goRepo: "acme/pub"},
+		{name: "repeated payload keys, the last of the token's repository", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", secretRepo}, field{"payload", pubRepo}), want: notInProject, goRepo: "acme/pub"},
+		{name: "a GitHub payload naming another repository and a later Repo of the token's", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"Repo", text("acme/pub")})}), want: notInProject, goRepo: "acme/pub"},
+		{name: "a GitHub payload with repeated repo keys, the last of the token's repository", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"repo", text("acme/pub")})}), want: notInProject, goRepo: "acme/pub"},
+
+		{name: "control: a topic of the token's project", subject: ownIssue,
+			data: object(field{"topic", text(ownIssue)}), want: framePasses()},
+		{name: "control: a topic of a project the token does not list", subject: otherIssue,
+			data: object(field{"topic", text(otherIssue)}), want: notHeld},
+		{name: "control: another project's topic under the token's project", subject: ownIssue,
+			data: object(field{"topic", text(otherIssue)}), want: notHeld},
+		{name: "control: the session's own message", subject: own,
+			data: object(field{"topic", text(own)}), want: framePasses()},
+		{name: "control: the token's project's role-lane forward", subject: own,
+			data: object(field{"topic", text(privLane)}), want: framePasses()},
+		{name: "control: another project's role-lane forward", subject: own,
+			data: object(field{"topic", text(pubLane)}), want: notHeld},
+		{name: "control: the token's project's role mark", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(privRole)}), want: framePasses()},
+		{name: "control: another project's role mark", subject: own,
+			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}), want: notHeld},
+		{name: "control: a GitHub event of the token's repository", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", pubRepo}), want: passed},
+		{name: "control: a GitHub event of another repository", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", secretRepo}), want: frameVerdict{action: frameDrop, reason: withheldNotInProject, answered: true}},
+		{name: "control: a GitHub header whose envelope names another project's topic", subject: github,
+			data: object(field{"topic", text(otherIssue)}, field{"payload", pubRepo}), want: notHeld},
+		{name: "control: brackets, a comma and an escaped quote in a string before another project's topic", subject: ownIssue,
+			data: object(field{"x", text(`]},"{[`)}, field{"topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+		{name: "control: a nested topic naming the token's project beside another project's top-level topic", subject: ownIssue,
+			data: object(field{"nested", string(object(field{"topic", text(ownIssue)}, field{"Topic", text(ownIssue)}))}, field{"topic", text(otherIssue)}), want: notHeld, goTopic: otherIssue},
+		{name: "control: nested topic keys of any case beside the token's project's own topic", subject: ownIssue,
+			data: object(field{"nested", string(object(field{"Topic", text(otherIssue)}))}, field{"list", `[{"topic":1},"]"]`}, field{"topic", text(ownIssue)}), want: framePasses()},
+	}
+	for _, variant := range []string{"Topic", "TOPIC", "tOpIc"} {
+		rows = append(rows,
+			row{name: "generic: another project's topic and a later " + variant + " of the token's project", subject: ownIssue,
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(ownIssue)}), want: notHeld, goTopic: ownIssue},
+			row{name: "GitHub: another project's topic and a later " + variant + " naming the GitHub event", subject: github,
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(github)}, field{"payload", pubRepo}), want: notHeld, goTopic: github},
+			row{name: "role: another project's role lane and a later " + variant + " naming the token's project's lane", subject: own,
+				data: object(field{"topic", text(pubLane)}, field{variant, text(privLane)}), want: notHeld, goTopic: privLane},
+			row{name: "agent: another project's topic and a later " + variant + " naming the session's own subject", subject: own,
+				data: object(field{"topic", text(otherIssue)}, field{variant, text(own)}), want: notHeld, goTopic: own},
+		)
+	}
+
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			var read struct {
+				Topic   string `json:"topic"`
+				Role    string `json:"role"`
+				Payload string `json:"payload"`
+			}
+			_ = json.Unmarshal(tc.data, &read)
+			var inner struct {
+				Repo string `json:"repo"`
+			}
+			_ = json.Unmarshal([]byte(read.Payload), &inner)
+			for _, check := range []struct{ what, want, got string }{
+				{"topic", tc.goTopic, read.Topic},
+				{"role mark", tc.goRole, read.Role},
+				{"repository", tc.goRepo, inner.Repo},
+			} {
+				if check.want != "" && check.got != check.want {
+					t.Fatalf("encoding/json reads the frame's %s as %q, want %q: the frame does not split the readers as the row says", check.what, check.got, check.want)
+				}
+			}
+			verdict := edgeFrameVerdict(repositories, session, projects, tc.subject, tc.data)
+			if verdict != tc.want {
+				t.Fatalf("edgeFrameVerdict(subject=%q, %s) = {action %d, reason %q, answered %t}, want {action %d, reason %q, answered %t}",
+					tc.subject, tc.data[:min(len(tc.data), 200)], verdict.action, verdict.reason, verdict.answered, tc.want.action, tc.want.reason, tc.want.answered)
 			}
 		})
 	}
