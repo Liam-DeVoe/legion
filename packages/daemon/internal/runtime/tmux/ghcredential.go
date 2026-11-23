@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -68,11 +67,12 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
 //
-// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
-// role the pane works as (paneRole, runtime.SlotRole: its claim's role, or the step's while the
-// architect does a step of its own; appauth.AppRoleFor) and the pane's repository alone, and
-// each build opens with a live read of every page of its App's installations under a fresh JWT
-// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
+// The walk builds each bundle once (appauth.Bundles), held by the App role the pane works as on
+// its issue (paneRole, runtime.SlotRole: its claim's role, or the step's while the architect does
+// a step of its own; appauth.AppRoleFor), the role itself where it is none of Legion's, and the
+// pane's repository, and each build opens with a live read of every page of its App's
+// installations under a fresh JWT (appauth.GitHubCredential), so the panes of one issue whose
+// roles are Legion's and run as one App cost the tick one
 // read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
 // reads GitHub for what its bundles hold (INFRA-2543 R2).
 //
@@ -83,7 +83,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
 		written, err := r.writePaneCredential(ctx, bundles, entry)
@@ -159,11 +159,12 @@ func (r *Runtime) writePaneCredential(ctx context.Context, bundles *appauth.Bund
 	return paneWrite{role: role, bundle: bundle, changed: changed, watched: true}, nil
 }
 
-// renderPane is the bundle of role's App for entry's pane: the one paneBundle mints on the pane's
-// claim's issue, rendered for the pane's own repository — the one its launch minted the write
-// token for, and for a tree pane this runtime adopted, the one the daemon records for the claim's
-// issue (Options.ClaimRepository). A render whose default is not the directory the pane's own
-// repository routes to (ghconfig.RouteDir) is refused. It writes nothing.
+// renderPane is the bundle of role's App for entry's pane: the one bundles, the caller's memo,
+// builds on the pane's claim's issue (appauth.Bundles.Bundle, which asks the controller's by the
+// default owner its launch recorded), rendered for the pane's own repository — the one its launch
+// minted the write token for, and for a tree pane this runtime adopted, the one the daemon records
+// for the claim's issue (Options.ClaimRepository). A render whose default is not the directory the
+// pane's own repository routes to (ghconfig.RouteDir) is refused. It writes nothing.
 func (r *Runtime) renderPane(ctx context.Context, bundles *appauth.Bundles, entry trackedProcess, role claim.Role) (ghconfig.Bundle, error) {
 	token := entry.locator.Claim
 	repo := entry.ghRepo
@@ -178,7 +179,7 @@ func (r *Runtime) renderPane(ctx context.Context, bundles *appauth.Bundles, entr
 	if issue == "" {
 		issue, _ = token.IssueKey()
 	}
-	bundle, err := r.paneBundle(ctx, bundles, issue, role, repo, entry.ghDefault)
+	bundle, err := bundles.Bundle(ctx, issue, role, repo, entry.ghDefault)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -188,19 +189,6 @@ func (r *Runtime) renderPane(ctx context.Context, bundles *appauth.Bundles, entr
 		}
 	}
 	return bundle, nil
-}
-
-// paneBundle is the gh bundle of one pane's claim of issue ("" for the controller's), and the one
-// place each path of this runtime that writes a pane's gh files asks for one: the refresh
-// (refreshGitHubCredentials), a launch (mintGitHubCredential), and the write an owner's step asks
-// of a slot (WriteSlotCredential). The controller's is asked for by owner (controllerDefault, ""
-// for none); every other role's is built for repo through bundles, the caller's memo, on issue,
-// whose plan can define the role and decides the App of a role it defines.
-func (r *Runtime) paneBundle(ctx context.Context, bundles *appauth.Bundles, issue string, role claim.Role, repo ghrepo.Repository, controllerDefault string) (ghconfig.Bundle, error) {
-	if role == claim.RoleController {
-		return r.controllerCredential(ctx, controllerDefault)
-	}
-	return bundles.Bundle(ctx, issue, role, repo)
 }
 
 // watching is whether entry's pane is still watched: its incarnation is tracked, for the same

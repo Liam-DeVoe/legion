@@ -16,8 +16,9 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
-  and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
+  runtime each issue runs in a pod of its own, where every agent of that issue runs, from one
+  published worker image. Each agent talks to the daemon over a connection its pod dials back, and
+  a controller the daemon launches runs in a pod of its own. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
   work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -46,11 +47,12 @@ with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
-Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
-is installed on.
-Each token is minted on that owner's installation with the role's own permissions: the implement
-App's write set for the implementer and the merger, the review App's review set for every other
-role.
+Every worker holds a gh bundle of the GitHub App its role acts as on its issue, with one token for
+each owner that App is installed on.
+Each token is minted on that owner's installation with that App's permissions: the implement
+App's write set for the implementer, the merger and a role of the issue's plan of the type
+implementation, the set of the App its `github_app` names for a role of the deployment that the
+issue's plan does not define, and the review App's review set for every other role.
 While the architect does a step of its own plan (one whose key is `owner`), its bundle is the App
 of that step's role instead, and its own App again at the step's end.
 The bundle holds one directory per owner the App is installed on, one more per owner a
@@ -81,9 +83,10 @@ repositories alone.
 The controller is the one Legion agent a person talks to directly. By default (`controller:
 operator`) the operator starts it with `legion controller start` in a terminal on their own machine,
 and it runs there as an interactive Oh My Pi session; closing that terminal leaves the project
-without a controller until someone runs the command again. Under `controller: daemon` (Kubernetes
-only) the daemon launches it as a pod in the cluster and relaunches it when it dies; a person
-reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
+without a controller until someone runs the command again. Under `controller: daemon` the daemon
+launches it and relaunches it when it dies. It runs as a pod in the cluster under the Kubernetes
+runtime, or as a pane in a window of its own under tmux. A person reaches it through Dispatch.
+The daemon wakes it when something needs a judgment no tree owns:
 
 - a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
   person's label is queued by the daemon: the issue moves to `todo` without the controller);
@@ -121,8 +124,8 @@ admission to close. The architect:
 1. claims the issue in Dispatch, so no other session works it alongside Legion;
 2. extends your issue's spec in place, writing each open question as a decision block for you to
    answer;
-3. asks you to approve the spec (the [design gate](#the-design-gate));
-4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+3. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
+4. asks you to approve the spec (the [design gate](#the-design-gate));
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue where its plan has the step `acceptance:owner`, once the steps before it have passed (in the default steps, up to the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the issue then goes on to its next step, or to its retro where the acceptance is its last. A step `acceptance` with no key is a fresh agent's reading of the work instead, and an issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on without one;
 7. does each step of the issue's plan whose key is `owner` itself, of any role and at any place, and the retro of a task whose last step of the type implementation is its own or that has none. Legion tells it such a step with an `owner-step` notice, starts no other agent for it, and takes its report with the `legion` tool's `complete_step`. While it does the step, it acts on GitHub as the App of the step's role, and as its own again at the step's end.
@@ -166,7 +169,7 @@ The daemon starts each step's worker itself, one step at a time, in the order of
 [plan](#the-plan-of-an-issue) (the order below in the default steps), and runs only the phases of
 the steps the plan names. A step whose key is `owner` starts no worker: the issue's architect does
 that step's work itself, acts on GitHub as that worker's App while it does, and reports it with
-the `legion` tool's `complete_step` ([below](#the-plan-of-an-issue)). A role keeps
+the `legion` tool's `complete_step` ([below](#the-plan-of-an-issue)). Each agent keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
@@ -207,7 +210,10 @@ The table is the line of the **default steps**. Each architect of a tree, the ro
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
 **plan** that picks which steps it runs: one task whose steps are Legion's roles (`planner`,
 `implementer`, `tester`, `reviewer` and `acceptance`), roles the deployment defines and roles the
-plan defines, in any order, any of them left out and a role at two steps. A step's key names its
+plan defines, in any order, any of them left out and a role at two steps. The plan defines each of
+its roles in a `plan_role` block such as
+`:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
+A step's key names its
 agent: two steps of one key are one agent's, and the key `owner` makes the step the architect's
 own, of any role and at any place: `acceptance:owner` is its acceptance in `accepting`, and
 `implementer:owner` its own implementation. A step `acceptance` with no key is a fresh agent of

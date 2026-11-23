@@ -1213,3 +1213,61 @@ func TestTheOwnersPromptNamesItsStepsAndNoStepWorkerAssumesAPullRequest(t *testi
 		}
 	}
 }
+
+// An owner's plan can define a role of its own, so the owner's prompt gives the form of a
+// `plan_role` block with an example a step names, the refusals of a role block and of its model as
+// the owner reads them (plan.Validate), and the two answers a later version gets about a role: one
+// that changes a role a step of the running task names is refused, so the owner stops the task
+// first, and once the deployment takes a role's name, every version that keeps it is refused, so
+// the owner stops the task and gives the role a new name. Both architect compositions share that
+// part, so both are read. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnersPromptGivesTheRoleBlockAndItsRefusals(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		isRoot bool
+	}{{"root architect", true}, {"sub-architect", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
+			text := foldWhitespace(composed)
+			for _, term := range []string{
+				"`plan_role`",
+				"`:::plan_role{#prober type=\"testing\" model=\"<a listed model>\"}`",
+				"names `prober`",
+				"the models of this deployment",
+				"which the deployment or Legion defines already; a role of a plan takes a name of its own.",
+				"Dispatch's step record takes no other.",
+				"the deployment does not list",
+				"one agent runs on one model.",
+				"one agent runs on one harness.",
+				"`held`",
+				"`worker-died`",
+				"which neither the deployment nor the plan defines.",
+			} {
+				if !strings.Contains(text, term) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, term)
+				}
+			}
+			for _, terms := range [][]string{
+				// A change of a role a step of the running task names is refused as a change of
+				// its block is, and the refusal says to stop the task first.
+				{"a role block that a step of the running task names", "`PLAN_REFUSED`", "task <id> is running"},
+				// Once the deployment takes the name of a role of the plan, the issue keeps its
+				// plan's role and every later version that keeps the name is refused.
+				{"adds a role of the deployment with the name of a role your plan defines", "keeps its plan's role", "refuses every later version that keeps a role of that name"},
+				// A version that renames the role is refused while a task that names it runs.
+				{"while such a task runs", "`stop_task` first", "a new name"},
+				// A version that takes away a role block a step still names names a role nobody
+				// defines, running or not, so a stop of the task does not let it through.
+				{"takes away a role block that a step still names", "neither the deployment nor the plan defines", "stopping the task does not help"},
+			} {
+				if !clauseHolds(composed, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
+				}
+			}
+		})
+	}
+}

@@ -18,16 +18,16 @@ var _ runtime.SlotCredentials = (*Runtime)(nil)
 
 // WriteSlotCredential satisfies runtime.SlotCredentials: the pane of token's claim, while it is
 // watched, has its gh files written for the App of the role it works as (writePaneCredential, the
-// refresh's write), judged under the launch lock with the write, minted by paneBundle on the pane's
-// claim's issue, so a role a plan defines holds the App of its type. Only the directories whose
-// hosts.yml differs are rewritten. A runtime with no credential function wrote no pane any gh
-// files, and a claim with no watched pane has none to write: its next spawn writes the App
+// refresh's write), judged under the launch lock with the write, built by appauth.Bundles on the
+// pane's claim's issue, so a role a plan defines holds the App of its type. Only the directories
+// whose hosts.yml differs are rewritten. A runtime with no credential function wrote no pane any
+// gh files, and a claim with no watched pane has none to write: its next spawn writes the App
 // runtime.SlotRole answers then, judged under the same lock.
 func (r *Runtime) WriteSlotCredential(ctx context.Context, token claim.Token) error {
 	if r.gitHubCredential == nil {
 		return nil
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		if entry.locator.Claim != token {
 			continue
@@ -60,7 +60,7 @@ func (r *Runtime) SlotHoldsCredential(ctx context.Context, token claim.Token, ro
 	if r.gitHubCredential == nil {
 		return nil
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		if entry.locator.Claim != token {
 			continue

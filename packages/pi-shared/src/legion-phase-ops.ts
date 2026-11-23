@@ -30,7 +30,7 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  /** One of Legion's six or a role of the deployment (contract 221). */
+  /** One of Legion's six, a role of the deployment (contract 221) or a role of the issue's plan. */
   readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;

@@ -508,10 +508,12 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the phase decides whether to re-run, wait or fix
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
-// phase, the implementer, whose code the checks ran on, and the architect that owns the issue
-// (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
-// a role holder with a message. A role named twice, the implementer holding the phase, is told
-// once, and a phase no worker holds names none (addressRoles). told is what the settlement
+// phase, the agent of the task's step that does its implementation work where the issue stands
+// (implementationAgent: the implementer of today's steps, or a role of the type implementation
+// under another name), whose code the checks ran on, and the architect that owns the issue
+// (owningArchitect) - each on its own claim's topic (record.RoleMessage), the way the daemon
+// reaches a role holder with a message. A claim named twice, the implementer holding the phase, is
+// told once, and a phase no worker holds names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
 // the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
 // holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
@@ -522,8 +524,10 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // would reach it as a second wake of one release, described to the worker as something somebody
 // published to its role topic. woken is that claim, "" when the settlement woke nobody, and every
 // other claim — a live one, and one the wake did not reach — is told as before. It is compared by
-// claim, not by role: the owner a settlement wakes at its own place is the claim the implementer's
-// row names at the owner's implementer step, as well as the architect that owns the issue.
+// claim, not by role: the owner a settlement wakes at its own place is the claim the start of the
+// owner's implementation step names, as well as the architect that owns the issue, and the agent
+// of the implementation step can work the retro under the role implementer while its own step's
+// role has another name, and so be the claim the wake reached.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
@@ -550,11 +554,17 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		return err
 	}
 	recipients := []roleRecipient{{issue: owner, role: claim.RoleArchitect, row: issue.Key}}
-	for _, role := range []claim.Role{issue.RoleAt(issue.Phase), claim.RoleImplementer} {
-		if role == claim.RoleArchitect {
-			continue
-		}
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
+	if worker := issue.RoleAt(issue.Phase); worker != claim.RoleArchitect {
+		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
+	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	if implementer, named, err := e.implementationAgent(ctx, tx, *issue, w, record.StandsAt(*issue)); err != nil {
+		return err
+	} else if named {
+		recipients = append(recipients, implementer)
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {

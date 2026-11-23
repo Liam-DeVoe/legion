@@ -18,8 +18,8 @@ import (
 
 // The tmux runtime holds the App each role of the deployment acts as (tmux.Options.RoleApps), the
 // reader its gh bundle function reads, so one walk of its panes builds a role of the deployment's
-// bundle once for every issue whose plan does not define its name (appauth.NewBundles) and builds
-// a role of a plan once for each App it acts as.
+// bundle once per repository, over every issue whose plan does not define its name
+// (appauth.NewBundles), and builds a role of a plan once for each App it acts as.
 func TestTheTmuxRuntimeHoldsTheAppOfEachRoleOfTheDeployment(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, Roles: []config.Role{
 		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},

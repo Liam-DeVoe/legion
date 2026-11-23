@@ -49,10 +49,13 @@ const DefaultWorkBackPrompt = "We read no progress on this issue: its work has g
 
 // DefaultHooks is the hook a deployment that names no `hooks:` key runs: every fifth move back of
 // any kind puts DefaultWorkBackPrompt in front of the three roles that do the work of a round in
-// the default steps, the implementer, the tester and the reviewer, each where the task has its
-// step. No hook may name the architect: the daemon's own wake to an architect is a notice; where
-// the architect does one of those steps itself, the hook reaches it there. The answer is a fresh
-// slice, so a caller that sorts or trims it leaves the next caller's answer whole.
+// the default steps, the implementer, the tester and the reviewer, each where the task has a step
+// that does its work; each is the agent of the task's step of the role's type, whether that step's
+// role is the role itself or a role the deployment or the plan defines (the workflow's fireHook),
+// and the reviewer's never the acceptance's. No hook may name the architect: the daemon's own
+// wake to an architect is a notice; where the architect does one of those steps itself, the hook
+// reaches it there. The answer is a fresh slice, so a caller that sorts or trims it leaves the next
+// caller's answer whole.
 func DefaultHooks() []Hook {
 	return []Hook{{
 		Name:   "work-back",

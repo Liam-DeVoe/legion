@@ -465,6 +465,37 @@ func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	return claim.AgentToken(project, issue.Key, name)
 }
 
+// implementationAgent is the agent that does the implementation work of issue's task where the
+// issue stands in at, on w, issue's walk, as a recipient of a role message: workAgent of the role
+// implementer, the agent of the step Walk.implementationPlace names. So the agent is the same
+// whatever its role is called - the implementer of a run with no plan rows, or a role the
+// deployment or the plan defines of the type implementation - and a role whose step no task holds
+// is never told. ok is false for a task with no step of that type.
+func (e *Engine) implementationAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase) (roleRecipient, bool, error) {
+	return e.workAgent(ctx, tx, issue, w, at, claim.RoleImplementer)
+}
+
+// workAgent is the agent that does the work of role, one of Legion's roles of a step, in issue's
+// task where the issue stands in at, on w, issue's walk, as a recipient of a role message: the
+// agent of the step Walk.workPlace names from the place of at (placeIn, none where the walk holds
+// no place for at), with that step's role and the claim stepToken makes for it, the claim the start
+// of that step names. Where that step's key is owner, the agent is the architect that owns issue
+// now (ownerAgent), read as of at, the phase the issue stands in. ok is false for a task with no
+// step that does that work.
+func (e *Engine) workAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, work claim.Role) (roleRecipient, bool, error) {
+	place, _ := w.placeIn(at)
+	step, ok := w.workPlace(place, work)
+	if !ok {
+		return roleRecipient{}, false, nil
+	}
+	role := claim.Role(w.Steps[step.Position-1].Role)
+	token, err := e.stepToken(ctx, tx, issue, w, step, at, role)
+	if err != nil {
+		return roleRecipient{}, false, err
+	}
+	return roleRecipient{issue: issue.Key, role: role, row: issue.Key, claim: token}, true, nil
+}
+
 // ownerAgent is the claim that runs a step of the owner of issue's task at at (a step of the key
 // owner, the owner's retro, or the acceptance of a run with no plan rows), and that the step's
 // record names: the architect that owns issue now, the one that does the step. The owner by rule

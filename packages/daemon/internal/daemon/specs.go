@@ -29,7 +29,9 @@ var _ supervise.Specs = specs{}
 
 // specs builds the part of every launch the claim does not carry. An operator may retain a
 // one-off prompt under the state directory for the Stage 2 proof; otherwise the Go daemon
-// composes the shipped role parts plus its own role-specific instructions. The repository is the
+// composes the shipped role parts for one of Legion's roles, and for a role of the deployment or
+// of the issue's plan its own prompt between the headless mechanics and Legion's worker part,
+// plus its own role-specific instructions. The repository is the
 // one the claim's issue's record names, at the default branch the record names; a runtime that
 // provisions workspaces itself (a Sandbox pod's init containers) provisions the issue's workspace
 // from them, and under any other the daemon makes sure the workspace is on its own host first.
@@ -48,8 +50,9 @@ type specs struct {
 	// Nil is a deployment that lists none.
 	models []string
 	// planRole is the role of an issue's plan in force named role, and whether that plan defines
-	// one (planRoleOf, the daemon's one reader of a role of a plan): a role neither Legion nor
-	// the deployment defines launches with the plan's prompt and model. Nil in a test whose specs
+	// one (planRoleOf, the daemon's one reader of a role of a plan): a role the plan defines that
+	// is none of Legion's launches with the plan's prompt and model, where the deployment defines a
+	// role of its name too. Nil in a test whose specs
 	// literal leaves it out, and such a specs launches no role of a plan.
 	planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
@@ -215,7 +218,7 @@ func (s specs) launchBackend(ctx context.Context, c supervise.Claim) (runtime.Ba
 // that may stamp an issue key into its commits too (issueTrailer), since it is the one that
 // works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	promptPaths, model, err := s.rolePromptPaths(ctx, c)
+	promptPaths, model, planned, err := s.rolePromptPaths(ctx, c)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -276,8 +279,10 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	// A role the deployment or the claim's issue's plan defines runs the model its definition
-	// gives it; Legion's roles name none and run the profile's own (runtime.SpawnSpec.Model).
-	spec.Model = model
+	// gives it; Legion's roles name none and run the profile's own (runtime.SpawnSpec.Model). A
+	// role the plan defines takes none of the settings the deployment keys by its name
+	// (runtime.SpawnSpec.PlanRole).
+	spec.Model, spec.PlanRole = model, planned
 	return spec, nil
 }
 
@@ -410,8 +415,9 @@ var refusalCooldownVariables = []string{
 // nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
 // (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude worker's plugin
 // is the image's — so a plugin-contract change for such a role is answered by a new image, not by
-// an install. Such a claim whose recorded contract differs still relaunches: it is the image's
-// plugin that decides, and the image probe is what refuses a wrong one. The daemon-launched
+// an install. The stale-plugin lane relaunches no such claim under Kubernetes (noPluginInstall):
+// its registration stands, and the update round over its pod brings the new image, whose plugin
+// the image probe holds to the contract. The daemon-launched
 // controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
 // launch is covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {
@@ -471,9 +477,10 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 	}, nil
 }
 
-// rolePromptPaths is the role prompt of c and the model its role names ("" for one of Legion's
-// roles, which run the profile's own). It keeps an explicit operator prompt as a narrow test
-// override, which replaces the prompt alone. Every ordinary claim uses the role prompts daemon
+// rolePromptPaths is the role prompt of c, the model its role names ("" for one of Legion's
+// roles, which run the profile's own), and whether the plan of c's issue defines the role. It
+// keeps an explicit operator prompt as a narrow test override, which replaces the prompt alone.
+// Every ordinary claim uses the role prompts daemon
 // boot snapshotted below its state directory (prompts.New): Legion's roles their composed parts
 // (prompts.Composer.Compose) — the six roles of a claim, and acceptance, Legion's role of a step
 // that is no claim role, whose fresh agent a plan step `acceptance` with no key asks for
@@ -481,22 +488,23 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 // copy of the plan's prompt (planRolePromptFile) between the headless mechanics and Legion's
 // worker part (prompts.Composer.ComposeStep), and a role the deployment defines its own prompt
 // file in that same place. The plan is read first: a deployment that took the name of a role a
-// plan in force defines leaves that issue the plan's role, with its prompt and its model, until a
-// version of the plan changes it (appauth.AppRoleFor decides its App the same way, and answers
-// Legion's roles, acceptance among them, before either). A role none of them defines is refused,
-// naming the issue and the role, with no prompt.
-func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, error) {
+// plan in force defines leaves that issue the plan's role, with its prompt and its model and none
+// of the settings the deployment keys by that name, until a version of the plan changes it
+// (appauth.AppRoleFor decides its App the same way, and answers Legion's roles, acceptance among
+// them, before either). A role none of them defines is refused, naming the issue and the role,
+// with no prompt.
+func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, bool, error) {
 	if legionRole(c.Role) {
 		paths, err := s.overridden(c, func() ([]string, error) {
 			parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 			return parts.RolePromptPaths, err
 		})
-		return paths, "", err
+		return paths, "", false, err
 	}
 	if s.planRole != nil {
 		planned, found, err := s.planRole(ctx, c.Issue, c.Role)
 		if err != nil {
-			return nil, "", fmt.Errorf("the role prompt of %s: %w", c.Token, err)
+			return nil, "", false, fmt.Errorf("the role prompt of %s: %w", c.Token, err)
 		}
 		if found {
 			paths, err := s.overridden(c, func() ([]string, error) {
@@ -506,16 +514,16 @@ func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string
 				}
 				return s.prompts.ComposeStep(file).RolePromptPaths, nil
 			})
-			return paths, planned.Model, err
+			return paths, planned.Model, true, err
 		}
 	}
 	if role, defined := s.roleOf(c.Role); defined {
 		paths, err := s.overridden(c, func() ([]string, error) {
 			return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
 		})
-		return paths, role.Model, err
+		return paths, role.Model, false, err
 	}
-	return nil, "", fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
+	return nil, "", false, fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
 }
 
 // legionRole says whether role is one of Legion's own, whose prompt Legion composes
@@ -711,26 +719,33 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
 }
 
-// DeploymentRolesFragment is the sentence every architect is told after its addressing: the roles
-// a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
-// whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
-// file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
-// one, the model its agent starts with. workerSpawnSpec and the skill-scenario rig both reach it
-// through ArchitectAddressing.
+// DeploymentRolesFragment is what every architect is told after its addressing: the roles a step
+// of its plan may name beside its plan's own, each with the type of its step, in two sentences, so
+// the owner can tell Legion's roles from the deployment's. The first is Legion's five
+// (BuiltinRoles, whose types it reads). The second is each role the deployment defines (roles,
+// config.Config.Roles) in the file's order, `<name> (<type>)`, with ` with the model <model>` where
+// the role's settings give one, the model its agent starts with, or, where the deployment defines
+// none, that it defines none. workerSpawnSpec and the skill-scenario rig both reach it through
+// ArchitectAddressing.
 func DeploymentRolesFragment(roles []config.Role) string {
 	builtin := stepplan.BuiltinRoles()
-	entries := make([]string, 0, len(stepRoleOrder)+len(roles))
+	legion := make([]string, 0, len(stepRoleOrder))
 	for _, name := range stepRoleOrder {
-		entries = append(entries, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
+		legion = append(legion, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
 	}
+	sentence := "Legion's roles, each with the type of its step: " + strings.Join(legion, ", ") + "."
+	if len(roles) == 0 {
+		return sentence + " This deployment defines no role of its own."
+	}
+	deployed := make([]string, 0, len(roles))
 	for _, role := range roles {
 		entry := fmt.Sprintf("%s (%s)", role.Name, role.Type)
 		if role.Model != "" {
 			entry += " with the model " + role.Model
 		}
-		entries = append(entries, entry)
+		deployed = append(deployed, entry)
 	}
-	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+	return sentence + " The roles this deployment defines, each with the type of its step: " + strings.Join(deployed, ", ") + "."
 }
 
 // ModelsFragment is the sentence every architect is told right after the roles

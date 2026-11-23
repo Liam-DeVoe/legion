@@ -212,8 +212,8 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	records := record.NewStore()
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
 	// The supervision is built before the machines are, because the machines are handed one of
-	// its answers: which roles a launch installs no plugin for, which only the daemon's own
-	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
+	// its answers: which claims a launch installs no plugin for, which only the daemon knows, from
+	// its configuration and the plan of each claim's issue (supervise.Deps.NoPluginInstall). A test that moves a role onto another
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
@@ -244,8 +244,10 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
 		PluginRelaunchable: true,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.backends, c) },
-		RefreshGate:        supervise.NewRefreshGate(0),
+		NoPluginInstall: func(ctx context.Context, c supervise.Claim) (bool, error) {
+			return noPluginInstall(ctx, s.cfg, s.backends, c)
+		},
+		RefreshGate: supervise.NewRefreshGate(0),
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,
@@ -1883,7 +1885,7 @@ func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 		t.Fatalf("read the claims for the sweep: %v", err)
 	}
 
-	rig.s.refreshStalePlugins(claims, "sweep")
+	rig.s.refreshStalePlugins(context.Background(), claims, "sweep")
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		m, ok := rig.sup.Machine(rig.tokens[role])
 		if !ok {
@@ -2137,7 +2139,7 @@ func TestStalePluginLeavesAClaudeWorkerAloneUnderKubernetesAndRelaunchesItUnderT
 				t.Fatalf("read the claims for the sweep: %v", err)
 			}
 
-			rig.s.refreshStalePlugins(claims, "sweep")
+			rig.s.refreshStalePlugins(context.Background(), claims, "sweep")
 
 			for _, role := range tc.relaunched {
 				rig.awaitClaim(role, "the worker a relaunch can carry past the contract to be relaunched", func(c supervise.Claim) bool {
@@ -2326,8 +2328,8 @@ func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) 
 	}
 
 	// No round is open yet: this is the boot pass, and the sweep that follows it.
-	rig.s.refreshStalePlugins(claims, "boot")
-	rig.s.refreshStalePlugins(claims, "sweep")
+	rig.s.refreshStalePlugins(context.Background(), claims, "boot")
+	rig.s.refreshStalePlugins(context.Background(), claims, "sweep")
 	m, ok := rig.sup.Machine(rig.tokens[claim.RoleImplementer])
 	if !ok {
 		t.Fatal("the Claude Code worker is not supervised")

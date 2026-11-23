@@ -119,7 +119,7 @@ func TestANewIssuePodBindsEachRoleOfTheDeploymentWithItsApp(t *testing.T) {
 }
 
 // The launcher of a role of the deployment is accepted on its issue's pod as one of Legion's is,
-// and a role neither Legion nor the deployment defines is refused.
+// and a role neither Legion, the deployment nor the issue's plan defines is refused.
 func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 	g := deploymentRig(t)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))

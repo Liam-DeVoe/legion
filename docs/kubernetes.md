@@ -3389,9 +3389,17 @@ The migrations recorded above this one are these.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261117201743_plan_roles adds the table `plan_roles`, the roles an owner's plan defines, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too, `drop table if exists plan_roles;` and `delete from schema_version where version = 20261117201743;` in one transaction (its header carries the whole block), so that the roll-forward creates the table again empty, and a rollback that also goes past the issue plans' tables runs it first, since the table's foreign key stands on `issue_plans`.
 That way back takes away every role a plan defines.
+Before you pin the release before, remove the `models` key from `legion.yaml` where the file sets it: that release refuses the whole file at load (`unknown key models`), and the models the key lists are the models a role of a plan may name, which the way back takes away.
 At its boot, the release before stops each task that still has a step of such a role to run.
 The reason it gives is `step <n> names the role <role>, which the deployment no longer defines`.
-After the roll forward, the owner of each such task gives its plan again, and Legion takes that version for the stopped task.
+Two kinds of task are not stopped at boot.
+A task whose plan role has the name of a role of the deployment is not stopped.
+The release before runs the deployment's role in its place.
+A root that waits on a person before its first step is not stopped at boot.
+It is stopped when it moves into that step.
+After the roll forward, the owner of each stopped task gives a new version of its plan.
+Legion takes only a version later than the one in force.
+The same version given again is dropped as a duplicate, and the task stays stopped.
 20261117213545_plan_step_agent adds `plan_steps.agent`, the name of each step's agent, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward adds the column again at its default, and a rollback past 20261117034837_issue_plans runs that way back before its own.
 20261117223524_deployment_roles writes the role checks of `claims`, `phases` and `issue_releases` and the checks `issues_phase_check` and `issues_held_from_check` again, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back first ([Rolling back the release whose deployment defines roles](#rolling-back-the-release-whose-deployment-defines-roles)), so that the roll-forward writes the checks again.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
@@ -3516,6 +3524,7 @@ What carries it is the update round over its pod, which asks it like every other
 A plugin-contract change for a Claude Code role in a pod is answered by a new image, never by an install, and `legion config check`, which prints the line under `runtime: kubernetes` alone, says so after its plugin line, naming each role this deployment runs on Claude Code:
 `Claude Code runs <roles>, whose plugin is the worker image's: a plugin-contract
 change for such a role is answered by a new image, not by an install.`
+A role the plan in force of an issue defines runs on Oh My Pi on that issue whatever `worker_backends` names for a role of the deployment of its name: it loads both plugins, and a stale-plugin relaunch of its claim installs both, as for any other Oh My Pi role.
 
 The pair the install uses is `runtime.kubernetes.plugins: { pi_legion: <exact version | absolute
 tarball path | http(s) URL>, pi_envoy: <same> }` (both keys together;
@@ -3953,7 +3962,7 @@ the Hawk model gateway, keyed by a projected ServiceAccount token, with a `model
 the operator keeps their own copies of the two files in a directory of their own ([Operator configuration](#operator-configuration)), and the Stage 4a and 4b proofs run on the example, each with its own copy of its ConfigMap.
 
 **A Claude Code role's model route is the operator's too.**
-A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod, and Claude Code reads its route from its own environment:
+A phase worker `worker_backends` puts on `claude` runs Claude Code in its pod (a role the plan in force of an issue defines runs on Oh My Pi on that issue, whatever `worker_backends` names for its name), and Claude Code reads its route from its own environment:
 `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` for a gateway.
 Legion adds no key and no settings file for it.
 The credential goes in `provider_keys` (`ANTHROPIC_API_KEY: <the providers Secret's key>`), which the shim exports into the agent's environment and nowhere else;
@@ -5087,7 +5096,7 @@ The bundle holds one directory per owner the role's App is installed on, one mor
 A directory is named for its owner's login, lowercased, and takes every login GitHub serves an account under: up to 39 letters, digits, hyphens and underscores, beginning with a letter or digit, so a managed user's login, which ends in `_<shortcode>` (`mona-cat_octo`), names one too.
 So the login of every owner a repository can be configured or recorded under is a directory's name, the issue's own owner among them.
 A login GitHub lists that is no such name is left out the same way: no lease is asked for it, it is said once on the daemon's stderr naming it, and only where it is the owner a controller's bundle is asked for does it fail the bundle instead.
-Every directory's token is the App's of the role the slot acts as: the implement App's for the implementer and the merger, the review App's for every other role, and in the architect's slot, while it does a step of its own plan, the App of that step's role.
+Every directory's token is the App's of the role the slot acts as on the issue: the implement App's for the implementer, the merger and a role of the issue's plan of the type implementation, the App its `github_app` names for a role of the deployment that the issue's plan does not define, the review App's for every other role, `acceptance` and each other role of a plan among them, and in the architect's slot, while it does a step of its own plan, the App of that step's role.
 Each one is the installation lease of the owner its directory is named for, minted at the permissions of the App the slot acts as — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
 A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches, whichever owner's it is.
@@ -5121,7 +5130,7 @@ The daemon keeps one record per project of what its mints found refused, and the
 A repository added under an owner the pod already projects is not a reason either: the pod keeps running until something else replaces it.
 Until then it works that repository through that owner's directory, whose token reaches every repository that owner's installation holds, the new one included.
 Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation: it keeps no list of owners.
-An account that installs the implement App gets a directory with that App's write token in the Secret of every slot that acts as that App (each implementer and merger, and an architect while it does an implementer step of its own), from the next bundle the daemon builds, and an install of the review App gives every other slot's Secret that App's token the same way and the controller's its read-only one.
+An account that installs the implement App gets a directory with that App's write token in the Secret of every slot that acts as that App (above: each role that acts as it, and an architect while it does an implementer step of its own), from the next bundle the daemon builds, and an install of the review App gives the Secret of every slot that acts as the review App that App's token the same way and the controller's its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 An issue pod gets one update round once both role Apps are installed on the account, as said above, and until the round replaces it the new directory is in its roles' Secrets and in no pod.
 The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
@@ -8118,7 +8127,7 @@ Four prerequisites and caveats the configuration cannot check for you:
 ### Operator configuration
 
 The Go coordinator's.
-Legion holds no model, provider or route.
+Legion holds no provider or route, and names a model only where `legion.yaml` or an issue's plan names one (`models`, `roles.<name>.model`, a role block's `model`).
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
@@ -8202,13 +8211,15 @@ each issue's pod (every role of it alike) and the image probe's.
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
   the [operator route README](../deploy/kubernetes/operator-route/README.md) shows the line and what the command does.
 
-- **Each role's model** is the operator's:
+- **Each role's model** is the operator's, but for a role whose settings or plan name a model (`models`, below):
   the `models.yml` and `overlay.yml` they keep in a directory of their own (for example `~/.local/state/legion-model-config`), which `deploy/kubernetes/operator-route/apply.sh --context <kube context> <directory>` writes into the ConfigMap `legion-operator-route` in namespace `legion`, with a server-side apply under its own field manager that forces conflicts:
   it takes the two keys over from any tool that wrote them before and names that tool's field manager on stderr.
   A tool that still declares the ConfigMap acts at its own next apply:
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
-  To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
+  To change the model of an Oh My Pi role, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
+  `modelRoles.default` is the model of every Legion role that names none of its own, whose launch names `--model @default`.
+  A role of `roles` with a `model`, and a role an issue's plan defines with a `model`, start on that model (`--model <model>`).
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
@@ -8216,6 +8227,24 @@ each issue's pod (every role of it alike) and the image probe's.
   the probe pod reads the effective value under the operator's configuration (`omp config get retry.modelFallback`) onto its OK line's `model-fallback` mark (`unread` when it could not read it:
   the probe pod's log says why), and the daemon reports the `model-fallback` capability open while a deployment's copy turns it off or the probe could not read it
   — a report, not a refusal; a `capabilities.decided.model-fallback: "<reason>"` line in `legion.yaml` records a decision to keep it off ([The deployment's capability report](#the-deployments-capability-report)).
+
+- **`models`**, a top-level `legion.yaml` key, lists the models a role of an owner's plan may name, in the order the owner is told them: `models: [<model>, …]`.
+  The listed models are `models`, then each model a role of `roles` names that `models` lacks, so a role of the deployment's model is listed whether or not `models` names it.
+  Every architect is told them after Legion's roles and the deployment's.
+  `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where none is named).
+  The served settings carry them as `settings.models`, absent where none is named.
+  This release takes a value `models` cannot hold with one warning, which boot logs and `legion config check` prints right after its OK line, naming the key and the entry, each index counted from 0; the next release refuses each of them at load.
+  A value that is not a list lists no model (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]: this release lists no model from it, and the next release refuses it; write models as a list in legion.yaml`).
+  An entry that is not a string (`models[<i>] must be a model's name: …`), an empty entry (`models[<i>] is empty: …`) and an entry that holds white space (`models[<i>] is "<m>", which holds white space, and a model's name is one word: …`) are left out of the listed models, each warning ending `this release leaves it out of the listed models, and the next release refuses it; remove it from legion.yaml`.
+  A model named twice is listed once (`models[<i>] names <m>, which models[<j>] names already: this release lists it once, and the next release refuses it; remove it from legion.yaml`).
+  `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
+  A role of a plan keeps its model with the version that defines it, into each later generation of its issue, so a model you take out of the listed models stops, at the daemon's next boot, each task whose remaining steps name a role of the issue's plan on that model, running or waiting:
+  the task stops where it stands, as `stop_task` stops it, a running step's worker is stopped, the issue is held `task-stopped`, and the owner is told once, in a `task-stopped` notice that names the role, with the reason `task <t> of <KEY> was stopped: step <n> names the role <role>, whose model <m> the deployment no longer lists; it lists <m1>, <m2>` (or `it lists none`).
+  A root that waits on a person before its first step is stopped when it moves into a step of such a role.
+  The owner's next version of the plan, on a listed model, starts the task again, as listing the model again and setting the root back to `todo` does.
+  A rollback past the release that adds `models` removes the key from `legion.yaml` first: the release before refuses it at load (`unknown key models`; [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Give a role of the deployment its model in the settings, as `roles.<name>.model`: Legion lists that model, and compares the `model` of a role block with the listed models.
+  A model that only a role's Oh My Pi overlay names is neither compared nor listed; the step record shows the model that each session ran.
 
 - **The pace of the wakes the daemon causes** is the operator's, as two top-level `legion.yaml` keys:
   `worker_wakes_per_minute` (8 by default) and `worker_wake_burst` (1 by default), a token bucket over the role processes the daemon starts and the tasks and notices it queues to wake a session that already runs (`internal/wakepace`), as [The daemon's Kubernetes request rate](#the-daemons-kubernetes-request-rate) is one over its requests to the API server.

@@ -268,6 +268,36 @@ func TestOnlyTheNamedRolesPanesAreToldTheirOwnOverlays(t *testing.T) {
 	}
 }
 
+// A role the plan in force of its issue defines is the plan's role, even where the deployment
+// defines a role of that name, and it takes none of that role's own settings: its pane names none
+// of the overlays role_config_files names for the name. The deployment's own prober, launched for
+// an issue whose plan defines no prober, names them.
+func TestAPaneOfAPlansRoleNamesNoneOfTheDeploymentRolesOverlays(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		plan bool
+		want string
+	}{
+		{"the deployment's prober", false, "PI_CONFIG_FILES=/etc/legion-operator/overlay.yml:/etc/legion-operator/prober.yml"},
+		{"the plan's prober", true, "PI_CONFIG_FILES=/etc/legion-operator/overlay.yml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeServerRuntimeWith(t, nil, nil, func(o *Options) {
+				o.PiConfigFiles = []string{"/etc/legion-operator/overlay.yml"}
+				o.RoleConfigFiles = map[claim.Role][]string{"prober": {"/etc/legion-operator/prober.yml"}}
+			})
+			spec := f.spec(t, "prober")
+			spec.PlanRole = tc.plan
+			if _, err := f.Spawn(context.Background(), spec); err != nil {
+				t.Fatalf("Spawn: %v", err)
+			}
+			if pairs := f.pairs(t); !slices.Contains(pairs, tc.want) {
+				t.Errorf("the pane's pairs = %q, want %q", pairs, tc.want)
+			}
+		})
+	}
+}
+
 // New refuses a role's overlay PI_CONFIG_FILES cannot name, as it refuses the operator's.
 func TestNewRefusesARoleOverlayPIConfigFilesCannotName(t *testing.T) {
 	for _, file := range []string{"fallback.yml", "/etc/a:b.yml"} {

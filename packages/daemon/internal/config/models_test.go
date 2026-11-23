@@ -3,42 +3,54 @@ package config
 import (
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // `models` lists the models a role may name, in the file's order, and the file that names none
-// lists none; each value the key cannot take is refused naming the key and the entry at fault.
-func TestTheModelsKeyIsReadAndRefused(t *testing.T) {
+// lists none. Each value the key cannot take is warned about, naming the key and the entry at
+// fault and that the next release refuses it, and the file loads: an entry that cannot be a
+// model's name is left out of the listed models, a model named twice is listed once, and a value
+// that is not a list lists none. A file whose `models` is whole raises no warning.
+func TestTheModelsKeyIsReadAndWarned(t *testing.T) {
+	const refuses = ", and the next release refuses it; "
 	for _, tc := range []struct {
 		name, key string
 		want      []string
-		refusal   string
+		warnings  []string
 	}{
 		{name: "two models", key: "models: [m-one, m-two]\n", want: []string{"m-one", "m-two"}},
 		{name: "no key"},
-		{name: "a scalar", key: "models: m-one\n", refusal: "models must be a list of model names, e.g. [anthropic/claude-sonnet-4]"},
-		{name: "a number", key: "models: [7]\n", refusal: "models[0] must be a model's name"},
-		{name: "a mapping entry", key: "models: [m-one, {name: m-two}]\n", refusal: "models[1] must be a model's name"},
-		{name: "an empty entry", key: "models: [\"\"]\n", refusal: "models[0] is empty"},
-		{name: "white space", key: "models: [\"a b\"]\n", refusal: "models[0] is a b, which holds white space: a model's name is one word"},
-		{name: "a model named twice", key: "models: [m, m]\n", refusal: "models names m twice"},
+		{name: "a scalar", key: "models: m-one\n",
+			warnings: []string{"models must be a list of model names, e.g. [anthropic/claude-sonnet-4]: this release lists no model from it" + refuses + "write models as a list in legion.yaml"}},
+		{name: "a number", key: "models: [7]\n", want: []string{},
+			warnings: []string{"models[0] must be a model's name: this release leaves it out of the listed models" + refuses + "remove it from legion.yaml"}},
+		{name: "a mapping entry", key: "models: [m-one, {name: m-two}]\n", want: []string{"m-one"},
+			warnings: []string{"models[1] must be a model's name: this release leaves it out of the listed models" + refuses + "remove it from legion.yaml"}},
+		{name: "an empty entry", key: "models: [\"\", m-one]\n", want: []string{"m-one"},
+			warnings: []string{"models[0] is empty: this release leaves it out of the listed models" + refuses + "remove it from legion.yaml"}},
+		{name: "white space", key: "models: [\"a b\"]\n", want: []string{},
+			warnings: []string{`models[0] is "a b", which holds white space, and a model's name is one word: this release leaves it out of the listed models` + refuses + "remove it from legion.yaml"}},
+		{name: "a model named twice", key: "models: [m, n, m]\n", want: []string{"m", "n"},
+			warnings: []string{"models[2] names m, which models[0] names already: this release lists it once" + refuses + "remove it from legion.yaml"}},
+		{name: "two faults", key: "models: [m, \"\", m]\n", want: []string{"m"}, warnings: []string{
+			"models[1] is empty: this release leaves it out of the listed models" + refuses + "remove it from legion.yaml",
+			"models[2] names m, which models[0] names already: this release lists it once" + refuses + "remove it from legion.yaml",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, tc.key+kubernetesFile), noEnv)
-			if tc.refusal != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.refusal) {
-					t.Fatalf("LoadForValidation with %q = %v, want a refusal naming %q", tc.key, err, tc.refusal)
+			for name, load := range map[string]func(string, func(string) string) (Config, error){"Load": Load, "LoadForValidation": LoadForValidation} {
+				cfg, err := load(writeConfigFile(t, tc.key+minimalFile), noEnv)
+				if err != nil {
+					t.Fatalf("%s with %q: %v, want the file loaded", name, tc.key, err)
 				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("LoadForValidation with %q: %v", tc.key, err)
-			}
-			if !slices.Equal(cfg.Models, tc.want) || (tc.want == nil) != (cfg.Models == nil) {
-				t.Fatalf("Models = %#v, want %#v", cfg.Models, tc.want)
+				if !slices.Equal(cfg.Models, tc.want) || (tc.want == nil) != (cfg.Models == nil) {
+					t.Errorf("%s with %q: Models = %#v, want %#v", name, tc.key, cfg.Models, tc.want)
+				}
+				if !slices.Equal(cfg.Warnings, tc.warnings) {
+					t.Errorf("%s with %q: Warnings = %#v, want %#v", name, tc.key, cfg.Warnings, tc.warnings)
+				}
 			}
 		})
 	}

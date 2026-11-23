@@ -32,7 +32,7 @@ func noAppOwners(context.Context, string, claim.Role) []string { return nil }
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
 // worker is told, and with the model its settings give it; one of Legion's roles names no model;
-// a role the deployment does not define is refused, with no prompt and no panic.
+// a role neither the deployment nor the issue's plan defines is refused, with no prompt and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -279,8 +279,57 @@ func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testin
 		if spec.Backend != tc.want {
 			t.Errorf("the prober on %s launches on %q, want %q", tc.issue, spec.Backend, tc.want)
 		}
-		if got := noPluginInstall(cfg, backends, c); got != tc.noInstall {
-			t.Errorf("noPluginInstall of the prober on %s = %t, want %t", tc.issue, got, tc.noInstall)
+		if got, err := noPluginInstall(context.Background(), cfg, backends, c); err != nil || got != tc.noInstall {
+			t.Errorf("noPluginInstall of the prober on %s = %t, %v; want %t", tc.issue, got, err, tc.noInstall)
+		}
+	}
+}
+
+// A claim the cheap terms of the stale-plugin rule settle never asks whether its launch installs
+// a plugin, which under Kubernetes reads the plan of the claim's issue from the store for a role
+// that is none of Legion's (noPluginInstall over roleBackends). A claim on this daemon's
+// contract, one in an update round and one on a daemon that can relaunch onto no plugin are each
+// answered with no read of the plan. A claim on an older contract reads it once, under the
+// context of the call that asks, and is refused, since its prober runs on Oh My Pi.
+func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *testing.T) {
+	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
+		Roles: []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}}
+	type callKey struct{}
+	call := context.WithValue(context.Background(), callKey{}, "the call's")
+	var reads []string
+	planRole := func(ctx context.Context, issue string, _ claim.Role) (record.PlanRole, bool, error) {
+		reads = append(reads, issue)
+		if ctx.Value(callKey{}) != "the call's" {
+			t.Errorf("the plan of %s was read under a context other than the call's", issue)
+		}
+		return record.PlanRole{}, false, nil
+	}
+	backends := roleBackends(cfg.BackendFor, planRole)
+	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
+		return noPluginInstall(ctx, cfg, backends, c)
+	}
+	older := api.DaemonAPIVersion - 1
+	prober := func(contract int, round string) supervise.Claim {
+		return supervise.Claim{Issue: "LEGION-43", Role: "prober", PluginContract: contract, UpdateRound: round}
+	}
+	for _, tc := range []struct {
+		name         string
+		claim        supervise.Claim
+		relaunchable bool
+		refused      bool
+		reads        int
+	}{
+		{"on this daemon's contract", prober(api.DaemonAPIVersion, ""), true, false, 0},
+		{"in an update round", prober(older, "round-1"), true, false, 0},
+		{"on a daemon that relaunches onto no plugin", prober(older, ""), false, false, 0},
+		{"on an older contract", prober(older, ""), true, true, 1},
+	} {
+		reads = nil
+		if got, err := supervise.StaleRefusesCalls(call, tc.claim, api.DaemonAPIVersion, tc.relaunchable, noInstall); err != nil || got != tc.refused {
+			t.Errorf("the prober %s: refused = %t, %v; want %t", tc.name, got, err, tc.refused)
+		}
+		if len(reads) != tc.reads {
+			t.Errorf("the prober %s read the plan %d times, want %d", tc.name, len(reads), tc.reads)
 		}
 	}
 }
@@ -360,7 +409,8 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	}
 }
 
-// A role worker_backends puts on claude is launched on Claude Code and told the Claude Code part
+// A role worker_backends puts on claude, where the plan of the claim's issue defines no role of its
+// name, is launched on Claude Code and told the Claude Code part
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
@@ -956,8 +1006,9 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 
 // A Claude Code claim gets no stale-plugin install, whatever its recorded contract: that install
 // is the two npm plugins, and a Claude worker's plugin is the worker image's, so a plugin-contract
-// change for such a role is answered by a new image. The relaunch itself is unchanged — the
-// image's plugin decides, and the image probe is what refuses a wrong one. An Oh My Pi claim of
+// change for such a role is answered by a new image. No stale-plugin lane relaunches such a claim
+// (noPluginInstall): the update round over its pod brings the new image, and the image probe is
+// what refuses a wrong plugin. An Oh My Pi claim of
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {

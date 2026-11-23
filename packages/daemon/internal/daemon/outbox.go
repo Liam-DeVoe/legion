@@ -3274,7 +3274,7 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 }
 
 // claimsOfIssue is the machine of every claim of issue the daemon supervises, whatever its role
-// (one of Legion's six or a role the deployment defines), in token order, read from each claim's
+// (one of Legion's six, a role the deployment defines or a role the issue's plan defines), in token order, read from each claim's
 // view, which waits on no decision a claim has in flight and reads no store. A claim that can
 // still run a process is a supervised one, so this is every claim a start or a removal of the
 // issue's workspace waits on.

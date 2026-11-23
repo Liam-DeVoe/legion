@@ -1005,7 +1005,9 @@ type Deps struct {
 	// launches into — this package cannot read the configuration a role is launched from — so it
 	// states the fact here, as it states its plugin contract and whether it can relaunch at all.
 	// nil is a daemon whose every launch installs a plugin, which is what every caller that
-	// states nothing means.
+	// states nothing means. Under Kubernetes the daemon's answer reads the plan of the claim's
+	// issue from its store for a role that is none of Legion's, bounded by ctx, the context of the
+	// call that asks, so StaleRefusesCalls asks it only of a claim its cheap terms find stale.
 	//
 	// A claim it answers true for, at any contract, is never relaunched by the stale-plugin lane
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
@@ -1014,7 +1016,12 @@ type Deps struct {
 	// what carries it: it is asked the steps of UpdateTask like any other claim, on its own Envoy
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
-	NoPluginInstall func(c Claim) bool
+	//
+	// An error is a read that failed, and the answer beside it says nothing of the claim: a reader
+	// logs the error once and decides nothing on it — it refuses nothing, relaunches nothing,
+	// charges nothing and reports no fact of the claim's launch — and asks again at its next call
+	// (staleRegistration, staleRefusesClaim, internal/api's staleClaim).
+	NoPluginInstall func(ctx context.Context, c Claim) (bool, error)
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was
@@ -2914,7 +2921,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 // than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
 // launcher reads, which the sandbox runtime measures before anything starts. Nothing was
 // started, and every later try would compose the same text from the same files and be refused
-// the same way until the deployment changes them, which takes a restart of the daemon. So it is
+// the same way until the deployment changes them, which takes a restart of the daemon, or, for a
+// role of the issue's plan, until a later version of the plan changes its prompt. So it is
 // charged no launch failure and not tried again: the claim fails at once, under the cause the
 // charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
 // prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as

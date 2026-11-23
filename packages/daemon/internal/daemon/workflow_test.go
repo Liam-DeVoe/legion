@@ -61,7 +61,9 @@ func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
 }
 
 // The engine's deployment is the file's (config.Config.Deployment): Legion's own roles of a step
-// and each role of `roles`, each with its type, which a step of that role is stored with.
+// and each role of `roles`, each with its type, which a step of that role is stored with where the
+// plan defines no role of its name (the deployment also carries each role's model and harness, the
+// listed models and the owner's role, which this test does not read).
 // The package names its resolved configuration plan, so the types are written as their words.
 func TestTheDeploymentReachesTheEngine(t *testing.T) {
 	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {}},
