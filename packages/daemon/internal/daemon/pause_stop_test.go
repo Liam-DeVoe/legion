@@ -1156,3 +1156,40 @@ func TestAPauseStopStopsTheClaimItsRowNames(t *testing.T) {
 		}
 	}
 }
+
+// A `pause_stop` row the release before wrote names no claim, and it stops the claim of the worker
+// on its role's step (the outbox's workerToken, record.WorkerClaim), as every other executor reaches
+// the claim of a row that names a role alone: here the agent of a key on the checker's step, whose
+// stop row ends, and not the checker's own claim beside it, which works no step and whose stop row
+// stays open. Both claims are queued, so the stop ends `stopped` with nothing to stop.
+func TestAPauseStopNamingNoClaimStopsTheStepsWorker(t *testing.T) {
+	r := newPauseRig(t)
+	worker, other := r.atTheCheckersStep()
+	sup, _ := r.supervisor()
+	for _, c := range []*supervise.Claim{&worker, &other} {
+		c.State, c.SuspendedBy = supervise.StateQueued, ""
+		if err := r.st.PutClaim(r.ctx, *c); err != nil {
+			t.Fatalf("seed the queued claim %s: %v", c.Token, err)
+		}
+		if _, _, err := sup.Create(r.ctx, *c, ""); err != nil {
+			t.Fatalf("create the machine of %s: %v", c.Token, err)
+		}
+	}
+	held := r.pauseLegion()
+	now := time.Now()
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
+		dispatchProject: "LEGION", log: quietLogger(), now: func() time.Time { return now }}
+
+	stop := mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "pause_stop", Tree: pauseIssue, Role: stepPauseChecker,
+		Generation: 2, Pause: held.ID, Reason: "project LEGION is paused"}, now)
+	if err := runner.execute(r.ctx, stop); err != nil {
+		t.Fatalf("run the stop row that names no claim: %v", err)
+	}
+
+	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+		t.Fatalf("the stops of %s = %+v, want one ended %s: it works the checker's step", worker.Token, got, store.PauseStopStopped)
+	}
+	if got := r.stops(held.ID, stepPauseChecker); len(got) != 1 || got[0].end != "" {
+		t.Fatalf("the stops of %s = %+v, want one still open: it works no step", other.Token, got)
+	}
+}
