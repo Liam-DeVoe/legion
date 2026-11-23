@@ -59,10 +59,11 @@ type Server struct {
 	// read a request that is not a broker call, or has written the answer of one that is (Serve).
 	calls   sync.WaitGroup
 	pending atomic.Int64
-	// Clock is the time this server's own timers run on: a register's wait, the enroll
-	// retry's backoff, the first confirming renew's bound and the renew cadence. Nil is
-	// clock.Real; a test hands it a clocktest.Fake and moves it rather than waiting a
-	// cadence out. The Broker's own timers take the clock the Broker is given.
+	// Clock is the time this server's own timers run on: a register's wait, the retry ladders
+	// (enroll, confirm, revoke), the first confirming renew's bound, the renew cadence, the
+	// dormant sweep's tick, and the grace it measures (a parked session's GoneAt and the sweep's
+	// cutoff). Nil is clock.Real; a test hands it a clocktest.Fake and moves it rather than
+	// waiting a cadence out. The Broker's own timers take the clock the Broker is given.
 	Clock clock.Clock
 	// dormantGraceNS is DefaultDormantGrace unless SetDormantGrace names another: how long a
 	// named session's identity is kept for it to come back to before SweepDormant revokes it.
@@ -564,7 +565,7 @@ func (s *Server) dormantRecord(sess *Session) func(identity) (Record, bool) {
 		if cur.SessionID == "" {
 			return Record{}, false
 		}
-		gone := time.Now()
+		gone := s.clock().Now() // the clock SweepDormant's cutoff reads, so the grace is measured on one clock
 		rec, err := s.Registry.record(sess, cur)
 		if err != nil {
 			s.Log.Error("this session is parked without its signing key, so coming back under its name gets it a new identity, not the requests and grants of the one it had",
@@ -1436,7 +1437,14 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			}
 			s.Log.Warn("enroll failed; retrying", "runtime_id", sess.RuntimeID(), "error", err, "in", delay)
 		}, func() error {
-
+			// ONE reading per attempt, compared with the generation this pass began at. An
+			// attempt that reads any other has found a rename and enrols nothing: the retry
+			// ends there (errRenamed) and the whole pass starts again, because the rename
+			// brought a lapsed id that must be revoked before the new runtime id can enrol at
+			// all. So every enrollment this retry can produce belongs to pass, and pass is
+			// what setEnrolledAt is given below: an answer for an identity the session has
+			// moved on from is installed on the identity it has now by nobody, and revoked by
+			// nobody either, since it may be the very enrollment that identity was handed back.
 			cur := sess.identity()
 			if cur.Generation != pass {
 				renamed = true
@@ -1451,7 +1459,6 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			}
 			return err
 		})
-
 		if renamed {
 			s.Log.Info("this session was named while it was enrolling; starting again under its new name", "runtime_id", sess.RuntimeID())
 			continue
@@ -1578,7 +1585,8 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 				"runtime_id", pass.RuntimeID, "enrollment_id", pass.EnrollmentID, "error", err, "in", delay)
 		}
 	}, func() error {
-
+		// The renew signs for ONE reading. A rename landing under it has given the session
+		// another identity, and this answer speaks for neither confirming nor refusing that.
 		if cur := sess.identity(); cur.Generation != pass.Generation || cur.EnrollmentID != pass.EnrollmentID {
 			return errRenamed
 		}
@@ -1599,7 +1607,6 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 		lease = next
 		return nil
 	})
-
 	if kept {
 		return lease, confirmKept
 	}
@@ -1706,7 +1713,6 @@ func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) boo
 		}
 		s.Log.Warn("revoking the lapsed enrollment failed; retrying", "runtime_id", sess.RuntimeID(), "enrollment_id", id, "error", err, "in", delay)
 	}, func() error { return s.revokeOnce(ctx, id) })
-
 	if !revoked && ctx.Err() == nil {
 		s.goRevoke(ctx, id)
 	}
@@ -1911,7 +1917,6 @@ func (s *Server) revoke(ctx context.Context, id string) {
 			s.Log.Warn("revoke failed; the lease lapses on its own", "enrollment_id", id, "error", err)
 		}
 	}, func() error { return s.revokeOnce(ctx, id) })
-
 }
 
 func (s *Server) save() {
@@ -1982,7 +1987,7 @@ func (s *Server) Recover(ctx context.Context) {
 			if peer != nil {
 				peer.Close()
 			}
-			gone := time.Now()
+			gone := s.clock().Now() // the clock SweepDormant's cutoff reads
 			rec.GoneAt = &gone
 			// A named record is parked whether or not it has an enrollment yet, exactly as
 			// retire parks one: a session saved before its first enroll landed — the helper

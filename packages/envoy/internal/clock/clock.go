@@ -1,16 +1,9 @@
-// Package clock is the time Envoy's code reads and waits on.
-// packages/daemon/internal/clock and packages/envoy/internal/clock hold the same code, because Go's
-// internal rule keeps one module from importing the other's (packages/envoy/infra imports Envoy's
-// through its replace), so a change to one is made to the other.
-//
-// # One clock per module
-//
-// Code whose timers, waits or deadlines a test asserts takes a Clock, through a field that
-// defaults to Real, and a test hands it a clocktest.Fake. There is one Clock and one fake for the
-// whole module: a package that needs only some of Clock's methods declares a narrowing of it, an
-// interface of its own whose methods have Clock's signatures, so Real and the fake fit every one
-// and no package keeps a clock or a fake of its own. The rule this serves is R4 of "The design of
-// this repository's tests" in docs/testing.md: no test passes or fails because it read a clock.
+// Package clock is the time a package's code reads and waits on where a test must move that time
+// itself: Real in production, a clocktest.Fake in a test, through a field that defaults to Real.
+// The cipher helper's own timers run on it (helper.Broker.Clock, helper.Server.Clock): its expiry
+// watch, refresh loop and retry ladder, a register's wait, the first confirming renew's bound, the
+// renew cadence and the dormant sweep. A package that needs only some of Clock's methods can
+// declare an interface of its own with those methods' signatures, which Real and the fake both fit.
 //
 // # The fake tells the test when a timer is armed
 //

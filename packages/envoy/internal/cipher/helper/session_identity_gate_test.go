@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -781,10 +782,20 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
-	go func() { done <- r.srv.renewLoop(ctx, sess, r.clock.Now().Add(time.Hour), served) }()
-	// The loop took the left-over wake and went back to its wait: it arms its renew wait a
-	// second time, which a loop that had acted on the wake and returned would never do.
-	r.clock.AwaitArmed(t, "the renew loop's wait, armed again after the left-over wake", 2)
+	lease := r.clock.Now().Add(time.Hour)
+	go func() { done <- r.srv.renewLoop(ctx, sess, lease, served) }()
+	// The loop arms its renew wait, and the left-over wake is waiting for it. A wait the loop
+	// leaves for the wake (time.After) stays pending on the fake, live or not, so no count of
+	// pending timers says the loop went back: the row moves the clock and wakes the loop again,
+	// for the same identity, and waits for the one wait only a loop still running can arm, at
+	// the deadline the moved clock gives it. A loop that acted on the left-over wake has returned,
+	// and nothing arms that wait.
+	r.clock.AwaitArmed(t, "the renew loop's first wait", 1)
+	r.clock.Advance(3 * time.Second)
+	sess.wakeEnroll()
+	now := r.clock.Now()
+	awaitArmedAt(t, r.clock, now.Add(leasetime.HelperRenewAfter(lease.Sub(now), r.srv.MinRenew)),
+		"the renew loop's wait, armed again on the moved clock after a wake for the identity it renews")
 	select {
 	case <-done:
 		t.Fatal("a wake left over from before this enrollment sent the session back to the enroll, abandoning a live enrollment")

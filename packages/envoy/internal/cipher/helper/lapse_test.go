@@ -156,7 +156,8 @@ func TestAProofInvalidRenewKeepsTheEnrollment(t *testing.T) {
 	release() // answered 401 PROOF_INVALID; the gate stays open for the retry
 
 	sess := r.srv.Registry.Get(os.Getpid())
-	testwait.Eventually(t, "the session to renew again after a PROOF_INVALID renew", func() bool {
+	// The session renews again after a PROOF_INVALID renew.
+	waitFor(t, func() bool {
 		posts, deletes, renews := r.fake.snapshot()
 		if st := sess.snapshot(); st.State != "enrolled" || st.EnrollmentID != id || sess.lapsed() != "" || len(deletes) != 0 || len(posts) != 1 {
 			t.Fatalf("after a PROOF_INVALID renew: session %s under %q (lapsed id %q), revokes %q, %d enrolls; want enrolled under %q, no revoke, one enroll",
@@ -224,7 +225,7 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 	r, lapsed, _ := lapseRig(t, failAlways)
 	sess := r.srv.Registry.Get(os.Getpid())
 	endSessionThenReleaseRevokes(t, r, r.srv.Registry, sess)
-	testwait.Eventually(t, "the handed-off revoke to revoke the lapsed id", func() bool { return revoked(r, lapsed) })
+	waitFor(t, func() bool { return revoked(r, lapsed) }) // the handed-off revoke revokes the lapsed id
 }
 
 // TestRegisterWaitWaitsForTheReEnrollmentAfterALapse: a lapse reopens the session's ready
@@ -273,7 +274,8 @@ func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
 	r.fake.enrollGate = enrollGate // the third enrollment gets the fake's 900 s default lease
 	r.fake.mu.Unlock()
 	releaseRenew() // the second lapse
-	testwait.Eventually(t, "the second lapsed id to be revoked", func() bool { return revoked(r, second) })
+	// The second lapsed id is revoked.
+	waitFor(t, func() bool { return revoked(r, second) })
 	replies = registerWaitBlocked(t, r, nil)
 	releaseEnroll()
 	third := freshEnrollment(t, replies, first, second)
@@ -336,7 +338,8 @@ func TestARenewThatFailsTransientlyKeepsTheLease(t *testing.T) {
 				when, st.State, st.EnrollmentID, sess.lapsed(), deletes, enrolls, id)
 		}
 	}
-	testwait.Eventually(t, "the session to renew again after a renew that failed with 503", func() bool {
+	// The session renews again after a renew that failed with 503.
+	waitFor(t, func() bool {
 		kept("until the retry arrives")
 		return renews() >= 2
 	})
@@ -371,7 +374,8 @@ func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registe
 		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, timeout)
 		replies <- registerAnswer{resp, err}
 	}()
-	testwait.Eventually(t, "the register call to wait on the session's ready channel", func() bool {
+	// The register call waits on the session's ready channel.
+	waitFor(t, func() bool {
 		if blockedInRegisterReply() {
 			return true
 		}

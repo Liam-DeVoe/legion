@@ -284,7 +284,7 @@ func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
 	if err := b.refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	timers.fire(t, "the warning of the expiry the refresh moved")
+	timers.fire(t, old.expiresAt.Add(-time.Hour), "the warning of the expiry the refresh moved")
 	for ended := range watchEnded {
 		if ended == old {
 			break

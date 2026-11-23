@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failingTokenTransport fails every request to the broker's token endpoint as an unreachable
@@ -72,17 +71,23 @@ func TestContractALostRefreshAnswerIsRetriedInsideTheGrace(t *testing.T) {
 	first.cancel()
 	lossy := &losingTokenTransport{}
 	// The retry after a lost answer is the refresh loop's own wait, armed on this broker's
-	// clock at the production retry, and fired here rather than shortened.
+	// clock at the production retry, and fired here rather than shortened. The fake stands
+	// still until the row moves it, so that wait is due defaultRefreshRetry after the moment
+	// Start begins. Start also arms the expiry watch's warning, a day before the credential's
+	// expiry, on a goroutine of its own and in either order with the retry: the row fires the
+	// retry by its own deadline (fireArmedAt), never the earliest timer, which can be the warning,
+	// and moving the fake there would leave the retry armed past it, never to fire.
 	fake := clocktest.New(time.Now())
 	b := &Broker{URL: cipheraddr.New(first.broker.URL), OperatorFile: first.broker.OperatorFile, MachineFile: first.machineFile,
 		HTTP: &http.Client{Transport: lossy}, Clock: fake}
 	t.Cleanup(b.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	retry := fake.Now().Add(defaultRefreshRetry)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	fake.Set(fake.AwaitArmed(t, "the refresh loop's retry after the lost answer", 1)[0])
+	fireArmedAt(t, fake, retry, "the refresh loop's retry after the lost answer")
 	waitFor(t, func() bool {
 		now, err := LoadMachineFile(first.machineFile)
 		return err == nil && now.RefreshToken != kept.RefreshToken
@@ -210,15 +215,7 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	if !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper holds no login")
 	}
-	drop := testwait.Until(t, "the expiry watch to arm its drop at the kept expiry", func() (time.Time, bool) {
-		for _, at := range fake.Armed() {
-			if at.Equal(kept.ExpiresAt) {
-				return at, true
-			}
-		}
-		return time.Time{}, false
-	})
-	fake.Set(drop)
+	fireArmedAt(t, fake, kept.ExpiresAt, "the expiry watch's drop at the kept expiry")
 	waitFor(t, func() bool { return !second.srv.Broker.HasCredential() })
 	if got := second.call(t, Request{Op: "login-status"}); got.LoginState != "expired" || got.CredentialDropped != dropExpired {
 		t.Fatalf("login-status after the expiry: %+v; want expired, dropped for %q", got, dropExpired)

@@ -61,9 +61,8 @@ func recordTime(t *testing.T, rec map[string]any) time.Time {
 
 const expiredMsg = dropExpired + "; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it"
 
-// expiryWatch drives the timers watchExpiry arms on the helper's own clock: each one is armed
-// for a moment the test reads back (AwaitArmed) and fires only when the test moves the fake to
-// it, so a row reads what the watch asked for instead of waiting for it.
+// expiryWatch drives the timers watchExpiry arms on the helper's own clock: each fires only when
+// the test moves the fake to it, so a row reads what the watch asked for instead of waiting for it.
 type expiryWatch struct{ fake *clocktest.Fake }
 
 func installExpiryTimers(b *Broker) *expiryWatch {
@@ -72,13 +71,15 @@ func installExpiryTimers(b *Broker) *expiryWatch {
 	return &expiryWatch{fake: fake}
 }
 
-// fire waits for the watch's next wait to be armed, answers the moment it was armed for, and
-// moves the fake to it, which fires it.
-func (et *expiryWatch) fire(t *testing.T, what string) time.Time {
+// fire waits for a timer armed for at, the wait the row means, and moves the fake there, which
+// fires it (fireArmedAt). Other timers can stand armed beside it: a replaced credential's watch,
+// whose wait stays pending on the fake once the watch has ended, or the watch of the credential
+// that replaced it. So a row names the deadline it means and never moves the fake to whichever
+// timer is armed first, which can be another watch's: a warning fired that way speaks for the
+// wrong credential, and a wait moved past is never fired at all.
+func (et *expiryWatch) fire(t *testing.T, at time.Time, what string) {
 	t.Helper()
-	armed := et.fake.AwaitArmed(t, what, 1)[0]
-	et.fake.Set(armed)
-	return armed
+	fireArmedAt(t, et.fake, at, what)
 }
 
 // TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen: with no refresh moving its
@@ -100,9 +101,7 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	if !status.CredentialHeld || !status.CredentialExpiresAt.Equal(cred.expiresAt) {
 		t.Fatalf("login-status after the login: %+v; want the credential held until %s", status, cred.expiresAt)
 	}
-	if at := timers.fire(t, "the warning before the credential's expiry"); !at.Equal(cred.expiresAt.Add(-2 * time.Hour)) {
-		t.Fatalf("the warning is armed for %s; want %s, the 2 h warning before the expiry", at, cred.expiresAt.Add(-2*time.Hour))
-	}
+	timers.fire(t, cred.expiresAt.Add(-2*time.Hour), "the 2 h warning before the credential's expiry")
 	warned := waitForRecord(t, &out, expiresSoonMsg)
 	expiresAt := cred.expiresAt.Format(time.RFC3339)
 	if warned["level"] != "WARN" || warned["credential_id"] != cred.id || warned["expires_at"] != expiresAt {
@@ -111,9 +110,7 @@ func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testi
 	if !b.HasCredential() {
 		t.Fatal("the warning dropped the credential")
 	}
-	if at := timers.fire(t, "the drop at the credential's expiry"); !at.Equal(cred.expiresAt) {
-		t.Fatalf("the drop is armed for %s; want the expiry %s", at, cred.expiresAt)
-	}
+	timers.fire(t, cred.expiresAt, "the drop at the credential's expiry")
 	expired := waitForRecord(t, &out, expiredMsg)
 	if expired["level"] != "ERROR" || expired["credential_id"] != cred.id || expired["expires_at"] != expiresAt {
 		t.Fatalf("the expiry line: %v; want an ERROR naming %s and %s (log: %s)", expired, cred.id, expiresAt, out.String())
@@ -181,7 +178,7 @@ func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
 
 	old := expiryLogin(t, b)
 	fresh := expiryLogin(t, b)
-	timers.fire(t, "the warning of the credential the newer login replaced")
+	timers.fire(t, old.expiresAt.Add(-time.Hour), "the warning of the credential the newer login replaced")
 	// The old credential's watch has said all it will once it ends.
 	for ended := range watchEnded {
 		if ended == old {
