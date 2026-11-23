@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>...
+# packages/envoy/scripts/forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-download] <package>...
 #
 # Runs the forced-order tests of each package on the hooked nats-server: every test named
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
@@ -33,6 +33,14 @@
 #                    holding there fails without it. A name no hook call of that version's hooks
 #                    passes is refused before the build, so a mistyped point cannot "fail" a test
 #                    on a compile error instead. Repeatable.
+#   -download        runs every check above and the download of nats-server at that version into
+#                    the module cache, then exits 0, building and testing nothing. A CI step runs
+#                    it under .github/scripts/ci-retry.sh's retry_fetch before the step that tests,
+#                    so the one network read this script makes, the download below, retries, and
+#                    the test step reads the module cache alone (dispatch://INFRA-1545, round 57).
+#                    The download runs from a directory with no go.mod, where go asks the checksum
+#                    database for the module even when its zip is cached, so a module download of
+#                    the build alone does not cover it.
 #
 # It fails, naming the package, when a package it is given declares no TestForcedOrder test, or
 # runs none (every one it declares skipped), so a step that names a package whose tests were
@@ -54,13 +62,14 @@ die() {
 }
 
 usage() {
-  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... <package>..." >&2
+  echo "usage: forced-order.sh [-C <module dir>] [-server 2.15.1|2.10.29] [-drop <hold point>]... [-download] <package>..." >&2
   exit 2
 }
 
 module="$envoy"
 server=""
 drops=()
+download_only=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -C)
@@ -79,6 +88,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage
       drops+=("$2")
       shift 2
+      ;;
+    -download)
+      download_only=1
+      shift
       ;;
     -h | --help) usage ;;
     -*)
@@ -173,6 +186,10 @@ done
   die "go mod download could not fetch $nats_server@v$server"
 source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
 [ -n "$source_dir" ] && [ -d "$source_dir" ] || die "go mod download found no source for $nats_server@v$server"
+if [ -n "$download_only" ]; then
+  echo "forced-order.sh: -download: nats-server v$server is in the module cache at $source_dir; nothing is built or tested" >&2
+  exit 0
+fi
 copy="$work/nats-server"
 cp -R "$source_dir" "$copy"
 chmod -R u+w "$copy"

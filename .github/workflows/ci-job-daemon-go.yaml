@@ -303,18 +303,18 @@ jobs:
 
       # forced-order.sh downloads the nats-server it hooks with `go mod download -json`, from a
       # directory with no go.mod, so go asks sum.golang.org for the module even when the module
-      # download above cached its zip. This step makes that read the same way, outside any module,
-      # under the one retry (ci-budgets.md's Retries note), so the script's own download reads no
-      # host; envoy-go-race's step of this name says how it was measured and why the version is
-      # read from the go.mod files (dispatch://INFRA-1545, round 56).
-      - name: Download the nats-server versions forced-order.sh hooks
+      # download above cached its zip. So this step runs that read first, under the one retry
+      # (ci-budgets.md's Retries note): the script's own -download, with the test step's
+      # arguments, which makes every check and the download that step makes and builds and tests
+      # nothing. envoy-go-race's step of this name says how it was measured (dispatch://INFRA-1545,
+      # round 57).
+      - name: Download the nats-server version forced-order.sh hooks
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          # shellcheck disable=SC2046 # each line is one module@version
-          retry_fetch "the nats-server versions forced-order.sh hooks" 180 -- go -C "$RUNNER_TEMP" mod download \
-            $(awk '$1 == "github.com/nats-io/nats-server/v2" { print $1 "@" $2 }' packages/envoy/go.mod packages/daemon/go.mod | sort -u)
+          retry_fetch "the nats-server the daemon links, for forced-order.sh" 180 -- \
+            packages/envoy/scripts/forced-order.sh -download -C packages/daemon ./internal/testnats/ >&2
 
       # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
       # every TestForcedOrder test of the packages named, built with -tags odatrace and -race

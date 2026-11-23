@@ -48,8 +48,9 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): 4800 s, the 80 minutes main's #4301 gives this job,
     # above the 71 the paragraph above derives, plus its slowest retried step alone — the ci-ok
-    # report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above packages/envoy's
-    # `go mod download` and the nats-server pre-fetch, each at 5 x 180 + 150 = 1050 s.
+    # report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"), above the nats-server
+    # pre-fetch's two calls at 2100 s and packages/envoy's `go mod download` at
+    # 5 x 180 + 150 = 1050 s.
     # 4800 + 2460 = 7260 s, a whole number of minutes, so the budget is the next one strictly
     # above it -> 122 min.
     timeout-minutes: 122
@@ -108,25 +109,24 @@ jobs:
       # of whose steps sets a GO* name.
       # forced-order.sh downloads the nats-server it hooks with `go mod download -json`, from a
       # directory with no go.mod, so go asks sum.golang.org for the module even when the step
-      # above cached its zip, and v2.10.29 is in no module's graph here. This step makes those
-      # reads the same way, outside any module, under the one retry (ci-budgets.md's Retries
-      # note), for every version the steps below hook: the one each module of the workspace
-      # requires, read from its go.mod as go lists the version it selects there (a pruned module
-      # graph), and v2.10.29. The module cache then holds each zip and its checksum lookup, and
-      # the script's own downloads read no host. Measured in an issue pod with GOPROXY=off and an
-      # unreachable checksum database: without this step all three forced-order downloads of this
-      # job and daemon-go's fail, and with it the script's go list of the test's packages loads
-      # every module from the cache (dispatch://INFRA-1545, round 56). The version is read with
-      # awk, not `go list -m`, which check-ci-filters.sh would read as a go command of its own.
+      # above cached its zip, and v2.10.29 is in no module's graph here. So this step runs that
+      # read first, under the one retry (ci-budgets.md's Retries note): the script's own
+      # -download, which makes every check and the download the test steps below make, with their
+      # arguments, and builds and tests nothing. The module cache then holds each zip and its
+      # checksum lookup, and the test steps read no host. Measured in an issue pod with
+      # GOPROXY=off and an unreachable checksum database: without this step every forced-order
+      # download of this job and daemon-go's fails, and after it the script's go list of the
+      # test's packages loads every module from the cache (dispatch://INFRA-1545, round 57).
       - name: Download the nats-server versions forced-order.sh hooks
-        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
-        timeout-minutes: 18
+        # Its own retry arithmetic: two calls of 5 x 180 + 150 = 1050 s, 2100 s -> 36 min.
+        timeout-minutes: 36
         run: |
-          . .github/scripts/ci-retry.sh
-          # shellcheck disable=SC2046 # each line is one module@version
-          retry_fetch "the nats-server versions forced-order.sh hooks" 180 -- go -C "$RUNNER_TEMP" mod download \
-            $(awk '$1 == "github.com/nats-io/nats-server/v2" { print $1 "@" $2 }' packages/envoy/go.mod packages/daemon/go.mod | sort -u) \
-            github.com/nats-io/nats-server/v2@v2.10.29
+          . ../../.github/scripts/ci-retry.sh
+          retry_fetch "the nats-server the module links, for forced-order.sh" 180 -- \
+            scripts/forced-order.sh -download ./internal/testnats/hooktest/ >&2
+          retry_fetch "nats-server 2.10.29, for forced-order.sh" 180 -- \
+            scripts/forced-order.sh -download -server 2.10.29 ./internal/testnats/hooktest/ >&2
+        working-directory: packages/envoy
       - name: Test forced-order.sh's refusals
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
