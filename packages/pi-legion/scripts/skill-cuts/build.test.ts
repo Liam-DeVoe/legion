@@ -43,7 +43,7 @@ import {
 } from "./copies";
 import { mtimeRange } from "./countsql";
 import { blindOrder } from "./judge";
-import { loadProfile } from "./load";
+import { loadProfile, recordedLines } from "./load";
 import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
@@ -7573,17 +7573,28 @@ test("a context session is read at the build its measured subagent was spawned u
   );
 }, 120_000);
 
+/** The build-tasks run in the reader's mode over a store in which task-4's session started
+ *  Helper, whose recorded listing holds alpha and beta: its tasks file, made once. */
+let readerSubagentRun: Promise<string> | undefined;
+function readerSubagentTasks(): Promise<string> {
+  readerSubagentRun ??= (async () => {
+    const store = changedStore("reader-subagent", (files) => {
+      (files.store_a ?? {})["/sessions/task-4/Helper.jsonl"] = sessionText("subagent");
+    });
+    const out = path.join(scratch, "reader-subagent", "tasks.jsonl");
+    const dir = path.join(scratch, "reader-subagent", "profiles");
+    const said: string[] = [];
+    const args = tasksArgs(out, ...profileFlags(dir)).map((arg) => (arg === config ? store : arg));
+    expect(await main(args, io(said))).toBe(EXIT.ok);
+    return out;
+  })();
+  return readerSubagentRun;
+}
+
 // Catches: a task the reader picked from a session measured as if the store held no subagent of
 // its session, when the store was never asked: its session's path was not known there.
 test("build-tasks in the reader's mode measures a task from a session against the subagent of that session the store gives, and says the store holds none only after asking it", async () => {
-  const store = changedStore("reader-subagent", (files) => {
-    (files.store_a ?? {})["/sessions/task-4/Helper.jsonl"] = sessionText("subagent");
-  });
-  const out = path.join(scratch, "reader-subagent", "tasks.jsonl");
-  const dir = path.join(scratch, "reader-subagent", "profiles");
-  const said: string[] = [];
-  const args = tasksArgs(out, ...profileFlags(dir)).map((arg) => (arg === config ? store : arg));
-  expect(await main(args, io(said))).toBe(EXIT.ok);
+  const out = await readerSubagentTasks();
   const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
     profiles: { tasks: { task: string; evidence?: Item[] }[] };
   };
@@ -7604,6 +7615,90 @@ test("build-tasks in the reader's mode measures a task from a session against th
   expect(none.kind).toBe("not measurable");
   expect(none.why).toEndWith(
     "the store holds no subagent of it (subagents.sql, asked for those spawned under the session's first prompt build, the one its profile is read at (no later line))"
+  );
+}, 120_000);
+
+// Catches: a task's profile that keeps only the names of the listing its measure uses, so a load
+// test draws a hint for a skill whose line its session recorded.
+test("a task's profile keeps each line of the listing its measure sets it against and where it was recorded: a subagent's, with its path hash, and the copy of the tested skill the session had; and none where the measure has no listing", async () => {
+  const out = await readerSubagentTasks();
+  const profileOf = (session: string) => {
+    const file = tasksOf(out).find((each) => each.pathHash === pathHash(session))?.profile;
+    expect(file).toBeString();
+    return { file: String(file), profile: JSON.parse(readFileSync(String(file), "utf8")) };
+  };
+  // task-4's session recorded no prompt: its profile keeps the listing of Helper, the subagent
+  // its measure uses, line by line, and the copy of alpha the session read, which its skills
+  // leave out.
+  const four = profileOf("/sessions/task-4.jsonl");
+  expect(four.profile.recordedListing).toMatchObject({
+    source: { kind: "subagent", pathHash: pathHash("/sessions/task-4/Helper.jsonl") },
+    lines: [
+      { name: "alpha", text: "Use for the alpha steps." },
+      { name: "beta", text: "Use for the beta greeting." },
+    ],
+    tested: { name: "alpha" },
+  });
+  expect(four.profile.skills.map((each: { name: string }) => each.name)).not.toContain("alpha");
+  // The load test reads it so.
+  expect(loadProfile(four.file, "omp", "alpha").profile.recordedListing).toEqual(
+    four.profile.recordedListing
+  );
+  // task-3's session started no subagent and recorded no prompt: its measure has no listing.
+  expect(profileOf("/sessions/task-3.jsonl").profile.recordedListing).toBeUndefined();
+}, 120_000);
+
+// Catches: a task's profile of a session that recorded its own prompt (the session listing, the
+// most common kind) that keeps no line of it, so a load test draws a hint for each skill; and a
+// secret of its listing kept in a line, or counted twice.
+test("a task's profile of a session that recorded its own prompt keeps each line of that prompt's listing as the session recorded it, its secrets taken out and counted once, and the copy of the tested skill it had", async () => {
+  // task-1's session is a subagent whose recorded prompt lists alpha, and beta under a line that
+  // holds a secret: a build of its own.
+  const store = changedStore("session-listing", (files) => {
+    (files.store_a ?? {})["/sessions/task-1.jsonl"] = sessionText("subagent").replace(
+      "- beta: Use for the beta greeting.",
+      `- beta: Use for the beta greeting, Bearer ${SECRET_TOKEN}.`
+    );
+  });
+  const out = path.join(scratch, "session-listing", "tasks.jsonl");
+  const dir = path.join(scratch, "session-listing", "profiles");
+  const said: string[] = [];
+  const args = tasksArgs(out, ...profileFlags(dir)).map((arg) => (arg === config ? store : arg));
+  expect(await main(args, io(said))).toBe(EXIT.ok);
+  const task = tasksOf(out).find((each) => each.pathHash === pathHash("/sessions/task-1.jsonl"));
+  expect(task?.profile).toBeString();
+  const file = String(task?.profile);
+  const profile = JSON.parse(readFileSync(file, "utf8"));
+  expect(profile.context).toBe("subagent:task");
+  // The profile's recorded prompt holds the beta line with the secret taken out.
+  const betaLine = /\n- beta: (.*)\n/.exec(String(profile.systemPrompt?.[0]))?.[1] ?? "";
+  expect(betaLine).toStartWith("Use for the beta greeting, Bearer ");
+  expect(JSON.stringify(profile)).not.toContain(SECRET_TOKEN);
+  const lines = [
+    { name: "alpha", text: "Use for the alpha steps." },
+    { name: "beta", text: betaLine },
+  ];
+  expect(profile.recordedListing).toMatchObject({
+    source: { kind: "session" },
+    lines,
+    tested: { name: "alpha" },
+  });
+  expect(profile.skills.map((each: { name: string }) => each.name)).not.toContain("alpha");
+  // The one secret is counted once: taken out of the recorded prompt, not again from its lines.
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
+    profiles: { tasks: { task: string; secretsRemoved?: number }[] };
+  };
+  expect(summary.profiles.tasks.find((each) => each.task === task?.id)?.secretsRemoved).toBe(1);
+  // The load test reads it so, and each line it gives a capture names the session as its source,
+  // which the capture records as `recorded (session)`.
+  const read = loadProfile(file, "omp", "alpha").profile.recordedListing;
+  expect(read).toEqual(profile.recordedListing);
+  const text = "Use for the alpha steps of the made-up project.";
+  expect(recordedLines(read, { name: "alpha", ownName: "alpha", description: text }, text)).toEqual(
+    [
+      { ...lines[0], from: "session", description: text },
+      { ...lines[1], from: "session" },
+    ]
   );
 }, 120_000);
 

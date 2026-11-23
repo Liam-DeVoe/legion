@@ -308,8 +308,8 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
   [--thinking <level, default off on omp, auto (Claude Code's own) on claude>] \
   [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] \
   [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>] \
-  [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]... \
-  [--claude <binary>] [--context-session <store>:<path hash>]
+  [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] \
+  [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
 ```
 
 The load test (`load.ts`): whether the host's agent loads the skill for each task,
@@ -358,6 +358,44 @@ only, on the Responses route, with an Anthropic `--hint-model`. A reply loads th
 of its tool calls reads it (Oh My Pi: `read` of `skill://<name>` or its `SKILL.md`, a `tool_use`
 block or a Responses `function_call` item; Claude Code: `Skill` naming `<name>` or
 `<plugin>:<name>`, or `Read` of its `SKILL.md`).
+
+The hints (the architect, 2026-11-23). Oh My Pi lists each skill as `- <name>: <text>`, where
+`<text>` is a hint a model writes from the skill's name and description, at temperature 1, or a
+cut-down preview of the description until the hint is written. The hint is made from the name
+too, so the two arms of a name test get different hints by design, and that is part of the
+name's effect. Where a task's session recorded its listing, the load lists each skill under the
+line that listing holds, not a new draw: `build-tasks --profiles-out` keeps in each profile the
+listing its listing measure uses (`recordedListing`: `source` `{kind: "session"}` or `{kind:
+"subagent", pathHash}`, each line's `name` and `text`, and `tested`, the profile's entry of the
+session's copy of the tested skill). A skill the profile installs keeps its recorded line. The
+tested skill keeps its line only where the load lists it under that name and with the
+description of the session's copy (read from its repository at its commit): a name test's
+proposed name, or an end-time text that differs from the session's, gets a drawn hint. The
+capture writes each recorded line into the scratch profile's `skill-descriptions.db` under Oh My
+Pi's key for that name and description (a recorded preview is listed as the preview), taking the
+key from the cached hint of draw 1, else from `<cache-dir>/hint-keys/<key>.json`, else from the
+row Oh My Pi stores when the hint run answers its hint request with the line itself; no model is
+asked for a recorded line. `behaviour` passes no recorded line.
+
+`--hint-draw <n>` (a whole number, default 1) is the draw of every hint no recorded line gives.
+Draw 1 keeps the cache keys of before, so its cache stays valid; draw n > 1 asks the hint model
+again for each skill text and caches the hint apart. A draw's hint is the file
+`<cache-dir>/hints/<key>.json`, where `<key>` is the first 32 hex characters of the SHA-256 of
+the Oh My Pi version (`omp --version`'s output), the name and the description, each followed by
+a NUL byte, and for draw n > 1 also `draw <n>` and a NUL byte. The file is one JSON object:
+`{"omp", "name", "description", "ompKey", "hint", "model", "writtenAt", "kept", "draw"}`
+(`draw` only for n > 1; `reply` and `reason` where `kept` is false). `ompKey` is Oh My Pi's key
+of the name and description, the same in every draw: to seed a draw's hint by hand, copy it from
+that skill text's draw 1 file or a capture record's `hints`. Claude Code lists each skill under
+its description, so it has no hint to draw: `--hint-draw` above 1 is refused there (exit 2).
+
+Each capture record's `hints` entry gives each listed skill's line (`hint`) and where it came
+from (`source`): `recorded (session)`, `recorded (subagent <path hash>)` or `drawn (draw <n>)`.
+Each task of `summary.json` gives the tested skill's line and its source (`listedUnder: {source,
+line}`; on Claude Code the source is `description (Claude Code)`, and a Claude Code record says
+so in `listedSource`), the summary's `listedUnder` counts the tasks of each source, and the
+command prints how many tasks list the skill under a recorded line and how many under a draw. An
+Oh My Pi `--out` made before this rule, or under another draw, is refused.
 
 Skill reads follow the behaviour replay's rule (the architect, 2026-11-22). On Oh My Pi, a reply
 whose every tool call reads a skill file is answered as `behaviour` answers one: a read of

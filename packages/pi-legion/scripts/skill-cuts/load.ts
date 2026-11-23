@@ -4,6 +4,7 @@
  *
  *     bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
  *         [--name <name>] --tasks <file> --host omp|claude --profile <file> [--runs 3] --out <dir>
+ *         [--hint-draw <n>]
  *
  * - `--skill` is the skill's directory as written: its description is the one tested. The skill
  *   is tested under `--name` when one is given, else under its frontmatter `name` (its
@@ -22,12 +23,13 @@
  * - A profile file (`loadProfile`) is one JSON object: cases.ts's `Profile` (the other skills
  *   installed beside it, each a `ProfileSkill`; the Oh My Pi plugins; the context files; an
  *   appended system prompt), the `context` (a case's: `devbox`, the default,
- *   `legion:<project>:<role>` or `subagent:<agent>`), and for Claude Code `claude`, the plugin
- *   layout (ClaudeLayout). `--profile` is the profile of each task that names none; a task that
- *   names none when no `--profile` is given is refused. A profile skill with a `namespace` (a
- *   copy of another source that Oh My Pi lists as `<namespace>/<name>`) is that name in every
- *   check, so it may share the tested skill's name; a Claude Code profile that holds one is
- *   refused, since its layout places skills by their bare name.
+ *   `legion:<project>:<role>` or `subagent:<agent>`), for Claude Code `claude`, the plugin
+ *   layout (ClaudeLayout), and `recordedListing`, the skill listing its session recorded, where
+ *   build.ts kept one (RecordedListing). `--profile` is the profile of each task that names
+ *   none; a task that names none when no `--profile` is given is refused. A profile skill with a
+ *   `namespace` (a copy of another source that Oh My Pi lists as `<namespace>/<name>`) is that
+ *   name in every check, so it may share the tested skill's name; a Claude Code profile that
+ *   holds one is refused, since its layout places skills by their bare name.
  *
  * For each task the host's first request is captured once, in the rebuilt context of the task's
  * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
@@ -44,10 +46,18 @@
  * - Oh My Pi: capture.ts's `captureBody`, with the task's text as a history of one user message.
  *   Oh My Pi lists each skill under a hint that it has a model write from the name and the
  *   description, so what is tested is that hint; the capture writes it once per Oh My Pi version,
- *   name and description, through the gateway, and keeps it in its cache. A `subagent:<agent>`
- *   profile is captured as capture.ts captures a subagent's case: its recorded prompt with only
- *   the skill's listing line changed, its recorded tools (each one nothing defines left out and
- *   recorded), and the stand-in Envoy listener.
+ *   name and description, through the gateway, and keeps it in its cache. The hint is made from
+ *   the name too, so the two arms of a name test get different hints by design: that is part of
+ *   the name's effect. Where the profile keeps the listing its session recorded, each skill is
+ *   listed under its recorded line in place of a hint (the architect, 2026-11-23T07:11Z;
+ *   `recordedLines`): each other skill's, and the tested skill's only where the arm lists it
+ *   under the name and the description the session's copy had (read from its repository at its
+ *   commit), so a proposed name, or a text that differs from the session's, gets a drawn hint.
+ *   `--hint-draw <n>` (1 by default) draws each other hint again: draw n > 1 is cached apart from
+ *   draw 1 (capture.ts, "The draw"), so a verdict that leads to action can rest on two draws. A
+ *   `subagent:<agent>` profile is captured as capture.ts captures a subagent's case: its
+ *   recorded prompt with only the skill's listing line changed, its recorded tools (each one
+ *   nothing defines left out and recorded), and the stand-in Envoy listener.
  * - Claude Code: for each profile, a scratch `CLAUDE_CONFIG_DIR` and HOME, into which `claude
  *   plugin install` installs a local marketplace that holds the profile's skills and the tested
  *   skill under its name, each in its plugin; then `claude -p --output-format stream-json
@@ -160,7 +170,10 @@
  * task's profile file with the SHA-256 of its bytes, its counts (TaskOutcome: judged runs, loads,
  * runs sent by each skill, runs that read past the last round, extra runs used) and verdict, why
  * it gives no description evidence (null when it gives some), why it was dropped (null when it
- * was not), its spend (TaskSpend), the skill's verdict, the test's spend), `runs/<task id>.jsonl`
+ * was not), its spend (TaskSpend), the line its capture lists the tested skill under and where
+ * that line came from (`listedUnder`: capture.ts's HintSource, `recorded (session)`, `recorded
+ * (subagent <path hash>)` or `drawn (draw <n>)`, or on Claude Code `description (Claude Code)`),
+ * how many tasks list it under each, the skill's verdict, the test's spend), `runs/<task id>.jsonl`
  * (one JSON line per run, LoadRun, which names its task's profile file and that SHA-256 too, its
  * session id and its place in its send order), `runs/<task id>.failed.jsonl` (one JSON line per
  * run that failed after one or more of its requests had their replies, FailedRun: the error and
@@ -180,16 +193,18 @@
  * fails for another reason, a read after its retries among them, is a failure (exit 1), tried
  * again by the next command.
  * An `--out` written by a test of other settings (another skill text, name, host,
- * model, thinking level, run count, hint model, or one whose runs were sent before each had its
- * own session id or before the skill reads rule), or holding a capture or runs of a task of the
- * same id with another text, under a profile of other bytes, or that its summary does not list
- * (so the text they were made for is not known), is refused. So is an `openai/<id>` model on Oh
- * My Pi with no `--hint-model` when no task's capture is saved: the hint model would be that
- * model, and hints are written on the Messages route only. The verdicts are score.ts's: a task's
- * is `taskFault` and the skill's `descriptionFault`, given only once every task has its judged
- * runs or has used its extra runs, and those are LOAD_RUNS. Each task's line ends with the
- * seconds of its phases: its capture (its context build, and the GitHub reads in it with their
- * count), the runs of its profile's tasks, its writes, the rest, and the total.
+ * model, thinking level, run count, hint model, hint draw, or one whose runs were sent before each
+ * had its own session id, before the skill reads rule, or, on Oh My Pi, before recorded lines),
+ * or holding a capture or runs of a task of the same id with another text, under a profile of
+ * other bytes, or that its summary does not list (so the text they were made for is not known),
+ * is refused. So is an `openai/<id>` model on Oh My Pi with no `--hint-model` when no task's
+ * capture is saved: the hint model would be that model, and hints are written on the Messages
+ * route only; and a `--hint-draw` above 1 on Claude Code, which lists descriptions and draws no
+ * hint. The verdicts are score.ts's: a task's is `taskFault` and the skill's `descriptionFault`,
+ * given only once every task has its judged runs or has used its extra runs, and those are
+ * LOAD_RUNS. Each task's line ends with the seconds of its phases: its capture (its context
+ * build, and the GitHub reads in it with their count), the runs of its profile's tasks, its
+ * writes, the rest, and the total.
  *
  * The listing rule (the architect, 2026-11-22T03:04Z), so that no one applies it by hand: each
  * task's listing measure is read from the tasks file's build-tasks summary
@@ -242,6 +257,7 @@ import {
   type HarnessRecord,
   type HarnessRule,
   type HintWriter,
+  type RecordedLine,
   rawBodyFile,
   renamedListingBlocks,
   rewriteBody,
@@ -254,7 +270,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { Case, listedName, Profile, type ProfileSkill, type Thinking } from "./cases";
+import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
 import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
   type AgentDefinition,
@@ -265,6 +281,7 @@ import {
   daemonCommit,
   installedCopies,
   LOCAL_SKILL_REPO,
+  NoSuchFile,
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
@@ -382,11 +399,33 @@ const ClaudeLayout = z.strictObject({
   skillPlugin: Name,
 });
 
-/** A load test's profile: what the host installs beside the tested skill, and the context it runs
- *  in (a case's; `devbox` unless it names one). */
+/** One line of a session's recorded skill listing (`- <name>: <text>`): the name and the text the
+ *  session listed the skill under. */
+const ListingLine = z.strictObject({ name: z.string().min(1), text: z.string() });
+
+/** The skill listing a task's session recorded, as build.ts keeps it in the task's profile where
+ *  the profile's listing measure sets it against one: where it was recorded (`source`: the
+ *  session's own prompt, or that of its subagent of the path hash), each listed skill's line in
+ *  order, and the entry of the copy of the tested skill's source that the session had (`tested`),
+ *  which the profile's skills leave out, since the load test installs the tested text; `tested` is
+ *  absent where the profile had no such copy. */
+export const RecordedListing = z.strictObject({
+  source: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("session") }),
+    z.strictObject({ kind: z.literal("subagent"), pathHash: z.string().min(1) }),
+  ]),
+  lines: z.array(ListingLine),
+  tested: ProfileSkill.optional(),
+});
+export type RecordedListing = z.infer<typeof RecordedListing>;
+
+/** A load test's profile: what the host installs beside the tested skill, the context it runs
+ *  in (a case's; `devbox` unless it names one), and the skill listing its session recorded, where
+ *  build.ts kept one (`recordedListing`). */
 const LoadProfile = Profile.extend({
   context: Case.shape.context.default("devbox"),
   claude: ClaudeLayout.optional(),
+  recordedListing: RecordedListing.optional(),
 });
 type LoadProfile = z.infer<typeof LoadProfile>;
 
@@ -836,6 +875,38 @@ function taskProfiles(
     );
   }
   return profiled;
+}
+
+/** What the summary and the report call the source of a Claude Code task's listing line: Claude
+ *  Code lists each skill under its description, so no hint is drawn or recorded there. */
+const CLAUDE_LISTED = "description (Claude Code)";
+
+/**
+ * The lines of a task profile's recorded listing (`listing`; none where it has none) that its Oh
+ * My Pi capture lists in place of hints (capture.ts's RecordedLine; the architect,
+ * 2026-11-23T07:11Z): each other skill's line as recorded, and the line of the tested skill only
+ * where the arm lists it under the name the session listed it under (`tested.name` is
+ * `tested.ownName`: a name test's proposed name gets a drawn hint) and with the description the
+ * session's copy had (`sessionDescription`, undefined where the profile names no such copy or its
+ * SKILL.md cannot be read: a drawn hint then), given with that description so that the capture
+ * lists it for that text alone.
+ */
+export function recordedLines(
+  listing: RecordedListing | undefined,
+  tested: { readonly name: string; readonly ownName: string; readonly description: string },
+  sessionDescription: string | undefined
+): RecordedLine[] {
+  if (listing === undefined) return [];
+  const from =
+    listing.source.kind === "session" ? "session" : `subagent ${listing.source.pathHash}`;
+  return listing.lines.flatMap(({ name, text }) => {
+    if (name !== tested.name && name !== tested.ownName) return [{ name, text, from }];
+    return tested.name === tested.ownName &&
+      sessionDescription !== undefined &&
+      sessionDescription === tested.description
+      ? [{ name, text, from, description: sessionDescription }]
+      : [];
+  });
 }
 
 /** Whether the plugin of arms.ts's PLUGIN_INJECTED puts the skill `own` (the tested skill's own
@@ -1307,8 +1378,10 @@ interface ClaudeCaptureRecord {
    *  sends with the body. */
   readonly requestPath: string;
   readonly requestHeaders: Readonly<Record<string, string>>;
-  /** The tested skill's listed description, and every skill the body lists. */
+  /** The tested skill's listed description, where that line came from (`listedSource`: its
+   *  description, since Claude Code lists no hint), and every skill the body lists. */
   readonly listed: string;
+  readonly listedSource: typeof CLAUDE_LISTED;
   readonly listing: readonly { readonly name: string; readonly description: string }[];
   /** The other requests the run sent, each answered by the recorder. */
   readonly otherRequests: readonly { readonly path: string; readonly bytes: number }[];
@@ -1422,10 +1495,12 @@ interface LoadOptions {
   readonly cacheDir: string;
   /** Oh My Pi: its binary (only where a capture is made: none is given when every one is read
    *  back); the `models.yml` a capture needs (a missing capture fails without it); the model that
-   *  writes hints; settings files laid over the scratch profile's. */
+   *  writes hints; the draw of its hints (`--hint-draw`; capture.ts's header, "The draw");
+   *  settings files laid over the scratch profile's. */
   readonly omp?: string;
   readonly models?: string;
   readonly hintModel?: string;
+  readonly hintDraw: number;
   readonly configFiles: readonly string[];
   /** Claude Code's binary. */
   readonly claude: string;
@@ -1461,7 +1536,14 @@ const SENDS = "each run its own session id; a profile's tasks interleaved in one
  *  is refused. */
 const SKILL_READS = `Oh My Pi answers a reply that only reads skill files, at most ${MAX_SKILL_ROUNDS} rounds; a run sent by another skill or still reading after them runs again, at most ${MAX_EXTRA_RUNS} extra runs a task`;
 
-/** The settings of a test that an `--out` holds: a test of other settings is refused there. */
+/** What an Oh My Pi test lists each skill under, as its settings record it with its draw (see the
+ *  file's header). An `--out` whose settings do not record it holds captures whose every skill
+ *  was listed under a drawn hint, so it is refused. */
+const LISTED_LINES =
+  "each skill under the line its session recorded where the arm lists it under that name and text, else under a hint of the test's draw";
+
+/** The settings of a test that an `--out` holds: a test of other settings is refused there.
+ *  `hints` is absent on Claude Code, which lists descriptions. */
 interface Settings {
   readonly skillText: string;
   readonly name: string;
@@ -1471,6 +1553,7 @@ interface Settings {
   readonly thinking: ThinkingLevel;
   readonly runs: number;
   readonly hintModel: string | null;
+  readonly hints?: { readonly listed: typeof LISTED_LINES; readonly draw: number };
   readonly sends: typeof SENDS;
   readonly skillReads: typeof SKILL_READS;
 }
@@ -1563,11 +1646,34 @@ function hintUsd(record: CaptureRecord): number {
   }, 0);
 }
 
+/** The line a task's capture lists the tested skill under, and where it came from: capture.ts's
+ *  HintSource for Oh My Pi, CLAUDE_LISTED for Claude Code. */
+interface ListedUnder {
+  readonly source: string;
+  readonly line: string;
+}
+
+/** What a task's summary says of the source of a line whose Oh My Pi capture record names none. */
+const NO_SOURCE = "not recorded: the capture was made before its record named each line's source";
+
+/** What the summary reads of a saved capture's record: the line a Claude Code record lists the
+ *  tested skill under, and each listed skill's line of an Oh My Pi record with its source
+ *  (capture.ts's CaptureRecord `hints`). */
+const SavedListed = z.looseObject({
+  listed: z.string().optional(),
+  hints: z
+    .array(z.looseObject({ skill: z.string(), hint: z.string(), source: z.string().optional() }))
+    .optional(),
+});
+
 /** One load test, as `runLoad` runs it: its options, settings, scratch root, the tested skill's
  *  directory, and each task's daemon image item of its summary evidence, which its capture reads. */
 class LoadTest {
   /** Claude Code's scratch home of each profile, by the SHA-256 of the profile's file. */
   private readonly claudeSetups = new Map<string, Promise<ClaudeSetup>>();
+  /** The description of the tested skill's copy each profile's session had, by the profile's
+   *  file (`sessionDescription`). */
+  private readonly sessionDescriptions = new Map<string, Promise<string | undefined>>();
 
   constructor(
     readonly o: LoadOptions,
@@ -1579,6 +1685,34 @@ class LoadTest {
 
   say(line: string): void {
     this.o.io.out(`load: ${line}\n`);
+  }
+
+  /** The description of the tested skill's copy that the session of `profile` had (its recorded
+   *  listing's `tested`), read as Oh My Pi reads a skill's frontmatter from its repository at its
+   *  commit, once per profile file; undefined where the profile names no such copy, or that
+   *  commit holds no SKILL.md there. */
+  sessionDescription(profile: TaskProfile): Promise<string | undefined> {
+    const made = this.sessionDescriptions.get(profile.file);
+    if (made !== undefined) return made;
+    const copy = profile.profile.recordedListing?.tested;
+    const read = (async () => {
+      if (copy === undefined) return undefined;
+      let bytes: Uint8Array;
+      try {
+        bytes = await this.o.source.file(
+          copy.repo,
+          copy.commit,
+          path.posix.join(copy.path, "SKILL.md")
+        );
+      } catch (error) {
+        if (error instanceof NoSuchFile) return undefined;
+        throw error;
+      }
+      const description = readFrontmatter(new TextDecoder().decode(bytes)).description;
+      return typeof description === "string" ? description : "";
+    })();
+    this.sessionDescriptions.set(profile.file, read);
+    return read;
   }
 
   /** The case a capture of `id` reads in the context of `profile`, and the arm it installs: the
@@ -1604,7 +1738,8 @@ class LoadTest {
       path: this.skillDir,
       name,
     };
-    const { context, claude: _claude, systemPrompt, ...rest } = profile;
+    // The recorded listing goes to the capture as lines (`recordedLines`), not in the profile.
+    const { context, claude: _claude, systemPrompt, recordedListing: _listing, ...rest } = profile;
     const recorded =
       systemPrompt === undefined || renamedFrom === null
         ? systemPrompt
@@ -1704,7 +1839,9 @@ class LoadTest {
     });
   }
 
-  /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. */
+  /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. A
+   *  capture made here lists each skill under the line the profile's recorded listing gives it
+   *  (`recordedLines`), else under a hint of the test's draw. */
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
@@ -1716,6 +1853,16 @@ class LoadTest {
     );
     let capture = savedCapture(files, arm);
     if (capture === undefined && models !== undefined) {
+      const { name, renamedFrom } = this.settings;
+      const lines = recordedLines(
+        profile.profile.recordedListing,
+        {
+          name,
+          ownName: renamedFrom ?? name,
+          description: skillFrontmatter(this.skillDir).description,
+        },
+        await this.sessionDescription(profile)
+      );
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
         outDir: path.dirname(files.body),
@@ -1725,6 +1872,8 @@ class LoadTest {
         models,
         hints: this.o.hints,
         ...(this.o.hintModel === undefined ? {} : { hintModel: this.o.hintModel }),
+        recordedLines: lines,
+        hintDraw: this.o.hintDraw,
         configFiles: this.o.configFiles,
         session: await this.sessionOf(task, profile),
       });
@@ -2024,6 +2173,7 @@ class LoadTest {
       requestPath: turn.path,
       requestHeaders: anthropicHeaders(turn.headers),
       listed,
+      listedSource: CLAUDE_LISTED,
       listing: [...listing].map(([name, description]) => ({ name, description })),
       otherRequests: requests
         .filter((request) => request !== turn)
@@ -2384,6 +2534,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   if (!Number.isInteger(o.runs) || o.runs < 1) {
     throw new Refused(`--runs ${o.runs} is not a whole number of 1 or more`);
   }
+  if (!Number.isInteger(o.hintDraw) || o.hintDraw < 1) {
+    throw new Refused(`--hint-draw ${o.hintDraw} is not a whole number of 1 or more`);
+  }
+  if (o.host === "claude" && o.hintDraw > 1) {
+    throw new Refused(
+      `--hint-draw ${o.hintDraw} is refused on Claude Code: it lists each skill under its description, not under a hint a model writes, so it has no hint to draw again`
+    );
+  }
   const slash = o.model.indexOf("/");
   const provider = slash < 0 ? "anthropic" : o.model.slice(0, slash);
   const modelId = o.model.slice(slash + 1);
@@ -2478,6 +2636,8 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     thinking: o.thinking,
     runs: o.runs,
     hintModel: o.host === "omp" ? (o.hintModel ?? null) : null,
+    // Claude Code lists descriptions: its settings name no hints, as before this rule.
+    ...(o.host === "omp" ? { hints: { listed: LISTED_LINES, draw: o.hintDraw } } : {}),
     sends: SENDS,
     skillReads: SKILL_READS,
   };
@@ -2565,16 +2725,38 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const outcomeOf = (task: Task): TaskOutcome =>
     taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs);
   let peak = 0;
-  // Each task's hint dollars, from its capture's record: read at the start, and again after the
-  // task's capture step, since its capture may have been made then.
+  // Each task's hint dollars, and the line its capture lists the tested skill under with where
+  // that line came from, from its capture's record: read at the start, and again after the task's
+  // capture step, since its capture may have been made then.
   const hintDollars = new Map<string, number>();
-  const readHintDollars = (task: Task): void => {
-    if (o.host !== "omp") return;
-    const record = loadCapturePaths(o.out, "omp", task.id).record;
+  const listedUnder = new Map<string, ListedUnder>();
+  const readCapture = (task: Task): void => {
+    const record = loadCapturePaths(o.out, o.host, task.id).record;
     if (!existsSync(record)) return;
-    hintDollars.set(task.id, hintUsd(JSON.parse(readFileSync(record, "utf8")) as CaptureRecord));
+    const raw: unknown = JSON.parse(readFileSync(record, "utf8"));
+    const saved = SavedListed.safeParse(raw).data;
+    if (o.host === "claude") {
+      if (saved?.listed !== undefined) {
+        listedUnder.set(task.id, { source: CLAUDE_LISTED, line: saved.listed });
+      }
+      return;
+    }
+    hintDollars.set(task.id, hintUsd(raw as CaptureRecord));
+    const entry = saved?.hints?.find((each) => each.skill === name);
+    if (entry !== undefined) {
+      listedUnder.set(task.id, { source: entry.source ?? NO_SOURCE, line: entry.hint });
+    }
   };
-  for (const task of tasks) readHintDollars(task);
+  for (const task of tasks) readCapture(task);
+  /** How many tasks list the tested skill under a recorded line, a drawn hint, and Claude Code's
+   *  description, and how many have no capture whose record says (`none`). */
+  const listedCounts = () => {
+    const sources = tasks.map((task) => listedUnder.get(task.id)?.source ?? "");
+    const recorded = sources.filter((source) => source.startsWith("recorded (")).length;
+    const drawn = sources.filter((source) => source.startsWith("drawn (")).length;
+    const description = sources.filter((source) => source === CLAUDE_LISTED).length;
+    return { recorded, drawn, description, none: tasks.length - recorded - drawn - description };
+  };
   /** Task `task`'s dollars so far at list price: its runs', its failed runs' (how many, and what
    *  their replies used) and its capture's hints'. */
   const spendOf = (task: Task): TaskSpend => {
@@ -2646,8 +2828,10 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           spend: spendOf(task),
           dropped: dropped.get(task.id) ?? null,
           listing: listings.get(task.id) ?? null,
+          listedUnder: listedUnder.get(task.id) ?? null,
         })),
         listing: listingCounts,
+        listedUnder: listedCounts(),
         dispatch: dispatchCounts,
         verdict,
         verdicts: {
@@ -2751,7 +2935,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           o.io.err(`load: ${what(task)}: ${messageFor(error)}`);
         }
       }
-      readHintDollars(task);
+      readCapture(task);
       ownMs.set(task.id, performance.now() - startedAt);
     }
     if (ready.length === 0) continue;
@@ -2843,6 +3027,14 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   }
   peak = Math.max(peak, o.io.peakRssBytes());
   const { verdict, usd } = writeSummary();
+  const under = listedCounts();
+  const noCapture =
+    under.none === 0 ? "" : `; ${under.none} tasks have no capture whose record says`;
+  test.say(
+    o.host === "omp"
+      ? `the listing line of ${name}: ${under.recorded} tasks list it under the line their session recorded, ${under.drawn} under a hint of draw ${o.hintDraw}${noCapture}`
+      : `the listing line of ${name}: ${under.description} tasks list it under its description, since Claude Code lists no hint${noCapture}`
+  );
   const small =
     count("need") < MIN_TASKS_PER_LABEL || count("near-miss") < MIN_TASKS_PER_LABEL
       ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`

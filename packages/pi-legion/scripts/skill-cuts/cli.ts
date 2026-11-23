@@ -29,7 +29,8 @@
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
- *       [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
+ *       [--hint-draw <n>] [--omp-config <file>]... [--claude <binary>]
+ *       [--context-session <store>:<path hash>]
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
@@ -2635,7 +2636,7 @@ const LOAD_USAGE = [
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
   "  [--context-session <store>:<path hash>] (the session a written task stands for: the one its profile was rebuilt from)",
-  "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]...",
+  "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] [--omp-config <file>]...",
   "  claude: [--claude <binary>]",
 ].join("\n");
 
@@ -2657,6 +2658,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       models: { type: "string" },
       omp: { type: "string" },
       "hint-model": { type: "string" },
+      "hint-draw": { type: "string" },
       "omp-config": { type: "string", multiple: true },
       claude: { type: "string" },
       repos: { type: "string" },
@@ -2686,6 +2688,10 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     host.data === "omp" && values.models !== undefined ? requiredOmp(values.omp) : undefined;
   if (values.runs !== undefined && !/^[1-9][0-9]*$/.test(values.runs)) {
     throw new Refused(`--runs ${values.runs} is not a whole number of 1 or more`);
+  }
+  const hintDraw = values["hint-draw"];
+  if (hintDraw !== undefined && !/^[1-9][0-9]*$/.test(hintDraw)) {
+    throw new Refused(`--hint-draw ${hintDraw} is not a whole number of 1 or more`);
   }
   if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Refused(`--skill ${given.skill} is not a directory`);
@@ -2732,6 +2738,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ...(omp === undefined ? {} : { omp }),
     ...(values.models === undefined ? {} : { models: values.models }),
     ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
+    hintDraw: hintDraw === undefined ? 1 : Number(hintDraw),
     configFiles: values["omp-config"] ?? [],
     claude: values.claude ?? "claude",
     requestLog: log,

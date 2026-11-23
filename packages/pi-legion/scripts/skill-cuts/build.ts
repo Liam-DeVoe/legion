@@ -426,11 +426,15 @@
  * <store>:<hash>` (required in the reader's mode; rebuilt before any reader call, and a session
  * that gives none fails the build), read at the build its listing measure's subagent was spawned
  * under (TOP_BUILD_RULE: that subagent, the earliest whose recorded prompt holds a listing, found
- * first with subagents.sql). The summary's `profiles` records
- * the context session, each task's profile and its evidence, why a task has none, and the GitHub
- * reads sent again after a transient failure by reason (`githubRetries`). A finished build gets no
- * profiles from `--profiles-out` afterwards; `--reprofile` (below) builds them again from its
- * tasks file.
+ * first with subagents.sql). Each profile keeps the listing its listing measure sets it against
+ * (`withRecordedListing`; load.ts's RecordedListing): the session's own recorded prompt's, else
+ * that subagent's, with where it was recorded, each listed skill's line, and the profile's copy
+ * of the tested skill's source; the prompt is already read, so this needs no store read. A load
+ * lists each skill under its recorded line where that line stands for the skill's text (load.ts).
+ * The summary's `profiles` records the context session, each task's profile and its evidence, why
+ * a task has none, and the GitHub reads sent again after a transient failure by reason
+ * (`githubRetries`). A finished build gets no profiles from `--profiles-out` afterwards;
+ * `--reprofile` (below) builds them again from its tasks file.
  * A task whose context does not list the tested skill tests nothing (`listsSkill`: a subagent's
  * recorded listing lacks its line, or another context's profile does not install it), so with
  * `--profiles-out` such a session is dropped (`skill-not-listed`) and counted: in the reader's
@@ -621,7 +625,7 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
-import { firstMessageLoad, Task } from "./load";
+import { firstMessageLoad, type RecordedListing, Task } from "./load";
 import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
@@ -3693,18 +3697,26 @@ function stepBuild(
   return topBuild(lines, start, index, how);
 }
 
-/** The names of the `<skills>` listing of the recorded prompt `blocks`, as capture.ts's
- *  `skillListing` reads a body's (`- <name>: <text>`), in order. */
-function listingNames(blocks: readonly string[]): string[] {
-  const names: string[] = [];
+/** The lines of the `<skills>` listing of the recorded prompt `blocks` (`- <name>: <text>`), as
+ *  capture.ts's `skillListing` reads a body's: each name with the text it is listed under, the
+ *  first line of each name, in order. */
+function listingLines(blocks: readonly string[]): { name: string; text: string }[] {
+  const lines: { name: string; text: string }[] = [];
   for (const text of blocks) {
     const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
     for (const line of block?.split("\n") ?? []) {
-      const name = /^- ([^:\s]+): /.exec(line)?.[1];
-      if (name !== undefined && !names.includes(name)) names.push(name);
+      const [, name, listed] = /^- ([^:\s]+): (.*)$/.exec(line) ?? [];
+      if (name === undefined || listed === undefined) continue;
+      if (!lines.some((each) => each.name === name)) lines.push({ name, text: listed });
     }
   }
-  return names;
+  return lines;
+}
+
+/** The names of the `<skills>` listing of the recorded prompt `blocks`, in order
+ *  (`listingLines`). */
+function listingNames(blocks: readonly string[]): string[] {
+  return listingLines(blocks).map((line) => line.name);
 }
 
 /** Where Oh My Pi says a subagent's listing is its parent's, and what the measure compares. */
@@ -3719,6 +3731,22 @@ const NAMES_ONLY =
  *  it was asked. */
 type SubagentRead = { readonly found: SubagentsFound | undefined } | { readonly unread: string };
 
+/** The recorded listing a session's measure sets its profile against (`listingMeasure`): its own
+ *  recorded prompt's blocks, else those of the subagent `read` found, the earliest spawned under
+ *  the build its profile is read at (`subagent`); undefined where neither is, and where that
+ *  build is not known. */
+function measuredAgainst(
+  input: ListingInput,
+  read: SubagentRead
+):
+  | { readonly blocks: readonly string[]; readonly subagent?: SubagentsFound["listing"] }
+  | undefined {
+  if (input.recorded !== undefined) return { blocks: input.recorded };
+  if (input.build !== undefined && "unknown" in input.build) return undefined;
+  const subagent = "found" in read ? read.found?.listing : undefined;
+  return subagent === undefined ? undefined : { blocks: subagent.blocks, subagent };
+}
+
 /** The listing measure of one session (LISTING_MEASURE): against its own recorded listing, else
  *  against the listing of the subagent `read` found, the earliest spawned under the build its
  *  profile is read at (`input.build`), else not measurable, with why. */
@@ -3728,8 +3756,8 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   const unknown = build !== undefined && "unknown" in build ? build.unknown : undefined;
   const words = build === undefined || "unknown" in build ? "at any time" : build.words;
   const found = "found" in read ? read.found : undefined;
-  const subagent = unknown === undefined ? found?.listing : undefined;
-  const against = input.recorded ?? subagent?.blocks;
+  const against = measuredAgainst(input, read);
+  const subagent = against?.subagent;
   const digest = `the session's first system-prompt-digest is ${input.sessionDigest ?? "none"}, and the rebuilt prompt has no digest: the build makes no prompt`;
   let measure: ListingMeasure;
   if (against === undefined) {
@@ -3754,7 +3782,7 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
       why: `the session records no system prompt, only its digest; ${digest}; ${none}`,
     };
   } else {
-    const recorded = listingNames(against);
+    const recorded = listingNames(against.blocks);
     const missing = recorded.filter((name) => !listed.includes(name));
     const from =
       input.recorded !== undefined || subagent === undefined || found === undefined
@@ -3785,6 +3813,35 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   return {
     item: LISTING_MEASURE,
     source: JSON.stringify(taken.length === 0 ? measure : { ...measure, fromRecorded: taken }),
+  };
+}
+
+/** `built` with its profile keeping the listing its measure sets it against (`measuredAgainst`;
+ *  load.ts's RecordedListing), where it has one: where that listing was recorded, each of its
+ *  lines with its secrets taken out, and the profile's copy of the tested skill's source. The
+ *  lines come from the profile's own recorded prompt where the listing is the session's, whose
+ *  secrets `sessionProfile` took out and counted already (`scrubbed({ systemPrompt })`), so none
+ *  is taken out again; else from the blocks as the store gave them (a subagent's), whose secrets
+ *  are taken out here and counted in `secretsRemoved`. This is the profile a task's file holds. */
+function withRecordedListing(built: SessionProfile, read: SubagentRead): SessionProfile {
+  const against = measuredAgainst(built.listing, read);
+  if (against === undefined) return built;
+  const { subagent } = against;
+  const secrets = scrubbed(
+    subagent === undefined ? (built.profile.systemPrompt ?? against.blocks) : against.blocks
+  );
+  const recordedListing: RecordedListing = {
+    source:
+      subagent === undefined
+        ? { kind: "session" }
+        : { kind: "subagent", pathHash: subagent.pathHash },
+    lines: listingLines(secrets.value),
+    ...(built.testedCopy === undefined ? {} : { tested: built.testedCopy }),
+  };
+  return {
+    ...built,
+    profile: { ...built.profile, recordedListing },
+    secretsRemoved: built.secretsRemoved + secrets.removed,
   };
 }
 
@@ -5838,12 +5895,17 @@ const WrittenProfile = Profile.extend({ context: Case.shape.context });
 /** A rebuilt task profile its readers would refuse (WrittenProfile), which is never written. */
 class ProfileRefused extends Error {}
 
-/** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile and the
- *  context), the evidence for each part, the secrets taken out of it, whether a load test of the
- *  skill in it lists the skill (`listsSkill`), and the session's store and path hash, by which its
- *  subagents are asked for. */
+/** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile, the context,
+ *  and, once `withRecordedListing` adds it, the listing its measure sets it against), the
+ *  evidence for each part, the secrets taken out of it, whether a load test of the skill in it
+ *  lists the skill (`listsSkill`), the session's store and path hash, by which its subagents are
+ *  asked for, and the profile's copy of the tested skill's source (`testedCopy`: the entry listed
+ *  under its name, which the profile's skills leave out), where it had one. */
 export interface SessionProfile {
-  readonly profile: Profile & { readonly context: string };
+  readonly profile: Profile & {
+    readonly context: string;
+    readonly recordedListing?: RecordedListing;
+  };
   readonly evidence: Evidence[];
   readonly secretsRemoved: number;
   /** What its listing measure is made from (`listingMeasure`). */
@@ -5851,6 +5913,7 @@ export interface SessionProfile {
   readonly listed: boolean;
   readonly store: string;
   readonly pathHash: string;
+  readonly testedCopy?: ProfileSkill;
 }
 
 /**
@@ -5965,6 +6028,7 @@ async function sessionProfile(
   // Each copy of the tested skill's source, the load test installs (cases.ts's `testedCopy`); a
   // copy of another source that shares its name stays.
   const tested = testedCopy(profiled.profile.skills, skill);
+  const testedSource = profiled.profile.skills.find((each) => listedName(each) === skill);
   const profile = {
     ...profiled.profile,
     ...recorded,
@@ -6011,6 +6075,9 @@ async function sessionProfile(
         )[0] ?? null,
       ...(build === undefined ? {} : { build }),
     },
+    // The copy listed under the tested skill's name: the recorded listing's line of it stands for
+    // that copy's text (`withRecordedListing`).
+    ...(testedSource === undefined ? {} : { testedCopy: testedSource }),
   };
 }
 
@@ -7981,10 +8048,9 @@ async function rebuiltContext(
       `${named}: its rebuilt context (${built.profile.context}) does not list ${skill}, so a written task in it would test nothing; give a session whose context lists it`
     );
   }
-  built.evidence.push(
-    listingMeasure(built.listing, unplaced === undefined ? { found } : { unread: unplaced })
-  );
-  return { store, hash, pathHash: pathHash(filePath), built };
+  const read: SubagentRead = unplaced === undefined ? { found } : { unread: unplaced };
+  built.evidence.push(listingMeasure(built.listing, read));
+  return { store, hash, pathHash: pathHash(filePath), built: withRecordedListing(built, read) };
 }
 
 /** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
@@ -8119,23 +8185,19 @@ async function writeProfiles<T extends TaskLine>(
       );
       continue;
     }
-    const file = path.resolve(plan.dir, `${task.id}.json`);
-    writeWhole(file, json(built.profile));
     const between = betweenOf(built.listing);
+    const read: SubagentRead =
+      between === undefined
+        ? unasked(built.listing)
+        : { found: subagents.get(`${built.store}\0${betweenKey(built.pathHash, between)}`) };
+    // A written task's profile is the context session's, which keeps its listing already.
+    const listed = task.source === "written" ? built : withRecordedListing(built, read);
+    const file = path.resolve(plan.dir, `${task.id}.json`);
+    writeWhole(file, json(listed.profile));
     const evidence =
       task.source === "written"
         ? built.evidence
-        : withMeasure(
-            built.evidence,
-            listingMeasure(
-              built.listing,
-              between === undefined
-                ? unasked(built.listing)
-                : {
-                    found: subagents.get(`${built.store}\0${betweenKey(built.pathHash, between)}`),
-                  }
-            )
-          );
+        : withMeasure(built.evidence, listingMeasure(built.listing, read));
     measures.push(measureIn(evidence));
     notes.push({
       task: task.id,
@@ -8143,7 +8205,7 @@ async function writeProfiles<T extends TaskLine>(
       profile: file,
       context: built.profile.context,
       skills: built.profile.skills.length,
-      ...(task.source === "written" ? {} : { secretsRemoved: built.secretsRemoved, evidence }),
+      ...(task.source === "written" ? {} : { secretsRemoved: listed.secretsRemoved, evidence }),
     });
     out.push({ ...task, profile: file });
   }
@@ -8866,19 +8928,13 @@ async function reprofileTasks(
           continue;
         }
         const between = betweenOf(built.listing);
+        const read: SubagentRead =
+          between === undefined
+            ? unasked(built.listing)
+            : { found: subagents.get(`${task.store}\0${betweenKey(task.pathHash, between)}`) };
         rebuilt = {
-          text: json(built.profile),
-          evidence: withMeasure(
-            built.evidence,
-            listingMeasure(
-              built.listing,
-              between === undefined
-                ? unasked(built.listing)
-                : {
-                    found: subagents.get(`${task.store}\0${betweenKey(task.pathHash, between)}`),
-                  }
-            )
-          ),
+          text: json(withRecordedListing(built, read).profile),
+          evidence: withMeasure(built.evidence, listingMeasure(built.listing, read)),
         };
       }
     }

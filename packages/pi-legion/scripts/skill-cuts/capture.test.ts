@@ -1496,6 +1496,206 @@ export default function bootProbe(pi) {
     ROW_TIMEOUT_MS
   );
 
+  // The rows on a recorded listing line and on the draw (capture.ts's header, "A recorded listing
+  // line" and "The draw"). Each captures cases of its own ids under out-recorded.
+  /** The lines a made-up session recorded for alpha and beta. */
+  const ALPHA_LINE = "Use for the alpha checklist, as the session listed it.";
+  const BETA_LINE = "Use for the beta greeting, as the session listed it.";
+  /** The capture of case `id`'s arm `arm` with `extra` options, against the cache `cacheDir`
+   *  (the shared one, which holds each text's hint of draw 1 once `captures` has run). */
+  const recordedCapture = async (
+    id: string,
+    arm: ArmName,
+    extra: Partial<CaptureOptions>,
+    cacheDir = path.join(dir, "cache")
+  ): Promise<Captured> => {
+    await captures();
+    const c = f1Case(id);
+    const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+    const made = await captureBody(c, buildArm(c, arm, dirs, dir), {
+      omp: binary(),
+      outDir: path.join(dir, "out-recorded"),
+      scratchDir: path.join(dir, "scratch"),
+      cacheDir,
+      source: localSource(path.join(dir, "repos")),
+      models: path.join(dir, "models.yml"),
+      hints,
+      session: SESSION,
+      ...extra,
+    });
+    return { capture: made, profile: profileHints(made) };
+  };
+  /** Oh My Pi's key of `skill`'s old text: the one it stored c1's drawn hint under. */
+  const ompKeyOf = async (skill: string) =>
+    (await captures()).old.capture.record.hints.find((hint) => hint.skill === skill)?.ompKey;
+
+  // Catches: a skill listed under a drawn hint though its session recorded its line, or a line
+  // written under another key than Oh My Pi's, so that Oh My Pi lists the cached hint or asks a
+  // model; and a recorded cut-down description taken for no line.
+  test(
+    "a skill with a recorded line is listed under that line in place of its cached hint, written under Oh My Pi's key of the skill text; a recorded cut-down description is listed as that cut-down description; no model is asked; and the record names each line's source",
+    async () => {
+      await captures();
+      const asked = hintRequests.length;
+      const oldText = skillFrontmatter(path.join(dir, "old")).description;
+      const { capture, profile } = await recordedCapture("recorded-1", "old", {
+        recordedLines: [
+          { name: "beta", text: BETA_LINE, from: "session" },
+          // The arm's own skill: its line names the text it was recorded for, the arm's.
+          { name: "alpha", text: PREVIEWS.alpha, from: "subagent 0f1e2d3c", description: oldText },
+        ],
+      });
+      expect(Object.fromEntries(skillListing(capture.body))).toEqual({
+        alpha: PREVIEWS.alpha,
+        beta: BETA_LINE,
+      });
+      // The cache holds each text's hint of draw 1, and so Oh My Pi's key of it: no hint run.
+      expect(hintRequests).toHaveLength(asked);
+      expect(capture.record.runs).toBe(1);
+      expect(capture.record.hintCalls).toEqual([]);
+      expect(capture.record.otherRequests).toEqual([]);
+      const [alphaKey, betaKey] = [await ompKeyOf("alpha"), await ompKeyOf("beta")];
+      expect(alphaKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(capture.record.hints).toEqual([
+        {
+          skill: "alpha",
+          hint: PREVIEWS.alpha,
+          key: expect.any(String),
+          ompKey: alphaKey ?? "",
+          written: false,
+          source: "recorded (subagent 0f1e2d3c)",
+        },
+        {
+          skill: "beta",
+          hint: BETA_LINE,
+          key: expect.any(String),
+          ompKey: betaKey ?? "",
+          written: false,
+          source: "recorded (session)",
+        },
+      ]);
+      expect(profile.get(alphaKey ?? "")).toBe(PREVIEWS.alpha);
+      expect(profile.get(betaKey ?? "")).toBe(BETA_LINE);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a recorded line of a skill text no hint was drawn for left to Oh My Pi's preview, or
+  // drawn from the model, for want of Oh My Pi's key.
+  test(
+    "a recorded line whose key the runner has not read is Oh My Pi's answer to its hint request in the hint run, no model asked; the key Oh My Pi stores it under is kept in the key cache, and the next capture reads it there and makes no hint run",
+    async () => {
+      await captures();
+      const asked = hintRequests.length;
+      const cacheDir = path.join(dir, "cache-recorded");
+      const oldText = skillFrontmatter(path.join(dir, "old")).description;
+      const recordedLines = [
+        { name: "alpha", text: ALPHA_LINE, from: "session", description: oldText },
+        { name: "beta", text: BETA_LINE, from: "session" },
+      ];
+      const first = await recordedCapture("recorded-2", "old", { recordedLines }, cacheDir);
+      const second = await recordedCapture("recorded-3", "old", { recordedLines }, cacheDir);
+      expect(hintRequests).toHaveLength(asked);
+      expect([first.capture.record.runs, second.capture.record.runs]).toEqual([2, 1]);
+      for (const { capture, profile } of [first, second]) {
+        expect(Object.fromEntries(skillListing(capture.body))).toEqual({
+          alpha: ALPHA_LINE,
+          beta: BETA_LINE,
+        });
+        expect(capture.record.hintCalls).toEqual([]);
+        expect(capture.record.otherRequests).toEqual([]);
+        for (const [skill, line] of [
+          ["alpha", ALPHA_LINE],
+          ["beta", BETA_LINE],
+        ] as const) {
+          const entry = capture.record.hints.find((hint) => hint.skill === skill);
+          // Oh My Pi's key of the skill text: the one it stored c1's drawn hint under.
+          expect(entry?.ompKey).toBe((await ompKeyOf(skill)) ?? "");
+          expect(profile.get(entry?.ompKey ?? "")).toBe(line);
+          const kept = path.join(cacheDir, "hint-keys", `${entry?.key}.json`);
+          expect(JSON.parse(readFileSync(kept, "utf8"))).toMatchObject({
+            name: skill,
+            ompKey: entry?.ompKey,
+          });
+        }
+      }
+      // No hint was drawn, so none is cached.
+      expect(existsSync(path.join(cacheDir, "hints"))).toBe(false);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a recorded line listed for an arm whose text the session never had, or for the
+  // arm's own skill with no text named, which would list a line made from another text.
+  test(
+    "an arm whose text differs from the one the session's line was recorded for, and an arm's own skill whose line names no text, get the hint of their draw, while the profile's other skill keeps its recorded line",
+    async () => {
+      const { old, fresh } = await captures();
+      const oldText = skillFrontmatter(path.join(dir, "old")).description;
+      const beta = { name: "beta", text: BETA_LINE, from: "session" };
+      const changed = await recordedCapture("recorded-4", "new", {
+        recordedLines: [
+          { name: "alpha", text: ALPHA_LINE, from: "session", description: oldText },
+          beta,
+        ],
+      });
+      const unnamed = await recordedCapture("recorded-5", "old", {
+        recordedLines: [{ name: "alpha", text: ALPHA_LINE, from: "session" }, beta],
+      });
+      for (const [each, drawn] of [
+        [changed, fresh],
+        [unnamed, old],
+      ] as const) {
+        const listing = skillListing(each.capture.body);
+        expect(listing.get("alpha")).toBe(profileHint(drawn, "alpha") as string);
+        expect(listing.get("beta")).toBe(BETA_LINE);
+        expect(each.capture.record.hints.map(({ skill, source }) => ({ skill, source }))).toEqual([
+          { skill: "alpha", source: "drawn (draw 1)" },
+          { skill: "beta", source: "recorded (session)" },
+        ]);
+      }
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // Catches: a second draw that reads draw 1's cached hint, so that two draws are one; one that
+  // writes over draw 1's file; or one that draws a hint where the session recorded a line.
+  test(
+    "draw 2 asks the hint model again for a skill text draw 1 has cached, caches that hint in a file of its own, and keeps a recorded line unchanged",
+    async () => {
+      const { old } = await captures();
+      const asked = hintRequests.length;
+      const { capture, profile } = await recordedCapture("recorded-6", "old", {
+        hintDraw: 2,
+        recordedLines: [{ name: "beta", text: BETA_LINE, from: "session" }],
+      });
+      expect(hintRequests.slice(asked)).toEqual(["alpha"]);
+      const drawOne = old.capture.record.hints.find((hint) => hint.skill === "alpha");
+      const drawTwo = capture.record.hints.find((hint) => hint.skill === "alpha");
+      expect(drawTwo).toMatchObject({
+        written: true,
+        source: "drawn (draw 2)",
+        ompKey: drawOne?.ompKey ?? "",
+      });
+      expect(drawTwo?.hint).not.toBe(drawOne?.hint);
+      expect(drawTwo?.key).not.toBe(drawOne?.key);
+      const listing = skillListing(capture.body);
+      expect(listing.get("alpha")).toBe(drawTwo?.hint as string);
+      expect(listing.get("beta")).toBe(BETA_LINE);
+      expect(profile.get(drawOne?.ompKey ?? "")).toBe(drawTwo?.hint as string);
+      const cached = (key: string | undefined) =>
+        JSON.parse(readFileSync(path.join(dir, "cache", "hints", `${key}.json`), "utf8"));
+      expect(cached(drawOne?.key)).toMatchObject({ hint: drawOne?.hint });
+      expect(cached(drawOne?.key).draw).toBeUndefined();
+      expect(cached(drawTwo?.key)).toMatchObject({
+        hint: drawTwo?.hint,
+        ompKey: drawOne?.ompKey,
+        draw: 2,
+      });
+    },
+    ROW_TIMEOUT_MS
+  );
+
   // Catches: a context file of a parent of the working directory that Oh My Pi never reads (the
   // capture run at the checkout's root), one shown at the capture's scratch path, or a file of the
   // working directory not named AGENTS.md or CLAUDE.md sent in the appended system prompt.
