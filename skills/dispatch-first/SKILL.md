@@ -9,16 +9,14 @@ description: "Use when a session has the dispatch command."
 
 - Before your first `dispatch` command in this session, read `skill://dispatch`.
 - Before you plan, file an issue, ask, post a finding or start work, run `dispatch search`.
-- **Each query word must match.** Use two or three: the thing and what is wrong.
-- Never paste a draft.
+- **Each query word must match.** Use two or three: the thing and what is wrong. Never paste a draft.
 
 ```bash
 dispatch search --query 'broadcast send order'
 dispatch search --query 'reviewer threads OR review comments'
 ```
 
-- **No hits:** remove a word before adding one.
-- Try two or three wordings before deciding nothing exists.
+- **No hits:** remove a word before adding one. Try two or three wordings before deciding nothing exists.
 - Open each hit that can be yours with `dispatch read --issue KEY`. Then open its parent (`child_of` under `Links:`, or a document's `Issue:`), with its status and recent events.
 
 ## What you find
