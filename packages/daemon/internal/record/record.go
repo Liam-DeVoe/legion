@@ -509,6 +509,17 @@ func (i Issue) RoleAt(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
 
+// StepIsOf says whether the step the issue stands at is role's to report on, where the phase alone
+// cannot say: at phase.Step, every role the deployment defines runs as the one phase, so only the
+// role of the running step (StepRole) works it, and a report or a task of another such role is of
+// a step the task has left or not reached. Every other phase is one role's, which the caller reads
+// from the phase, so it answers true there. It is the one statement of that rule: the engine's
+// judgement of a completion (workflow's handoff), the completion route's fallback to a held task
+// (api's heldTaskNotCurrent) and the judges of queued work (HoldsQueued) all read it.
+func (i Issue) StepIsOf(role claim.Role) bool {
+	return i.Phase != phase.Step || role == i.StepRole
+}
+
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
 // Dispatch's time of it (At), each zero when unknown. Dispatch appends an issue's events under the
 // issue's row lock, so their sequence is the order they commit in. The time is the start of the
@@ -2799,7 +2810,7 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
+// queuedFor and, at the phase step, at a step of role (StepIsOf). Every role a deployment defines
 // runs as step, so a start or a task queued for the step of one role names a phase that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
@@ -2812,7 +2823,7 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
 // brings a claim back for a start (supervise.StartWork, through PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+	return i.Phase == queuedFor && i.StepIsOf(role)
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still

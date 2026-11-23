@@ -1049,11 +1049,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left, which pastCompletion answers. At
-	// step, a completion is current only from the role of the running step (Issue.StepRole): two
+	// step, a completion is current only from the role of the running step (Issue.StepIsOf): two
 	// steps of roles the deployment defines both run as step, and the other's report is of a step
 	// the task has left.
 	reported := phase.Of(fact.Role, issue.Phase)
-	current := reported == issue.Phase && (issue.Phase != phase.Step || fact.Role == issue.StepRole)
+	current := reported == issue.Phase && issue.StepIsOf(fact.Role)
 	var late *intake.Refusal
 	if !current {
 		var now *intake.Refusal
