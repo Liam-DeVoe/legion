@@ -1599,20 +1599,23 @@ type Machine struct {
 	// connSeen is how much of the worker's turns the claim's connection shows the machine
 	// (connView, connview.go): whole, so the bounds that judge the worker by its frames run; or cut,
 	// by a daemon start before the shim's first hello (NewMachine), by a close (closeView), or by a
-	// reconnect hello over a pending task until the agent's answer or a turn frame (askView). It is
+	// reconnect hello over a pending task until the agent's answer or a turn frame (helloView). It is
 	// memory only, as the connection is. Every change of it goes through setView, which logs the
 	// changes that cross whole for the cost reading.
 	connSeen connView
-	// closedAt is when the claim's connection last closed (closeView), which a ready that comes
-	// over that cut view counts the reconnect deadline from (readyView). It is read only while the
-	// view is closed, and is memory only, as connSeen is.
+	// closedAt is when the claim's connection last closed (closeView), which the reconnect deadline
+	// a close sets is counted from, at the close and at a ready that comes over that cut view
+	// (reconnectFromClose, readyView). It is read only while the view is closed, and is memory only,
+	// as connSeen is.
 	closedAt time.Time
-	// helloAsked is whether the hello of the claim's connection asked its agent whether it is in a
-	// turn over a pending task (askView): its own ask, or a daemon start's own that serves it
-	// (startAskServes). No sweep asks that connection again (observe), since the reconnect deadline
-	// armed at that hello bounds the ask, and the answer, when it comes, ends the daemon start's own
-	// asks with it (answerView). A close clears it (closeView), and so does the let-go of the
-	// process (letGo); it is memory only, as connSeen is.
+	// helloAsked is whether the hello of the claim's connection opened it over a pending task
+	// (helloView), so that the hello asks its agent whether it is in a turn (askView), or a daemon
+	// start's own ask that serves it does (startAskServes). It is set before any step of the
+	// hello's decision that can fail, so a hello whose decision failed before its ask is one too. No
+	// sweep asks that connection again (observe), since the reconnect deadline armed at that hello
+	// bounds the ask, and the answer, when it comes, ends the daemon start's own asks with it
+	// (answerView). A close clears it (closeView), and so does the let-go of the process (letGo); it
+	// is memory only, as connSeen is.
 	helloAsked bool
 	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
 	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),

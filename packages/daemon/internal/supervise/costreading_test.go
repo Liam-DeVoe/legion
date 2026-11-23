@@ -955,7 +955,7 @@ func TestTaskCostLogStopsTheClockAtACloseAndStartsItWholeAtTheAnswerOfNoTurn(t *
 }
 
 // A close over no pending task, and the hello after it over none: that hello asks nothing, and the
-// view is whole at it (askView), which the machine logs (viewWholeLine), so the reading's clocks
+// view is whole at it (helloView), which the machine logs (viewWholeLine), so the reading's clocks
 // run again from there. A task written after it is taken and no turn starts: the daemon charges
 // the second wait one bound after the take, takes the task back and writes it again, and the
 // reading passes the charge. The worker reports the value written again seen and leaves it a bound
