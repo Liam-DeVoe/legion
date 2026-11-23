@@ -343,7 +343,8 @@ build_world() {
     iam.serviceAccounts.signJwt iam.serviceAccounts.signBlob iam.serviceAccounts.actAs iam.serviceAccounts.implicitDelegation
     iam.serviceAccountKeys.create cloudsql.users.create cloudsql.users.update secretmanager.versions.access storage.objects.get
     gkehub.memberships.create gkehub.memberships.update resourcemanager.projects.setIamPolicy resourcemanager.folders.setIamPolicy
-    resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy iam.roles.update)
+    resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy secretmanager.secrets.setIamPolicy iam.roles.update
+    deploymentmanager.deployments.create deploymentmanager.deployments.update)
   echo '{}' >"$world/roles.json"
   role roles/container.admin "${container_admin[@]}"
   role roles/owner "${owner_perms[@]}"
@@ -363,6 +364,11 @@ build_world() {
   role roles/storage.objectViewer resourcemanager.projects.get resourcemanager.projects.list storage.objects.get storage.objects.list
   role roles/container.serviceAgent container.pods.create container.pods.update container.serviceAccounts.createToken container.secrets.get
   role roles/viewer container.pods.get resourcemanager.projects.get storage.objects.list
+  # Its deployments.* names read with `gcloud iam roles describe roles/deploymentmanager.editor` on
+  # 2026-11-23.
+  role roles/deploymentmanager.editor deploymentmanager.deployments.cancelPreview deploymentmanager.deployments.create \
+    deploymentmanager.deployments.delete deploymentmanager.deployments.get deploymentmanager.deployments.list \
+    deploymentmanager.deployments.stop deploymentmanager.deployments.update resourcemanager.projects.get
   # Its names checked against `gcloud iam roles describe roles/gkehub.admin` on 2026-11-21.
   role roles/gkehub.admin gkehub.features.create gkehub.features.update gkehub.memberships.create gkehub.memberships.delete \
     gkehub.memberships.get gkehub.memberships.list gkehub.memberships.update gkehub.membershipbindings.create \

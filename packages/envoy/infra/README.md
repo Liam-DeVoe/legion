@@ -4696,7 +4696,9 @@ the secrets broker's, and each
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
 certificate for any user, mint the operator's Google service account's token, make a guarded
 namespace on another cluster of the project or of the workload pool's fleet, register a cluster to
-that fleet or write the namespaces and RBAC its scopes put on the members, set IAM policy over any
+that fleet or write the namespaces and RBAC its scopes put on the members, make or change a
+Deployment Manager deployment on the project (Deployment Manager creates a deployment's resources as
+the project's Google APIs service agent, which holds `roles/editor` there), set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, whether a role grants the
 right outright or limits it to an object by name, and each principal that can become one of those:
 through IAM impersonation, reported as the chain, by minting the token of a Google service

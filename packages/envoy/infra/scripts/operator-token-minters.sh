@@ -32,9 +32,9 @@
 #                     roles/container.admin's includedPermissions, the Google service account ones
 #                     in roles/iam.serviceAccountTokenCreator, ...KeyAdmin and ...User, the hold
 #                     writers' in roles/cloudsql.admin, roles/secretmanager.secretAccessor and
-#                     roles/storage.objectViewer, and the fleet's in roles/gkehub.admin. A name the
-#                     role does not hold would find no holder, which reads as clean, so it fails the
-#                     run instead.
+#                     roles/storage.objectViewer, the fleet's in roles/gkehub.admin, and Deployment
+#                     Manager's in roles/deploymentmanager.editor. A name the role does not hold would
+#                     find no holder, which reads as clean, so it reads UNKNOWN instead (exit 2).
 #   code: RBAC        What code declares, first: each --rbac-render file (the JSON render of the
 #                     program that declares the cluster's Roles and bindings, a List, an array or a
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
@@ -76,6 +76,12 @@
 #                     there, by which a holder grants itself any of them. It runs before the RBAC
 #                     steps, which ask who may impersonate each user and Google service account it
 #                     lists, by name: GKE's IAM authorizer judges an impersonated user by its own IAM.
+#   live: Deploy-     Policy Analyzer's holders, on the project, of deploymentmanager.deployments.create
+#     ment Manager    and update, judged as the GKE IAM step judges its own: Deployment Manager creates
+#                     a deployment's resources with the credentials of the project's Google APIs
+#                     service agent (<number>@cloudservices.gserviceaccount.com), not the caller's,
+#                     and that agent holds roles/editor on the project, so either permission acts as
+#                     roles/editor there. Each finding names that route.
 #   live: minters     Policy Analyzer's holders, on --gsa or above it, of
 #                     iam.serviceAccounts.getAccessToken, getOpenIdToken, signJwt, signBlob, actAs,
 #                     implicitDelegation, iam.serviceAccountKeys.create and setIamPolicy. They must
