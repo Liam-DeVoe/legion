@@ -219,9 +219,7 @@ test("a merge appears without a reload, and the page issues no delivery GET @pr"
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const deliveryRequests: string[] = [];
@@ -459,9 +457,7 @@ test("the freshness row says Live with the last change, and Reconnecting while d
 }) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -486,9 +482,7 @@ test("on a phone the delivery page shows a merge without a reload", async ({
 }, testInfo) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(
-    `UPDATE delivery_settings SET last_event_at = now(), last_reconcile_at = now() WHERE singleton`
-  );
+  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 

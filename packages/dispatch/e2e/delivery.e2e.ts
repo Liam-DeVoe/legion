@@ -297,9 +297,8 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
   // here, word for word what that pass writes, so the page the finger meets is already the one
   // the pass leaves and a pass landing mid-row moves nothing (INFRA-1260).
   await sql(
-    `UPDATE delivery_settings
-       SET last_error = 'the GitHub App is not installed on acme/widgets'
-     WHERE singleton`
+    `UPDATE project_deploy_sources
+       SET last_error = 'the GitHub App is not installed on acme/widgets'`
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -379,10 +378,9 @@ test("on a phone a reconcile error arriving under the finger widens nothing @pho
   // socket instead: reconcile.go's RecordReconcileError leaves last_reconcile_at set and
   // last_error naming the failure, and the PRs row carries that name.
   await sql(
-    `UPDATE delivery_settings
+    `UPDATE project_deploy_sources
        SET last_reconcile_at = '2024-06-01T01:00:00Z',
-           last_error = 'the installation lacks Actions: read on acme/widgets'
-     WHERE singleton`
+           last_error = 'the installation lacks Actions: read on acme/widgets'`
   );
   await expect(page.locator('[data-source="prs"]')).toHaveText(
     /the installation lacks Actions: read on acme\/widgets/
@@ -467,10 +465,9 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
     "acme/widgets": { contents: "read", installation_id: 690, pull_requests: "read" },
   });
   await sql(
-    `UPDATE delivery_settings
+    `UPDATE project_deploy_sources
        SET last_reconcile_at = '2024-06-01T01:00:00Z',
-           last_error = 'the installation lacks Actions: read on acme/widgets'
-       WHERE singleton`
+           last_error = 'the installation lacks Actions: read on acme/widgets'`
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -510,57 +507,94 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   await context.close();
 });
 
-// @pr: Live delivery: the Delivery page from nothing - the setup form saved against the GitHub App's own read, then the timeline it draws.
-test("an unconfigured Delivery page sets itself up from its form and then shows the timeline @pr", async ({
+// @pr: Live delivery: the Delivery page from nothing - a project's settings tab saved against the GitHub App's own read, then the timeline it draws.
+test("an unconfigured Delivery page links to the project settings tabs, and a save there brings the timeline @pr", async ({
   browser,
 }, testInfo) => {
-  // The save proves the GitHub App can read the deploy repository (the installation with
+  // The save proves the GitHub App can read each source's repository (the installation with
   // Contents: read, a minted token, then the repository read under it); the fake answers all
   // three for a seeded repository and 404s an unseeded one.
   await seedFakeGithub({ "acme/widgets": { contents: "read", installation_id: 301 } });
+  await createProject({ key: "ACME", name: "Acme" });
+  await putProjectDefaultRepository("ACME", "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
+    // No project has delivery on: the page links to each project's settings tab.
     await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
     await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
-    await expect(page.getByLabel("Deploy repository")).toHaveValue("");
-    await expect(page.getByLabel("Deploy repository")).toHaveAttribute("placeholder", "owner/repo");
+    await page.getByRole("link", { name: "Acme settings" }).click();
+    await expect(page).toHaveURL(/\/projects\/ACME\/settings$/);
+    const delivery = page.getByRole("switch", { name: "Delivery" });
+    await expect(delivery).not.toBeChecked();
+    await delivery.check();
+    const source = page.getByRole("group", { name: "Deploy source 1" });
+    const repository = source.getByLabel("Repository", { exact: true });
+    await expect(repository).toHaveValue("");
+    await expect(repository).toHaveAttribute("placeholder", "acme/widgets");
 
     // A repository the App cannot read is refused with the server's own reason, and nothing is
-    // stored: the page still offers the setup form.
-    await page.getByLabel("Deploy repository").fill("acme/unseen");
-    await page.getByLabel("Deploy workflow").fill(".github/workflows/deploy.yml");
-    await page
-      .getByLabel("Production jobs")
+    // stored: the switch and the draft stay.
+    await repository.fill("acme/unseen");
+    await source
+      .getByLabel("Deploy workflow", { exact: true })
+      .fill(".github/workflows/deploy.yml");
+    await source
+      .getByLabel("Production jobs", { exact: true })
       .fill("widgets-release / widgets-release\nrelease / release");
-    await page.getByLabel("Production apply step").fill("Run ./.github/actions/apply");
-    await page.getByLabel("PR checks workflow").fill(".github/workflows/pr-checks.yml");
-    await page.getByLabel("Population authors").fill("octocat\noctocat-agent[bot]");
-    await page.getByLabel("Excluded repositories").fill("acme/dojo");
+    await source
+      .getByLabel("Production apply step", { exact: true })
+      .fill("Run ./.github/actions/apply");
+    await source
+      .getByLabel("PR checks workflow", { exact: true })
+      .fill(".github/workflows/pr-checks.yml");
+    await page
+      .getByLabel("Population authors", { exact: true })
+      .fill("octocat\noctocat-agent[bot]");
+    await page.getByLabel("Excluded repositories", { exact: true }).fill("acme/dojo");
     await page.getByRole("button", { name: "Save delivery settings" }).click();
     await expect(
       page.getByRole("alert").filter({ hasText: "the GitHub App is not installed on acme/unseen" })
     ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
-    expect(await sql("SELECT count(*) FROM delivery_settings")).toBe("0");
+    await expect(delivery).toBeChecked();
+    expect(await sql("SELECT count(*) FROM project_delivery_settings")).toBe("0");
     await page.screenshot({
       path: testInfo.outputPath("delivery-setup-refused.png"),
       fullPage: true,
     });
 
-    await page.getByLabel("Deploy repository").fill("acme/widgets");
+    // Emptied, the source reads the project's default repository, which the App can read.
+    await repository.fill("");
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/settings/delivery") &&
+        response.url().endsWith("/api/v1/projects/ACME/settings/delivery") &&
         response.ok()
     );
     await page.getByRole("button", { name: "Save delivery settings" }).click();
     await saved;
+    await expect(
+      page.getByRole("status").filter({ hasText: "Delivery settings saved" })
+    ).toBeVisible();
+    expect(
+      await sql(
+        `SELECT s.delivery || ' ' || coalesce(d.repo, 'default') || ' ' || array_to_string(s.population_authors, ',') || ' ' || array_to_string(s.excluded_repos, ',') || ' ' || array_to_string(d.production_job_names, ',') || ' ' || d.production_apply_step_name
+           FROM project_delivery_settings s JOIN project_deploy_sources d USING (project_key)
+          WHERE s.project_key = 'ACME'`
+      )
+    ).toBe(
+      "true default octocat,octocat-agent[bot] acme/dojo widgets-release / widgets-release,release / release Run ./.github/actions/apply"
+    );
+    await page.screenshot({
+      path: testInfo.outputPath("delivery-settings.png"),
+      fullPage: true,
+    });
 
-    // The timeline replaces the form: nothing has been reconciled yet, so the freshness row
-    // reads never-happened and the list view is empty.
+    // The Delivery page now draws the timeline: nothing has been reconciled yet, so the freshness
+    // row reads never-happened and the list view is empty.
+    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+    await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toHaveCount(
       0
     );
@@ -571,23 +605,6 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
     });
     await page.getByRole("button", { name: "List", exact: true }).click();
     await expect(page.getByText("No PRs in the current filter/window.")).toBeVisible();
-    expect(
-      await sql(
-        `SELECT deploy_repo || ' ' || array_to_string(population_authors, ',') || ' ' || array_to_string(excluded_repos, ',') || ' ' || array_to_string(production_job_names, ',') || ' ' || production_apply_step_name FROM delivery_settings`
-      )
-    ).toBe(
-      "acme/widgets octocat,octocat-agent[bot] acme/dojo widgets-release / widgets-release,release / release Run ./.github/actions/apply"
-    );
-
-    // Settings shows the same record, to change it later.
-    await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
-    await expect(page.getByLabel("Deploy repository")).toHaveValue("acme/widgets");
-    await expect(page.getByLabel("Population authors")).toHaveValue("octocat\noctocat-agent[bot]");
-    await page.screenshot({
-      path: testInfo.outputPath("delivery-settings.png"),
-      fullPage: true,
-    });
   } finally {
     await context.close();
   }

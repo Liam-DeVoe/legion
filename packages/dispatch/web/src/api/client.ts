@@ -1807,17 +1807,6 @@ export class DispatchApiClient {
     return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, input, bounds);
   }
 
-  /** The delivery timeline's configuration record, or `null` until someone sets it. */
-  getDeliverySettings() {
-    return this.read("/api/v1/settings/delivery", {});
-  }
-
-  /** Replaces the delivery timeline's configuration (human callers only). The server first proves
-   *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
-  putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
-    return this.put("/api/v1/settings/delivery", {}, input, bounds);
-  }
-
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named
    *  it and when it last changed, or `null` for a project that names none. There is no list of
    *  every project's daemon, so the Settings page's daemon section reads this once per project
