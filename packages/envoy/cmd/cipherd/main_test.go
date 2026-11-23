@@ -1197,6 +1197,7 @@ func airlockEnv(t *testing.T) []string {
 
 // TestMainRefusesAProfilesFileItCannotServe drives the real binary with each kind of profiles
 // file it must refuse — one whose proxy block the airlock will not validate, one whose proxy block
+// still sets a judge, which is the key's own tag now, one whose proxy block
 // names no host, one whose profile has a name no session can ask for, one naming a requester
 // service the deployment does not register (CheckRequesters, the boot's own read), one for each
 // host spelling of ruleHostRows (the rows TestProfilesCheckRefusesAHostTheProxyNeverCompares drives
@@ -1245,13 +1246,19 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
 		"a proxy block the airlock refuses": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy", "gcp"},
+		},
+		// Who decides a request is the key's own judge tag, so a proxy block that still sets a
+		// judge is refused, naming the tag that took its place, rather than served with no judge.
+		"a proxy block that sets a judge": {
 			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "judge": 1800}}]}`),
-			want: []string{"profiles[0]", "DEEL_API_KEY", "1800", "900"},
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.judge", "judge tag", "--judge"},
 		},
 		// A proxy block binds its credential to the hosts it names, so one that names none is
 		// refused, where today's rules file served a host-less entry that only named a judge.
 		"a proxy block with no host": {
-			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"judge": 600}}]}`),
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"headers": ["x-api-key"]}}]}`),
 			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.hosts", "required"},
 		},
 		// A profile whose name is not of the policy's form matches no request, so the file

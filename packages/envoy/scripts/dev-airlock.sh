@@ -27,7 +27,7 @@
 #     of it out of the JSON report that command prints.
 #   - The model judge, on every broker: the six BROKER_JUDGE_* settings pointed at the model
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
-#     a profile's proxy block gives the judge seconds for is decided by the model rather than by
+#     whose key's judge tag gives the judge seconds of it is decided by the model rather than by
 #     a person.
 #   - A profiles file (BROKER_PROFILES_FILE) and a fake Secrets Manager (the file
 #     BROKER_FAKE_SECRETS_FILE names) that name each other, each profile a secret of its own name
@@ -35,10 +35,10 @@
 #     headers and allow of its own; a github-app secret, with the github block every github-app
 #     profile carries; a google-login secret; an azure-login secret, kind azure, bound to the
 #     Microsoft stand-in and the stand-in resource host; a stored AWS key pair, kind aws, bound to
-#     the AWS stand-in; and the judge's five human-tier secrets - two whose proxy blocks give the
-#     judge 900 seconds, each with guidance of its own, one they give it nothing of, one owned by
-#     nobody that anyone approves, and one tagged an administrator's that its proxy block gives the
-#     judge 900 seconds of all the same, which the judge must refuse because the tag says a person
+#     the AWS stand-in; and the judge's five human-tier secrets - two whose judge tags give the
+#     judge 900 and 600 seconds, each with a guidance tag of its own, one with no judge tag, one
+#     owned by nobody that anyone approves, and one tagged an administrator's whose judge tag
+#     gives the judge 900 seconds of it all the same, which the judge must refuse because the tag says a person
 #     approves every release of it. One more profile, AIRLOCK_PLAIN_GITHUB, is the github-app
 #     secret's with no proxy block, whose release is the value itself: a github-app secret no
 #     profile names is refused (github-app-no-profile), and the broker reads profiles at boot
@@ -227,12 +227,12 @@ AWS_SECRET="AIRLOCK_AWS_KEY"
 # The five the model judge is asked about. Each is human tier, so each waits for a person
 # unless the judge decides it first, and each is a stored value with no type: what the judge is
 # about is who may approve a request, and a type's minting is another check's subject.
-# JUDGED_SECRET is the one its proxy block gives the judge seconds of; UNJUDGED_SECRET the one
-# whose block gives it nothing, which must still wait for its person; SHARED_SECRET the one
+# JUDGED_SECRET is the one whose judge tag gives the judge seconds of it; UNJUDGED_SECRET the one
+# with no judge tag, which must still wait for its person; SHARED_SECRET the one
 # nobody owns, which anyone signed in approves and which the judge therefore approves in
 # anyone's place; ADMIN_SECRET the administrator's credential, which carries the same judge
-# seconds as JUDGED_SECRET and which the judge must refuse all the same - the stack writes
-# exactly the profile the defect allowed, so a check can see the refusal come from the broker
+# tag as JUDGED_SECRET and which the judge must refuse all the same - the stack writes
+# exactly the tags the defect allowed, so a check can see the refusal come from the broker
 # rather than from the absence of a judge.
 #
 # ADMIN_SECRET carries two tags the others do not, because the policy refuses an admin secret
@@ -244,17 +244,21 @@ UNJUDGED_SECRET="AIRLOCK_UNJUDGED_TOKEN"
 SHARED_SECRET="AIRLOCK_SHARED_TOKEN"
 ADMIN_SECRET="AIRLOCK_ADMIN_TOKEN"
 # SECOND_JUDGED_SECRET is a second judge key of the approver's, bound to S as JUDGED_SECRET is,
-# with guidance of its own. A request for it beside JUDGED_SECRET is two judge keys, which the
-# judge decides together, each against its own guidance.
+# with a shorter judge tag and guidance of its own. A request for it beside JUDGED_SECRET is two
+# judge keys, which the judge decides together, each against its own guidance, for at most the
+# shorter of the two judge tags.
 SECOND_JUDGED_SECRET="AIRLOCK_SECOND_JUDGED_TOKEN"
 ADMIN_MAX_GRANT="1h"
-# The seconds the proxy blocks let the judge decide of the judge keys, which is also the longest
-# lifetime a request for one of them may sign, and the lifetime a request naming none gets.
+# The seconds the judge tags let the judge decide of the judge keys, which is also the longest
+# lifetime a request for one of them may sign, and the lifetime a request naming none gets:
+# JUDGE_SECONDS for JUDGED_SECRET, SHARED_SECRET and ADMIN_SECRET, SECOND_JUDGE_SECONDS for
+# SECOND_JUDGED_SECRET.
 JUDGE_SECONDS=900
-# The guidance the proxy blocks give the judge for JUDGED_SECRET and for SECOND_JUDGED_SECRET:
-# the key owner's instruction, which the stand-in model is shown with every request for the key.
-# Each is printed single-quoted in the exports below and written into the profiles JSON as it
-# is, so neither may hold a quote of either kind or a backslash.
+SECOND_JUDGE_SECONDS=600
+# The guidance tags of JUDGED_SECRET and of SECOND_JUDGED_SECRET: the key owner's instruction,
+# which the stand-in model is shown with every request for the key. Each is printed
+# single-quoted in the exports below and written into the fake store's JSON as it is, so neither
+# may hold a quote of either kind or a backslash.
 JUDGE_GUIDANCE="grant for the stack check runs, which name the run in the reason"
 SECOND_JUDGE_GUIDANCE="grant for the stack release job"
 # What the judge is configured with: the model id its verdicts are recorded under
@@ -510,9 +514,9 @@ DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_H
 RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*}"
 
 # --- The profiles file: each secret a profile of its own name whose proxy block says where its
-# value may go, in which headers, and how many seconds of it the model judge may decide; the
-# github-app secret's carries the github block every GitHub profile has, and AIRLOCK_PLAIN_GITHUB
-# is that secret's with no proxy block (the header). ---
+# value may go and in which headers; who decides a request for it is its key's own judge tag, in
+# the fake store below. The github-app secret's carries the github block every GitHub profile
+# has, and AIRLOCK_PLAIN_GITHUB is that secret's with no proxy block (the header). ---
 cat >"$PROFILES_FILE" <<EOF
 {"profiles": [
   {"name": "$DEMO_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
@@ -525,11 +529,11 @@ cat >"$PROFILES_FILE" <<EOF
   {"name": "$GOOGLE_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
   {"name": "$AZURE_SECRET", "proxy": {"hosts": ["$MICROSOFT_HOST", "$AZURE_RESOURCE_HOST"], "kind": "azure"}},
   {"name": "$AWS_SECRET", "proxy": {"hosts": ["$AWS_HOST"], "kind": "aws"}},
-  {"name": "$JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$JUDGE_GUIDANCE"}},
+  {"name": "$JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
   {"name": "$UNJUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
-  {"name": "$SHARED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
-  {"name": "$ADMIN_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
-  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$SECOND_JUDGE_GUIDANCE"}}
+  {"name": "$SHARED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$ADMIN_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
+  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}}
 ]}
 EOF
 
@@ -541,7 +545,9 @@ EOF
 # projected Azure token only for a human-tier name a person approved. The judge's five are
 # human tier too, so each waits for a person: four of them the approver's own, and one
 # owned by nobody (the owner tag "shared", policy.OwnerShared), which anyone signed in
-# approves and which the judge therefore approves in anyone's place. One of the approver's is
+# approves and which the judge therefore approves in anyone's place. Four of them carry a judge
+# tag (policy.TagJudge) and two a guidance tag (policy.TagGuidance): the judge decides those
+# four, the administrator's among them by its tag but never in fact. One of the approver's is
 # the approver's administrator's credential (admin: "true"), which carries the requesters list
 # and the hour's cap that tag demands of a secret: a list naming the approver and this stack's
 # service, since the enrolled pod acts for that service and a list no requester is on is
@@ -552,6 +558,8 @@ jq -n \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
   --arg admin "$ADMIN_VALUE" --arg second "$SECOND_JUDGED_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
+  --arg judge "$JUDGE_SECONDS" --arg secondjudge "$SECOND_JUDGE_SECONDS" \
+  --arg guidance "$JUDGE_GUIDANCE" --arg secondguidance "$SECOND_JUDGE_GUIDANCE" \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
@@ -576,17 +584,17 @@ jq -n \
       value: ({access_key_id: $awskey, secret_access_key: $awssecret,
                session_token: $awssession} | tojson)},
      {name: ($prefix + "airlock-judged-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human"}, value: $judged},
+      tags: {owner: $approver, tier: "human", judge: $judge, guidance: $guidance}, value: $judged},
      {name: ($prefix + "airlock-unjudged-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human"}, value: $unjudged},
      {name: ($prefix + "airlock-shared-token"), kms_key_id: $kms,
-      tags: {owner: "shared", tier: "human"}, value: $shared},
+      tags: {owner: "shared", tier: "human", judge: $judge}, value: $shared},
      {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human", admin: "true",
-             requesters: ($approver + " " + $service), "max-grant": $maxgrant},
+             requesters: ($approver + " " + $service), "max-grant": $maxgrant, judge: $judge},
       value: $admin},
      {name: ($prefix + "airlock-second-judged-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human"}, value: $second}
+      tags: {owner: $approver, tier: "human", judge: $secondjudge, guidance: $secondguidance}, value: $second}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
@@ -815,6 +823,7 @@ dev-airlock: ready.
   export AIRLOCK_JUDGE_MODEL=$JUDGE_MODEL
   export AIRLOCK_JUDGE_AUDIENCE=$JUDGE_MODEL_AUDIENCE
   export AIRLOCK_JUDGE_SECONDS=$JUDGE_SECONDS
+  export AIRLOCK_SECOND_JUDGE_SECONDS=$SECOND_JUDGE_SECONDS
   export AIRLOCK_JUDGED_SECRET=$JUDGED_SECRET
   export AIRLOCK_UNJUDGED_SECRET=$UNJUDGED_SECRET
   export AIRLOCK_SHARED_SECRET=$SHARED_SECRET
@@ -842,15 +851,16 @@ $BROKER_BANNER
                        $DISPATCH_URL and the one ask that stand holds, $DISPATCH_ANSWERED_ASK on
                        $DISPATCH_OPEN_ISSUE, answered by $APPROVER_LOGIN, and mints its own
                        credential at the metadata stand on $METADATA_ADDRESS.
-                       Who decides each key is its profile's proxy block: the judge decides up to
-                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $SECOND_JUDGED_SECRET (owned by
-                       $APPROVER_LOGIN, each against its guidance) and of $SHARED_SECRET
-                       (owned by nobody). A request for them alone is the judge's: no approve_url,
+                       Who decides each key is its own judge tag: the judge decides up to
+                       $JUDGE_SECONDS seconds of $JUDGED_SECRET and $SECOND_JUDGE_SECONDS of
+                       $SECOND_JUDGED_SECRET (owned by $APPROVER_LOGIN, each against its guidance
+                       tag) and $JUDGE_SECONDS of $SHARED_SECRET (owned by nobody). A request for
+                       them alone is the judge's: no approve_url,
                        a read-only page, never listed; granted, or refused for good. No request
-                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS seconds
+                       has to cite anything. $ADMIN_SECRET carries the same $JUDGE_SECONDS-second judge tag
                        and is an administrator's secret (admin: "true", requesters $APPROVER_LOGIN
-                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET's proxy block
-                       names no judge: each is $APPROVER_LOGIN's card, and so is any request with one of
+                       and $SERVICE, max-grant $ADMIN_MAX_GRANT), and $UNJUDGED_SECRET carries no
+                       judge tag: each is $APPROVER_LOGIN's card, and so is any request with one of
                        them beside a judge key. Ask with
                        agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming the stack check run>"
   approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET on ${API_FRONT_URL}/approve/<record>;

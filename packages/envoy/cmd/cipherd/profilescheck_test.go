@@ -60,8 +60,6 @@ profile "GITHUB_ADMIN_PAT": proxy.hosts github.com
 profile "GITHUB_ADMIN_PAT": proxy.headers authorization
 profile "GITHUB_ADMIN_PAT": proxy.allow any method and path
 profile "GITHUB_ADMIN_PAT": proxy.kind ""
-profile "GITHUB_ADMIN_PAT": proxy.judge none
-profile "GITHUB_ADMIN_PAT": proxy.guidance ""
 profile "OPENAI": added
 profile "OPENAI": source OPENAI
 profile "OPENAI": tier agent
@@ -74,8 +72,6 @@ profile "OPENAI": proxy.headers authorization
 profile "OPENAI": proxy.headers x-api-key
 profile "OPENAI": proxy.allow any method and path
 profile "OPENAI": proxy.kind ""
-profile "OPENAI": proxy.judge none
-profile "OPENAI": proxy.guidance ""
 `, path)
 	if stdout != want {
 		t.Fatalf("the report is\n%s\nwant\n%s", stdout, want)
@@ -84,14 +80,14 @@ profile "OPENAI": proxy.guidance ""
 
 // everyField is a profiles file that sets every field a profile has, over three profiles, since a
 // profile holds a github block or a google block and never both: GITHUB_READ sets every field but
-// google and the proxy's allow, kind, judge and guidance, GOOGLE_READ sets google, and AWS_KEY sets
-// the rest of the proxy block.
+// google and the proxy's allow and kind, GOOGLE_READ sets google, and AWS_KEY sets the rest of the
+// proxy block.
 const everyField = `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon", "ada@example.com"], "maxGrant": "1h30m",
    "github": {"accounts": ["example-org"], "repositories": ["example-org/legion"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"},
    "proxy": {"hosts": ["api.github.com"], "headers": ["authorization", "x-github-token"]}},
   {"name": "GOOGLE_READ", "source": "GCS_READER", "google": {"scopes": ["devstorage.read_only"]}},
-  {"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws", "judge": 300, "guidance": "grant it for the backup job"}}
+  {"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws"}}
 ]}`
 
 // everyFieldLines is, for each field of a profile by its JSON path (a block's fields under the
@@ -112,8 +108,6 @@ var everyFieldLines = map[string][]string{
 	"proxy.headers":       {`profile "GITHUB_READ": proxy.headers x-github-token`},
 	"proxy.allow":         {`profile "AWS_KEY": proxy.allow GET /`},
 	"proxy.kind":          {`profile "AWS_KEY": proxy.kind aws`},
-	"proxy.judge":         {`profile "AWS_KEY": proxy.judge 300 seconds`},
-	"proxy.guidance":      {`profile "AWS_KEY": proxy.guidance "grant it for the backup job"`},
 }
 
 // profileFieldPaths is every JSON field of policy.Profile, a block's fields (GitHubBlock,
@@ -171,7 +165,7 @@ func TestProfilesCheckReportsEveryField(t *testing.T) {
 	// GITHUB_READ, and the report holds a line for every field it had.
 	without := profilesFile(t, `{"profiles": [
   {"name": "GOOGLE_READ", "source": "GCS_READER", "google": {"scopes": ["devstorage.read_only"]}},
-  {"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws", "judge": 300, "guidance": "grant it for the backup job"}}
+  {"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws"}}
 ]}`)
 	code, stdout, stderr = runCheck(t, without, "--against", added)
 	if code != 0 || stderr != "" {
@@ -213,18 +207,18 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 		want []string
 	}{
 		{
-			"a judge above the longest lifetime",
-			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"]}}, {"name": "ANTHROPIC", "proxy": {"hosts": ["api.anthropic.com"], "judge": 1800}}]}`,
-			[]string{`profiles[1] "ANTHROPIC"`, "1800", "900"},
+			"a judge in a proxy block, the key's own tag now",
+			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"]}}, {"name": "ANTHROPIC", "proxy": {"hosts": ["api.anthropic.com"], "judge": 600}}]}`,
+			[]string{`profiles[1] "ANTHROPIC"`, "proxy.judge", "judge tag", "retag ANTHROPIC --judge"},
 		},
 		{
-			"guidance longer than the judge reads",
-			`{"profiles": [{"name": "ANTHROPIC", "proxy": {"hosts": ["api.anthropic.com"], "judge": 600, "guidance": "` + strings.Repeat("g", 2001) + `"}}]}`,
-			[]string{`profiles[0] "ANTHROPIC"`, "proxy.guidance", "2001", "2000"},
+			"guidance in a proxy block, the key's own tag now",
+			`{"profiles": [{"name": "ANTHROPIC_READ", "source": "ANTHROPIC", "proxy": {"hosts": ["api.anthropic.com"], "guidance": "grant for the release job"}}]}`,
+			[]string{`profiles[0] "ANTHROPIC_READ"`, "proxy.guidance", "guidance tag", "the source, ANTHROPIC", "--guidance"},
 		},
 		{
 			"a proxy block with no host",
-			`{"profiles": [{"name": "ANTHROPIC", "proxy": {"judge": 600}}]}`,
+			`{"profiles": [{"name": "ANTHROPIC", "proxy": {"headers": ["x-api-key"]}}]}`,
 			[]string{`profiles[0] "ANTHROPIC"`, "proxy.hosts", "required"},
 		},
 		{
@@ -398,14 +392,14 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 	old := profilesFile(t, `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}},
-   "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}], "judge": 300}},
+   "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}]}},
   {"name": "LEGACY", "proxy": {"hosts": ["old.example.com"]}}
 ]}`)
 	now := profilesFile(t, `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon"], "maxGrant": "1h",
    "github": {"accounts": ["example-org", "ada"], "repositories": ["ada/proofs", "example-org/legion"], "permissions": {"contents": "read", "metadata": "read", "pull_requests": "read"}, "value": "token"},
    "proxy": {"hosts": ["api.github.com", "uploads.github.com"], "headers": ["authorization", "x-api-key"],
-    "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600, "guidance": "grant for the release job"}}
+    "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws"}}
 ]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
@@ -424,8 +418,6 @@ profile "GITHUB_READ": proxy.hosts uploads.github.com added
 profile "GITHUB_READ": proxy.headers x-api-key added
 profile "GITHUB_READ": proxy.allow GET /v1/ → POST /v1/
 profile "GITHUB_READ": proxy.kind "" → aws
-profile "GITHUB_READ": proxy.judge 300 seconds → 600 seconds
-profile "GITHUB_READ": proxy.guidance "" → "grant for the release job"
 profile "LEGACY": removed
 profile "LEGACY": source LEGACY
 profile "LEGACY": tier the source's
@@ -437,8 +429,6 @@ profile "LEGACY": proxy.hosts old.example.com
 profile "LEGACY": proxy.headers authorization
 profile "LEGACY": proxy.allow any method and path
 profile "LEGACY": proxy.kind ""
-profile "LEGACY": proxy.judge none
-profile "LEGACY": proxy.guidance ""
 `, now, old)
 	if stdout != want {
 		t.Fatalf("the report is\n%s\nwant\n%s", stdout, want)
@@ -553,17 +543,19 @@ func TestProfilesCheckRefusesAnOldFileItCannotRead(t *testing.T) {
 
 // TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse is why the old file is decoded
 // and not held to the file's rules (policy.DecodeProfiles): the profiles in force may predate a
-// refusal this broker makes, and a check that refused them would refuse the pull request that
-// fixes them too.
+// refusal this broker makes — here a proxy block that still sets the judge and guidance a key's
+// own tags now carry — and a check that refused them would refuse the pull request that fixes
+// them too. The two fields the old file sets are read and dropped, so the report says what else
+// changed and nothing of them.
 func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T) {
-	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 1800}}]}`)
-	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 900}}]}`)
+	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 1800, "guidance": "grant it for the release job"}}]}`)
+	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com", "github.com"]}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
 	}
-	if want := `profile "GITHUB_ADMIN_PAT": proxy.judge 1800 seconds → 900 seconds`; !strings.Contains(stdout, want) {
-		t.Fatalf("the report does not say %q:\n%s", want, stdout)
+	if want := `profile "GITHUB_ADMIN_PAT": proxy.hosts github.com added`; !strings.Contains(stdout, want) || strings.Contains(stdout, "judge") || strings.Contains(stdout, "guidance") {
+		t.Fatalf("the report does not say %q alone, with no judge or guidance line:\n%s", want, stdout)
 	}
 }
 

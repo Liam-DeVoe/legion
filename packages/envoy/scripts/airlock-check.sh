@@ -1781,7 +1781,7 @@ k8a_start_broker() { # <profiles file> <label>
 }
 
 check_k8a() {
-	expect "the judge-1800 and the no-hosts copies exit non-zero naming the profile"
+	expect "the judge-1800 copy (a proxy block that still sets a judge, which is the key's own tag) and the no-hosts copy exit non-zero naming the profile"
 	expect "the malformed copy names the parse position"
 	expect "a local broker refuses to start on each of the three failing copies"
 	expect "the new-host, new-header and removed-entry copies exit 0 and list what they add or remove"
@@ -1793,7 +1793,7 @@ check_k8a() {
 	mkdir -p "$d"
 	cp "$AIRLOCK_PROFILES_FILE" "$d/valid.json"
 	jq '.profiles[0].proxy.judge = 1800' "$d/valid.json" >"$d/judge-1800.json"
-	jq '.profiles[0].proxy += {judge: 300} | .profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
+	jq '.profiles[0].proxy.hosts = []' "$d/valid.json" >"$d/no-hosts.json"
 	jq '.profiles[0].proxy.hosts += ["extra.airlock.test"]' "$d/valid.json" >"$d/new-host.json"
 	jq '.profiles[0].proxy += {headers: ["authorization", "x-extra"]}' "$d/valid.json" >"$d/new-header.json"
 	jq '.profiles = .profiles[1:]' "$d/valid.json" >"$d/removed-entry.json"
@@ -1809,8 +1809,8 @@ check_k8a() {
 		observe "$label: exit ${K8A_STATUS[$label]}; $(printf '%s' "$out" | head -n 3 | tr '\n' ' / ')"
 	done
 
-	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
-		"the 1800 and no-hosts copies exit non-zero naming the profile" \
+	judge "$([ "${K8A_STATUS[judge-1800]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[judge-1800]}" && contains 'judge tag' "${K8A_OUT[judge-1800]}" && [ "${K8A_STATUS[no-hosts]}" -ne 0 ] && contains 'AIRLOCK_DEMO_TOKEN' "${K8A_OUT[no-hosts]}" && echo 0 || echo 1)" \
+		"the judge-1800 copy, refused naming the judge tag that took its place, and the no-hosts copy exit non-zero naming the profile" \
 		"judge-1800 exited ${K8A_STATUS[judge-1800]} saying '${K8A_OUT[judge-1800]}'; no-hosts exited ${K8A_STATUS[no-hosts]} saying '${K8A_OUT[no-hosts]}'"
 	judge "$([ "${K8A_STATUS[malformed]}" -ne 0 ] && contains 'byte' "${K8A_OUT[malformed]}" && echo 0 || echo 1)" \
 		"the malformed copy names the parse position" "it exited ${K8A_STATUS[malformed]} saying '${K8A_OUT[malformed]}'"
@@ -2172,7 +2172,7 @@ check_k15() {
 	# names are among them.
 	local caught named missing=""
 	caught=$(grep -cE '^PASS:' "$WORK_DIR/mutants.log" || true)
-	for named in go-extra-header go-no-host-check go-judge-over-900 go-carries-value lean-all-headers lean-carries-value; do
+	for named in go-extra-header go-no-host-check go-hostless-entry go-carries-value lean-all-headers lean-carries-value; do
 		grep -qE "^PASS: $named " "$WORK_DIR/mutants.log" || missing="$missing $named"
 	done
 	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them"
