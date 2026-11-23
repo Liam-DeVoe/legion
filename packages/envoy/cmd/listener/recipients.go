@@ -1,8 +1,22 @@
 package main
 
 import (
+	"context"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
+
+// recipientLaneReadTimeout bounds the one bucket read a count can make, of the claim record of the
+// controller role whose notice lane a publish names (recipientCounts), so a role bucket that does
+// not answer leaves both counts out with most of sendRequestBudget still left to the sender stamp
+// and the publish.
+const recipientLaneReadTimeout = 500 * time.Millisecond
 
 // recipientCounts is how many sessions, other than sender, a message published on topic is for,
 // as listenerwire.PublishResponse carries the two numbers: recipients is every session the topic
@@ -30,29 +44,53 @@ import (
 // older than those records has a row and no record, and it is a recipient like any other, which
 // is why the rows are in the union too.
 //
+// A session is counted only through a topic its consumer filter keeps, by the one judgment a
+// filter built from a stored row makes (store.LaneHolders.Keeps, which store.Registry.
+// FollowableTopics and so storedRowFilter apply): either store can name a topic that filter drops,
+// and its consumer delivers nothing on it. A row an earlier build stored can name another
+// session's inbox, a failed-delivery lane or a wildcard reaching one, and a row or a record can
+// name the notice lane of a controller role the session no longer holds: a record keeps the lane
+// of a role taken from its session for the record's 30 days when that session had stopped, since
+// nothing rewrites a stopped session's record. A session the judgment leaves with no topic matching
+// the message is no recipient of it, and a publish no session follows that way answers recipients
+// 0, as any stored topic no session follows does.
+//
 // connected is how many of those sessions the session registry holds a live entry for, by the
 // rule every reader of a session's age reads (session.SessionRegistry.Lookup, session.StateOf): an
 // unresponsive session is not counted, since a sender reading "running now" acts on it. It is the
 // number a reader acts on: against 30 days of records a team topic almost never counts zero, so
 // recipients alone would never again tell a sender that nobody is there to read its message.
 //
-// Every read here is of memory: each check reads its watcher's state alone, both matchers answer
-// from their caches' subject indexes and the session registry from its cache, so counting makes
-// no JetStream API call and the publish it precedes waits on no round trip of its own.
-func recipientCounts(d *listenerDeps, topic, sender string) (recipients, connected *int) {
+// Every read here is of memory but one: each check reads its watcher's state alone, both matchers
+// answer from their caches' subject indexes and the session registry from its cache, so counting
+// the publish of a topic that is no controller notice lane makes no JetStream API call and the
+// publish it precedes waits on no round trip of its own. A publish on a controller notice lane
+// reads that lane's role claim from the bucket, once, within recipientLaneReadTimeout of ctx
+// (store.Registry.ReadLaneHolders), the read a filter built from a stored row makes for it; a read
+// that did not answer or failed leaves both counts out, as a cache that cannot be served does.
+func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string) (recipients, connected *int) {
 	if !d.known.Opened() || d.registry.Servable() != nil {
+		return nil, nil
+	}
+	// A lane is a literal, so the lane the message is published on is the one lane whose holder
+	// can decide whether a topic matching it is kept; any other lane matches nothing here.
+	readCtx, cancel := context.WithTimeout(ctx, recipientLaneReadTimeout)
+	holders, err := d.registry.ReadLaneHolders(readCtx, []string{topic})
+	cancel()
+	if err != nil {
 		return nil, nil
 	}
 	// connected stays nil, and no entry is looked up, while the session copy cannot be served.
 	if d.sessions.Servable() == nil {
 		connected = new(int)
 	}
+	judged := recipientJudgment{holders: holders, subject: topic, private: bus.OverlapsPrivateStreamSubject(topic)}
 	counted := map[string]struct{}{}
-	count := func(sessionID string) {
+	count := func(sessionID string, topics []string) {
 		if sessionID == sender {
 			return
 		}
-		if _, dup := counted[sessionID]; dup {
+		if _, dup := counted[sessionID]; dup || !judged.keeps(sessionID, topics) {
 			return
 		}
 		counted[sessionID] = struct{}{}
@@ -63,10 +101,40 @@ func recipientCounts(d *listenerDeps, topic, sender string) (recipients, connect
 			*connected++
 		}
 	}
-	d.known.MatchEach(topic, func(record session.KnownSession) { count(record.SessionID) })
+	d.known.MatchEach(topic, func(record session.KnownSession) { count(record.SessionID, record.Topics) })
 	for _, interest := range d.registry.MatchAllMachines(topic) {
-		count(interest.SessionID)
+		count(interest.SessionID, interest.Topics)
 	}
 	total := len(counted)
 	return &total, connected
+}
+
+// recipientJudgment is what recipientCounts judges each matched session's topics by: the holders
+// of the lane subject is published on (store.Registry.ReadLaneHolders) and whether subject
+// overlaps a private stream subject at all (bus.OverlapsPrivateStreamSubject).
+type recipientJudgment struct {
+	holders store.LaneHolders
+	subject string
+	private bool
+}
+
+// keeps reports whether some topic of topics, a session's stored row or known-session record that
+// a store's matcher visited for subject, is one sessionID's consumer filter keeps
+// (store.LaneHolders.Keeps) and matches subject in one of its forms (contracts.TopicForms), as the
+// stores' matchers read a topic.
+//
+// A subject that overlaps no private stream subject, matched by a set with no wildcard topic, is
+// kept with no topic judged: the matcher visited the set, so a topic of it equals subject in one of
+// its forms, and that topic reaches no private stream subject either, so the filter keeps it. That
+// is the set nearly every publish matches, a team topic's or a GitHub topic's, so counting one
+// costs no token split per topic; only a wildcard topic can reach a private stream subject while
+// matching such a subject.
+func (j recipientJudgment) keeps(sessionID string, topics []string) bool {
+	if !j.private && !slices.ContainsFunc(topics, func(topic string) bool { return strings.ContainsAny(topic, "*>") }) {
+		return true
+	}
+	return slices.ContainsFunc(topics, func(topic string) bool {
+		return slices.ContainsFunc(contracts.TopicForms(topic), func(form string) bool { return bus.SubjectContains(form, j.subject) }) &&
+			j.holders.Keeps(sessionID, topic)
+	})
 }

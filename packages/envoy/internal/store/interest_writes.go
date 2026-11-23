@@ -489,50 +489,100 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 }
 
 // controllerLaneRoles reports the controller roles sessionID holds among those of the Legion
-// controller notice lanes the topic sets name (bus.ControllerNoticeRole), and nil when they name
-// none (bus.NamesControllerNoticeLane): that lane is the one private stream subject whose owner
-// the rule reads a session's roles for (bus.ReachesPrivateStreamSubject), so a write naming none
-// reads no claim and is refused for none.
-//
-// Each such role is decided by its own claim record, read from the bucket once however many of
-// the sets name its lane, waiting no longer than ctx (RoleClaim, bus.Bounded), and never by the
-// role claim copy (RolesHeldBy). The row decided here drives the session's consumer filter, so a
-// copy that lost the controller's claim would drop the lane from its holder's filter, and a copy
-// that still names a session the claim has left would hand that session another controller's
-// notices, each until the copy's next read repaired it. The session holds the role when the
-// record names it. A record this build cannot decode (ErrMalformedRoleClaim) names no holder, as
-// the copy reads it, and a key NATS refuses (bus.ErrRefused) is one no read can tell the holder
-// of, which the role claim reaper removes; each gives the lane to nobody and is no error, so a
-// registration naming it stores the rest of its row rather than being refused at every
-// heartbeat. Any other read that did not answer or failed is returned, naming the role, and the
-// write is refused rather than storing the row without the lane: a notice published while the
-// lane was out of the consumer's filter reaches the controller on no later path. The listener's
-// registration route answers that refusal with the bus-unavailable 503 (cmd/listener's
-// writeStoreError).
+// controller notice lanes the topic sets name (bus.ControllerNoticeRole), as their claim records
+// say (ReadLaneHolders), and nil when they name none (bus.NamesControllerNoticeLane): that lane is
+// the one private stream subject whose owner the rule reads a session's roles for
+// (bus.ReachesPrivateStreamSubject), so a write naming none reads no claim and is refused for none.
+// A read that did not answer or failed is returned, naming the session, and the write is refused
+// rather than storing the row without the lane: a notice published while the lane was out of the
+// consumer's filter reaches the controller on no later path. The listener's registration route
+// answers that refusal with the bus-unavailable 503 (cmd/listener's writeStoreError).
 func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, topics ...[]string) ([]string, error) {
+	holders, err := r.ReadLaneHolders(ctx, topics...)
+	if err != nil {
+		return nil, fmt.Errorf("decide whether %s holds a controller notice lane: %w", sessionID, err)
+	}
+	return holders.heldBy(sessionID), nil
+}
+
+// LaneHolders is what the claim records of Legion controller roles say about their notice lanes
+// (bus.ControllerNoticeRole): for each role a read weighed, the session its record names, or the
+// empty string for a role whose lane is nobody's. Registry.ReadLaneHolders reads it, and Keeps and
+// Followable judge a session's stored topics by it.
+type LaneHolders map[string]string
+
+// ReadLaneHolders reads the claim record of the controller role of each controller notice lane
+// the topic sets name, once each however many of the sets name its lane, waiting no longer than ctx
+// (RoleClaim, bus.Bounded), and never the role claim copy (RolesHeldBy); it reads nothing and
+// answers nil when the sets name no lane (bus.NamesControllerNoticeLane). What it answers decides a
+// session's consumer filter, so a copy that lost the controller's claim would drop the lane from
+// its holder's filter, and a copy that still names a session the claim has left would hand that
+// session another controller's notices, each until the copy's next read repaired it. A record that
+// names a holder gives the lane to that session. A record this build cannot decode
+// (ErrMalformedRoleClaim) names no holder, as the copy reads it, and a key NATS refuses
+// (bus.ErrRefused) is one no read can tell the holder of, which the role claim reaper removes; each
+// gives the lane to nobody and is no error, so a registration naming it stores the rest of its row
+// rather than being refused at every heartbeat. Any other read that did not answer or failed is
+// returned, naming the role.
+func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (LaneHolders, error) {
 	if !slices.ContainsFunc(topics, bus.NamesControllerNoticeLane) {
 		return nil, nil
 	}
-	var weighed, held []string
+	holders := LaneHolders{}
 	for _, set := range topics {
 		for _, topic := range set {
 			role, lane := bus.ControllerNoticeRole(topic)
-			if !lane || slices.Contains(weighed, role) {
+			if _, weighed := holders[role]; !lane || weighed {
 				continue
 			}
-			weighed = append(weighed, role)
 			claim, err := r.RoleClaim(ctx, role)
 			switch {
 			case errors.Is(err, ErrMalformedRoleClaim), errors.Is(err, bus.ErrRefused):
 				// A claim no read can name a holder of: the lane is nobody's.
+				holders[role] = ""
 			case err != nil:
-				return nil, fmt.Errorf("decide whether %s holds %s's notice lane: %w", sessionID, role, err)
-			case claim.Revision != 0 && claim.HolderSessionID == sessionID:
-				held = append(held, role)
+				return nil, fmt.Errorf("read %s's claim: %w", role, err)
+			case claim.Revision == 0:
+				holders[role] = ""
+			default:
+				holders[role] = claim.HolderSessionID
 			}
 		}
 	}
-	return held, nil
+	return holders, nil
+}
+
+// heldBy is the controller roles h gives sessionID, sorted.
+func (h LaneHolders) heldBy(sessionID string) []string {
+	var held []string
+	for role, holder := range h {
+		if holder != "" && holder == sessionID {
+			held = append(held, role)
+		}
+	}
+	slices.Sort(held)
+	return held
+}
+
+// Keeps reports whether sessionID's consumer filter keeps topic, one its stored row or its
+// known-session record names: whether topic reaches no private stream subject that is not the
+// session's own (bus.ReachesPrivateStreamSubject), the session holding the controller roles h
+// names it the holder of. It is the one judgment of a stored topic: a filter built from a stored
+// row keeps exactly the topics it keeps (Followable, FollowableTopics, which cmd/listener's
+// storedRowFilter builds every such filter through), and a publish's recipient count counts a
+// session only through a topic it keeps (cmd/listener's recipientCounts). A controller notice lane
+// whose role h weighed no claim of is held by nobody here, so a caller reads the holders of every
+// lane its answer turns on: FollowableTopics those of every lane the row names, and the recipient
+// count that of the lane it publishes on, the one lane that can match its subject, since a lane is
+// a literal.
+func (h LaneHolders) Keeps(sessionID, topic string) bool {
+	return !bus.ReachesPrivateStreamSubject(sessionID, topic, h.heldBy(sessionID))
+}
+
+// Followable is topics without each one sessionID's consumer filter does not keep (Keeps). topics
+// is not changed.
+func (h LaneHolders) Followable(sessionID string, topics []string) []string {
+	return slices.DeleteFunc(slices.Clone(topics), func(topic string) bool { return !h.Keeps(sessionID, topic) })
 }
 
 // Remove releases the role claims of sessionID that release authorises (RoleReleaseAuthority)

@@ -421,7 +421,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
 // counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
-	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
+	if !OverlapsPrivateStreamSubject(topic) {
 		return false
 	}
 	if role, lane := ControllerNoticeRole(topic); lane {
@@ -430,6 +430,14 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	own := contracts.LegacyAgentSubject(sessionID)
 	twin, _ := contracts.LegacyTwin(topic)
 	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
+}
+
+// OverlapsPrivateStreamSubject reports whether topic overlaps a private stream subject
+// (privateStreamSubjects) under NATS wildcard rules, whoever's that subject is: the first question
+// ReachesPrivateStreamSubject asks, so a topic it answers false for reaches no session's private
+// subject, whatever session or roles a caller would weigh it for.
+func OverlapsPrivateStreamSubject(topic string) bool {
+	return slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) })
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes

@@ -240,6 +240,11 @@ type takeoverTries struct {
 	cfg      listenerDeliveryHandlerConfig
 	claimant string
 	role     string
+	// replaced is the session other than the claimant that the claim record the last try read
+	// names as the holder, empty for none: a write lands only over the record its try read
+	// (store.Registry.SetRoleWithPrevious), so once the claim lands this is the session it took the
+	// role from, whose consumer the claim route narrows (roleSetHandler).
+	replaced string
 }
 
 // beforeTry runs before each try of the claim's write: when the claim record that try read names a
@@ -248,11 +253,13 @@ type takeoverTries struct {
 // with nothing written (errTakeoverUnrecorded), which the claim route answers 503, and its client
 // claims again: a full stream refuses the claim for as long as it refuses every other write, and
 // the role stays with the holder the claim read until then.
-func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
+func (t *takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
 	previous := read.HolderSessionID
+	t.replaced = ""
 	if previous == "" || previous == t.claimant {
 		return nil
 	}
+	t.replaced = previous
 	if err := publishTakeover(ctx, t.cfg, t.role, previous); err != nil {
 		return takeoverUnrecordedError{previous: previous, err: err}
 	}

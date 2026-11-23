@@ -1287,10 +1287,11 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
-		// (recipientCounts), so taking them here costs the publish below no JetStream request.
-		// Only this branch counts: a role send names its holder, and a refused topic reaches
-		// nobody.
-		recipients, connected := recipientCounts(d, item.Topic, item.SourceSession)
+		// for every topic but a controller notice lane, whose role claim they read once
+		// (recipientCounts), so taking them here costs any other publish below no JetStream
+		// request. Only this branch counts: a role send names its holder, and a refused topic
+		// reaches nobody.
+		recipients, connected := recipientCounts(r.Context(), d, item.Topic, item.SourceSession)
 		// The sender stamp's read and the publish take this one deadline, derived from the
 		// caller's own context, so this route too answers a bus it cannot reach rather than
 		// spending the caller's attempt.
@@ -1989,6 +1990,18 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // none of it. A try whose takeover record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded).
 //
+// A claim that landed over another session's claim narrows that session before it is answered,
+// as an unsubscribe does (recordFollowedTopics, refollow): its known-session record is written
+// from its stored row, which the claim took the role's topic off, and its consumer is filtered on
+// that row again, which drops the role's controller notice lane now that the claim names the
+// claimant (storedRowFilter). A notice published once the claim is answered reaches the new holder
+// alone. What stays open: a notice published between the claim's write and that filter write
+// (a bucket read, a claim read and one consumer call, under the former holder's session lock and
+// within sessionConsumerCallTimeout) still reaches the former holder, and a filter write that
+// failed, which refollow logs, leaves the lane on its consumer until its next registration or
+// relay restart. A stopped former holder has no entry, so its record keeps the lane, which the
+// publish count judges by the claim (recipientCounts).
+//
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
 // before it registers, and once the refresh has written the entry, its registration reads the
@@ -2362,7 +2375,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					ifClaimRevision = &decidedRevision
 				}
 			}
-			tries := takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
+			tries := &takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
 			item, err := d.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 				SessionID:         body.SessionID,
 				MachineID:         machineID,
@@ -2453,6 +2466,20 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			}
 			landed = true
 			go runTakenRoleDrain(*d.delivery, body.Role)
+			// The session the claim took the role from follows what its stored row now holds, as
+			// after an unsubscribe: its known-session record is written from that row, and its
+			// consumer, when the relay serves it one, is filtered on it again (refollow). The
+			// claim took the role's topic off that row, and the filter built from the row drops
+			// the role's controller notice lane, whose claim names this claimant now
+			// (storedRowFilter), so a notice published once this claim is answered reaches the new
+			// holder alone, where the former holder's filter would otherwise keep the lane until
+			// its next registration. Both run before the answer, the record within this route's
+			// budget and the consumer call within a budget of its own, as the unsubscribe route
+			// runs them.
+			if tries.replaced != "" {
+				recordFollowedTopics(ctx, d, tries.replaced, logger)
+				d.consumers.refollow(r.Context(), d, tries.replaced)
+			}
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}
