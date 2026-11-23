@@ -705,26 +705,33 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
 }
 
-// DeploymentRolesFragment is the sentence every architect is told after its addressing: the roles
-// a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
-// whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
-// file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
-// one, the model its agent starts with. workerSpawnSpec and the skill-scenario rig both reach it
-// through ArchitectAddressing.
+// DeploymentRolesFragment is what every architect is told after its addressing: the roles a step
+// of its plan may name beside its plan's own, each with the type of its step, in two sentences, so
+// the owner can tell Legion's roles from the deployment's. The first is Legion's five
+// (BuiltinRoles, whose types it reads). The second is each role the deployment defines (roles,
+// config.Config.Roles) in the file's order, `<name> (<type>)`, with ` with the model <model>` where
+// the role's settings give one, the model its agent starts with, or, where the deployment defines
+// none, that it defines none. workerSpawnSpec and the skill-scenario rig both reach it through
+// ArchitectAddressing.
 func DeploymentRolesFragment(roles []config.Role) string {
 	builtin := stepplan.BuiltinRoles()
-	entries := make([]string, 0, len(stepRoleOrder)+len(roles))
+	legion := make([]string, 0, len(stepRoleOrder))
 	for _, name := range stepRoleOrder {
-		entries = append(entries, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
+		legion = append(legion, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
 	}
+	sentence := "Legion's roles, each with the type of its step: " + strings.Join(legion, ", ") + "."
+	if len(roles) == 0 {
+		return sentence + " This deployment defines no role of its own."
+	}
+	deployed := make([]string, 0, len(roles))
 	for _, role := range roles {
 		entry := fmt.Sprintf("%s (%s)", role.Name, role.Type)
 		if role.Model != "" {
 			entry += " with the model " + role.Model
 		}
-		entries = append(entries, entry)
+		deployed = append(deployed, entry)
 	}
-	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+	return sentence + " The roles this deployment defines, each with the type of its step: " + strings.Join(deployed, ", ") + "."
 }
 
 // ModelsFragment is the sentence every architect is told right after the roles

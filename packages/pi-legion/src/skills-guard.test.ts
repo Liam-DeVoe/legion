@@ -877,6 +877,24 @@ test("the plan guide gives a role block, its refusals and a role under a running
   ).toEqual([]);
 });
 
+// Steps that share a key are one agent in one session, and a step with no key has an agent of its
+// own (the daemon's plan.AgentOf), so the plan guide says how a step gets a fresh or an earlier
+// agent. The words it carried before, that each role has one agent for each issue and that Legion
+// cannot carry the choice out yet, are gone.
+test("the plan guide says how a step gets a fresh or an earlier agent", () => {
+  const guide = collapsed(path.join(staged, "legion-architect/references/plan.md"));
+  expect([
+    ...lacks("legion-architect/references/plan.md", [
+      /Steps that share a key, `<role>:<key>`, are one agent in one session/,
+      /a step with no key has an agent of its own/,
+      /whether each step needs a fresh agent or an earlier one, and why/,
+    ]),
+    ...["one agent for each issue", "cannot carry out your choice"]
+      .filter((phrase) => guide.includes(phrase))
+      .map((phrase) => `legion-architect/references/plan.md still says: ${phrase}`),
+  ]).toEqual([]);
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.

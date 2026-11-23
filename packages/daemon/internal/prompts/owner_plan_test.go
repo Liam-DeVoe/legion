@@ -100,8 +100,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
-				// A new version of plan.md names the token of the text it replaces.
-				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
+				// A part of plan.md changes by an edit, and an upload, which replaces it whole,
+				// names the token of the text it replaces.
+				{"`plan.md` exists", "a part of it", "`dispatch doc-edit`", "whole only with an upload"},
+				{"replaces every word", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`"},
+				{"names no token", "`400 PRECONDITION_REQUIRED`"},
 				// A parked or done child takes a new plan after its rerun: stop, then give it.
 				{"parked or done child", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
@@ -351,5 +354,54 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 				t.Errorf("go/%s still says %q", part, phrase)
 			}
 		}
+	}
+}
+
+// Three sentences of the owner's prompt say what Legion does, where their earlier words were read
+// two ways or were false. A part of `plan.md` changes by `dispatch doc-edit` and only a whole
+// replacement is an upload, as the planner is told. Steps that share a key are one agent in one
+// session and a step with no key has an agent of its own (plan.AgentOf), so the owner's choice of
+// a fresh or an earlier agent is carried out, where the old words said each role had one agent for
+// each issue. An issue whose work started on another architect's plan runs that plan's task, and
+// only one whose work started before any plan runs the task default. Each rule is held by the
+// terms of the clause that states it, in their order, and each retired sentence is gone from both
+// compositions. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnersPlanSentencesSayWhatLegionDoes(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	held := [][]string{
+		{"Steps that share a key", "`<role>:<key>`", "one agent in one session", "an earlier step's key"},
+		{"A step with no key", "an agent of its own", "no other step of the task"},
+		{"before any architect gave it a plan", "the task default"},
+		{"started on a plan another architect gave", "that plan's task"},
+		{"stop_task", "its running task", "`default` or the other plan's", "register_plan"},
+	}
+	retired := []string{
+		"upload each new version",
+		"gives each role one agent for each issue",
+		"cannot carry that choice out yet",
+		"before you gave it a plan runs the task default",
+		"call stop_task on the task default",
+	}
+	for _, tc := range []struct {
+		name   string
+		isRoot bool
+	}{{"root architect", true}, {"sub-architect", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
+			for _, terms := range held {
+				if !clauseHolds(composed, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
+				}
+			}
+			text := foldWhitespace(composed)
+			for _, phrase := range retired {
+				if strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt still says %q", tc.name, phrase)
+				}
+			}
+		})
 	}
 }
