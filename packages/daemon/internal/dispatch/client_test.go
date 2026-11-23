@@ -1182,7 +1182,7 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // the two lists hold is a method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
 	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "ArtifactSlugs", "EventsAfter", "MessageBodiesSince",
-		"Approval", "ApprovedVersionBefore", "ArtifactChanges", "Handoff", "Whoami"}
+		"Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff", "Whoami"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"
