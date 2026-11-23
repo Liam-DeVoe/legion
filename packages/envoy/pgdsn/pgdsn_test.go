@@ -260,6 +260,12 @@ var printedShapes = map[string]struct{ dsn, want string }{
 	"a quoted setting with a space in its password":    {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle='https://u:madeup madeuphead0123" + "@" + "h'", urlCredentialWords},
 	"a statement_timeout with a space in its password": {"host=127.0.0.1 port=1 user=legion dbname=legion statement_timeout='https://u:madeup madeuphead0123" + "@" + "h'", urlCredentialWords},
 	"options with an escaped space in a password":      {`host=127.0.0.1 port=1 user=legion dbname=legion options='-c datestyle=https://u:madeup\\ madeuphead0123` + "@" + `h'`, urlCredentialWords},
+	"a setting with a / in its password":               {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle=https://u:madeup/madeuphead0123" + "@" + "h", urlCredentialWords},
+	"a URL's setting with a %2F in its password":       {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeup%2Fmadeuphead0123%40h", urlCredentialWords},
+	"a quoted setting with a ? in its password":        {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle='https://u:madeup?madeuphead0123" + "@" + "h'", urlCredentialWords},
+	"a quoted setting with a # in its password":        {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle='https://u:madeup#madeuphead0123" + "@" + "h'", urlCredentialWords},
+	"a statement_timeout with a / in its password":     {"host=127.0.0.1 port=1 user=legion dbname=legion statement_timeout=https://u:madeup/madeuphead0123" + "@" + "h", urlCredentialWords},
+	"options with a / in a password":                   {"host=127.0.0.1 port=1 user=legion dbname=legion options='-c datestyle=https://u:madeup/madeuphead0123" + "@" + "h'", urlCredentialWords},
 }
 
 // A custom parameter's name holding a letter outside ASCII (`app.naïve`), which guc.c's own check

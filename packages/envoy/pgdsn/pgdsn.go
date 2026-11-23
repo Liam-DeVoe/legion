@@ -40,14 +40,17 @@ import (
 //   - a URL whose query holds a key of no such shape (queryKeyMalformed), read as pgx reads it,
 //     the spaces at its ends dropped (`&https://u:<pw>%40h=1`): pgx sends it to the server as a
 //     parameter's name, which the server prints;
-//   - a value of any key but password and sslpassword holding a URL with a user name or a password,
-//     "://" and then an "@" before the next "/", "?" or "#" (valueHoldsURLCredential), as pgx reads
-//     it from a keyword DSN or, decoded, from a URL's query: the server echoes a runtime parameter's
-//     value it refuses, given as a keyword (`datestyle=https://u:<pw>@h`) or inside options
-//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed. A space
-//     does not end it: a password holding one (`%20`, a tab, an escaped or quoted space) reaches the
-//     server whole, so two settings of options, a URL and then an address
-//     (`-c app.url=https://ci.example -c app.owner=ops@acme.example`), are refused too;
+//   - a value of any key but password and sslpassword holding "://" and then an "@" anywhere after
+//     it, a URL with a user name or a password (valueHoldsURLCredential), as pgx reads it from a
+//     keyword DSN or, decoded, from a URL's query: the server echoes a runtime parameter's value it
+//     refuses, given as a keyword (`datestyle=https://u:<pw>@h`) or inside options
+//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed. Nothing
+//     after the "://" ends it: a password holding a "/", "?" or "#" (`https://u:<head>/<tail>@h`,
+//     its `%2F` in a URL's query, a quoted "?" or "#") or a space (`%20`, a tab, an escaped or quoted
+//     space) reaches the server whole, and the rule cannot tell such a password's tail from the
+//     URL's path. So a URL value with an "@" in its path (`https://ci.example/@team`) and two
+//     settings of options, a URL and then an address (`-c app.url=https://ci.example -c
+//     app.owner=ops@acme.example`), are refused too;
 //   - a value other than a password holding "://" anywhere (valueHoldsURL), where the value is
 //     one of the four pgx's connect error or the server prints: the user, the database (dbname or
 //     database), the host or the hostaddr, as pgx reads it from a keyword DSN or, decoded, from a
@@ -97,8 +100,8 @@ func Refusal(setting, dsn string) error {
 			" name and the server can print whole; name each setting of the query by its keyword", setting)
 	case valueHoldsURLCredential:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password holds a URL with a user name or a password"+
-			" (\"://\" and then an \"@\" before the next \"/\", \"?\" or \"#\", a space or none), which Postgres can print whole, as the server"+
-			" prints a setting's value it refuses; give the setting no credential", setting)
+			" (\"://\" and then an \"@\" anywhere after it, since a password can hold a \"/\", \"?\", \"#\" or space), which"+
+			" Postgres can print whole, as the server prints a setting's value it refuses; give the setting no credential", setting)
 	case valueHoldsURL:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password, its user, database, host or hostaddr,"+
 			" holds \"://\", a URL, which Postgres does not read as one and prints whole, a password in it included; write the"+
@@ -206,11 +209,12 @@ func printedRefusal(settings []keywordSetting) refusal {
 	return kept
 }
 
-// urlCredential is a URL with a user name or a password in a value: "://", then an "@" before the
-// next "/", "?" or "#", which ends a URL's authority. A space does not end it: pgx decodes a
-// password's %20 before the value reaches the server, and a tab or a quoted or escaped space
-// stands in a value as written, so a password holding one is still the URL's.
-var urlCredential = regexp.MustCompile(`://[^/?#]*@`)
+// urlCredential is a URL with a user name or a password in a value: "://", then an "@" anywhere
+// after it. Nothing ends it: a password holding a "/", "?" or "#" ends url.Parse's authority
+// early, its tail read as the path, query or fragment, pgx decodes a password's %20 and %2F before
+// the value reaches the server, and a tab or a quoted or escaped space stands in a value as
+// written, so the "@" after any of them is still the URL's user info's.
+var urlCredential = regexp.MustCompile(`(?s)://.*@`)
 
 // hostList says whether value reads as a host list pgx dials and no credential stands in: no "@"
 // or "=" anywhere, and a ":" only in an entry (pgx splits the list at ",") that is a socket
