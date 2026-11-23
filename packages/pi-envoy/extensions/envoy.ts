@@ -1477,7 +1477,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it. A `low` card
   // (`stored`) goes as `nextTurn` with no turn, which `UnwrittenFrames` hands only to a settled
-  // host: the host stores it with no event, so the check for stored cards looks for its write.
+  // host: the host stores it with no event, so the check for stored cards looks for its write, and
+  // the card is recorded on the agent stream here, as it is handed, since no `message_end` records
+  // it there: Dispatch's live view shows it before the turn that reads it, as it shows every other
+  // card the session displays. A send that throws records nothing.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
@@ -1503,11 +1506,23 @@ export default function envoyExtension(hostApi: PiApi): void {
       return;
     }
     const { details, ...options } = cardWake.deliveryFor(deliverAs, activeSessionContext);
-    pi.sendMessage(
-      { customType: "envoy-message", content, display: true, details: { ...known, ...details } },
-      options
+    const card = {
+      customType: "envoy-message",
+      content,
+      display: true,
+      details: { ...known, ...details },
+    };
+    pi.sendMessage(card, options);
+    if (deliverAs !== "stored") return;
+    // Stamped as it is handed, before the host stamps any turn that reads it: the host stores the
+    // card after `pi.sendMessage` returns (its entry's time, at the pinned build, is some
+    // milliseconds later), so no entry of it is there yet to take a time from.
+    recordAgentStreamMessage(
+      { ...card, role: "custom", timestamp: Date.now() },
+      false,
+      hostSessionID()
     );
-    if (deliverAs === "stored") checkStoredCards();
+    checkStoredCards();
   };
 
   // The host is idle, holds no message, is not shutting down, and is on the session this instance
@@ -3236,10 +3251,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   /** One of this session's messages, on its way to whoever has the session open, tagged with the
    *  Dispatch message a user message delivered when it matches a person's turn this extension sent
    *  in. Only the top-level instance publishes: a `task` subagent's instance never learns a session
-   *  id, and its work reaches the viewer as the parent's tool call anyway. `host` is the session
-   *  the host records the message under, read from the event's own context: this instance's
-   *  `sessionID` trails a move with no event (a rollback) until the next pass, and a message kept
-   *  under it would be replayed to a viewer of a session it is not part of. */
+   *  id, and its work reaches the viewer as the parent's tool call anyway. The host's message
+   *  events record each message, and `handCard` records a stored card, for which the host raises
+   *  no event. `host` is the session the host records the message under, read from the event's
+   *  own context, or the host's own id as a stored card is handed: this instance's `sessionID`
+   *  trails a move with no event (a rollback) until the next pass, and a message kept under it
+   *  would be replayed to a viewer of a session it is not part of. */
   const recordAgentStreamMessage = (message: unknown, streaming: boolean, host: string): void => {
     if (sessionID === "" || host === "") return;
     agentStreamOf(host).record(

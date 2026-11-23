@@ -212,9 +212,11 @@ and handed at the first settled check after the run, at a heartbeat that finds t
 or right before a card that starts a turn (`checkStoredCards`). The host writes it with no
 `message_end`, so its frame counts as shown once the session's store holds its entry, on any
 branch of the session, under SQL session storage as under files (`storeHoldsSession`,
-`storedCheck`); until then its claim stays pending and the stream keeps its copy. Its `details`
-carry the hand-over state `inert` and its urgency, and no card id, so no wake follows it and no
-unread count names it.
+`storedCheck`); until then its claim stays pending and the stream keeps its copy. For the same
+reason no host event puts it on the agent stream: the extension records it there as it hands it
+over (`handCard`), so Dispatch's live view shows it, under either storage, before the turn that
+reads it. Its `details` carry the hand-over state `inert` and its urgency, and no card id, so no
+wake follows it and no unread count names it.
 
 ## Session identity
 

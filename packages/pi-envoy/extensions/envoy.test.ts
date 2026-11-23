@@ -14371,6 +14371,73 @@ console.log(JSON.stringify(args));
         rmSync(directory, { recursive: true, force: true });
       }
     });
+
+    // The host stores a low card with no event, so no `message_end` records it on the agent
+    // stream: the session records it there as it hands it over, so Dispatch's live view shows what
+    // the next turn reads, before that turn, as it shows every other card the session displays
+    // (dispatch://INFRA-5271, R1). The tests fire no host event.
+    const lowCardFrames = () =>
+      natsState.published
+        .filter((published) => published.subject === "agentstream.ses_delivery.frames")
+        .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
+        .filter((frame) => frame.kind === "message");
+
+    test("reaches the live stream as it is handed, as one settled user message saying who sent it", async () => {
+      const { agent, delivered } = await bootDirectSession("low-stream", {
+        idle: () => true,
+        pending: () => false,
+      });
+      // A viewer opens the session, as the Dispatch relay's watch does.
+      natsState.controls
+        .get("agentstream.ses_delivery.control")
+        ?.push(JSON.stringify({ type: "watch", v: 1 }));
+      const handedFrom = Date.now();
+
+      agent.push(daemonEnvelope("low notice", "low-stream", { urgency: "low" }));
+      await delivered(1);
+
+      const frames = lowCardFrames();
+      expect(frames).toHaveLength(1);
+      const message = frames[0]?.message;
+      expect(message).toMatchObject({
+        parts: [{ text: "Envoy message from agent:\n\nlow notice", type: "text" }],
+        role: "user",
+        streaming: false,
+      });
+      expect(message?.at).toBeGreaterThanOrEqual(handedFrom);
+      expect(message?.id).toBe(`c${message?.at}:evt-low-stream`);
+      expect(message?.dispatchMessageId).toBeUndefined();
+    });
+
+    test("held while a turn runs reaches the live stream when it is handed, and not before", async () => {
+      let idle = false;
+      const { agent, context, delivered, fixture } = await bootDirectSession("low-stream-held", {
+        idle: () => idle,
+        pending: () => false,
+      });
+      natsState.controls
+        .get("agentstream.ses_delivery.control")
+        ?.push(JSON.stringify({ type: "watch", v: 1 }));
+
+      agent.push(daemonEnvelope("held notice", "low-stream-held", { urgency: "low" }));
+      agent.push(daemonEnvelope("later notice", "med-stream-held", { urgency: "med" }));
+      await delivered(1);
+      await drainTimers();
+      // The `med` card is streamed from its own `message_end`, which this host never fires.
+      expect(lowCardFrames()).toEqual([]);
+
+      idle = true;
+      await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+      await delivered(2);
+      const frames = lowCardFrames();
+      expect(frames).toHaveLength(1);
+      expect(frames[0]?.message).toMatchObject({
+        id: expect.stringMatching(/^c\d+:evt-low-stream-held$/),
+        parts: [{ text: "Envoy message from agent:\n\nheld notice", type: "text" }],
+        role: "user",
+        streaming: false,
+      });
+    });
   });
 
   // A person's Send or Aside from the Agents page is the user's own turn, as if typed at the
