@@ -791,7 +791,7 @@ test("the controller reads every held reason, and a stopped task's phase in its 
   const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
   expect(held).toEqual([...LEGION_HELD_REASONS]);
   expect(admission).toMatch(
-    /\| `children_before_retro` \|[^|]*without `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
+    /\| `children_before_retro` \|[^|]*last step is no acceptance step \(`acceptance:owner` or `acceptance`\)[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
   );
   expect(admission).toMatch(
     /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/

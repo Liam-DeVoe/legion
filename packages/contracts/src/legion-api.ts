@@ -980,7 +980,8 @@ const legionBlockedIssue = z.object({
  * `children_before_retro` and `task_stopped` came with contract 211; a caller below it is served
  * each such row as `unclassified` with no `heldBy` (the daemon's value strip
  * `withoutUnadmittedHeldWords`).
- * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
+ * `at_work` names an issue in `accepting`, `retro` or `merging` (in the default steps, past its
+ * review), which keeps no admission slot; `record.HeldAtWork`
  * says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
