@@ -117,6 +117,75 @@ func TestTheBackfillsWalksReadOnlyTheirBatch(t *testing.T) {
 	}
 }
 
+// heldBlockRefGuardAsItStood is blockNodeStands over r as it stood before it was a scalar subquery:
+// an exists, which the planner pulls up into a semi-join.
+const heldBlockRefGuardAsItStood = `exists (select 1 from graph_nodes block
+		where block.kind = 'block' and block.id = r.from_node
+			and block.state <> 'gone')`
+
+// TestTheHeldBlockRefReadProbesEachRowsBlockNode holds the block-reference batch's read again under
+// its locks (HeldBlockRefRowsStatement) to reading graph_nodes and block_refs for the batch's own
+// rows alone, however many block nodes the store holds and whatever the statistics say of them.
+// The seed is the walk test's, analyzed, and then a live node for every one of its 20,000 blocks,
+// written after the analysis as the block pass writes them, so the statistics still count the
+// few block nodes there were before: the database as the block-reference pass meets it. The batch
+// is the walk's first, its 200 rows' keys bound as the pass binds them. With hash and merge joins
+// off and under each plan-cache mode the analyzed plan must answer all 200 rows and read at most
+// those 200 rows of each table (relationReads). The control is the read with the guard as it
+// stood, an exists: it must plan, run, and read every block node.
+func TestTheHeldBlockRefReadProbesEachRowsBlockNode(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	pool := database.Pool
+	seedWalkPlan(t, pool)
+	if _, err := pool.Exec(ctx, `analyze graph_nodes`); err != nil {
+		t.Fatalf("analyze graph_nodes before the block nodes: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key)
+		select 'block', d.node_id, 'block', 'project', 'live', '{}'::jsonb, now(), '{"kind":"system","id":"walk-plan"}'::jsonb, 0, 'BWK'
+		from document_blocks d join artifacts a on a.id = d.artifact_id where a.project_key = 'BWK'
+	`); err != nil {
+		t.Fatalf("write a node for every block: %v", err)
+	}
+	batch, err := readBlockRefRows(ctx, database, []any{"", "", "", ""})
+	if err != nil || len(batch) != backfillBatch {
+		t.Fatalf("read the first block reference batch: %d rows, %v", len(batch), err)
+	}
+	keys := make([][]string, 5)
+	for _, row := range batch {
+		for i, value := range []string{row.artifactID, row.blockID, row.kind, row.toKind, row.toID} {
+			keys[i] = append(keys[i], value)
+		}
+	}
+	args := []any{keys[0], keys[1], keys[2], keys[3], keys[4]}
+	control := strings.Replace(HeldBlockRefRowsStatement, blockNodeStands("r"), heldBlockRefGuardAsItStood, 1)
+	if control == HeldBlockRefRowsStatement {
+		t.Fatalf("the control is the statement itself: the guard was not found in it")
+	}
+	indexKeys := explaintest.NewIndexKeys(pool)
+	for _, mode := range explaintest.PlanCacheModes {
+		plan := explaintest.ExplainAfter(t, ctx, pool, nil, explaintest.Statement{SQL: HeldBlockRefRowsStatement, Args: args}, mode, "json")
+		answered := explaintest.Nodes(t, plan)[0].Rows
+		nodes := relationReads(t, indexKeys, plan, "graph_nodes", "graph_nodes_pkey")
+		refs := relationReads(t, indexKeys, plan, "block_refs", "block_refs_pkey")
+		if answered != backfillBatch || nodes.rows > backfillBatch || refs.rows > backfillBatch {
+			t.Errorf("the held read under %s answered %.0f rows and read %.0f of graph_nodes and %.0f of block_refs, want %d, at most %d and at most %d:\n%s",
+				mode, answered, nodes.rows, refs.rows, backfillBatch, backfillBatch, backfillBatch,
+				explaintest.ExplainAfter(t, ctx, pool, nil, explaintest.Statement{SQL: HeldBlockRefRowsStatement, Args: args}, mode, "text"))
+		} else {
+			t.Logf("the held read under %s reads %.0f rows of graph_nodes and %.0f of block_refs", mode, nodes.rows, refs.rows)
+		}
+		stood := relationReads(t, indexKeys, explaintest.ExplainAfter(t, ctx, pool, nil, explaintest.Statement{SQL: control, Args: args}, mode, "json"), "graph_nodes", "graph_nodes_pkey")
+		if stood.rows <= backfillBatch {
+			t.Errorf("the held read with its guard as it stood, the control, reads %.0f rows of graph_nodes under %s, so this test cannot tell a read of every block node from one per row:\n%s",
+				stood.rows, mode, explaintest.ExplainAfter(t, ctx, pool, nil, explaintest.Statement{SQL: control, Args: args}, mode, "text"))
+		} else {
+			t.Logf("the held read with its guard as it stood under %s reads %.0f rows of graph_nodes, as the control must", mode, stood.rows)
+		}
+	}
+}
+
 // TestTheBackfillAnalyzesTheColumnsItsWalksReadBy holds Backfill to giving the planner statistics
 // of node_kind on the three tables it walks (walkedColumnsAnalysis) before its passes: the deploy
 // adds those columns after any analysis, and with no statistics of them the planner reads every
