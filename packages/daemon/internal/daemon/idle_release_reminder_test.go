@@ -7,6 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -73,6 +76,17 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole(t *testing.T) {
 // with no wake due. With its role's completion recorded, the pod is released once quiet past the
 // idle bound and no pass holds it for the reminder. The control, the same past-due wake with no
 // completion recorded, is held as reminder_due pass after pass.
+//
+// A fresh claim owes its phase too (spec v72): a live implementer whose claims row records it
+// serving run 0, as one that has retired no run, and whose pending delivery is its first task of
+// the issue's run and phase, prompted and neither delivered nor confirmed, as a send that failed
+// before any turn leaves it, serves that task's run and entry by the owed answer's rule
+// (supervise.Claim.ServingAt). The store's idle view fills each claim's served run and entry by
+// that rule (store's readIdleView, pods.IdleClaim.ReadServing), so with its reported reminder
+// wake past due the claim is held reminder_due. It reads the view through the store's own
+// release transaction (store.Store.ReleaseIdleIssue), with the record's reader the daemon hands
+// it (record.FillIdleClaims), and decides it as the idle tick does (workflow.IdleRelease); it
+// fails if the view reads the run from the claims row (serving_generation) instead.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) {
 	t.Run("its role's completion is recorded", func(t *testing.T) {
 		rig := newIdleWakeRig(t, nil, idleRigOwesNothing)
@@ -140,6 +154,42 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 			t.Fatalf("the pod of %s is gone while its claim owes its phase and its reminder is due", issue.key)
 		}
 		rig.kube.requireServed(t)
+	})
+	t.Run("a fresh claim whose first task of the run is not yet delivered owes its phase", func(t *testing.T) {
+		const contract = 47
+		r := newPauseRig(t)
+		r.st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+			return record.FillIdleClaims(ctx, r.pauses.records, tx, issue, at, claims)
+		})
+		fresh := r.claim(claim.RoleImplementer, supervise.StateIdle)
+		fresh.ServingGeneration, fresh.ServedEntry, fresh.GivenEntry = 0, 0, 1
+		fresh.Pending = undeliveredTask(phase.Implementing, 1)
+		r.putClaim(fresh)
+		r.putPhaseRow(claim.RoleImplementer, 1, false)
+		// The session reported twenty minutes ago, on the daemon's contract, with a reminder wake a
+		// minute past due, and the pod has recorded nothing for half an hour.
+		if _, err := r.pool.Exec(r.ctx, `update claims set plugin_contract = $2, activity_at = now() - interval '20 minutes',
+			activity_next_reminder_at = now() - interval '1 minute', updated_at = now() - interval '30 minutes'
+			where token = $1`, string(fresh.Token), contract); err != nil {
+			t.Fatalf("report the implementer's reminder wake past due: %v", err)
+		}
+		var got workflow.IdleDecision
+		var served pods.IdleClaim
+		if _, err := r.st.ReleaseIdleIssue(r.ctx, "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+			got = workflow.IdleRelease(view, time.Now(), 10*time.Minute, true, false, contract)
+			for _, c := range view.Claims {
+				if c.Role == claim.RoleImplementer {
+					served = c
+				}
+			}
+			return store.IdleReleaseMark{}, nil
+		}); err != nil {
+			t.Fatalf("read the idle view of %s: %v", pauseIssue, err)
+		}
+		if got.Hold != workflow.IdleHoldReminder {
+			t.Errorf("the pod of %s decided %+v (the implementer serves run %d, entry %d), want held %s: the fresh claim serves its first task's run and entry and owes its phase",
+				pauseIssue, got, served.ServingGeneration, served.ServingEntry, workflow.IdleHoldReminder)
+		}
 	})
 }
 

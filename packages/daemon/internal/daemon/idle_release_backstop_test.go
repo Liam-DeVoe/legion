@@ -57,6 +57,12 @@ import (
 // phase. Those last three rows fail if the second kind reads only the task's mark (p.NewsOnly),
 // and the fifth control's backstop row fails without the second kind.
 //
+// The sixth control, a claim whose first task of the issue's run is not yet delivered, is
+// TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTaskOfItsRun, on this
+// writer and on both of a pause's: a fresh claim, which serves that task's run and entry
+// (supervise.Claim.ServingAt) and owes its phase, and a claim kept across a new run, which still
+// serves the earlier run and is of the first kind. Every row here serves the issue's run.
+//
 // A merger in merging whose pull request is merged gets none, since the merge finished its
 // merging (record.MergedInMerging). The controls, an implementer that serves its row's entry and
 // a merger whose pull request is open, each owe their phase and get one.

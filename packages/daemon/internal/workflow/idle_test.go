@@ -366,7 +366,11 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // nudge a role whose completion stands, so such a hold would never end. The same holds of a
 // merger in merging whose pull request is merged (record.MergedInMerging), whose merging that
 // merge finished while a merged root stands in merging until the rest of its tree leaves; its
-// control, the same merger with its pull request not merged, owes the merge and is held.
+// control, the same merger with its pull request not merged, owes the merge and is held. A fresh
+// claim, which has retired no run, holding the first task of the issue's run and phase with its
+// send failed before any turn, serves that task's run and entry as the owed answer reads them
+// (supervise.Claim.ServingAt, which the store fills the view's claim with through
+// pods.IdleClaim.ReadServing, as this row does), so it owes its phase and is held too.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
 	decideIdleRows(t, []idleRuleRow{
 		{
@@ -424,6 +428,23 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
 			view: func() pods.IdleView {
 				v := idleChild()
 				v.Phase, v.Claims[0].Role = phase.Merging, claim.RoleMerger
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldReminder,
+		},
+		{
+			name: "a reminder of a fresh claim whose first task of the run is not yet delivered",
+			view: func() pods.IdleView {
+				v := idleChild()
+				fresh := supervise.Claim{Role: claim.RoleImplementer, State: supervise.StateIdle,
+					Pending: &supervise.Delivery{ID: "outbox:42", Task: "the phase's next step", Generation: v.Generation,
+						Entry: v.Claims[0].RowEntry, Phase: v.Phase, QueuedAt: idleNow.Add(-time.Hour), Prompted: true,
+						SendFailures: 1, LastSendFailureAt: idleNow.Add(-59 * time.Minute)}}
+				// The view carries what the store fills it with from that claim, and nothing of its own.
+				v.Claims[0].ServingGeneration, v.Claims[0].ServingEntry = 0, 0
+				v.Claims[0].ReadServing(fresh, v.Generation, v.Phase)
+				v.Claims[0].LastTurnAt = time.Time{}
 				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
 				return v
 			}(),

@@ -188,10 +188,11 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //   - The claim serves a run, and that run is the issue's current generation. The run and the
 //     entry are claimServes's, the one function the completion route (answerCompletion) reads for
 //     its HANDOFF_NO_RUN and HANDOFF_STALE_GENERATION refusals and for its entry fence, so the two
-//     routes read one rule. The daemon's own delivery of a relaunch's record (supervise.HoldsTask)
-//     carries no run, no entry and no look, so a claim that holds it and was left serving no run
-//     serves none, confirmed or not; and a wake's task names no phase, so a claim that holds one
-//     unconfirmed and has served no run serves none either.
+//     routes read one rule; it reads them as the reminder hold and the backstop read them too
+//     (supervise.Claim.ServingAt). The daemon's own delivery of a relaunch's record
+//     (supervise.HoldsTask) carries no run, no entry and no look, so a claim that holds it and was
+//     left serving no run serves none, confirmed or not; and a wake's task names no phase, so a
+//     claim that holds one unconfirmed and has served no run serves none either.
 //   - The claim's role works the phase the issue stands on (roleFor), the tree does not linger,
 //     where a completion records nothing, and the phase is not merging with its pull request
 //     merged (record.MergedInMerging), which is what finishes merging (workflow.PhaseFinished)

@@ -357,17 +357,20 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
 // release, whatever else did or did not happen. That is for a claim that owes its phase work: a
 // claim that owes it nothing — its completion recorded while the issue stays in the phase, a
-// merge forward holding it, its merging finished by a merged pull request, or behind its entry
-// (record.PhaseOwed) — is armed no backstop (internal/daemon's armBackstops, dispatch://INFRA-2746
-// R1), since any work it gets later comes as a task or a message of the daemon's, which wakes the
-// pod once it is sent. There are two exceptions. The first is a claim behind its entry that holds
-// a task of the issue's run and phase the daemon has not delivered, of that entry, of an earlier
-// one or of no entry: that delivery waits for the claim to come back and admission's owed-entry
-// repair passes over such a claim, so it keeps its backstop (internal/daemon's
-// holdsUndeliveredEntryTask). The second is a claim that holds a task of news alone
-// (supervise.Delivery.NewsOnly) of the issue's run and phase the daemon has not delivered,
-// whatever it owes and whatever entry it serves: once a send of that news fails before any turn,
-// nothing sends it again, so it keeps its backstop too (internal/daemon's
+// merge forward holding it, its merging finished by a merged pull request, behind its entry or
+// still serving an earlier run (record.PhaseOwed) — is armed no backstop (internal/daemon's
+// armBackstops, dispatch://INFRA-2746 R1), since any work it gets later comes as a task or a
+// message of the daemon's, which wakes the pod once it is sent. There are two exceptions. The
+// first is a claim that holds a task of the issue's run and phase the daemon has not delivered, of
+// its row's entry, of an earlier one or of no entry, while it is behind its entry or still serves
+// an earlier run of the issue: that delivery waits for the claim to come back and admission's
+// owed-entry repair passes over such a claim, so it keeps its backstop (internal/daemon's
+// holdsUndeliveredEntryTask). The run and the entry a claim serves are the ones the owed answer
+// reads (supervise.Claim.ServingAt), so a fresh claim whose first task of the run is not yet
+// delivered owes its phase and gets the backstop for that. The second is a claim that holds a task
+// of news alone (supervise.Delivery.NewsOnly) of the issue's run and phase the daemon has not
+// delivered, whatever it owes and whatever entry it serves: once a send of that news fails before
+// any turn, nothing sends it again, so it keeps its backstop too (internal/daemon's
 // holdsUndeliveredNewsTask). The row is fired under a conditional update, so a backstop two passes
 // read fires once, and the row survives a restart, so one that came due while the daemon was down
 // fires at the first pass after it starts.

@@ -57,13 +57,14 @@ type IdleClaim struct {
 	// own close, an idle release. The rule reads it to tell the one suspension no daemon rule may
 	// undo, the operator's, from every other (IdleClaim.OperatorSuspended).
 	SuspendedBy supervise.SuspendSource
-	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
-	// issue's current run from one left over by an older one.
+	// ServingGeneration and ServingEntry are the run and the phase entry the claim serves, read at
+	// the issue's run and phase by the one reading every reader of what a claim owes takes
+	// (supervise.Claim.ServingAt, through ReadServing, which the store applies to the claim it
+	// reads: store's readIdleView). The run tells a phase worker of the issue's current run from
+	// one left over by an older one, and a fresh claim whose first task of the run is not yet
+	// delivered serves that task's run and entry. Each is 0 for a claim that serves none.
 	ServingGeneration uint64
-	// ServingEntry is the phase entry the claim serves, by supervise.Claim.ServingEntry's rule,
-	// which the store applies to the claim it reads (store's readIdleView): 0 for a claim that has
-	// taken no task carrying an entry.
-	ServingEntry int64
+	ServingEntry      int64
 	// RowEntry and RowCompleted are the claim's role's phases row: the entry it stands on and
 	// whether it records the role's completion (record.PhaseRow.Entry, record.PhaseRow.Completed),
 	// 0 and false where the role has no row.
@@ -111,6 +112,15 @@ type IdleClaim struct {
 	// every activity report. The newest UpdatedAt of a pod's claims is when the pod last did
 	// anything the daemon recorded, which is what the idle period is measured from.
 	UpdatedAt time.Time
+}
+
+// ReadServing sets c's ServingGeneration and ServingEntry to what of, the claim c is read from,
+// serves while its issue stands at run generation in phase at (supervise.Claim.ServingAt): the
+// run and the entry the owed answer reads too. The store's idle view reads them so
+// (store's readIdleView), for the reminder hold (workflow's IdleRelease), and so does the backstop
+// of a released or pause-stopped worker (internal/daemon's getsBackstop).
+func (c *IdleClaim) ReadServing(of supervise.Claim, generation uint64, at phase.Phase) {
+	c.ServingGeneration, c.ServingEntry = of.ServingAt(generation, at)
 }
 
 // Live is whether the claim still holds its place in the pod: a failed, retired or already

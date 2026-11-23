@@ -142,12 +142,12 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 }
 
 // The view gives each claim what the reminder hold asks of a claim that works the open phase
-// (record.PhaseOwed): the entry the claim serves, by supervise.Claim.ServingEntry's own rule, and,
-// through the record's reader the daemon hands the store (ReadIdleRecordsWith,
-// record.FillIdleClaims), the entry its role's phases row stands on, whether that row records a
-// completion, whether a merge forward of the issue's pull request holds the role, and whether
-// that pull request is merged while the issue stands in merging. A claim that has served no
-// entry, a role with no row and an issue with no pull request read 0 and false.
+// (record.PhaseOwed): the run and the entry the claim serves, by supervise.Claim.ServingAt's rule
+// (pods.IdleClaim.ReadServing), and, through the record's reader the daemon hands the store
+// (ReadIdleRecordsWith, record.FillIdleClaims), the entry its role's phases row stands on, whether
+// that row records a completion, whether a merge forward of the issue's pull request holds the
+// role, and whether that pull request is merged while the issue stands in merging. A claim that
+// has served no entry, a role with no row and an issue with no pull request read 0 and false.
 func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

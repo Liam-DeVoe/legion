@@ -484,16 +484,20 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // project runs reads nothing else of it.
 //
 // GetsBackstop answers, through tx, whether c, a released claim of the worker of the phase at that
-// its issue stands at, serving the issue's generation, gets a backstop: the rule a release's
-// backstop reads (internal/daemon's getsBackstop, record.PhaseOwed), which reads the workflow's
-// record of the claim's role and which this package cannot import (IdleRecords says why). A
-// worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1), since a
-// backstop would wake it to do nothing, but for the two kinds of claim the rule keeps, whose
-// delivery waits for the claim to come back: one behind its entry that holds a task of the
-// issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
-// entry (internal/daemon's holdsUndeliveredEntryTask), and one that holds a task of news alone of
-// the issue's run and phase the daemon has not delivered, whatever it owes and whatever entry it
-// serves (internal/daemon's holdsUndeliveredNewsTask).
+// its issue stands at, gets a backstop: the rule a release's backstop reads (internal/daemon's
+// getsBackstop, record.PhaseOwed), which reads the workflow's record of the claim's role and which
+// this package cannot import (IdleRecords says why). That rule reads the run and the entry c
+// serves from the whole claim, as the owed answer reads them (supervise.Claim.ServingAt), so the
+// cancel reads no run of its own and asks it whatever run the claim was left serving: a fresh
+// claim whose first task of the issue's run is not yet delivered serves that task's run and owes
+// its phase. A worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1),
+// since a backstop would wake it to do nothing, but for the two kinds of claim the rule keeps,
+// whose delivery waits for the claim to come back: one that holds a task of the issue's run and
+// phase the daemon has not delivered, of its row's entry, of an earlier one or of no entry, while
+// it is behind its entry or still serves an earlier run of the issue (internal/daemon's
+// holdsUndeliveredEntryTask), and one that holds a task of news alone of the issue's run and phase
+// the daemon has not delivered, whatever it owes and whatever entry it serves (internal/daemon's
+// holdsUndeliveredNewsTask).
 type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration
@@ -521,12 +525,12 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the worker of the issue's open phase serving the issue's generation
-// that gets one (ReleaseCancelPause.GetsBackstop, of its whole claim, ClaimTx, since the entry it
-// serves and the task it holds are read from what releasedRole does not carry), its backstop,
-// which the record arms only where the stop owes no launch. A wake taken since is left open: it
-// is the launch the role is owed, and its start row runs at the resume. The caller holds the
-// issue's lock and held's row for share.
+// unpushed work; and, for the worker of the issue's open phase that gets one
+// (ReleaseCancelPause.GetsBackstop, of its whole claim, ClaimTx, since the run and the entry it
+// serves, supervise.Claim.ServingAt's, and the task it holds are read from what releasedRole does
+// not carry), its backstop, which the record arms only where the stop owes no launch. A wake taken
+// since is left open: it is the launch the role is owed, and its start row runs at the resume. The
+// caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
@@ -538,7 +542,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
 		if !owed && paused.Backstop > 0 && paused.OpenPhaseRole != nil && paused.GetsBackstop != nil &&
-			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
+			r.role == paused.OpenPhaseRole(standing.phase) {
 			c, err := ClaimTx(ctx, tx, r.token)
 			if err != nil {
 				return err
@@ -598,7 +602,6 @@ type releasedRole struct {
 	tree       string
 	role       claim.Role
 	generation uint64
-	serving    uint64
 }
 
 // stillReleasedRoles are the claims among suspended that are still suspended as `released`, in
@@ -607,7 +610,7 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 	if len(suspended) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `select token, tree, role, generation, serving_generation from claims where project = $1 and issue = $2
+	rows, err := tx.Query(ctx, `select token, tree, role, generation from claims where project = $1 and issue = $2
 		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by role`,
 		project, issue, suspended)
 	if err != nil {
@@ -618,11 +621,11 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 	for rows.Next() {
 		var r releasedRole
 		var token, role string
-		var generation, serving int64
-		if err := rows.Scan(&token, &r.tree, &role, &generation, &serving); err != nil {
+		var generation int64
+		if err := rows.Scan(&token, &r.tree, &role, &generation); err != nil {
 			return nil, err
 		}
-		r.token, r.role, r.generation, r.serving = claim.Token(token), claim.Role(role), uint64(generation), uint64(serving)
+		r.token, r.role, r.generation = claim.Token(token), claim.Role(role), uint64(generation)
 		roles = append(roles, r)
 	}
 	return roles, rows.Err()
@@ -716,7 +719,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
-	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
+	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at)
@@ -729,16 +732,14 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records
 	for claims.Next() {
 		var c pods.IdleClaim
 		var role, state, kinds, suspendedBy string
-		var servingGeneration int64
 		var activityAt, reminder, lastTurn *time.Time
-		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
+		if err := claims.Scan(&role, &state, &c.PluginContract, &c.LastStartRow,
 			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
 			&c.HasProcess, &suspendedBy, &lastTurn); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
-		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
 		if kinds != "" {
 			c.ActivityKinds = strings.Split(kinds, ",")
@@ -748,11 +749,14 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
-	// The entry each claim serves is supervise.Claim.ServingEntry's answer, so the claims are read
-	// again as the supervisor reads them (claimSelect) and that rule is applied rather than
-	// written a second time: it reads the pending delivery, the entry the claim last served and
-	// its update round together. A claim's token is its project, issue and role, so the role
-	// names one claim of the issue in each read.
+	// The run and the entry each claim serves are supervise.Claim.ServingAt's answer at the
+	// issue's run and phase, the one reading every reader of what a claim owes takes
+	// (pods.IdleClaim.ReadServing), so the claims are read again as the supervisor reads them
+	// (claimSelect) and that rule is applied rather than written a second time: it reads the
+	// pending delivery, the run and the entry the claim last served and its update round
+	// together. So the reminder hold reads a fresh claim whose first task of the run is not yet
+	// delivered as serving that task's run and entry, as the owed answer does. A claim's token is
+	// its project, issue and role, so the role names one claim of the issue in each read.
 	served, err := readClaims(ctx, tx, " where c.project = $1 and c.issue = $2", project, issue)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
@@ -760,7 +764,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records
 	for i := range view.Claims {
 		for _, c := range served {
 			if c.Role == view.Claims[i].Role {
-				view.Claims[i].ServingEntry = c.ServingEntry()
+				view.Claims[i].ReadServing(c, view.Generation, view.Phase)
 				break
 			}
 		}

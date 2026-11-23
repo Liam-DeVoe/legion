@@ -398,9 +398,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		}
 	}
 	// A reminder is a turn due only of a claim that owes its phase, by the owed answer's rule
-	// (record.PhaseOwed, which api's owedBy reads too). No reminder comes to a claim that owes
-	// nothing, and the silence sweep does not nudge a role whose completion stands, so a past-due
-	// wake such a claim reported would hold the pod until the issue left its phase.
+	// (record.PhaseOwed, which api's owedBy reads too), read of the run and the entry the claim
+	// serves as the owed answer reads them (supervise.Claim.ServingAt, which the idle view's
+	// claims carry: pods.IdleClaim.ReadServing), so a fresh claim whose first task of the run is
+	// not yet delivered owes its phase here too. No reminder comes to a claim that owes nothing,
+	// and the silence sweep does not nudge a role whose completion stands, so a past-due wake such
+	// a claim reported would hold the pod until the issue left its phase.
 	for _, c := range view.Claims {
 		if !c.Live() || !idlePhaseOpen(view, c) || !record.PhaseOwed(c.ServingGeneration, view.Generation,
 			c.ServingEntry, c.RowEntry, c.RowCompleted, c.MergeForwardHeld, c.MergedInMerging) {
@@ -555,7 +558,9 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 }
 
 // idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenPhaseRole),
-// serving the current generation: the one shape of claim a phase reminder is armed in.
+// serving the current generation as the owed answer reads the run a claim serves
+// (pods.IdleClaim.ServingGeneration, supervise.Claim.ServingAt): the one shape of claim a phase
+// reminder is armed in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
 	return OpenPhaseRole(view.Phase) == c.Role && c.ServingGeneration == view.Generation
 }

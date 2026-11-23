@@ -1058,6 +1058,12 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // the second kind reads only the task's mark (p.NewsOnly), and the fifth control's backstop row
 // fails on both writers without the second kind.
 //
+// The sixth control, a claim whose first task of the issue's run is not yet delivered, is
+// TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTaskOfItsRun, on both of
+// these writers and on a release: a fresh claim, which serves that task's run and entry
+// (supervise.Claim.ServingAt) and owes its phase, and a claim kept across a new run, which still
+// serves the earlier run and is of the first kind. Every row here serves the issue's run.
+//
 // The stop transaction's row stops it owing no launch, as every row here does; the machine's own
 // stop of a claim holding such a task owes it a launch as well (supervise's holdsTask), which the
 // row leaves out so that the stop reads the backstop's rule. The control, the same stop of an

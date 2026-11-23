@@ -20,6 +20,17 @@ import (
 // live claim kept across a new run N+1, which still serves run N. The same claim whose phases row
 // records its completion of the row's entry owes nothing a wake could bring back, and gets none.
 //
+// By spec v72 the fresh claim serves the run and the entry of the task it holds, as the owed
+// answer reads them (supervise.Claim.ServingAt), so it gets the backstop because it owes its
+// phase; the kept claim still serves run N, owes nothing, and gets it by the first kind of claim
+// that owes nothing (holdsUndeliveredEntryTask), whose terms are that it is behind its entry or
+// still serves an earlier run. A kept claim that has served no entry is level with its row's
+// entry (0 compares with none), so it takes that kind for the earlier run it serves alone and
+// gets one too, and gets none where its row records its completion. A kept claim whose turn
+// confirmed the first task of run N+1 serves that task's run and entry, level with its row, owes
+// its phase and gets one. Verification v30's rows get none: a kept claim and a fresh claim that
+// hold no task, or hold a task of another run or of another phase unconfirmed.
+//
 // LEGION-208's implementer serves the run named served, the issue stands at run generation in
 // implementing, its row stands on entry rowEntry, and the claim holds the task of that run, that
 // phase and that entry. Each case runs through the three writers that arm a backstop: the
@@ -67,6 +78,15 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 			completed          bool
 			backstop           bool
 			why                string
+			// noServedEntry leaves a kept claim having served no entry, level with its row's entry,
+			// in place of the entry below its row's.
+			noServedEntry bool
+			// The task the claim holds in place of the first task of the run unconfirmed: none
+			// (noTask), that task confirmed by a turn (confirmed), or, unconfirmed, a task of run
+			// taskGeneration or of phase taskPhase.
+			noTask, confirmed bool
+			taskGeneration    uint64
+			taskPhase         phase.Phase
 		}{
 			{name: "the sixth control: a fresh claim serving run 0 holds the first task of run 1",
 				generation: 1, served: 0, rowEntry: 1, backstop: true,
@@ -80,6 +100,33 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 			{name: "a claim kept across run 2 still serving run 1 holds the first task of run 2, and its row records its completion",
 				generation: 2, served: 1, rowEntry: 2, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
+			{name: "a claim kept across run 2 still serving run 1, which served no entry, holds the first task of run 2",
+				generation: 2, served: 1, rowEntry: 2, noServedEntry: true, backstop: true,
+				why: "it is level with its row's entry and still serves an earlier run, and nothing sends its first task again"},
+			{name: "a claim kept across run 2 still serving run 1, which served no entry, holds the first task of run 2, and its row records its completion",
+				generation: 2, served: 1, rowEntry: 2, noServedEntry: true, completed: true,
+				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
+			{name: "a claim kept across run 2 holds the first task of run 2 confirmed",
+				generation: 2, served: 1, rowEntry: 2, confirmed: true, backstop: true,
+				why: "a turn confirmed the task, so the claim serves run 2 and entry 2, level with its row, and owes its phase"},
+			{name: "a claim kept across run 2 still serving run 1 holds no task",
+				generation: 2, served: 1, rowEntry: 2, noTask: true,
+				why: "it holds no task for a wake to deliver and owes nothing"},
+			{name: "a claim kept across run 2 still serving run 1 holds a task of run 1 unconfirmed",
+				generation: 2, served: 1, rowEntry: 2, taskGeneration: 1,
+				why: "the task it holds is of another run, so it is no task of the issue's run for a wake to deliver"},
+			{name: "a claim kept across run 2 still serving run 1 holds a task of run 2's retro unconfirmed",
+				generation: 2, served: 1, rowEntry: 2, taskPhase: phase.Retro,
+				why: "the task it holds is of another phase, so it is no task of the issue's phase for a wake to deliver"},
+			{name: "a fresh claim serving run 0 holds no task",
+				generation: 1, served: 0, rowEntry: 1, noTask: true,
+				why: "it holds no task of the issue's run, so it serves no run and owes nothing"},
+			{name: "a fresh claim serving run 0 holds a task of run 1 unconfirmed, and the issue stands at run 2",
+				generation: 2, served: 0, rowEntry: 1, taskGeneration: 1,
+				why: "the task it holds is of another run, so it serves no run and owes nothing"},
+			{name: "a fresh claim serving run 0 holds a task of run 1's retro unconfirmed",
+				generation: 1, served: 0, rowEntry: 1, taskPhase: phase.Retro,
+				why: "the task it holds is of another phase, so it serves no run and owes nothing"},
 		} {
 			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
 				r := newPauseRig(t, claim.RoleImplementer)
@@ -94,9 +141,25 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 				if c.served != 0 {
 					implementer.ServedEntry = c.rowEntry - 1
 				}
+				if c.noServedEntry {
+					implementer.ServedEntry = 0
+				}
 				task := undeliveredTask(phase.Implementing, c.rowEntry)
 				task.Generation = c.generation
 				implementer.GivenEntry, implementer.Pending = c.rowEntry, task
+				if c.taskGeneration != 0 {
+					task.Generation = c.taskGeneration
+				}
+				if c.taskPhase != "" {
+					task.Phase = c.taskPhase
+				}
+				if c.confirmed {
+					task.DeliveredAt = task.LastSendFailureAt.Add(time.Minute)
+					task.ConfirmedAt = task.DeliveredAt
+				}
+				if c.noTask {
+					implementer.Pending = nil
+				}
 				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
 
 				// A pause writer records the stop in every case, owing no launch, so a case that arms

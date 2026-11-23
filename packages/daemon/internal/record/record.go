@@ -2806,8 +2806,8 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	return PhaseRow{}
 }
 
-// EntriesDiffer is whether entry, the one a claim serves (api's claimServes, which reads
-// supervise.Claim.ServingEntry), and rowEntry, the one its role's phases row stands on
+// EntriesDiffer is whether entry, the one a claim serves (supervise.Claim.ServingAt, which api's
+// claimServes reads), and rowEntry, the one its role's phases row stands on
 // (PhaseRow.Entry), are both set and differ. Either one 0 is nothing to compare, for the reasons
 // the completion route's entry fence gives (api's entryFence). It is the one comparison that fence
 // and the owed answer (api's owedBy, through PhaseOwed) make, so the two routes read one rule.
@@ -2817,8 +2817,9 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 
 // PhaseOwed is whether a claim that works its issue's phase owes that phase's completion, from
 // the facts the record holds of it: serving, the run the claim serves, and generation, the
-// issue's; entry, the phase entry the claim serves, and rowEntry, the one its role's phases row
-// stands on (PhaseRow.Entry); completed, whether that row records the role's completion
+// issue's; entry, the phase entry the claim serves (serving and entry as
+// supervise.Claim.ServingAt reads them), and rowEntry, the one its role's phases row stands on
+// (PhaseRow.Entry); completed, whether that row records the role's completion
 // (PhaseRow.Completed); mergeForwardHeld, whether a merge forward holds the role
 // (MergeForwardHolds, which the caller reads of the issue's pull request at the phase the issue
 // stands in); and merged, whether the issue stands in merging with its pull request merged
@@ -2839,15 +2840,18 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // stands in for: the silence sweep does not nudge a role whose completion stands, so a hold on
 // such a claim's reported wake would never end, and a backstop would wake it every
 // backstop_minutes to do nothing where any work it gets later comes as a task or a message of the
-// daemon's, which wakes the pod once it is sent. The first kind the backstop keeps is behind its
-// entry and holds a task of the issue's run and phase the daemon has not delivered, of that
-// entry, of an earlier one or of no entry (internal/daemon's holdsUndeliveredEntryTask): that
-// delivery waits for the claim to come back, admission's owed-entry repair passes over a claim
-// that holds such a task, and nothing else brings the pod back for it. The second holds a task of
-// news alone (supervise.Delivery.NewsOnly) of the issue's run and phase the daemon has not
-// delivered, whatever it owes and whatever entry it serves (internal/daemon's
-// holdsUndeliveredNewsTask): once a send of that news fails before any turn, nothing sends it
-// again.
+// daemon's, which wakes the pod once it is sent. The first kind the backstop keeps holds a task of
+// the issue's run and phase the daemon has not delivered, of its row's entry, of an earlier one or
+// of no entry, while it is behind its entry or still serves an earlier run of the issue
+// (internal/daemon's holdsUndeliveredEntryTask): that delivery waits for the claim to come back,
+// admission's owed-entry repair passes over a claim that holds such a task, and nothing else
+// brings the pod back for it. A claim that still serves an earlier run is a live claim kept
+// across a new generation of its issue whose first task of the new run is not yet delivered; a
+// fresh claim whose first task is not yet delivered serves that task's run and entry
+// (supervise.Claim.ServingAt) and owes its phase. The second holds a task of news alone
+// (supervise.Delivery.NewsOnly) of the issue's run and phase the daemon has not delivered,
+// whatever it owes and whatever entry it serves (internal/daemon's holdsUndeliveredNewsTask):
+// once a send of that news fails before any turn, nothing sends it again.
 func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
 	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged
 }

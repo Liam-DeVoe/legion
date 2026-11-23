@@ -134,15 +134,19 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // (store.CloseRoleOpenResumeTx); and either the launch it is owed — a held wake of the pause
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
-// phase serving its generation, its backstop. A worker that owes that phase nothing gets no
-// backstop, by the rule a release's backstop reads (getsBackstop, dispatch://INFRA-2746 R1), but
-// for the two kinds of such worker that rule keeps: a claim behind its entry that holds a task of
-// the issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of
-// no entry (holdsUndeliveredEntryTask), and a claim that holds a task of news alone of the issue's
-// run and phase the daemon has not delivered, whatever it owes and whatever entry it serves
-// (holdsUndeliveredNewsTask). A stop the machine makes of a claim that holds a task no turn has
-// taken already owes it a launch (supervise's holdsTask), which brings it back at the resume. A
-// start owed once the pause has ended, with no pause open after it, is logged as a released held
+// phase, its backstop, where it gets one by the rule a release's backstop reads (getsBackstop,
+// dispatch://INFRA-2746 R1). That rule reads the run and the entry the worker serves from the
+// whole claim, as the owed answer reads them (supervise.Claim.ServingAt), so the stop reads no run
+// of its own and asks it whatever run the claim was left serving: a fresh claim whose first task
+// of the issue's run is not yet delivered serves that task's run and owes its phase. A worker that
+// owes that phase nothing gets no backstop but for the two kinds of such worker that rule keeps: a
+// claim that holds a task of the issue's run and phase the daemon has not delivered, of its row's
+// entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier
+// run of the issue (holdsUndeliveredEntryTask), and a claim that holds a task of news alone of the
+// issue's run and phase the daemon has not delivered, whatever it owes and whatever entry it
+// serves (holdsUndeliveredNewsTask). A stop the machine makes of a claim that holds a task no turn
+// has taken already owes it a launch (supervise's holdsTask), which brings it back at the resume.
+// A start owed once the pause has ended, with no pause open after it, is logged as a released held
 // row (decision 23), and the outbox runs it at once through the pacing; a later open pause holds
 // it, and that pause's resume logs it.
 //
@@ -256,7 +260,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
 			return made, err
 		}
-		if !owed && issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
+		if !owed && issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) {
 			_, gets, err := getsBackstop(ctx, p.records, tx, issue.Phase, issue.Generation, c)
 			if err != nil {
 				return made, err

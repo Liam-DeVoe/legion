@@ -451,7 +451,9 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 
 // claimServes is the run and the phase entry a completion from claim c of issue is of, and, where
 // that run is 0, why: what the claim holds instead of the issue's current task
-// (heldTaskNotCurrent). It is the one place that rule is written, and it has two readers. The
+// (heldTaskNotCurrent). The run and the entry are the ones every reader of what a claim owes its
+// phase reads (supervise.Claim.ServingAt, which says why a claim that has retired no run takes
+// them from the issue's own current task it holds), and this function has two readers. The
 // completion route (answerCompletion) refuses a completion of run 0 HANDOFF_NO_RUN with that
 // reason (noRunCompletion), one of a run the issue has left HANDOFF_STALE_GENERATION
 // (staleCompletion), and holds one of the current run to the entry its role's phases row stands
@@ -459,36 +461,26 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // term of what a claim owes (dispatch://INFRA-2746 R1), so a claim it tells it owes a completion
 // is one this function attributes to the issue's current run and to the entry the row stands on.
 //
-// The run and the entry are what the claim serves (supervise.Claim.ServingRun, ServingEntry),
-// with one fallback. A claim that has retired no run and holds a task its agent neither confirmed
-// nor was marked as reading is working that held task: that is exactly the state a busy refusal, a
-// late refusal, a lost prompt or a failed adoption leaves behind while the agent goes on and does
-// the phase's work in a turn of its own, and refusing its completion costs the issue a phase for
-// nothing. So the run and the entry are taken from the task the claim is holding: that task names
-// the generation and the phase itself, so the route can answer from it rather than from the turn
-// that never announced itself.
-//
-// The fallback applies only when that task is the issue's own current work. A task of another
-// run, of another phase, or of no phase at all — an operator's own, which carries generation 0,
-// or a wake's, which names no phase — is none of the work a completion could be of, and answers
-// run 0, whether the claim answered for it (supervise's serving reads such a task too, for a claim
-// that has served nothing) or answered for nothing. Why the held task is not the issue's current
-// task is one question with one answer (heldTaskNotCurrent), and this function is its one reader,
-// so the 409 can never describe a rule the route does not apply. The reason is asked too when the
-// fallback did not apply: a claim that has retired no run and holds a task the agent read or a
-// turn confirmed, which carries no run — an operator's own, or the daemon's own delivery of what
-// its relaunch ended (supervise.Delivery.Relaunch), which the turn that reads it confirms — serves
-// no run either, and the refusal says what the claim holds rather than giving no reason.
+// The fallback to the held task is narrow: a held task of another run, of another phase, or of no
+// phase at all is none of the work a completion could be of, and answers run 0. Why the held task
+// is not the issue's current task is one question with one answer (heldTaskNotCurrent), which
+// answers "" exactly where the fallback reads the held task (supervise.HoldsTaskOf), and this
+// function is its one reader, so the 409 can never describe a rule the route does not apply. The
+// reason is asked wherever the run is 0, the fallback's or not: a claim that has retired no run
+// and holds a task the agent read or a turn confirmed, which carries no run — an operator's own,
+// or the daemon's own delivery of what its relaunch ended (supervise.Delivery.Relaunch), which the
+// turn that reads it confirms — serves no run either, and the refusal says what the claim holds
+// rather than giving no reason.
 //
 // What the narrowness does not buy is a claim with no earlier run to confuse a completion with.
 // Nothing on the completion route confirms a delivery or retires a run, so a claim whose held
-// task stays unconfirmed still answers from that same task after a completion this fallback
+// task stays unconfirmed still answers from that same task after a completion the fallback
 // admitted, and a later entry of the same generation and the same phase takes it again. What
 // keeps such an entry's completion from being the entry before it is the held task's own entry —
 // each entry hands the role a task of its own number, and the entry fence compares the task's
 // against the row's — and, for a phase that ends with a handoff record, the workflow's
 // HANDOFF_NOT_NEW, which refuses a completion naming the record the role wrote for its previous
-// entry. Neither fence is this fallback's doing; they are the ones every completion passes.
+// entry. Neither fence is the fallback's doing; they are the ones every completion passes.
 //
 // Every other fence of the route reads what it read before. The adopted run is the issue's own
 // generation, so the stale-generation refusal and its two tails never fire for it, and the phase
@@ -496,15 +488,8 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // record's own checks, the implementer's pull-request check and the idempotency key, whose run is
 // the issue's generation, are untouched.
 func claimServes(c supervise.Claim, issue record.Issue) (serving uint64, entry int64, notCurrent string) {
-	serving, entry = c.ServingRun(), c.ServingEntry()
-	if c.ServingGeneration == 0 && (c.Pending == nil || (c.Pending.ConfirmedAt.IsZero() && c.Pending.DeliveredAt.IsZero())) {
-		if notCurrent = heldTaskNotCurrent(issue.Key, issue.Generation, issue.Phase, c.Pending); notCurrent == "" {
-			serving, entry = c.Pending.Generation, c.Pending.Entry
-		} else {
-			serving, entry = 0, 0
-		}
-	}
-	if serving == 0 && notCurrent == "" {
+	serving, entry = c.ServingAt(issue.Generation, issue.Phase)
+	if serving == 0 {
 		notCurrent = heldTaskNotCurrent(issue.Key, issue.Generation, issue.Phase, c.Pending)
 	}
 	return serving, entry, notCurrent
@@ -512,20 +497,20 @@ func claimServes(c supervise.Claim, issue record.Issue) (serving uint64, entry i
 
 // heldTaskNotCurrent says why the task a claim is holding is not the issue's current task — it is
 // of another run, of another phase, or there is no task at all — and answers "" when it is that
-// task: one of the issue's own generation and its own phase. The one rule has two readers, and
-// this is the one place it is written. The fallback to the held task's run and entry applies
-// exactly on the empty answer (claimServes), and the HANDOFF_NO_RUN refusal is written from the
-// answer itself (noRunCompletion), so a change to which held task may back a completion cannot
+// task: one of the issue's own generation and its own phase (supervise.HoldsTaskOf, the test the
+// run a claim serves reads, supervise.Claim.ServingAt). The HANDOFF_NO_RUN refusal is written from
+// the answer itself (noRunCompletion), so a change to which held task may back a completion cannot
 // leave the 409 describing a rule the route no longer applies.
 //
-// An empty answer also says the claim holds a task at all, which is what lets claimServes read
-// Pending on the strength of it: the first case asks supervise.HoldsTask, so every case after it
-// reads a task. A claim holds none when it holds nothing and when it holds only the daemon's own
-// delivery of a relaunch's record (supervise.Delivery.Relaunch), which carries the sentence of
-// what the relaunch ended and no work; the reason says which, so that delivery is said as what it
-// is rather than read as a task of no run, which is an operator's own.
+// Every case after the first two reads a task: the second asks supervise.HoldsTask. A claim holds
+// none when it holds nothing and when it holds only the daemon's own delivery of a relaunch's
+// record (supervise.Delivery.Relaunch), which carries the sentence of what the relaunch ended and
+// no work; the reason says which, so that delivery is said as what it is rather than read as a
+// task of no run, which is an operator's own.
 func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
 	switch {
+	case supervise.HoldsTaskOf(pending, current, p):
+		return ""
 	case !supervise.HoldsTask(pending):
 		if pending == nil {
 			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)

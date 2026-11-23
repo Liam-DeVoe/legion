@@ -7438,7 +7438,7 @@ That daemon does not read the annotations `legion.dev/volume-reset` and `legion.
 An issue pod that no role is using is released: the daemon ends it and starts another at the next wake for one of its roles.
 A pod qualifies once it has had no turn in progress and no turn due for the idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default).
 A turn is due when the next phase reminder of a phase worker that owes its phase falls inside the idle period:
-the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the claim owes its phase, by the rule the owed route reads (`record.PhaseOwed`).
+the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the claim owes its phase, by the rule the owed route reads (`record.PhaseOwed`), of the run and the entry the claim serves as that route reads them (`Claim.ServingAt`, `internal/supervise/machine.go`).
 The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work.
 When the answer is that the claim owes nothing, or the read fails or gets no answer within 3 seconds (`OWED_READ_BOUND_MS`), the timer sends no reminder and clears the next reminder the session reports, so that reminder holds no pod.
 A worker that owes its phase and goes quiet is sent its task again by the daemon's silence sweep, not by a reminder.
@@ -7531,12 +7531,12 @@ The wakes are these:
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
-  Nor does a phase worker that owes its phase nothing: its completion of the phase's entry is recorded while the issue stays in the phase, a merge forward holds it, its merged pull request finished merging, or it is behind that entry, by the rule of the daemon's answer of what a claim owes (`record.PhaseOwed`, read by `armBackstops`, `internal/daemon/wake.go`).
+  Nor does a phase worker that owes its phase nothing: its completion of the phase's entry is recorded while the issue stays in the phase, a merge forward holds it, its merged pull request finished merging, it is behind that entry or still serves an earlier run, by the rule of the daemon's answer of what a claim owes (`record.PhaseOwed`, read by `armBackstops`, `internal/daemon/wake.go`).
   Such a worker is OSSV-732's reviewer, whose approval stood while GitHub held the merge for a code-owner review; a backstop would wake it every `backstop_minutes` to do nothing.
   Any work such a worker gets later comes as a task or a message of the daemon's, which wakes the pod once it is sent: admission's owed-entry repair sends the entry's task to a worker behind its entry that holds no task of the issue's run and phase that the daemon has not delivered.
   The exception is a task of news alone (`NewsOnly`), the second kind below.
   Two kinds of worker that owe their phase nothing still get the backstop.
-  The first is one behind its entry that holds a task of the issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of no entry, unless its completion is recorded, a merge forward holds its role or its merged pull request is finishing its merge (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
+  The first is one that holds a task of the issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, unless its completion is recorded, a merge forward holds its role or its merged pull request is finishing its merge (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
   A send can fail before any turn and then waits for the claim to come back.
   A relaunch of a failed or retired worker keeps the task of an earlier entry that it still holds, and does not deliver the new entry (`keepsStartTask`, `internal/daemon/outbox.go`).
   A task of no entry is a resume task (`ResumePhaseTask`) or a task of news alone (`NewsOnly`), which names the issue's run and phase too but is no task of the phase, so the first kind does not count it (`Delivery.StillWorked`) and the second does.
@@ -7549,6 +7549,11 @@ The wakes are these:
   Once a send of it fails before any turn, no news reconcile, repair or silence sweep sends it again, so for such a worker the backstop is the one wake that delivers it.
   For an issue the daemon records as waiting on another issue (its admission slot given back for the wait), the backstop wakes the pod only `WaitSilenceBound`, 24 hours, after the release armed it (`pod_wake_backstops.armed_at`), in place of `backstop_minutes`.
   The normal delay applies again at the first wake tick after the issue takes a slot, so a backstop already past it then wakes the pod at once.
+
+The run and the entry a worker serves are the ones the daemon's answer of what a claim owes reads (`Claim.ServingAt`, `internal/supervise/machine.go`), and the release, a pause's stop, a paused cancel of a release and the reminder hold read them the same way.
+A fresh claim whose first task is not yet delivered serves that task's run and entry, so it owes its phase: it gets the backstop, and a past-due reminder wake it reported holds its pod.
+A claim that still serves an earlier run is a live claim kept across a new generation of its issue whose first task of the new run is not yet delivered: it serves the run it was left serving (`ServingGeneration`), so it owes nothing and gets the backstop as the first kind.
+Once a turn confirms that task, the claim serves the task's run and entry and owes its phase.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
@@ -7812,7 +7817,7 @@ It writes the claim and the stop's record, and with them:
   The daemon also queues no outbox row keyed by another project's issue, since only that project's daemon runs such a row, against its own claims: every write of an outbox row by its key takes one rule (`claim.KeyOfProject`, `internal/claim/token.go`), so neither the stop of such a spawn nor its agent's ready queues a row of that issue or changes one;
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
-  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads, with that rule's two exceptions: a worker behind its entry that holds a task of the issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of no entry, and a worker that holds a task of news alone of the issue's run and phase that the daemon has not delivered, whatever it owes and whatever entry it serves ([Idle release](#idle-release)); a cancel of its pod's release, made while the project is paused, which records it stopped by the pause, reads the same rule.
+  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads, with that rule's two exceptions: a worker that holds a task of the issue's run and phase that the daemon has not delivered, of its entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, and a worker that holds a task of news alone of the issue's run and phase that the daemon has not delivered, whatever it owes and whatever entry it serves ([Idle release](#idle-release)); a cancel of its pod's release, made while the project is paused, which records it stopped by the pause, reads the same rule.
 
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
