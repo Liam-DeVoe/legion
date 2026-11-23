@@ -173,8 +173,14 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if got := slotCalls(rt, owner)[before:]; len(got) != 0 {
 			t.Fatalf("the stale notice asked the runtime %q of the owner's slot, want nothing", got)
 		}
-		if lines := strings.Count(logged.String(), "outbox owner-step finished undelivered: its step no longer runs"); lines != 1 {
-			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", lines, logged.String())
+		lines := staleLines(t, logged.String())
+		if len(lines) != 1 {
+			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", len(lines), logged.String())
+		}
+		// The notice names no run, so the executor judges it by the role the owner's slot acts as,
+		// which it read, and the line says what it read.
+		if slot := lines[0]["slot"]; slot != string(claim.RoleArchitect) {
+			t.Fatalf("the stale notice's line names the slot %v, want the architect it read:\n%s", slot, logged.String())
 		}
 	})
 }

@@ -41,7 +41,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 Without `acceptance:owner`, a reviewer step approves, or passes with no pull request, only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.
 A `ci_check` that reads `absent` moves nothing back either: the retro sends it to you as a finding.
 One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check.
-So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
+So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires.
 
 ## A role of your plan
 

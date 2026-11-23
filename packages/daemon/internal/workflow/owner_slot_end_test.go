@@ -112,9 +112,12 @@ func TestEveryEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 // step was the owner's (record.OwnerActsAs), so its slot holds the implement App through the
 // retro, and the retro's end, the move to merging, queues one more supervise slot_credential of the
 // owner's claim. It does so too where the way back of a rollback dropped the plan rows while the
-// retro ran, so the retro ends off its walk (endOffWalk). The control: on `implementer reviewer`
+// retro ran, so the retro ends off its walk (endOffWalk). The controls: on `implementer reviewer`
 // the implementer does the retro, whose end queues none, since the owner's slot was never written
-// for it.
+// for it; and on `acceptance:owner` alone the owner does the retro as itself, so its slot keeps
+// its own App through the retro and the retro's end queues none either. Only the off-walk end of a
+// retro, whose plan rows are gone, cannot tell the two retros of the owner apart, and queues the
+// write-back for both (endOffWalk).
 func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -125,6 +128,7 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 		{name: "the owner's retro of its own implementer step", steps: []string{"implementer:owner", "reviewer"}, queued: 1},
 		{name: "the same retro, its plan rows dropped while it ran", steps: []string{"implementer:owner", "reviewer"}, dropped: true, queued: 1},
 		{name: "control: the retro of a fresh implementer", steps: []string{"implementer", "reviewer"}},
+		{name: "control: the owner's retro of acceptance:owner alone", steps: []string{"acceptance:owner"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -133,15 +137,21 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-			if tc.steps[0] == "implementer:owner" {
+			switch tc.steps[0] {
+			case "acceptance:owner":
+				assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(1))
+				move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
+			case "implementer:owner":
 				if result := applyFacts(t, pool, engine)("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
 					t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
 				}
-			} else {
+			default:
 				move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			}
-			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
-			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			if tc.steps[0] != "acceptance:owner" {
+				assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+				move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			}
 			assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 			before := superviseRowsOf(t, pool, root.Key, "slot_credential")
 			if tc.dropped {

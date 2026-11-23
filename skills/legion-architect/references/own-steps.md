@@ -31,10 +31,13 @@ Read it also when a retro reports to you.
   Its phase is the phase the issue stands in, and its reason the task a worker of that step would get.
 
 - The notice comes only while that step runs, once your slot's gh files hold the GitHub App of the step's role.
-  That includes your own App (the review App, for the retro, a planner, tester or reviewer step and acceptance).
+  That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step.
+  Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did.
   Legion writes the slot first only for another App.
   While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App.
-  At the step's end Legion writes your own App back to your slot, unless your next step, of another App, already runs.
+  A merge forward asked of you is the one exception, below.
+  At the end of the step or of such a retro, Legion writes your own App back to your slot.
+  It writes nothing where your next step, retro or merge forward of another App already runs.
   A notice that comes after the end waits for that write.
 
 - While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound.
@@ -44,6 +47,13 @@ Read it also when a retro reports to you.
 - A retry of your claim at your step (`legion claims retry`) relaunches your session, and Legion tells you the step again.
   It starts no worker.
   While an `owner-step` of that run is still on its way to you, the retry tells you nothing more.
+
+- Where the task's implementer step is yours, the daemon's ask to merge the base forward comes to you, in any phase.
+  That merge is the implementer's act, so your slot holds the implement App until the ask ends.
+  It ends when its merge lands, the pull request closes or merges, or the issue moves into `implementing`, leaves, is held or its task stops.
+  Each end writes your own App back to your slot, as a step's end does.
+  Until then Legion tells you no step or retro of another App, such as your review step or your acceptance.
+  A `sign_off` or a `complete_step` is a call to the daemon, not to GitHub, so your slot's App does not change it.
 
 ## Reporting it
 
@@ -77,6 +87,8 @@ Read it also when a retro reports to you.
 - A review you leave on the pull request decides nothing of the step.
   It serves the repository's own merge rule, such as a required approving review, which you give yourself.
   After a forward merge in `accepting`, `retro` or `merging`, the daemon asks you to approve the new head on GitHub.
+  GitHub refuses an approval from the pull request's author, so that ask waits until your slot holds the review App.
+  While your slot holds the implement App, it waits for the end of your retro or of the merge forward asked of you.
   A merger that enters `merging` while that approval is owed waits for it.
 
 ## A task with no pull request

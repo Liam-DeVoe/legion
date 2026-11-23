@@ -1342,8 +1342,8 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // App of the role runtime.SlotRole answers for the pane, as the boot's one reader of a claim's App
 // answers it (roleApps): its own role's, a role the plan in force of the pane's issue defines
 // acting as the App of its type, any other role the deployment defines acting as the App its
-// github_app names (deploymentApps), and, while the pane's architect does a step of its own
-// issue's task, that step's role's (ownerActsAs)) and the controller pane's own
+// github_app names (deploymentApps), and, while the pane's architect acts as another role on its
+// own issue (ownerActsAs), that role's) and the controller pane's own
 // (appauth.ControllerCredential), which its refresh asks by the default owner its launch recorded,
 // both built over the owner accounts each App is installed on, which the bundle reads at every
 // build (appauth.Manager.InstalledOwners:
@@ -1375,9 +1375,11 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// reads the roles' Apps the runtime's walks hold (opts.RoleApps), one reader for
 			// both.
 			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, opts.RoleApps, log), gh
-			// While an owner does a step of its task, its pane holds that step's App, and its own
-			// role's again once the step ends (ownerActsAs): every write of a pane's gh files, the
-			// refresh's and a spawn's, asks it through runtime.SlotRole.
+			// While an owner acts as another role, its pane holds that role's App (ownerActsAs): at a
+			// step it does itself, the step's; at its retro of its own implementation step, that step's;
+			// and while a merge forward asked of it has not ended, the implementer's. It holds its own
+			// role's App again after each, and every write of a pane's gh files, the refresh's and a
+			// spawn's, asks it through runtime.SlotRole.
 			opts.ActsAs = ownerActsAs(st.Pool(), record.NewStore())
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)

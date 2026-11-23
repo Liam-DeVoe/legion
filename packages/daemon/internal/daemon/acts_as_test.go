@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -103,4 +104,81 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 			t.Errorf("SlotRole(%s) = (%q, %v), want (%q, nil)", tc.name, slot, err, want)
 		}
 	}
+}
+
+// A merge forward is an act as the implementer, so the daemon's ActsAs answers the implementer for
+// the owner while the record holds a merge forward asked of the owner that has not ended. LEGION-7
+// stands at the reviewer's step of `implementer:owner reviewer`, another agent's: its implementer's
+// phases row names the owner's claim, the claim the ask reached (record.WorkerClaim), and its pull
+// request holds an ask that has not landed, so its owner acts as the implementer. Once the ask
+// landed, the owner acts as nothing again. The control: LEGION-8, the same with `implementer
+// reviewer`, whose ask went to the implementer's own claim, leaves the owner acting as nothing.
+func TestTheDaemonsActsAsIsTheImplementerForAMergeForwardAskedOfTheOwner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	reviewer := record.TaskPlace{Kind: record.PlaceStep, Position: 2}
+	seed := func(tx pgx.Tx, key string, words ...string) error {
+		issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION",
+			Title: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review", Rank: "A", LastDispatchSeq: 1}
+		version := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: now}
+		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskRunning, Place: reviewer}
+		roles := stepplan.BuiltinRoles()
+		steps := make([]record.PlanStep, 0, len(words))
+		for i, word := range words {
+			role, agent, _ := strings.Cut(word, ":")
+			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: agent})
+		}
+		implementer := mustClaimToken(t, key, claim.RoleImplementer)
+		if strings.HasSuffix(words[0], ":owner") {
+			implementer = mustClaimToken(t, key, claim.RoleArchitect)
+		}
+		if err := records.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: implementer, Entry: 1,
+			StepTask: "a", StepPlace: 1}); err != nil {
+			return err
+		}
+		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key,
+			State: record.PullRequestOpen, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Reviewing, Why: record.ConflictCheckNotGreen, AskedAt: now}})
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := seed(tx, "LEGION-7", "implementer:owner", "reviewer"); err != nil {
+			return err
+		}
+		return seed(tx, "LEGION-8", "implementer", "reviewer")
+	}); err != nil {
+		t.Fatalf("seed LEGION-7 and LEGION-8 at their reviewer's step with a merge forward asked: %v", err)
+	}
+	actsAs := ownerActsAs(pool, records)
+	acts := func(t *testing.T, key string, want claim.Role, acting bool, when string) {
+		t.Helper()
+		if role, got, err := actsAs(ctx, mustClaimToken(t, key, claim.RoleArchitect)); err != nil || role != want || got != acting {
+			t.Fatalf("ActsAs(%s's architect) %s = (%q, %v, %v), want (%q, %v, nil)", key, when, role, got, err, want, acting)
+		}
+	}
+	acts(t, "LEGION-7", claim.RoleImplementer, true, "while the merge forward asked of it is open")
+	acts(t, "LEGION-8", "", false, "while the merge forward asked of its implementer is open")
+
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		pr, err := records.PullRequest(ctx, tx, "LEGION-7")
+		if err != nil || pr == nil {
+			return fmt.Errorf("read LEGION-7's pull request: %+v, %w", pr, err)
+		}
+		landed := *pr.MergeForward
+		landed.Landed = "d00d"
+		pr.MergeForward, pr.HeadSHA = &landed, "d00d"
+		return records.PutPullRequest(ctx, tx, *pr)
+	}); err != nil {
+		t.Fatalf("land LEGION-7's merge forward: %v", err)
+	}
+	acts(t, "LEGION-7", "", false, "once the merge forward landed")
 }

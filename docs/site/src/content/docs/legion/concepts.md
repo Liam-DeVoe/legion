@@ -53,8 +53,12 @@ Each token is minted on that owner's installation with that App's permissions: t
 App's write set for the implementer, the merger and a role of the issue's plan of the type
 implementation, the set of the App its `github_app` names for a role of the deployment that the
 issue's plan does not define, and the review App's review set for every other role.
-While the architect does a step of its own plan (one whose key is `owner`), its bundle is the App
-of that step's role instead, and its own App again at the step's end.
+While the architect acts as another role, its bundle is that role's App instead: at a step of its
+own plan (one whose key is `owner`), the step's role; at its retro where the task's last
+implementation step is its own, that step's role; and while a merge forward the daemon asked of it
+has not ended, the implementer, since that merge is the implementer's act.
+Everywhere else, and always while the issue is held, it is the architect's own App, and the end of
+each such act writes that App back.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
@@ -186,7 +190,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. On an issue with no pull request it reviews the work its task text names and reports `pass` or `fail`, with the commit it read, instead. | review App |
 | `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). Another agent's refused pass is taken when it sends it again once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
-| `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue where a point qualifies, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer); the architect keeps its own |
+| `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue where a point qualifies, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer). The architect acts as that role where the step was its own, and keeps its own App where the task has none |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test or a review that requests changes sends the issue back to an earlier step: the one

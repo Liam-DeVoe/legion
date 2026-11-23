@@ -2997,7 +2997,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
-  The `pr-merged` count is read in the architect's session only where that session shows a notice delivered earlier in the run; a session that shows none fails as UNKNOWN.
+  The `pr-merged` count is read in the architect's session only where that session shows a notice delivered earlier in the run; a session that shows none fails the check with exit 1, since a count of 0 there says nothing.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `accepting`, its children's at their parks, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
@@ -7160,7 +7160,7 @@ a GitHub that never answered, an answer that is not 2xx (GitHub's 401 for a toke
 A stage proof calls it once in `prerequisites`, after `require_app_inputs` and `write_github_apps` and before its first write anywhere and any check that needs a login.
 `role_app ROLE` then prints the login of the App the role acts as on its own claim (the implement App's for the implementer and the merger, the review App's for every other role, the controller's included), as REST and git name it, and `role_app_slug ROLE` the bare slug GraphQL names the bot by;
 either fails, saying so, when `read_app_logins` has not run.
-Neither names the App an architect's slot holds while the architect does a step of its own plan, which is that step's role's App: at `implementer:owner`, the implement App's.
+Neither names the App an architect's slot holds while the architect acts as another role, which is that role's App: under `implementer:owner`, the implement App's at that step, at the retro where that step is the task's last implementation step, and while a merge forward the daemon asked of the architect has not ended.
 A role of the deployment, which acts as the App its `github_app` names, and a role of an issue's plan, which acts as the App of its type, are names neither reads.
 `lib/app-logins.test.ts` runs the helper, and `read_app_logins` over it, against a stand-in GitHub, `lib/github-apps.test.ts` runs the input checks over the same stand-in, and `lib/reviewer-thread.test.ts` drives `reviewer_thread` with the logins set.
 

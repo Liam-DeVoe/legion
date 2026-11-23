@@ -164,7 +164,9 @@ func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t 
 func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve(t *testing.T) {
 	saysAndRetires(t, repoFile, [][2]string{
 		{"docs/kubernetes.md", "Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own"},
-		{"docs/kubernetes.md", "A `complete_step` holds the head of the `review` record it reported instead"},
+		{"docs/kubernetes.md", "The owner's `complete_step` at `reviewer:owner` holds the head of the `review` record it reported instead"},
+		{"docs/kubernetes.md", "At a review step of a role the deployment or the plan defines, it holds the commit the owner's workspace stands on."},
+		{"docs/kubernetes.md", "At `acceptance:owner` it is applied as `sign_off` or `request_backward_move`, so it holds the pull request's head."},
 		{"scripts/e2e/README.md", "A step `acceptance` with no key is a fresh agent of the role `acceptance`."},
 		{"scripts/e2e/README.md", "which the driver posts itself (an agent's `legion` tool fills the commit in)"},
 	}, [][2]string{
@@ -178,7 +180,8 @@ func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve
 func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) {
 	saysAndRetires(t, promptPart, [][2]string{
 		{"mechanics/headless.md", "A copy of the head under `$TMPDIR` that you only read or run checks from is no workspace: commit nothing in it."},
-		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself, in its `phase-finished` notice."},
+		{"mechanics/headless.md", "Your completion's summary reaches the architect in the `phase-finished` notice of the move your completion makes."},
+		{"mechanics/headless.md", "A completion that moves nothing reaches no one, such as the merger's, or a reviewer's after its own review moved the issue."},
 		{"core/tester.md", "Report the missing surface to whoever owns the plan, and hold your completion until it exists."},
 		{"core/planner.md", "nothing refuses a plan handoff without them, so check them yourself before you record it."},
 		{"core/reviewer.md", "Run the thermonuclear pair over that diff as the paragraph above says."},
@@ -215,5 +218,50 @@ func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *te
 	}, [][2]string{
 		{"architect-root.md", "Each round tests a large pull request whole again"},
 		{"go/architect-common.md", "ends the round whatever CI says there"},
+	})
+}
+
+// The owner's retro of a task whose last implementation step is its own acts as that step's App,
+// the implement App, which alone resolves the pull request's review threads (record.OwnerActsAs,
+// record.RetroActsAs), and its end queues the owner's slot back to its own App (workflow's endStep,
+// endOffWalk, ownerSlotCredential). The owner's own retro of a task with no such step stays on the
+// owner's App.
+func TestTheOwnersRetroOfItsImplementationStepActsAsTheImplementApp(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"reviewer.md", "where the implementer step is the owner's, the owner does, at its next implementer step or at its retro."},
+	}, nil)
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/site/src/content/docs/legion/running-legion.md", "The retro of a task whose last implementation step is the architect's own acts as the implement App, as that step did."},
+		{"docs/site/src/content/docs/legion/concepts.md", "The architect acts as that role where the step was its own, and keeps its own App where the task has none"},
+	}, [][2]string{
+		{"docs/site/src/content/docs/legion/running-legion.md", "(its acceptance, a tester or reviewer step, its retro), needs no write"},
+	})
+}
+
+// A completion's summary rides the phase-finished notice of the transition it makes (workflow's
+// noticeFor); merging has no completion case and a completion of a phase left moves nothing
+// (handoff, reportEndedStep), so the worker sends what the architect must act on itself.
+func TestTheHeadlessPartSaysAReportThatMovesNothingReachesNoOne(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{}, [][2]string{
+		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself"},
+	})
+}
+
+// A task with no pull request has a diff from the default branch, and the red team reads it.
+func TestTheAcceptancePromptGivesTheRedTeamTheDiffOfATaskWithNoPullRequest(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"acceptance.md", "Give the goal red team those and that diff in place of the pull request's body and diff."},
+	}, [][2]string{
+		{"acceptance.md", "Give the goal red team those in place of the body and the diff."},
+	})
+}
+
+// An implementer completes against the issue's open pull request, and opens one only where none
+// is open or merged (HANDOFF_NO_PULL_REQUEST, api's implementationPullRequest).
+func TestTheImplementerCoreOpensAPullRequestOnlyWhereTheIssueHasNone(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"core/implementer.md", "Open the PR where the issue has none open, and write its body as you go."},
+	}, [][2]string{
+		{"core/implementer.md", "Open the PR; write the PR body as you go."},
 	})
 }

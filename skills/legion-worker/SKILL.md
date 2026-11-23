@@ -29,13 +29,13 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    Commit nothing in the copy.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
-   A run whose output you did not capture can be neither confirmed nor cleared.
+   A run whose output you did not capture proves nothing either way.
 
 6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
-- A refused completion is information, not a retry loop: complete again once its cause is fixed, or as its code below says.
+- A refused completion is information, not a retry loop: complete again once its cause is fixed, or as its code says.
   Quote the answer verbatim to the architect.
 
   - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing.
@@ -48,9 +48,10 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
     Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head, with a handoff naming it.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
+    `TASK_STOPPED`: your handoff counts as used; never send it again.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
 
-- These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:
+- These waits end the turn with a `WAITING` line naming what they wait on:
 
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
 
@@ -60,7 +61,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
   - a pushing role whose second push still left the pull request off its commit.
 
-- Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+- Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you saw, tried and need decided, then go on.
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 

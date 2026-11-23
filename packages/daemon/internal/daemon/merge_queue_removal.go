@@ -158,7 +158,10 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// row's end on a claim that failed or retired, and the delivery. holds, where it is set, is what
+// the message waits for once the role's session runs and before it is published: the owner's slot
+// holding the App of the role the message asks an act as (mergeForwardMessage's ownerSlotActs). It
+// answers nil once the message may be published, and a wait or an error that the row answers.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -168,6 +171,7 @@ type heldMessage struct {
 	attributes []any
 	claimEnded string
 	delivered  string
+	holds      func(ctx context.Context) error
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -217,6 +221,13 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 			m.what, m.role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
+	}
+	// The slot is written and asked only once the session runs: a released claim's pod has no slot
+	// to write, and its launch writes the App the runtime judges then.
+	if m.holds != nil {
+		if err := m.holds(ctx); err != nil {
+			return err
+		}
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {

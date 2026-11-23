@@ -224,41 +224,52 @@ func retroSteps(words ...string) []record.PlanStep {
 	return steps
 }
 
-// The owner's retro of a task whose last step of the type implementation is the owner's is done as
-// that step's role, and every write of the owner's slot judges that on the Secret it writes: the
-// rig's ActsAs is the daemon's rule (record.OwnerActsAs) over the issue as the record would read
-// it, the task's plan rows `implementer:owner reviewer`. While the issue stands at the reviewer's
-// step the owner's slot holds the review App, its own. At the retro the outbox's write puts the
-// implement App in the slot's Secret; a refresh tick during the retro leaves it there, and so does
-// a launch of the owner into the pod it keeps, whose start frame waits for the implement App's
-// token; once the retro ended and the issue stands in merging, the retro's write-back puts the
-// review App back.
+// The owner's slot holds the App of the role the owner's act is done as, and every write of the
+// owner's slot judges that on the Secret it writes: the rig's ActsAs is the daemon's rule
+// (record.OwnerActsAs) over the issue as the record would read it, the task's plan rows
+// `implementer:owner reviewer`, and whether the record holds a merge forward asked of the owner
+// that has not ended. While the issue stands at the reviewer's step with no merge forward the
+// owner's slot holds the review App, its own. Two windows hold the implement App: the owner's retro
+// of its own implementer step, and a merge forward asked of the owner while another agent reviews,
+// since a merge forward is an act as the implementer. In each the outbox's write puts the implement
+// App in the slot's Secret; a refresh tick in the window leaves it there, and so does a launch of
+// the owner into the pod it keeps, whose start frame waits for the implement App's token; once the
+// window ended and the issue stands in merging, the write-back puts the review App back.
 //
 // The controls: at the retro of `acceptance:owner` alone, which the owner does as itself, and at the
 // retro of `implementer reviewer`, which its implementer does, the same write, tick and launch
 // leave the owner's slot on the review App.
-func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementApp(t *testing.T) {
+func TestTheOwnersRetroAndItsMergeForwardHoldTheImplementApp(t *testing.T) {
 	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
+	reviewing := record.Issue{Key: testTree, Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer}
 	for _, tc := range []struct {
 		name  string
 		steps []record.PlanStep
-		// placeRole is the role of the claim that works the retro (record.Issue.PlaceRole).
-		placeRole claim.Role
-		want      string
+		// window is the issue as the record reads it through the window the test writes the slot in,
+		// and asked whether the record holds a merge forward asked of the owner then.
+		window record.Issue
+		asked  bool
+		want   string
 	}{
-		{name: "implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"), placeRole: claim.RoleArchitect, want: implement},
-		{name: "control: acceptance:owner alone", steps: retroSteps("acceptance:owner"), placeRole: claim.RoleArchitect, want: review},
-		{name: "control: the retro of a fresh implementer", steps: retroSteps("implementer", "reviewer"), placeRole: claim.RoleImplementer, want: review},
+		{name: "the owner's retro of implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"),
+			window: record.Issue{Key: testTree, Phase: phase.Retro, PlaceRole: claim.RoleArchitect}, want: implement},
+		{name: "a merge forward asked of the owner of implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"),
+			window: reviewing, asked: true, want: implement},
+		{name: "control: acceptance:owner alone", steps: retroSteps("acceptance:owner"),
+			window: record.Issue{Key: testTree, Phase: phase.Retro, PlaceRole: claim.RoleArchitect}, want: review},
+		{name: "control: the retro of a fresh implementer", steps: retroSteps("implementer", "reviewer"),
+			window: record.Issue{Key: testTree, Phase: phase.Retro, PlaceRole: claim.RoleImplementer}, want: review},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var issue atomic.Pointer[record.Issue]
-			issue.Store(&record.Issue{Key: testTree, Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer})
+			var asked atomic.Bool
+			issue.Store(&reviewing)
 			g := newRig(t, nil, withOptions(func(o *Options) {
 				o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
 					if token != rootToken {
 						return "", false, nil
 					}
-					role, acting := record.OwnerActsAs(*issue.Load(), tc.steps)
+					role, acting := record.OwnerActsAs(*issue.Load(), tc.steps, asked.Load())
 					return role, acting, nil
 				}
 			}))
@@ -270,37 +281,40 @@ func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementApp(t *testing.T) 
 				t.Fatalf("the owner's slot holds %q at the reviewer's step, want %q", got, review)
 			}
 
-			issue.Store(&record.Issue{Key: testTree, Phase: phase.Retro, PlaceRole: tc.placeRole})
+			window := tc.window
+			issue.Store(&window)
+			asked.Store(tc.asked)
 			if err := g.r.WriteSlotCredential(g.ctx, rootToken); err != nil {
-				t.Fatalf("WriteSlotCredential of the owner's slot at the retro = %v", err)
+				t.Fatalf("WriteSlotCredential of the owner's slot in the window = %v", err)
 			}
 			if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != tc.want {
-				t.Fatalf("the owner's slot holds %q at the retro once written, want %q", got, tc.want)
+				t.Fatalf("the owner's slot holds %q in the window once written, want %q", got, tc.want)
 			}
 			g.r.refreshGitHubCredentials(g.ctx)
 			if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != tc.want {
-				t.Fatalf("the owner's slot holds %q after a refresh tick during the retro, want %q", got, tc.want)
+				t.Fatalf("the owner's slot holds %q after a refresh tick in the window, want %q", got, tc.want)
 			}
 			again := rootSpec(t)
 			again.Generation++
 			g.spawn(again)
 			if after := g.pod(sandbox).UID; after != before {
-				t.Fatalf("the owner's launch during the retro replaced the pod (%s, then %s), want it kept", before, after)
+				t.Fatalf("the owner's launch in the window replaced the pod (%s, then %s), want it kept", before, after)
 			}
 			if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != tc.want {
-				t.Fatalf("the owner's slot holds %q after its launch during the retro, want %q", got, tc.want)
+				t.Fatalf("the owner's slot holds %q after its launch in the window, want %q", got, tc.want)
 			}
 			sum := sha256.Sum256([]byte(tc.want))
 			if start := lastStart(t, g, rootToken); start.GitHubCredential == nil || start.GitHubCredential.TokenDigest != hex.EncodeToString(sum[:]) {
-				t.Fatalf("the owner's start frame during the retro waits for the credential %+v, want the digest of %q", start.GitHubCredential, tc.want)
+				t.Fatalf("the owner's start frame in the window waits for the credential %+v, want the digest of %q", start.GitHubCredential, tc.want)
 			}
 
 			issue.Store(&record.Issue{Key: testTree, Phase: phase.Merging})
+			asked.Store(false)
 			if err := g.r.WriteSlotCredential(g.ctx, rootToken); err != nil {
-				t.Fatalf("the retro's write-back of the owner's slot = %v", err)
+				t.Fatalf("the write-back of the owner's slot = %v", err)
 			}
 			if got := slotToken(t, g, sandbox, claim.RoleArchitect); got != review {
-				t.Fatalf("the owner's slot holds %q after the retro's write-back in merging, want %q", got, review)
+				t.Fatalf("the owner's slot holds %q after the write-back in merging, want %q", got, review)
 			}
 		})
 	}

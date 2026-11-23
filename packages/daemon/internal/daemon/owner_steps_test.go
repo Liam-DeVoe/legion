@@ -43,13 +43,14 @@ import (
 // holds it, and while the runtime answers that it does not yet, the owner is told nothing. Once
 // the slot holds it, the owner is told its step as one notice owner-step. Its complete_step of
 // step 1, with its handoff record written in its own session and the pull request open, moves the
-// issue to the retro, which is the owner's too (record.PlaceWorker): the end of step 1 writes the
-// owner's slot for its own App again, and the retro, done as the implementer whose step was the
-// owner's, is told as an owner-step once the slot holds the implementer's App again, the App that
-// can resolve the pull request's threads. The owner's complete_step of the retro with its rating
-// moves the issue to merging, the retro's end writes the slot back to the owner's own App, and the
-// merge ends it at done. The records of step 1 and of the retro name the owner's claim and its
-// session, and no implementer was ever launched.
+// issue to the retro, which is the owner's too (record.PlaceWorker), done as the implementer whose
+// step was the owner's (record.RetroActsAs). The end of step 1 queues the write of the owner's slot
+// back to its own App, which writes nothing, since the retro already runs as the implementer, and
+// the retro is told as an owner-step once the outbox has written the slot for the implementer's App
+// and the slot holds it, the App that can resolve the pull request's threads. The owner's
+// complete_step of the retro with its rating moves the issue to merging, the retro's end writes the
+// slot back to the owner's own App, and the merge ends it at done. The records of step 1 and of the
+// retro name the owner's claim and its session, and no implementer was ever launched.
 //
 // The control is a mutation of the release's code, run by hand: start's branch of the owner's
 // place taken out of workflow/effects.go. The step's start then launches the owner's claim again
@@ -94,7 +95,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 		t.Fatalf("the owner of %s was told %+v at the retro, want the owner-step of task a's retro", r.key, told[1])
 	}
 	if r.slotWrites(owner.token) == written {
-		t.Fatalf("the end of %s's step 1 asked no write of the owner's slot back to its own App: calls %+v", r.key, r.slotCalls())
+		t.Fatalf("the retro of %s was told with no write of the owner's slot since step 1, want the outbox to write it for the implementer's App: calls %+v", r.key, r.slotCalls())
 	}
 	asked := r.rt.CallsOf("SlotHoldsCredential")
 	if last := asked[len(asked)-1]; last.Claim != owner.token || last.Role != claim.RoleImplementer {

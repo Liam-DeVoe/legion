@@ -252,12 +252,16 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // writes nothing, and neither does a record key that is no issue key (recordsSteps).
 //
 // It is the one writer of the end of each step on a walk, so it is the one place an owner's slot is
-// given its own App back: where the run it ends is a step or the retro of a stored plan whose start
-// named an architect (the owner, or the architect above that ran the step for it, ownerAgent), it
-// queues a supervise slot_credential of the owner's claim in the same transaction, which writes the
-// owner's slot back to its own App when it runs (ownerSlotCredential). A merge's start names the
-// merger, so its end queues none. A run on no step of its walk is ended, and its write-back queued,
-// by endOffWalk.
+// given its own App back at a step's end: where the run it ends is a step of a stored plan whose
+// start named an architect (the owner, or the architect above that ran the step for it,
+// ownerAgent), it queues a supervise slot_credential of the owner's claim in the same transaction,
+// which writes the owner's slot back to its own App when it runs (ownerSlotCredential). The end of
+// the owner's retro queues it only where the retro was done as another role than the owner's own
+// (record.RetroActsAs over the walk's steps), the one retro whose slot was switched: the retro of
+// the owner's own implementation step. The owner's retro of a task with no step of the type
+// implementation is done as itself, and its slot held the owner's own App throughout. A merge's
+// start names the merger, so its end queues none. A run on no step of its walk is ended, and its
+// write-back queued, by endOffWalk.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
@@ -270,6 +274,9 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	})
 	if err != nil || !ended || !w.Stored {
 		return err
+	}
+	if step.place.Kind == record.PlaceRetro && record.RetroActsAs(w.Steps) == claim.RoleArchitect {
+		return nil
 	}
 	return e.ownerSlotCredential(ctx, tx, before, agent)
 }
