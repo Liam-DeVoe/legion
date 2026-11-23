@@ -44,7 +44,10 @@ import (
 //
 // The roles are addressed as every role message of the daemon is (addressRoles), each once, and
 // a pull request that is not open, an issue in no phase of record.MergeForwardPhases and a tree
-// that lingers (record.TreeLingers, where every role is suspended) are asked nothing.
+// that lingers (record.TreeLingers, where every role is suspended) are asked nothing. Nor is an
+// issue whose implementer's claim runs in the slot of a role the deployment no longer defines
+// (lostSlot): nobody can make the merge, so no role is told, the architect is not told the
+// implementer is asked, and the record keeps no ask.
 func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
 	if pr.State != record.PullRequestOpen || !record.StandsIn(issue, record.MergeForwardPhases...) {
@@ -64,10 +67,21 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return err
 	}
+	// The claim of a keyed agent runs in the slot of its name, which can be a role the deployment
+	// lost while its step's role is not (lostSlot): its task is stopped as the lost role's is, and a
+	// message to it would wake a claim no pod can launch. Where that claim is the implementer's,
+	// nobody can make the merge, so nothing is asked: no hold, which would keep the worker waiting
+	// for a merge nobody makes, no notice saying the implementer is asked, and no ask on the
+	// record, so a later confirmed read of the head asks again once the role is defined again.
 	for _, to := range addressed {
-		// The claim of a keyed agent runs in the slot of its name, which can be a role the
-		// deployment lost while its step's role is not (lostSlot): its task is stopped as the
-		// lost role's is, and a hold to it would wake a claim no pod can launch.
+		if to.role == claim.RoleImplementer && lostSlot(to.token, e.cfg.Deployment) {
+			slot, _ := to.token.Slot()
+			e.logOnCommit(ctx, "workflow: no merge forward is asked: the implementer's claim runs in the slot of a role the deployment no longer defines",
+				"issue", issue.Key, "pullRequest", pr.Number, "head", pr.HeadSHA, "claim", to.token, "slot", slot)
+			return nil
+		}
+	}
+	for _, to := range addressed {
 		if lostSlot(to.token, e.cfg.Deployment) {
 			continue
 		}
