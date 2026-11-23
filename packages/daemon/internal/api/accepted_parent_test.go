@@ -119,7 +119,8 @@ func TestTheRefusalUnderAnAcceptedAncestorSaysItsLastStepPassed(t *testing.T) {
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
 	want := statusChild + " is beneath " + statusRoot + ", whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath " +
 		statusRoot + " now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; run it again once " +
-		statusRoot + " has closed, or, where " + statusRoot + " stands in a retro its owner does, have that owner take it back with a backward move first"
+		statusRoot + " has closed, or first take " + statusRoot + " back to an earlier step: a request_backward_move by the agent that works it now, " +
+		"which is the agent of its retro (its own architect where the retro is the owner's) or its merger"
 	if message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}

@@ -252,11 +252,12 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // or merging (record.Accepted) once the last step of its task, whatever that step is, has passed.
 // Such an ancestor closes next without the new work: by its merge, whose head does not carry it,
 // or at the end of its retro where it has no pull request. A backward move takes it back first
-// only where it stands in a retro its owner does, since a move back is the role's that works the
-// issue's phase (workflow's backwardRefusal). operation is what the caller would do again once the
-// ancestor has closed.
+// only from the role that works it there (workflow's backwardRefusal): the agent of its retro,
+// which is its own architect where the retro is the owner's, or its merger; the child-status
+// notice of a person's own move says the same (workflow.ChildUnderAcceptedParentNotice).
+// operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath %s now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; %s once %s has closed, or, where %s stands in a retro its owner does, have that owner take it back with a backward move first",
+	return fmt.Sprintf("%s is beneath %s, whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath %s now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; %s once %s has closed, or first take %s back to an earlier step: a request_backward_move by the agent that works it now, which is the agent of its retro (its own architect where the retro is the owner's) or its merger",
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
