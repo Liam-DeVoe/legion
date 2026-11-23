@@ -174,7 +174,10 @@ exec "${realPsql}" "$@"
 
 // The template is copied only once its server has stopped. A `pg_ctl` that refuses that stop -
 // exit 1, the server left running - must refuse the start by name rather than let a stack start
-// from a copy of a running server.
+// from a copy of a running server. That refusal leaves the template's real server running. On
+// Linux the bounded child's own kill takes it, since its environment keeps the child's token; the
+// row does not rest on that kill, and stops the server with the real `pg_ctl` however it ends, then
+// requires `pg_ctl status` to find no server.
 test.skipIf(withoutBinaries)(
   "the stacks' Postgres template whose server will not stop refuses the start by name",
   async () => {
@@ -204,30 +207,49 @@ exec "${join(bin, "pg_ctl")}" "$@"
 `
     );
     chmodSync(join(binaries, "pg_ctl"), 0o755);
-    const { code, named, stderr, stdout } = await runBounded({
-      argv: [process.execPath, child, harnessPostgres, "stopfails", dir, "", ""],
-      bound: "oneDatabase",
-      env: {
-        DISPATCH_E2E_PG_BIN: binaries,
-        HOME: process.env.HOME ?? "",
-        PATH: process.env.PATH ?? "",
-        TMPDIR: stubs,
-      },
+    const templateData = join(dir, "template", "pgdata");
+    try {
+      const { code, named, stderr, stdout } = await runBounded({
+        argv: [process.execPath, child, harnessPostgres, "stopfails", dir, "", ""],
+        bound: "oneDatabase",
+        env: {
+          DISPATCH_E2E_PG_BIN: binaries,
+          HOME: process.env.HOME ?? "",
+          PATH: process.env.PATH ?? "",
+          TMPDIR: stubs,
+        },
+        from: import.meta.url,
+      });
+      expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
+      expect(
+        existsSync(refused),
+        `the stand-in pg_ctl was never asked to stop the template:\n${stdout}`
+      ).toBe(true);
+      const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
+        message?: string;
+        started?: true;
+      };
+      expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
+        "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
+          "stop, and no stack starts from a copy of a running server: "
+      );
+    } finally {
+      // A server that is already gone has no postmaster.pid, and nothing to stop.
+      if (existsSync(join(templateData, "postmaster.pid"))) {
+        await runBounded({
+          argv: [join(bin, "pg_ctl"), "-D", templateData, "-m", "immediate", "-w", "stop"],
+          bound: "short",
+          from: import.meta.url,
+        });
+      }
+    }
+    // `pg_ctl status` exits 3 where no server runs on that data directory.
+    const status = await runBounded({
+      argv: [join(bin, "pg_ctl"), "-D", templateData, "status"],
+      bound: "short",
       from: import.meta.url,
     });
-    expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
-    expect(
-      existsSync(refused),
-      `the stand-in pg_ctl was never asked to stop the template:\n${stdout}`
-    ).toBe(true);
-    const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
-      message?: string;
-      started?: true;
-    };
-    expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
-      "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
-        "stop, and no stack starts from a copy of a running server: "
-    );
+    expect(status.code, `the template's server outlived the row:\n${status.stdout}`).toBe(3);
   },
-  rowLimit("oneDatabase")
+  rowLimit("oneDatabase", "short", "short")
 );
