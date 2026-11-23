@@ -62,8 +62,8 @@ type roleForReader struct {
 // only while the task runs there and so never at admitted, whose task is at no act,
 // Engine.startOwnersStep, which reads the place of a step or a retro the owner does, and
 // Engine.restartTask, which reads its task's first step, a place no plan runs as admitted), or
-// reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only for a
-// parent held before its retro for the issues beneath it), or answers RoleFor's role for every
+// reads the retro's own place (Engine.holdBeforeRetro and Engine.startHeldRetro, which run only
+// for a parent held before its retro for the issues beneath it), or answers RoleFor's role for every
 // phase but step and its place's, which admitted never is, to the readers this list holds
 // (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
 // a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
@@ -105,6 +105,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAnOwnerStepIsToldToTheOwnerFromEachStartPath", "TestATreeAdmittedAgainTellsTheOwnerItsStep"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}: {calls: 1, tests: []string{
 		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
+	// The role of the agent that does the retro, which the retro-held notice names.
+	{file: "internal/workflow/engine.go", fn: "Engine.holdBeforeRetro"}: {calls: 1, tests: []string{
+		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestARetroHeldNoticeNamesTheRoleOfTheRetrosAgent"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}: {calls: 1, tests: []string{
@@ -149,7 +152,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
-	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
 	// Whether the owner works the review step, where no round is settled; outside reviewing no
 	// round is settled either (reviewRound), so its architect at admitted changes nothing.
 	{file: "internal/workflow/review.go", fn: "Engine.settleRound"}: {calls: 1, tests: []string{

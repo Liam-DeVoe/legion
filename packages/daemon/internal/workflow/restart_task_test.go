@@ -152,7 +152,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		}
 		// The write carries the hold's retro-held sentence, so the person who set the todo reads why
 		// the board went back.
-		why := retroHeldNotice(root.Key, []string{heldBeneath}).Reason
+		why := retroHeldReason(root.Key, []string{heldBeneath})
 		if got, writes := outboxRowsOf(t, pool, root.Key), statusWrites(t, pool, root.Key); got != outbox+1 || len(writes) != statuses+1 ||
 			writes[len(writes)-1] != record.OrdinaryStatusWrite("in_progress", "todo", why) {
 			t.Fatalf("the todo queued %d outbox rows of %s, its status writes now %+v; want one, the status the record keeps, in_progress, written back over the todo with the hold's reason, and nothing started",

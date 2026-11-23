@@ -37,16 +37,24 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
-// issues beneath it still in the workflow, and what ends the hold: each of them leaving it, done
-// or parked under the park rule (parkRule, carried word for word as every notice of a park is).
-// It names the retro and the role of the retro's agent, whose work the hold keeps (Walk.RoleAt of
-// the retro: the role of the task's last step of the type implementation, the implementer for the
-// owner's), as the held notice of any hold names the phase it is from (HeldNotice).
-func retroHeldNotice(parent string, beneath []string) record.Notice {
-	return record.Notice{Kind: "retro-held", Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, Reason: fmt.Sprintf(
-		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
-			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
+// issues beneath it still in the workflow, and what ends the hold (retroHeldReason). It names the
+// retro and role, the role of the retro's agent, whose work the hold keeps (Walk.RoleAt of the
+// retro: the role of the task's last step of the type implementation, the implementer for the
+// owner's), which its caller reads on the walk in hand, as the held notice of any hold names the
+// phase it is from (HeldNotice).
+func retroHeldNotice(parent string, role claim.Role, beneath []string) record.Notice {
+	return record.Notice{Kind: "retro-held", Role: role, Phase: phase.Retro, Reason: retroHeldReason(parent, beneath)}
+}
+
+// retroHeldReason is why parent waits before its retro for beneath, the issues beneath it still in
+// the workflow, and what ends the hold: each of them leaving it, done or parked under the park rule
+// (parkRule, carried word for word as every notice of a park is). It is the retro-held notice's
+// reason (retroHeldNotice) and the reason posted beside the status a todo on the held root is set
+// back to (heldParentWait's reason).
+func retroHeldReason(parent string, beneath []string) string {
+	return fmt.Sprintf("%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
+		"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
+		"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))
 }
 
 // heldParentWait is why parent, held before its retro for the issues beneath it
@@ -84,11 +92,11 @@ func (w heldParentWait) refusal() *intake.Refusal {
 }
 
 // reason is the reason posted beside the status a todo on the held root is set back to: the hold's
-// own retro-held sentence where any issue beneath is open (retroHeldNotice), and otherwise why its
+// own retro-held sentence where any issue beneath is open (retroHeldReason), and otherwise why its
 // tree runs nothing yet (intake.HeldParentWaitsForTree).
 func (w heldParentWait) reason() string {
 	if len(w.beneath) > 0 {
-		return retroHeldNotice(w.parent.Key, w.beneath).Reason
+		return retroHeldReason(w.parent.Key, w.beneath)
 	}
 	return intake.HeldParentWaitsForTree(w.parent.Key, w.parent.Tree, w.lingers)
 }
