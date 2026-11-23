@@ -628,6 +628,10 @@ RULES = {
         (f"{DAEMON}/**/*.go", "internal/textcheck/test_executables_test.go:18 calls testexec.Unguarded on ../.., whose walk "
                               "(packages/envoy/testexec/unguarded.go:59) passes over node_modules, vendor, testdata and dot "
                               "directories (:68), and :108 parses every .go file under packages/daemon it finds, test files included")),
+    f"{DAEMON}/internal/textcheck/lock_wait_reads_test.go": reads(
+        (f"{DAEMON}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:27 calls lockWaitEventReads on ../.., whose walk (:48) "
+                              "passes over node_modules, vendor, testdata and dot directories (:57) and any directory holding a "
+                              "go.mod (:60), and :68 reads every .go file under packages/daemon it finds, test files included")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -1005,6 +1009,11 @@ RULES = {
         Read(g, "internal/textcheck/test_executables_test.go:18 calls testexec.Unguarded on ../.., whose walk "
                 "(testexec/unguarded.go:59) passes over node_modules, vendor, testdata and dot directories (:68) and "
                 "infra, a directory holding a go.mod of its own (:71), and :108 parses every .go file it finds, test files included")
+        for g in envoy_go_files_but_infra()],
+    f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go": [
+        Read(g, "internal/textcheck/lock_wait_reads_test.go:28 calls lockWaitEventReads on ../.., whose walk (:49) passes "
+                "over node_modules, vendor, testdata and dot directories (:58) and infra, a directory holding a go.mod of "
+                "its own (:61), and :69 reads every .go file it finds, test files included")
         for g in envoy_go_files_but_infra()],
     f"{ENVOY}/internal/textcheck/visible_markdown_copy_test.go": reads(
         (f"{DAEMON}/internal/textcheck/visible_markdown_test.go", "internal/textcheck/visible_markdown_copy_test.go:50 os.ReadFile (readGoTokens, called with daemonVisibleMarkdown :14, ../../../daemon/internal/textcheck/visible_markdown_test.go, at :21)")),
