@@ -692,8 +692,9 @@ end $$;
 -- 20261122071000), in one order. The base branch can move with no change of its name, and the
 -- answer is about one base revision, so the snapshot names the revision, and "unknown" where the
 -- row holds none, a row a writer of the release before this one wrote, which is not read until a
--- write stores one (the reconcile reads each open pull request again every five minutes). It reads
--- only.
+-- write stores one (the reconcile's read of the pull request, which it tries for each of n due
+-- open rows within ceil(n / delivery.PullRequestHeadBatch) passes, whatever the others' reads
+-- answer). It reads only.
 create function pull_request_former_heads_snapshot(integer) returns text language sql stable as $$
   select coalesce(string_agg(lower(head.repo) || '#' || head.number || '@' || head.head_sha || ' onto ' || head.base_ref
     || ' at ' || coalesce(head.base_sha, 'unknown'), ', ' order by lower(head.repo), head.number), '')

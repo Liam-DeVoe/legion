@@ -36,12 +36,13 @@ import (
 // result, and by the read of an issue's results for a `before_merge` result's commit, at most
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer ago than PullRequestHeadStaleAfter (every open row at
-// every pass of one process, as far as the batch reaches, and as PullRequestHeadStaleAfter says
-// with several) and every merged row the rule this build judges by has not judged yet — one
-// offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads). Each writer that
-// read GitHub stores, with the issue, the inputs it judged the issue from (PullRequestHead.Inputs),
-// so a change of an issue's links judges each row it names again from them, in its own
-// transaction and with no read of GitHub (LinksChanged).
+// every pass of one process while no more than PullRequestHeadBatch are due, each due row within
+// ceil(n/PullRequestHeadBatch) passes of n due rows whatever the others' reads answer, and as
+// PullRequestHeadStaleAfter says with several) and every merged row the rule this build judges by
+// has not judged yet — one offer per rule version (AttributionRuleVersion,
+// ListStalePullRequestHeads). Each writer that read GitHub stores, with the issue, the inputs it
+// judged the issue from (PullRequestHead.Inputs), so a change of an issue's links judges each row
+// it names again from them, in its own transaction and with no read of GitHub (LinksChanged).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -167,8 +168,8 @@ func markHeadNotStored(err error) error {
 // found nobody is complete, and clears: GitHub's answer is the whole truth about the row.
 //
 // A write carrying no read time leaves the row's checked_at as it was: nulling it would hand a
-// row the reconcile has just read back to the next batch (ListStalePullRequestHeads orders the
-// never-read first), which is why an incomplete write is held off the attribution rather than
+// row the reconcile has just read back to the next batch (ListStalePullRequestHeads takes every
+// open row never read), which is why an incomplete write is held off the attribution rather than
 // sent round again. attribution_rule is kept by the same test, and it is the other half of the
 // merged arm's bound: a write that did not read GitHub leaves the stored rule alone, so a
 // merged row an incomplete envelope wrote is still offered to the current rule, while a refresh
@@ -795,30 +796,50 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFu
 // shortest wait the reconcile leaves after a pass, whose waits are drawn in
 // (ReconcileInterval - ReconcileInterval/10, ReconcileInterval] (duty.RunJittered,
 // duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
-// With one process the next pass starts more than this bound after that end, so every pass
-// re-reads every open row the pass before it read, as far as the batch reaches. With several
-// processes serving one database the next pass can be another process's, starting less than this
-// bound after the read, and it leaves the row as fresh. The first pass that starts more than this
-// bound after the read reads it, and the deployment's passes come at most ReconcileInterval
-// apart, so two reads of an open row are at most about this bound plus ReconcileInterval apart,
-// nine and a half minutes, plus the passes' own run time. A bound of the whole ReconcileInterval
-// would leave such a row not yet due at one process's next pass whenever that pass's wait, with
-// the time the pass before ran on after the read, came to five minutes or less, which a quick pass
-// almost always does, and the row would wait for the pass after: about ten minutes between two
-// reads of it rather than five.
+// With one process the next pass starts more than this bound after that end, so every pass offers
+// again every open row the pass before it read, and takes them all while no more than
+// PullRequestHeadBatch rows are due; past that, each due row within the bound
+// ListStalePullRequestHeads gives. With several processes serving one database the next pass can
+// be another process's, starting less than this bound after the read, and it leaves the row as
+// fresh. The first pass that starts more than this bound after the read takes it, and the
+// deployment's passes come at most ReconcileInterval apart, so with no more than a batch due and
+// a read that succeeds, two reads of an open row are at most about this bound plus
+// ReconcileInterval apart, nine and a half minutes, plus the passes' own run time. A bound of the
+// whole ReconcileInterval would leave such a row not yet due at one process's next pass whenever
+// that pass's wait, with the time the pass before ran on after the read, came to five minutes or
+// less, which a quick pass almost always does, and the row would wait for the pass after: about
+// ten minutes between two reads of it rather than five.
 var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
 
 // PullRequestHeadBatch is how many rows the reconcile reads again in one pass.
 const PullRequestHeadBatch = 200
 
-// ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
-// unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
-// never read first), every merged row credited to nobody that no read has reached, and every
+// ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the least
+// lately tried first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a
+// row never read is due), every merged row credited to nobody that no read has reached, and every
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
+// A row's place is the later of checked_at, its last read, and attempted_at, when the reconcile
+// last began a read of it (markHeadTried), and a row with neither is taken first. The reconcile
+// stamps attempted_at as it begins each row's read, whatever the read then answers, so a row
+// whose reads fail goes behind every due row tried less lately than it, and never holds the front
+// of every batch: before attempted_at, a full batch of rows GitHub answered 5xx for kept their
+// unchanged checked_at, and so their places, every pass, and a row behind them was never read. A
+// failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
+// and nothing that waits on its read (the check states settler's read of a row with no base
+// revision, api/check_states.go, verifyFormerHeads) takes the try for one. The bound: a place only
+// moves later, but for a row first written, which no read has reached, so each pass that tries
+// the rows it takes and not a given due row takes limit rows placed no later than that row and
+// puts them after it; of n rows due, each is tried within ceil(n/limit) passes, one more for each
+// limit rows first written meanwhile, whatever any read answers but a rate limit, which stops a
+// batch and leaves the rows it did not try where they were. With one process a pass starts at
+// most ReconcileInterval after the one before it ended. The rule half below is taken in the same
+// order.
+//
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round at every pass of one process, each starting at most five minutes after the one before it
-// ended, and as PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// round at every pass of one process while no more than a batch is due, each starting at most
+// five minutes after the one before it ended, within the bound above past that, and as
+// PullRequestHeadStaleAfter says with several; a merged row is written once more at
 // most, by an envelope or a read-through, and a recorded result reads through only for a commit
 // no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
 // `before_merge` result at that head stands at no basis for ever: a merge delivered by a
@@ -868,7 +889,7 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 		select repo, number from pull_request_heads
 		where (state = 'open' and (checked_at is null or checked_at < $1))
 		   or (state = 'merged' and issue_key is null and checked_at is null)
-		order by checked_at nulls first, repo, number
+		order by greatest(checked_at, attempted_at) nulls first, repo, number
 		limit $2
 	`, now.Add(-PullRequestHeadStaleAfter), limit)
 	if err != nil {
@@ -881,7 +902,7 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 	rejudged, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads
 		where state = 'merged' and attribution_rule < $1
-		order by checked_at nulls first, repo, number
+		order by greatest(checked_at, attempted_at) nulls first, repo, number
 		limit $2
 	`, AttributionRuleVersion, rejudge)
 	if err != nil {
@@ -930,6 +951,20 @@ func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull 
 	`, repoFull, number, now, AttributionRuleVersion)
 	if err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
+	}
+	return nil
+}
+
+// markHeadTried stamps attempted_at on a row the reconcile is about to read, whatever the read
+// then answers, so ListStalePullRequestHeads takes every due row tried less lately before it
+// again, and a row whose reads fail never holds the front of every batch. It stamps nothing else:
+// a try is no read of the pull request, so checked_at, the base revision and every other fact of
+// the row stay as they are, and the row stays due.
+func markHeadTried(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
+	if _, err := pool.Exec(ctx, `
+		update pull_request_heads set attempted_at = $3 where repo = $1 and number = $2
+	`, repoFull, number, now); err != nil {
+		return fmt.Errorf("stamp the try of the head of %s#%d: %w", repoFull, number, err)
 	}
 	return nil
 }

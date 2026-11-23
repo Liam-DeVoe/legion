@@ -160,8 +160,8 @@ func TestARowWithNoStoredBaseRevisionIsReadOnceAWriteStoresOne(t *testing.T) {
 // TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks: #70's row holds no base
 // revision, as a row the release before this one wrote, so its candidate H1 is not read and the
 // test handoff waits (answers 503). The delivery reconcile, on its own timer
-// (delivery.Reconcile.Run, ticking here every 100 ms in place of five minutes), re-reads every
-// open row no pass has read lately first in each pass, whatever the delivery settings say
+// (delivery.Reconcile.Run, ticking here every 100 ms in place of five minutes), re-reads each due
+// open row, the least lately tried first, whatever the delivery settings say
 // (ListStalePullRequestHeads, RefreshPullRequestHead): it stores the base revision GitHub names
 // for #70 with the head and the issue the row had. The mark the settle kept then falls due, the
 // settle compares #70's stored head with that base revision once, publishes k1 yes at H1, and the

@@ -558,7 +558,13 @@ type formerHeadsReads struct {
 // request's row formerHeadsHeld picks, its canonical name where it has one, which is GitHub's
 // route to it, and compares that row's head with its base revision. A row that stores no base
 // revision, as a writer of the release before this one left it, is not read: the reconcile's read
-// of the pull request stores one within minutes, and until then the candidates stay unverified.
+// of the pull request stores one, and it tries that read for each of n due open rows within
+// ceil(n/delivery.PullRequestHeadBatch) of its passes, whatever GitHub answers for the others
+// (delivery.ListStalePullRequestHeads), each pass of one process starting at most five minutes
+// after the one before it ended, a row due once its last read is delivery.PullRequestHeadStaleAfter
+// old: with no more than a batch due, about nine and a half minutes after that read, plus the
+// passes' run time. A try that fails stores nothing and comes again the same way, and until a
+// read stores one the candidates stay unverified.
 // A read of the pull request that finds GitHub at another head or base revision than the row
 // stores decides nothing either (delivery.CommitMembership.Stale): GitHub moved it on where no
 // write has stored it yet. Both are unverified, read again after the failure backoff, since a read
