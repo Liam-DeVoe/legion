@@ -10,7 +10,11 @@ package testexec
 
 import (
 	"os"
+	"os/exec"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"testing"
 )
 
 // WriteFile is os.WriteFile for a file a test will run. It holds syscall.ForkLock for reading while
@@ -21,4 +25,31 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	syscall.ForkLock.RLock()
 	defer syscall.ForkLock.RUnlock()
 	return os.WriteFile(name, data, perm)
+}
+
+// ForkBeside starts n goroutines that each start true and start it again as soon as it exits,
+// until the test ends: the forks that the code a test calls meets in a process whose other
+// goroutines start commands, as a daemon's do and as tests running beside each other do. A test
+// that writes a file and then runs it beside them meets ETXTBSY whenever a child forked inside the
+// write still holds the file open at the run. A machine with no true command fails the test, since
+// such a test would then measure nothing.
+func ForkBeside(t testing.TB, n int) {
+	t.Helper()
+	forker, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatalf("no true command to fork beside the test: %v", err)
+	}
+	var stop atomic.Bool
+	var forks sync.WaitGroup
+	for range n {
+		forks.Go(func() {
+			for !stop.Load() {
+				_ = exec.Command(forker).Run()
+			}
+		})
+	}
+	t.Cleanup(func() {
+		stop.Store(true)
+		forks.Wait()
+	})
 }

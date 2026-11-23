@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -25,20 +23,8 @@ import (
 //
 // Not parallel: its forks are the condition it measures, and a run of its own keeps them its own.
 func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
-	forker, err := exec.LookPath("true")
-	if err != nil {
-		t.Skipf("no true command to fork: %v", err)
-	}
 	dir := t.TempDir()
-	var stop atomic.Bool
-	var forks sync.WaitGroup
-	for range 8 {
-		forks.Go(func() {
-			for !stop.Load() {
-				_ = exec.Command(forker).Run()
-			}
-		})
-	}
+	ForkBeside(t, 8)
 	busy := 0
 	var other error
 	for i := range 400 {
@@ -54,8 +40,6 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 			break
 		}
 	}
-	stop.Store(true)
-	forks.Wait()
 	if other != nil {
 		t.Fatalf("write or run a fake executable: %v", other)
 	}
