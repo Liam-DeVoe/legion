@@ -18,11 +18,15 @@ import (
 
 // A child's own architect's claim failing holds nothing, even at accepting where its acceptance is
 // its own. While that claim no longer holds its role the child's notices go on up to the architect
-// above it, an owner-step aside, which waits for the child's own architect (noticeArchitect), and
-// the architect above must hear why: the failure is one worker-died on the child, naming the
-// architect, the child's phase and the failure the fact carries, whose reason names the child and,
-// for a child at a step no owner does, as here, says its notices come to the reader until the
-// daemon starts the child's architect again. The owner walk sends it above the child
+// above it, an owner-step aside, which goes to the child's own architect alone (noticeArchitect)
+// and, sent while that claim has failed, is dropped, its next launch's catch-up telling it the step
+// again. The architect above must hear why: the failure is one worker-died on the child, naming
+// the architect, the child's phase and the failure the fact carries, whose reason names the child.
+// For a child at a place its own architect does not end alone, as here in testing, the reason says
+// its notices come to the reader until it runs again, and that the daemon starts it again at the
+// child's next phase start; at a step of its own or its retro the daemon starts it again at once,
+// at most OwnerRestarts times in that step's run, and then the stranded list names it for the
+// operator's retry (restartFailedOwner). The owner walk sends it above the child
 // (record.OwningArchitect). The controller hears nothing of it, since an
 // architect inside the tree is left to act. A done child, a child that left the workflow and a
 // child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions

@@ -25,8 +25,9 @@ import (
 // its record names the child's own architect when that claim is idle or failed (and so started
 // again by the move), and the tree's architect when the operator suspended it, which no start
 // wakes. A run of step 2 no start of this release counted (the boot's open of it, upgradedStart,
-// through startAgent) names the tree's architect when the child's own has failed, since nothing
-// starts it again there. The control is the step's agent read as the owner by rule
+// through startAgent) names the tree's architect when the child's own has failed, since the boot's
+// open starts nothing (the daemon starts a failed owner again at its own step only when its claim
+// fails there, restartFailedOwner). The control is the step's agent read as the owner by rule
 // (record.OwnerClaim): the suspended and the failed cases then name the child's own architect,
 // which does not act, and the test fails on them.
 func TestAStepOfTheOwnerIsRunByTheArchitectThatOwnsTheIssueNow(t *testing.T) {
