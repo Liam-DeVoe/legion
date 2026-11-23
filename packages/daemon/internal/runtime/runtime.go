@@ -276,7 +276,8 @@ type PlanSlotsDrift interface {
 }
 
 // PodLacks is what an issue pod lacks of a launch whose claim runs in slot (claim.Token.Slot, its
-// agent's name, which the pod's launcher of the role of that name serves) on a step of role, where
+// agent's name, which the pod's launcher of that name serves, a role's or a plan agent's such as
+// `implementer-2`) on a step of role, where
 // lacks says whether the pod was built without a name: the role's name alone for a claim named for
 // its role, whose slot and role are one name; "<role>, the role of its step" or "<slot>, the slot
 // of the claim's agent" where the pod lacks one of two names; both where it lacks the two; and ""

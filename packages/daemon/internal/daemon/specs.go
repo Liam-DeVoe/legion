@@ -631,7 +631,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			steps[i] = fmt.Sprintf("step %d of task %s (%s) `%s%s`", w.position, w.task, w.role, notify.RoleTopicPrefix, w.token)
 		}
 		siblings = "the agent of each step of your issue's plan is on its topic: " + strings.Join(steps, ", ") +
-			"; your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above."
+			"; your topic with its last part, your agent's name, replaced by a role reaches the agent named for that role, which need not be the one that works the step of that role you mean: write to that step's agent on its topic above."
 	}
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; the project's controller is `%s%s`; %s",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project), siblings)

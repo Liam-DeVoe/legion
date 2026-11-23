@@ -391,9 +391,9 @@ func agentNames(named []PlanStep) []claim.Agent {
 }
 
 // A key's name is its newest: rows of an earlier generation that named it otherwise do not move it
-// within a generation. The project's default steps name key a for its first role, implementer, with
-// no earlier rows (defaultRows); the owner's version of that generation keeps that name, and not the
-// name tester that key a had in generation 1.
+// within a generation. Generation 2's default steps are named here from no earlier rows, so key a
+// takes its first role, implementer; the owner's version of that generation keeps that name, and
+// not the name tester that key a had in generation 1.
 func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
 	first := ofGeneration(1, NameAgents(nil, nil, []PlanStep{
 		{Task: "t", Position: 1, Role: "tester", AgentKey: "a"},
