@@ -204,7 +204,9 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 // TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead: payload members are
 // additive, so a newer publisher may add a member that is not a string. No handler reads such a
 // member: the intake skips it and handles the rest of the payload. The merged pull request is
-// fetched and stored, with no ERROR line, and the event's time is recorded.
+// fetched and stored, with no ERROR line, and the event's time is recorded. Every line of the
+// package the intake's path writes, the Attributor's head attribution included, goes to the
+// intake's logger, which the row reads.
 func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
