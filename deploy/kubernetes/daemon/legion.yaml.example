@@ -224,9 +224,10 @@ projects:
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,
 #                                      # are a whole multiple of it. roles are the roles it
-#                                      # writes to, at least one of implementer, tester,
-#                                      # reviewer, planner and merger; the architect is refused,
-#                                      # since the daemon's own wake to an architect is a notice.
+#                                      # writes to, at least one, each implementer, tester,
+#                                      # reviewer, planner, merger or a role of `roles`. The
+#                                      # architect is refused, since the daemon's own wake to an
+#                                      # architect is a notice.
 #                                      # The words are prompt here or prompt_file below, never
 #                                      # both and never neither. Each refusal at load names the
 #                                      # hook by its place in the list and the key at fault, as
