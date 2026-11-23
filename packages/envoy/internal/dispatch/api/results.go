@@ -260,6 +260,14 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	if err != nil {
 		return refused(err)
 	}
+	// The check may be on an issue of another project, which a parent of another project puts
+	// above the recording issue, and the result is appended to that issue. The pre-handler
+	// check read only the path's issue, so a credential scoped to one project is refused such a
+	// check here, before anything is written.
+	callerProject, _ := s.callerProject(r)
+	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
+		return refused(err)
+	}
 	// A CI job's check run, read once and before the transaction opens for the reason the check
 	// is resolved there: it is a GitHub round trip, though the process keeps its answer, since a
 	// check run never changes its name or its commit (specCheckRun). Both refusals below read

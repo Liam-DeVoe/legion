@@ -85,6 +85,7 @@ func readOnlyTable() []apiRoute {
 // answers 403 READ_ONLY_TOKEN and never runs its handler, the row the list names runs it once,
 // and GET /ws/live opens no socket (walkEveryChainWith).
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	walkEveryChainWith(t, readOnlyLimitedToken())
 }
 
@@ -104,6 +105,7 @@ var readListAnswers = map[string]limitedAnswer{
 // each listed route answers its handler's own refusal of its probe path (readListAnswers,
 // walkTheMountedServerWith).
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
+	t.Parallel()
 	walkTheMountedServerWith(t, readOnlyLimitedToken())
 }
 
@@ -151,6 +153,7 @@ func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 // list names, sorted, each name that is no row of the table and each row that is a write, and
 // passes a GET row whether the deployment serves it or only a server with its test hooks in does.
 func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
+	t.Parallel()
 	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) != 0 {
 		t.Fatalf("the read list as it stands is refused: %v", refused)
 	}
@@ -183,6 +186,7 @@ func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 // token's key would be free whatever the first request did - which is why the key table is read
 // as well.
 func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const readOnly, named = "a-read-only-token-that-tries-to-write", "a-named-token-that-writes"
@@ -304,6 +308,7 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 // workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
 // cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	marked := &markedStatements{}
 	traced := storetest.TracedStore(t, database, marked)
