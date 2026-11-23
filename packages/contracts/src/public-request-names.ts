@@ -152,13 +152,13 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "target_session",
     source:
-      "POST /v1/messages/send (the Envoy listener, listenerwire.SendRequest): the session id the message is sent to, which the listener names in its answer (\"no live session <id>\")",
+      'POST /v1/messages/send (the Envoy listener, listenerwire.SendRequest): the session id the message is sent to, which the listener names in its answer ("no live session <id>")',
   },
   {
     place: "field",
     name: "expects_reply",
     source:
-      "POST /v1/messages/send and /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): what the message wants back, false, \"optional\" or \"required\"",
+      'POST /v1/messages/send and /v1/messages/publish (the Envoy listener, listenerwire.MessageBody): what the message wants back, false, "optional" or "required"',
   },
   {
     place: "field",
