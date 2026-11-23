@@ -9483,11 +9483,13 @@ console.log(JSON.stringify(args));
         await drain();
         expect(regained).toEqual(["legion-controller:reregistered"]);
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot,
-      // which loads the extension's module and is waited for with no bound of turns (`waitOn`);
-      // every other wait ends by its own count of turns or steps (`onPassClock`). No run of this
-      // form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
+      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
+      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+      // 6 112.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the
+      // cluster's `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs
+      // took 32.1 s against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 40.9
+      // times that.
     });
   }
 
@@ -10343,10 +10345,11 @@ console.log(JSON.stringify(args));
       expect(holders.get(role)).toBe("ses_fo");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 6 490.29 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
+    // against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 38.5 times that.
   });
 
   test("a claim the model makes after the listener refused the role to the session is kept by later passes", async () => {
@@ -10477,10 +10480,12 @@ console.log(JSON.stringify(args));
       expect(holders.get(role)).toBe("ses_ab");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 6 501.32 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 38.5
+    // times that.
   });
 
   test("an abandoned hold whose session another process heartbeats again is the newer holder: refused once seen, never taken back", async () => {
@@ -10555,10 +10560,12 @@ console.log(JSON.stringify(args));
       expect(holders.has(role)).toBe(false);
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 6 094.86 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 41.0
+    // times that.
   });
 
   // A hold is its role and the session it was made under, so every hold of one role this process
@@ -10853,10 +10860,12 @@ console.log(JSON.stringify(args));
       expect(holders.get(role)).toBe("ses_sr_c");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 9 793.71 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 25.5
+    // times that.
   });
 
   for (const meanwhile of ["the listener reaped it", "a third session took the role"] as const) {
@@ -10938,11 +10947,13 @@ console.log(JSON.stringify(args));
           expect(claimSessions.length).toBe(confirmed);
         }
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot,
-      // which loads the extension's module and is waited for with no bound of turns (`waitOn`);
-      // every other wait ends by its own count of turns or steps (`onPassClock`). No run of this
-      // form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
+      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
+      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+      // 9 098.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the
+      // cluster's `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs
+      // took 33.4 s against the calibration's 31.2 s), at the merge head 0915a5ef. The package's
+      // 250 s is 27.5 times that.
     });
   }
 
@@ -11024,10 +11035,12 @@ console.log(JSON.stringify(args));
       expect(holders.get(role)).toBe("ses_op_c");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 8 689.57 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m2-tw5zt of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (144 busy loops, at which row A's runs took 33.4 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 28.8
+    // times that.
   });
 
   test("a fork's run that ends after the host moved leaves a frame for the session it left unshown", async () => {
@@ -11097,10 +11110,12 @@ console.log(JSON.stringify(args));
       expect(holders.get("legion-controller")).toBe("ses_oi");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 5 010.18 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 49.9
+    // times that.
   });
 
   // A release the listener refuses leaves the claim standing: its conditional delete is beaten
@@ -11153,10 +11168,12 @@ console.log(JSON.stringify(args));
       expect(holders.has(role)).toBe(false);
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 4 485.16 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 55.7
+    // times that.
   });
 
   // An abandoned hand-back loop walks a live `Map`: a hold a session event inserts behind its
@@ -11533,11 +11550,13 @@ console.log(JSON.stringify(args));
         await ticks(1);
         expect(holders.get(role)).toBe("ses_t3w_c");
       });
-      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot,
-      // which loads the extension's module and is waited for with no bound of turns (`waitOn`);
-      // every other wait ends by its own count of turns or steps (`onPassClock`). No run of this
-      // form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
+      // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
+      // other wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+      // 6 302.00 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m7-wx9cp of the
+      // cluster's `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs
+      // took 32.1 s against the calibration's 31.2 s), at 1242ae61. The package's 250 s is 39.7
+      // times that.
     });
   }
 
@@ -11754,10 +11773,12 @@ console.log(JSON.stringify(args));
       expect(holders.get("reviewer")).toBe("ses_mp_fork");
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's boot, which
-    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every
-    // other wait ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // loads the extension's module and is waited for with no bound of turns (`waitOn`); every other
+    // wait ends by its own count of turns or steps (`onPassClock`). Worst measured cost:
+    // 5 306.64 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 47.1
+    // times that.
   });
 
   test("a plugin's claim while NATS is down is refused, and the next pass claims once NATS is back", async () => {
@@ -12340,9 +12361,15 @@ console.log(JSON.stringify(args));
               });
               // A hang guard (the package's `--timeout 250000`): what can hang is the fixture's
               // boot, which loads the extension's module and is waited for with no bound of turns
-              // (`waitOn`); every other wait ends by its own count of turns (`onPassClock`). No
-              // run of this form is measured yet.
-              // MEASUREMENT-PROVISIONAL
+              // (`waitOn`); every other wait ends by its own count of turns (`onPassClock`). Worst
+              // measured cost of its 472 rows together: 769 289.00 ms over 20 runs at the 96 rung
+              // in the Jobs infra-1580-krows-m1a-696gj, infra-1580-krows-m1b-g796k,
+              // infra-1580-krows-m1c-psjrw and infra-1580-krows-m1d-cqfwc, the worst in
+              // infra-1580-krows-m1b-g796k of the cluster's `builds` namespace, two CPUs and 8 GiB
+              // (148 busy loops, at which row A's runs took 36.9 s against the calibration's
+              // 31.2 s), at the merge head 0915a5ef. Its slowest row in the whole-file run at that
+              // head (the Job infra-1580-wf-wfd-hv9dp, 150 busy loops, row A 37.0 s) took
+              // 10 680.90 ms, and the package's 250 s is 23.4 times that.
             });
           }
         }
@@ -13447,9 +13474,11 @@ console.log(JSON.stringify(args));
       expect.arrayContaining(["notifications.dispatch.issue.PRIV-1.>"])
     );
     // A hang guard, not a bound on work: what can hang is the wait (`until`) for the heartbeat's
-    // registrations, which has no deadline of its own. The limit is the package's
-    // `--timeout 250000`; no run of this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // registrations, which has no deadline of its own. The limit is the package's `--timeout
+    // 250000`; no run of this form is measured yet. Worst measured cost: 5 610.77 ms over 20 runs
+    // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two
+    // CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the calibration's
+    // 31.2 s), at the merge head 0915a5ef. The package's 250 s is 44.6 times that.
   });
 
   // The edge can start refusing a topic it accepted before, as when the broker's answer for the
@@ -19133,8 +19162,11 @@ console.log(JSON.stringify(args));
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the session's boot,
       // awaited on the real clock with no bound of the row's own; every wait on the test's clock
-      // ends by its own count of turns (`onPassClock`). No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // ends by its own count of turns (`onPassClock`). Worst measured cost: 8 197.65 ms over 20
+      // runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds`
+      // namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against
+      // the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 30.5 times
+      // that.
     });
 
     // The negative control of the check: a session context with no `getContextUsage` publishes no
@@ -21876,9 +21908,12 @@ console.log(JSON.stringify(args));
         }
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never
-      // runs here. No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
+      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
+      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
+      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
+      // package's 250 s is 14.4 times it.
     });
 
     test("the first registration waits on no reading, and the next carries its place", async () => {
@@ -21936,9 +21971,12 @@ console.log(JSON.stringify(args));
         }
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never
-      // runs here. No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
+      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
+      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
+      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
+      // package's 250 s is 14.4 times it.
     });
 
     test("a refused reading registers no place and clears the one it held", async () => {
@@ -21959,9 +21997,12 @@ console.log(JSON.stringify(args));
         }
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never
-      // runs here. No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
+      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
+      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
+      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
+      // package's 250 s is 14.4 times it.
     });
 
     test("a timed-out reading registers the last place read", async () => {
@@ -21982,9 +22023,12 @@ console.log(JSON.stringify(args));
         }
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the boot, a heartbeat's
-      // registration or the shutdown, should one wait on a timer, which the test's clock never
-      // runs here. No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // registration or the shutdown, should one wait on a timer, which the test's clock never runs
+      // here. Worst measured cost of the describe's eight rows together: 17 393.00 ms over 20 runs
+      // at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
+      // calibration's 31.2 s), at the merge head 0915a5ef. So each row cost at most that, and the
+      // package's 250 s is 14.4 times it.
     });
 
     test("a reading that throws still registers the session, without a place", async () => {
@@ -23004,10 +23048,12 @@ console.log(JSON.stringify(args));
       }
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's
-    // clock ends by its own count of turns or steps (`onPassClock`, `redialParked`). No run of
-    // this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
+    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
+    // 6 988.62 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 35.8
+    // times that.
   });
 
   test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
@@ -23067,10 +23113,12 @@ console.log(JSON.stringify(args));
       }
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's
-    // clock ends by its own count of turns or steps (`onPassClock`, `redialParked`). No run of
-    // this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
+    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
+    // 7 321.18 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 34.1
+    // times that.
   });
 
   test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
@@ -23124,10 +23172,11 @@ console.log(JSON.stringify(args));
       }
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's
-    // clock ends by its own count of turns or steps (`onPassClock`). No run of this form is
-    // measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
+    // ends by its own count of turns or steps (`onPassClock`). Worst measured cost: 7 715.69 ms
+    // over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against the
+    // calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 32.4 times that.
   });
 
   test("two opens of the live view's control subject that race each other take it once", async () => {
@@ -23182,10 +23231,12 @@ console.log(JSON.stringify(args));
       }
     });
     // A hang guard (the package's `--timeout 250000`): what can hang is the boot or the shutdown,
-    // each awaited on the real clock with no bound of the row's own; every wait on the test's
-    // clock ends by its own count of turns or steps (`onPassClock`, `redialParked`). No run of
-    // this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // each awaited on the real clock with no bound of the row's own; every wait on the test's clock
+    // ends by its own count of turns or steps (`onPassClock`, `redialParked`). Worst measured cost:
+    // 8 495.78 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s
+    // against the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 29.4
+    // times that.
   });
 
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
@@ -23461,16 +23512,18 @@ console.log(JSON.stringify(args));
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
-    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for each pass's work
-    // up to its bound (`clock.wait`), which has no bound of turns, because the start's trade reads
-    // the pod's token from disk, real I/O. The readings below were taken with that wait bounded by
+    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for each pass's work up
+    // to its bound (`clock.wait`), which has no bound of turns, because the start's trade reads the
+    // pod's token from disk, real I/O. The readings below were taken with that wait bounded by
     // turns (`hold`). Worst measured cost: 19 597.69 ms over 20 runs at the 96 rung in the Job
     // infra-1580-krows-j3-dx2jm of the cluster's `builds` namespace, two CPUs and 8 GiB (226 busy
     // loops, at which row A's runs took 36.6 s against the calibration's 31.2 s), 2026-11-21T19:16Z
     // to 19:34Z; 13 026.49 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
     // of 2026-11-19 18:40Z, 2026-11-20T20:24Z to 20:42Z, and 12 273.40 ms over 20 runs there,
-    // 2026-11-21T02:55Z to 03:12Z. 120_000 is 6.1 times the worst.
-    // MEASUREMENT-PROVISIONAL
+    // 2026-11-21T02:55Z to 03:12Z. 120_000 is 6.1 times the worst. At the merge head 0915a5ef:
+    // 12 212.80 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m5-9nptt of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (177 busy loops, at which row A's runs took
+    // 33.4 s against the calibration's 31.2 s).
   }, 120_000);
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
@@ -23623,14 +23676,16 @@ console.log(JSON.stringify(args));
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
-    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for the start's work
-    // up to its bound (`clock.wait`), which has no bound of turns, because its trade reads the
-    // pod's token from disk, real I/O. The readings below were taken with that wait bounded by
-    // turns (`hold`). Worst measured cost: 23 310.35 ms over 20 runs at 16 busy loops (the 96
-    // rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T02:38Z to 02:55Z, the next
-    // worst of those 20 being 11 460.22 ms, and 7 282.53 ms over 20 runs there, 2026-11-20T18:13Z
-    // to 18:28Z, so 150_000 is 6.4 times the worst.
-    // MEASUREMENT-PROVISIONAL
+    // A hang guard, not a bound on work: what can hang is `readPass`'s wait for the start's work up
+    // to its bound (`clock.wait`), which has no bound of turns, because its trade reads the pod's
+    // token from disk, real I/O. The readings below were taken with that wait bounded by turns
+    // (`hold`). Worst measured cost: 23 310.35 ms over 20 runs at 16 busy loops (the 96 rung) on
+    // the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T02:38Z to 02:55Z, the next worst of
+    // those 20 being 11 460.22 ms, and 7 282.53 ms over 20 runs there, 2026-11-20T18:13Z to 18:28Z,
+    // so 150_000 is 6.4 times the worst. At the merge head 0915a5ef: 10 616.45 ms over 20 runs at
+    // the 96 rung in the Job infra-1580-krows-m5-9nptt of the cluster's `builds` namespace, two
+    // CPUs and 8 GiB (177 busy loops, at which row A's runs took 33.4 s against the calibration's
+    // 31.2 s).
   }, 150_000);
 
   test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
@@ -23878,15 +23933,17 @@ console.log(JSON.stringify(args));
       "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
     ]);
     await fixture.handlers.get("session_shutdown")?.({}, context);
-    // A hang guard, not a bound on work: what can hang is the wait for the start
-    // (`clock.waitOn`), which has no bound of turns, because its trade reads the pod's token from
-    // disk, real I/O. The readings below were taken with that wait bounded by turns (`run`). Worst
-    // measured cost: 13 789.10 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc
-    // of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's
-    // runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T19:51Z to 20:10Z; 6 742.65 ms
-    // over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-    // 2026-11-21T14:48Z to 15:03Z. 90_000 is 6.5 times the worst.
-    // MEASUREMENT-PROVISIONAL
+    // A hang guard, not a bound on work: what can hang is the wait for the start (`clock.waitOn`),
+    // which has no bound of turns, because its trade reads the pod's token from disk, real I/O. The
+    // readings below were taken with that wait bounded by turns (`run`). Worst measured cost:
+    // 13 789.10 ms over 20 runs at the 96 rung in the Job infra-1580-krows-j4-2w4bc of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (257 busy loops, at which row A's runs took
+    // 53.6 s against the calibration's 31.2 s), 2026-11-21T19:51Z to 20:10Z; 6 742.65 ms over 20
+    // runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // 2026-11-21T14:48Z to 15:03Z. 90_000 is 6.5 times the worst. At the merge head 0915a5ef:
+    // 11 484.65 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m5-9nptt of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (177 busy loops, at which row A's runs took
+    // 33.4 s against the calibration's 31.2 s).
   }, 90_000);
 
   test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
@@ -23972,15 +24029,16 @@ console.log(JSON.stringify(args));
       await switching;
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
-    // A hang guard, not a bound on work: what can hang is the wait for the boot or for the
-    // follow's trade (`clock.waitOn`, `clock.wait`), which has no bound of turns, because each
-    // trade reads the pod's token from disk, real I/O. The readings below were taken with those
-    // waits bounded by turns (`run`, `hold`). Worst measured cost: 13 513.21 ms over 20 runs at 16
-    // busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z
-    // to 16:22Z, with the boot on the real clock; with the boot on the test clock, 12 258.67 ms
-    // over 20 runs there, 2026-11-20T17:58Z to 18:13Z, and 8 259.09 ms, 2026-11-21T02:21Z to
-    // 02:38Z. So 90_000 is 6.7 times the worst.
-    // MEASUREMENT-PROVISIONAL
+    // A hang guard, not a bound on work: what can hang is the wait for the boot or for the follow's
+    // trade (`clock.waitOn`, `clock.wait`), which has no bound of turns, because each trade reads
+    // the pod's token from disk, real I/O. The readings below were taken with those waits bounded
+    // by turns (`run`, `hold`). Worst measured cost: 13 513.21 ms over 20 runs at 16 busy loops
+    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z,
+    // with the boot on the real clock; with the boot on the test clock, 12 258.67 ms over 20 runs
+    // there, 2026-11-20T17:58Z to 18:13Z, and 8 259.09 ms, 2026-11-21T02:21Z to 02:38Z. So 90_000
+    // is 6.7 times the worst. At the merge head 0915a5ef: 8 187.40 ms over 20 runs at the 96 rung
+    // in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (106 busy loops, at which row A's runs took 32.2 s against the calibration's 31.2 s).
   }, 90_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
@@ -24067,9 +24125,10 @@ console.log(JSON.stringify(args));
     // loops, at which row A's runs took 31.5 s against the calibration's 31.2 s), 2026-11-22T05:22Z
     // to 05:31Z; 19 027.39 ms over 20 runs in the Job infra-1580-krows-j4-2w4bc (257 busy loops,
     // row A at 53.6 s), 2026-11-21T20:14Z to 20:31Z; 8 261.56 ms over 20 runs at 16 busy loops (the
-    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z.
-    // 150_000 is 7.2 times the worst.
-    // MEASUREMENT-PROVISIONAL
+    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T15:03Z to 15:17Z. 150_000
+    // is 7.2 times the worst. At the merge head 0915a5ef: 2 706.69 ms over 20 runs at the 96 rung
+    // in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB
+    // (106 busy loops, at which row A's runs took 32.2 s against the calibration's 31.2 s).
   }, 150_000);
 
   // Not decided by the host's speed: the viewer's replay settles on promises alone, so it has run
@@ -24992,10 +25051,12 @@ console.log(JSON.stringify(args));
       expect(scheduled[1]?.delayMs).toBeGreaterThanOrEqual(20_000);
       expect(scheduled[1]?.delayMs).toBeLessThanOrEqual(40_000);
     });
-    // A hang guard (the package's `--timeout 250000`): what can hang is the load of the
-    // extension's module, waited for with no bound of turns (`waitOn`); every other wait ends by
-    // its own count of turns or steps (`onPassClock`). No run of this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // A hang guard (the package's `--timeout 250000`): what can hang is the load of the extension's
+    // module, waited for with no bound of turns (`waitOn`); every other wait ends by its own count
+    // of turns or steps (`onPassClock`). Worst measured cost: 6 992.03 ms over 20 runs at the 96
+    // rung in the Job infra-1580-krows-m3-9p4bh of the cluster's `builds` namespace, two CPUs and
+    // 8 GiB (131 busy loops, at which row A's runs took 32.1 s against the calibration's 31.2 s),
+    // at the merge head 0915a5ef. The package's 250 s is 35.8 times that.
   });
 
   test("a rebind during a network outage notifies instead of failing the handler", async () => {
@@ -25976,10 +26037,12 @@ describe("consumer delivery", () => {
       }
     });
     // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
-    // on the test's clock ends by its own count of turns (`onPassClock`). The limit is the
-    // package's `--timeout 250000`; no run of this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait on
+    // the test's clock ends by its own count of turns (`onPassClock`). The limit is the package's
+    // `--timeout 250000`; no run of this form is measured yet. Worst measured cost: 9 501.84 ms
+    // over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs took 33.1 s against the
+    // calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 26.3 times that.
   });
 
   test("a frame written before a restart and relayed again after it is answered done and not shown again", async () => {
@@ -26209,8 +26272,11 @@ describe("consumer delivery", () => {
       });
       // A hang guard (the package's `--timeout 250000`): what can hang is the load of the
       // extension's module in the boot, awaited with no bound of turns; every other wait ends by
-      // its own count of turns or steps (`onPassClock`). No run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // its own count of turns or steps (`onPassClock`). Worst measured cost: 7 491.00 ms over 20
+      // runs at the 96 rung in the Job infra-1580-krows-m3-9p4bh of the cluster's `builds`
+      // namespace, two CPUs and 8 GiB (131 busy loops, at which row A's runs took 32.1 s against
+      // the calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 33.4 times
+      // that.
     });
   }
 
@@ -26473,10 +26539,12 @@ describe("consumer delivery", () => {
       expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
     });
     // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
-    // on the test's clock ends by its own count of turns (`onPassClock`). The limit is the
-    // package's `--timeout 250000`; no run of this form is measured yet.
-    // MEASUREMENT-PROVISIONAL
+    // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait on
+    // the test's clock ends by its own count of turns (`onPassClock`). The limit is the package's
+    // `--timeout 250000`; no run of this form is measured yet. Worst measured cost: 5 297.37 ms
+    // over 20 runs at the 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the
+    // calibration's 31.2 s), at the merge head 0915a5ef. The package's 250 s is 47.2 times that.
   });
 
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
@@ -26597,10 +26665,13 @@ describe("consumer delivery", () => {
         expect(card.content).not.toContain("delivered:");
       });
       // A hang guard, not a bound on work: what can hang is the boot's wait for its first
-      // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every
-      // wait on the test's clock ends by its own count of turns (`onPassClock`). The limit is the
-      // package's `--timeout 250000`; no run of this form is measured yet.
-      // MEASUREMENT-PROVISIONAL
+      // registration (`bootConsumer`'s `until`, on the real clock), which has no bound; every wait
+      // on the test's clock ends by its own count of turns (`onPassClock`). The limit is the
+      // package's `--timeout 250000`; no run of this form is measured yet. Worst measured cost:
+      // 10 520.74 ms over 20 runs at the 96 rung in the Job infra-1580-krows-m4-lbs74 of the
+      // cluster's `builds` namespace, two CPUs and 8 GiB (172 busy loops, at which row A's runs
+      // took 33.1 s against the calibration's 31.2 s), at the merge head 0915a5ef. The package's
+      // 250 s is 23.8 times that.
     });
 
     // The mirror of the case above: a machine whose clock runs 4 h 45 min ahead of the listener's
