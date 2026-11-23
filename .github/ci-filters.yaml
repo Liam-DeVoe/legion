@@ -2561,6 +2561,7 @@ worker_image:
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
   - 'packages/envoy/testnatsinprocess/**'
+  - 'packages/envoy/testexec/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
