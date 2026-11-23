@@ -2320,6 +2320,9 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
+# and is the verdict on them; envoy-go-checks and the test job each end with one.
+HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the
@@ -2629,6 +2632,10 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
+    # The pool's own test runs as a step of its own, not through the pool it tests.
+    harness("harness_pool_test", "Test the harness pool", f"{SCRIPTS}/harness-pool.test.sh", [
+        (f"{SCRIPTS}/harness-pool.sh", "the script under test"),
+    ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
@@ -2823,14 +2830,19 @@ GATES = [
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
-    # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
+    # have jobs of their own: the Claude Code plugin build, the changelog fold, about forty
     # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
-    # this gate carries too, since the job must be selected for the step to run in it - and the
-    # Bun suites of scripts/. One go command is left, the build a Bun test starts: the listener's.
+    # this gate carries too, since the job must be selected for the step to run in it, and all but
+    # three queued through the harness pool - and the Bun suites of scripts/. One go command is
+    # left, the build a Bun test starts: the listener's.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
                    at("test", E2E_LIB_TESTS), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
+        # Every harness step but three queues its harness through the pool, and the wait step is
+        # the verdict on them, so a change to the pool must start this job whatever gate it hits.
+        (".github/scripts/harness-pool.sh",
+         f"{at('test', HARNESS_POOL_WAIT_STEP)}, and each harness step above it but three queues its harness through it"),
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
                                                      "file's path, lists that directory and reads the package.json and "
@@ -3480,6 +3492,10 @@ GATES = [
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
          "the vendored archive's sha256 and renders it"),
+        # Every script harness step queues its harness through the pool, and the wait step is the
+        # verdict on them, so a change to the pool must start this job.
+        (".github/scripts/harness-pool.sh",
+         f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}, and each harness step above it queues its harness through it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
         # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and

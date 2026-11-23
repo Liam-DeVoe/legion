@@ -1300,7 +1300,7 @@ filter (dispatch://INFRA-1413).
 
 The session message-wait suite, in a job of its own: it is the one test of the test job
 that needs a database, and a Postgres service there would start one for every change
-that selects any of that job's thirty-two harness steps.
+that selects any of that job's forty-odd harness steps.
 
 ## One output per test.sh step of the test job
 
@@ -1628,7 +1628,49 @@ The script harnesses, the Claude Code plugin build and the Bun suites of scripts
 script it tests, handed down as an input of the same name
 (.github/workflows/ci-job-test.yaml), so a change to one script runs one harness. The job's
 own filter names every one of those lists, since a job's `if:` tests one output and a step
-gate decides nothing in a job that was not selected.
+gate decides nothing in a job that was not selected. All but three of those steps queue their
+harness through the harness pool (#the-harness-pool) and the job's verdict on them is its step
+"Wait for the script harnesses and judge them": gh-read.test.sh, whose last case reads the
+job's Runner.Worker among its parents, dispatch-browser-run-reads.test.sh, whose waits of a
+few seconds are judged against the real clock, and harness-pool.test.sh, which tests the pool
+itself, stay steps of their own, run before the pool queues any. Every harness step has its
+own gate, so a change can reach none of them; the wait passes `--allow-none` for that run.
+
+## The harness pool
+
+.github/scripts/harness-pool.sh runs a job's script harnesses beside each other. A job's steps
+run one after another, and a shell harness of fakes mostly waits - on a fake's answer, a poll, a
+deadline - so as steps they kept three of a 4-vCPU runner's cores idle: about 1,000 s of
+envoy-go-checks' 1,336 s median (n=222 pull-request runs, 2026-11-22) and 678 s of the test
+job's 742 s median on the runs that ran its harnesses (n=123) were harness steps in series.
+All 19 of envoy-go-checks' harnesses had been run at once, each with a TMPDIR of its own, and
+passed but the one that fails alone off a runner (dev-stack.test.sh, whose fakes use `$$` as a
+port), before the pool was written.
+
+Each harness step keeps its name, its `if:` and its working directory, and runs
+`harness-pool.sh start <name> <command>`, which queues the command and returns: the step's
+result says only that its harness was queued. The harnesses start in the order queued, no more
+at once than the runner has processors (nproc), each in a session of its own with its standard
+input from /dev/null, its output in a log of its own, SIGINT and SIGQUIT at their defaults (a
+command started with `&` by a shell without job control starts with both ignored, which would
+make a harness's own INT traps do nothing), and the runner's per-step files (GITHUB_STEP_SUMMARY,
+GITHUB_OUTPUT, GITHUB_ENV, GITHUB_PATH, GITHUB_STATE) pointed at files of its own entry, since
+the step that queued it has ended. The job's step "Wait for the script harnesses and judge
+them" waits for the last of them and is their verdict: it prints each one's log in a group of
+its own headed by its exit status, wall seconds, CPU seconds and seconds waiting for a slot,
+fails with an `::error` naming each that failed, and writes the same table to the job summary.
+It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is still
+judged; and a cancel's signal reaches it (the step `exec`s it), so a harness still running when
+the job is cancelled or times out is named with its log so far rather than lost. `start
+--minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
+HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so
+a harness outlives the step that queued it and the job's timeout-minutes still bounds it.
+
+A harness belongs in the pool when nothing else in the job writes what it reads and it reads
+nothing of its parents. One that needs an earlier step is queued after it
+(release-push.test.sh after install-changie, disk_watch.test.sh after the user-namespace
+sysctl, check-ci-filters.test.sh after setup-go). In envoy-go-checks they are queued right after
+the Go cache restore, longest first, since the cluster test's nats.yaml render runs go.
 
 ## Why the daemon's Go suite is a job of its own
 
@@ -1755,7 +1797,8 @@ recheck a slow-suite failure on a pull request: the label picks the lane, while 
 ## envoy-go's fast half: the Go format check, the two generated-code checks, the
 
 envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
-tests, the vet of the module as darwin compiles it, and the build and pack of
+tests (through the harness pool, #the-harness-pool, beside the other steps), the vet of the
+module as darwin compiles it, and the build and pack of
 the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
 internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
 whose one run this is (envoy-go's unit step leaves

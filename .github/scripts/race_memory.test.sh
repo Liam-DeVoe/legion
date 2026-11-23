@@ -49,13 +49,15 @@ check "names the default limit" "$(contains "$out" 'the limit is 8388608 kB (the
 
 echo "case: a peak over the limit fails the run and names the test that was running"
 # Prints a -json stream naming a test as running, then grows past a 1 kB limit and lives long
-# enough for the sampler to take a second sample at 5 s, by when the stream has been read.
+# enough for the sampler to take a second sample at 5 s, by when the stream has been read: 10 s,
+# so a sampler that a loaded runner (other harnesses beside this one) holds back by seconds still
+# samples it.
 grower='
 import json, sys, time
 sys.stdout.write(json.dumps({"Action": "run", "Test": "TestTheSamplerNamesMe"}) + "\n")
 sys.stdout.flush()
 block = b"x" * (64 * 1024 * 1024)
-time.sleep(6)
+time.sleep(10)
 sys.stdout.write(str(len(block)) + "\n")
 '
 run_sampler 1 python3 -c "$grower"

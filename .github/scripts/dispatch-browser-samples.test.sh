@@ -144,7 +144,11 @@ check "CPU" "$(contains "$out" 'took no CPU sample$')"
 echo "case: the sampler writes both files, over this machine's own /proc"
 # The one case that runs the sampler itself: the fixtures above stand in for what it writes, so
 # the shape it writes is worth holding. It is started as the browser steps start it, left to
-# take at least one tick, and killed as their trap kills it.
+# take at least one tick, and killed as their trap kills it. The case waits for that tick on the
+# files, not on a clock: awk writes its CPU lines, the tick's machine line first, when it exits,
+# so a machine line means the tick is written, where a fixed sleep could end before the first
+# tick on a runner busy with other harnesses. The 30 s bound only ends a wait for a tick that
+# never comes, which the checks then report.
 dir=$(fixture sampler-runs)
 # What a previous run left behind. The sampler truncates both files, so neither line survives
 # into the reading.
@@ -152,7 +156,12 @@ printf 'stale\n' > "$dir/memory-samples.txt"
 printf 'machine 999999999\n' > "$dir/cpu-samples.txt"
 "$samples_script" sample "$dir" &
 sampler=$!
-sleep 2
+for _ in $(seq 150); do
+  grep -qE '^[0-9]+$' "$dir/memory-samples.txt" 2>/dev/null &&
+    grep -qE '^machine [0-9]+$' "$dir/cpu-samples.txt" 2>/dev/null &&
+    ! grep -q 999999999 "$dir/cpu-samples.txt" && break
+  sleep 0.2
+done
 kill "$sampler" 2>/dev/null || true
 wait "$sampler" 2>/dev/null || true
 check "the memory samples are numbers of kB" \
