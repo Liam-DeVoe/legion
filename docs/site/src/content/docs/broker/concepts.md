@@ -1526,7 +1526,23 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code, and this release names none yet.
+itself, for a kind it names in code. This release names one, the approve capability, below.
+
+The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
+block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it
+at start (`broker: the approve capability`, with the host and the grant digest, or `state=off`).
+A session on such a box trades the person's sign-in, asking for
+`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`, and is answered a
+placeholder (`agent-secrets-placeholder-approve-…`) of a grant of that person and session that
+lasts 15 minutes, with the proxy's URL, its authority and the one host under `proxy`. Nobody
+approves the grant: the sign-in is its authority, and revoking the sign-in ends it. Only a person's
+sign-in is granted the placeholder. On each allowed request the proxy mints a token of the scope
+`approve` and the project scope person for the grant, bound to its pod's key, and never releases
+it; the broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
+(`broker: minted a grant's token`), never the token. Dispatch holds that token to its approve
+routes and answers every other route `403 APPROVE_ONLY_TOKEN`, the mint and the change of a
+personal token among them; the block's `allow` list names those routes as well, so a request for
+any other route is refused at the proxy first. `dispatch review` sends a person's review this way.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
