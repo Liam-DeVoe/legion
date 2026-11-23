@@ -539,11 +539,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
 	specRow := graphstore.ArtifactRow{ID: artifactID, CreatedAt: createdAt}
 	specNode := graphstore.Created(graphstore.WithArtifactRow(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt), specRow))
-	specFacts := []graphstore.Tuple{graphstore.ArtifactPartOf(specRef, key, actor, createdAt)}
 	if bornConverted {
 		specNode = graphstore.Created(graphstore.WithArtifactRow(graphstore.QueryNode(specRef, input.Project, graphstore.QuerySpec, actor, createdAt), specRow))
-		specFacts = graphstore.AttributeFacts(specFacts, specNode)
 	}
+	// The spec's node states its values, its new row's id and created_at among them
+	// (graphstore.ArtifactRow), and a query node's values beside them.
+	specFacts := graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(specRef, key, actor, createdAt)}, specNode)
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{issueNode, specNode}, specFacts)
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, issueNodes)

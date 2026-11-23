@@ -292,7 +292,9 @@ func TestTheArmOverRefsTakesTheStoresAddressBound(t *testing.T) {
 // store.ArtifactNodeCreatedAt), to the names this package writes the row's values under
 // (ArtifactRow), which package store writes out as text because this package imports it, and holds
 // what WithArtifactRow lays on a node to the row: its id, and its created_at at the microsecond
-// Postgres keeps, so a time read back from the value is the row's own.
+// Postgres keeps, so a time read back from the value is the row's own. Each is a value of the node,
+// stated as a value tuple as every value is (AttributeFacts), and ArtifactRowFacts states only the
+// ones the node's tuples do not state already.
 func TestTheViewReadsTheRowADocumentsNodeNames(t *testing.T) {
 	if want := "attributes->>'" + AttributeArtifactID + "'"; !strings.Contains(store.ArtifactNodeUUID, want) {
 		t.Errorf("graph_edges reads a document's uuid as %s, not off %s", store.ArtifactNodeUUID, want)
@@ -300,17 +302,27 @@ func TestTheViewReadsTheRowADocumentsNodeNames(t *testing.T) {
 	if want := "attributes->>'" + AttributeCreatedAt + "'"; !strings.Contains(store.ArtifactNodeCreatedAt, want) {
 		t.Errorf("graph_edges reads a document's created_at as %s, not off %s", store.ArtifactNodeCreatedAt, want)
 	}
+	const row = "00000000-0000-4000-8000-000000000001"
 	at := time.Date(2026, time.November, 23, 4, 5, 6, 123456789, time.FixedZone("east", 3600))
 	node := WithArtifactRow(ArtifactNode("CORE-1/spec", "CORE", "", model.Actor{Kind: "user", ID: "alice"}, at),
-		ArtifactRow{ID: "00000000-0000-4000-8000-000000000001", CreatedAt: at})
-	if got := node.Attributes[AttributeArtifactID]; got != "00000000-0000-4000-8000-000000000001" {
+		ArtifactRow{ID: row, CreatedAt: at})
+	const created = "2026-11-23T03:05:06.123456Z"
+	if got := node.Attributes[AttributeArtifactID]; got != row {
 		t.Errorf("the node names the row %v", got)
 	}
-	if got, want := node.Attributes[AttributeCreatedAt], "2026-11-23T03:05:06.123456Z"; got != want {
-		t.Errorf("the node dates the row %v, want %s", got, want)
+	if got := node.Attributes[AttributeCreatedAt]; got != created {
+		t.Errorf("the node dates the row %v, want %s", got, created)
 	}
-	if facts := AttributeFacts(nil, node); len(facts) != 0 {
-		t.Errorf("the row's values state %d tuples, want none: they ride on the node's attributes alone", len(facts))
+	facts := AttributeFacts(nil, node)
+	if len(facts) != 2 || facts[0].Kind != AttributeArtifactID || facts[0].ToID != row ||
+		facts[1].Kind != AttributeCreatedAt || facts[1].ToID != created || facts[0].ToKind != KindValue {
+		t.Errorf("the row's values state %+v, want its artifact_id and its created_at as the node's value tuples", facts)
+	}
+	if again := ArtifactRowFacts(nil, node, row, created); len(again) != 0 {
+		t.Errorf("values the node's tuples state already state %+v again, want nothing", again)
+	}
+	if moved := ArtifactRowFacts(nil, node, "00000000-0000-4000-8000-000000000002", created); len(moved) != 1 || moved[0].Kind != AttributeArtifactID {
+		t.Errorf("a new row at the same time states %+v, want its artifact_id alone", moved)
 	}
 	if bare := WithArtifactRow(ArtifactNode("CORE-1/spec", "CORE", "", model.Actor{Kind: "user", ID: "alice"}, at), ArtifactRow{}); bare.Attributes != nil {
 		t.Errorf("a node that names no row carries %v", bare.Attributes)

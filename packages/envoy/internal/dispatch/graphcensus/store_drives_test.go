@@ -511,9 +511,10 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 		// The components' nodes with their part_of and depends_on, which the seed writes first, the
 		// issues' nodes, which it writes before their documents, with a child's child_of its
 		// parent, the issues' needs and their affects of their components, each document's node
-		// with its part_of its issue and its references, and each document's latest version,
-		// indexed as its first: the version's node, and the blocks it states afresh with their
-		// values and the references they hold. Every node of the seed is in its project.
+		// with its part_of its issue, its row's id and created_at and its references, and each
+		// document's latest version, indexed as its first: the version's node, and the blocks it
+		// states afresh with their values and the references they hold. Every node of the seed is in
+		// its project.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComponent, graphstore.AttributeVisibility}: {graphstore.KindComponent},
 			{graphstore.KindComponent, graphstore.AttributeState}:      {graphstore.KindComponent},
@@ -529,6 +530,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindArtifact, graphstore.AttributeVisibility}:  {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeState}:       {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeProject}:     {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeArtifactID}:  {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeCreatedAt}:   {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.TuplePartOf}:          {"document_part_of"},
 			{graphstore.KindArtifact, graphstore.TupleMentions}:        {"document_ref"},
 			{graphstore.KindVersion, graphstore.AttributeVisibility}:   {graphstore.KindVersion},

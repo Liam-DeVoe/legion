@@ -310,7 +310,7 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 		if artifact.IssueKey != nil {
 			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}
 		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, partOf); err != nil {
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, graphstore.AttributeFacts(partOf, made)); err != nil {
 			return removedNodes{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
 		}
 	}

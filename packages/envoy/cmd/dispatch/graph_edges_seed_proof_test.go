@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -29,7 +30,8 @@ const seedWaitEnv = "DISPATCH_SEED_WAIT"
 
 // The issue tree's step keeps every edge over a deployment's data (dispatch://INFRA-1098's T7b,
 // c-view-one-select): over a copy of the database seedDatabaseEnv names, made with CREATE DATABASE
-// … TEMPLATE, the root's build boots, migrating it to this head; the test waits until its
+// … TEMPLATE, brought through 0116 and given a default assignee for each project that names none
+// (nameDefaultAssignees), the root's build boots, migrating it to this head; the test waits until its
 // backfills owe nothing - the boot's own run, then graphcensus.Backfill until every pass is
 // complete, and the block index owed by no document - and reads graph_edges. It then announces a
 // build that lists every relation kind the children moved, as their release's fleet would, boots
@@ -55,13 +57,21 @@ func TestTheIssueTreesStepKeepsEveryEdgeOverASeed(t *testing.T) {
 	}
 	ctx := context.Background()
 	copyURL := copySeedDatabase(t, seedURL)
+	database := openSeedStore(t, copyURL)
+	// A deployment's dump can predate 0116, which adds projects.default_assignee, and its people
+	// need not have signed in on this server, which the migration that makes that column not
+	// null reads (20261111210103): the copy is brought through 0116 first, and each project that
+	// names no default assignee is given one, as an operator does before deploying again.
+	if err := database.MigrateThrough(ctx, defaultAssigneeMigration); err != nil {
+		t.Fatalf("migrate the copy through %04d: %v", defaultAssigneeMigration, err)
+	}
+	nameDefaultAssignees(t, ctx, database)
 	rootBuild := cmdtest.BuildStamped(t, "envoy-dispatch-seed-root", oneSelectRootBuild)
 
 	first := startDispatchProcessWith(t, copyURL, dispatchOptions{Binary: rootBuild, SigningKey: multiprocessSigningKey})
 	if err := first.healthyWithin(wait); err != nil {
 		t.Fatal(err)
 	}
-	database := openSeedStore(t, copyURL)
 	waitForTheBackfills(t, ctx, database, first, wait)
 	stopDeployedProcess(t, first)
 	scanSeed := func(what, statement string) int64 {
@@ -110,21 +120,29 @@ func TestTheIssueTreesStepKeepsEveryEdgeOverASeed(t *testing.T) {
 }
 
 // copySeedDatabase makes a copy of the database seedURL names under a name of its own, with
-// CREATE DATABASE … TEMPLATE, and drops that copy, by its name, when the test ends.
+// CREATE DATABASE … TEMPLATE, and answers its URL. When the test ends it drops that copy, by its
+// name and with (force), from a connection to the server's postgres database, never to the copy
+// itself; the test's own connections to the copy are closed before that (t.Cleanup runs in the
+// reverse order, and every connection to the copy is opened after this). seedURL must be a
+// postgres:// URL, whose path names the database.
 func copySeedDatabase(t *testing.T, seedURL string) string {
 	t.Helper()
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(seedURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", seedDatabaseEnv, err)
+	parsed, err := url.Parse(seedURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		t.Fatalf("%s is no postgres:// URL", seedDatabaseEnv)
 	}
-	if config.Database == "" {
+	seed := strings.TrimPrefix(parsed.Path, "/")
+	if seed == "" {
 		t.Fatalf("%s names no database", seedDatabaseEnv)
 	}
-	seed := config.Database
+	at := func(database string) string {
+		named := *parsed
+		named.Path = "/" + database
+		return named.String()
+	}
 	copied := fmt.Sprintf("seed_proof_%d", time.Now().UnixNano())
-	config.Database = "postgres"
-	admin, err := pgx.ConnectConfig(ctx, config)
+	admin, err := pgx.Connect(ctx, at("postgres"))
 	if err != nil {
 		t.Fatalf("connect to the seed's server: %v", err)
 	}
@@ -132,8 +150,9 @@ func copySeedDatabase(t *testing.T, seedURL string) string {
 	if _, err := admin.Exec(ctx, `create database `+pgx.Identifier{copied}.Sanitize()+` template `+pgx.Identifier{seed}.Sanitize()); err != nil {
 		t.Fatalf("copy the seed database %s: %v", seed, err)
 	}
+	t.Logf("seed proof: copied %s to %s", seed, copied)
 	t.Cleanup(func() {
-		conn, err := pgx.ConnectConfig(context.Background(), config)
+		conn, err := pgx.Connect(context.Background(), at("postgres"))
 		if err != nil {
 			t.Errorf("connect to drop the copy %s: %v", copied, err)
 			return
@@ -143,14 +162,69 @@ func copySeedDatabase(t *testing.T, seedURL string) string {
 			t.Errorf("drop the copy %s: %v", copied, err)
 		}
 	})
-	config.Database = copied
-	return config.ConnString()
+	return at(copied)
+}
+
+// defaultAssigneeMigration is 0116_project_default_assignee, which adds projects.default_assignee,
+// the column the migration that makes it not null (20261111210103) refuses to leave empty.
+const defaultAssigneeMigration = 116
+
+// nameDefaultAssignees gives each project of database that names no default assignee one, printed:
+// the person its issues are assigned to most, or, for a project none of whose issues is assigned,
+// the person the seed's issues are assigned to most. It fails where no issue of the seed names an
+// assignee, since then no default can be read off the seed.
+func nameDefaultAssignees(t *testing.T, ctx context.Context, database *store.Store) {
+	t.Helper()
+	rows, err := database.Pool.Query(ctx, `
+		with held as (
+			select project_key, lower(assignee) as assignee, count(*) as issues
+			from issues where coalesce(assignee, '') <> ''
+			group by project_key, lower(assignee)
+		), overall as (
+			select assignee from held group by assignee order by sum(issues) desc, assignee limit 1
+		)
+		select p.key,
+		       coalesce((select h.assignee from held h where h.project_key = p.key order by h.issues desc, h.assignee limit 1),
+		                (select assignee from overall)),
+		       exists (select 1 from held h where h.project_key = p.key)
+		from projects p where p.default_assignee is null
+		order by p.key
+	`)
+	if err != nil {
+		t.Fatalf("read the projects that name no default assignee: %v", err)
+	}
+	type named struct {
+		project string
+		person  *string
+		own     bool
+	}
+	projects, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (named, error) {
+		var each named
+		err := row.Scan(&each.project, &each.person, &each.own)
+		return each, err
+	})
+	if err != nil {
+		t.Fatalf("read the projects that name no default assignee: %v", err)
+	}
+	for _, each := range projects {
+		if each.person == nil {
+			t.Fatalf("project %s names no default assignee, and no issue of the seed names an assignee to give it", each.project)
+		}
+		from := "its issues' most frequent assignee"
+		if !each.own {
+			from = "no issue of it is assigned, so the seed's most frequent assignee"
+		}
+		t.Logf("seed proof: project %s takes the default assignee %s (%s)", each.project, *each.person, from)
+		if _, err := database.Pool.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, each.project, *each.person); err != nil {
+			t.Fatalf("name the default assignee of %s: %v", each.project, err)
+		}
+	}
 }
 
 // openSeedStore opens a store on the copy, closed when the test ends.
-func openSeedStore(t *testing.T, url string) *store.Store {
+func openSeedStore(t *testing.T, databaseURL string) *store.Store {
 	t.Helper()
-	database, err := store.Open(context.Background(), url)
+	database, err := store.Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open the copy: %v", err)
 	}

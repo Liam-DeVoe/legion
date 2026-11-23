@@ -847,10 +847,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		// The backfill's pass over the issues, documents, asks and messages the build before the
 		// store wrote: each one's node and its visibility, state and project, as its create states
-		// them, a document's part_of the issue that owns it, an issue's child_of its parent,
-		// CORE-2's of CORE-1, and the mentions of each refs row a document it names holds
-		// (nameArtifactNodes), which the term document_ref counts. The seeded history's are all in
-		// project CORE, so none states parties.
+		// them, a document's part_of the issue that owns it and its row's id and created_at, an
+		// issue's child_of its parent, CORE-2's of CORE-1, and the mentions of each refs row a
+		// document it names holds (nameArtifactNodes), which the term document_ref counts. The
+		// seeded history's are all in project CORE, so none states parties.
 		Name: objectBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeObjectBatch"},
 		Database: database, Drive: passes(backfillObjectNodes),
 		Counts: map[StoredKind][]string{
@@ -860,6 +860,8 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeArtifactID}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeCreatedAt}:  {graphstore.KindArtifact},
 			{graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
 			{graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
@@ -1269,7 +1271,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// The attempts are the mention's and the message's.
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.
-		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 2},
+		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 5, writes: 2},
 		// CORE-1 and CORE-2 are each taken to state a filed_from and a duplicate_of and to be born
 		// converted, each with its room and its decisions query; CORE-1's spec is a query node too.
 		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 21, writes: 2}, "query_node": {tuples: 4, writes: 3},

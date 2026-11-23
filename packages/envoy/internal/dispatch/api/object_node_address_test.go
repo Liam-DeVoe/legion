@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -306,6 +307,90 @@ func TestARemovalLeavesTheGoneNodeOfAnEarlierBuildsDocumentGone(t *testing.T) {
 		}
 	}
 	requireProjectsComplete(t, database)
+}
+
+// A document's node holds, as values, the id and the created_at of the row it projects
+// (graphstore.ArtifactRow), each a value tuple as every value of a node is, and its row's attributes
+// their projection. A document is made, removed, and another made at its address: the node then
+// holds the second row's values, and a read of it as of a time before the second document's create
+// (graphstore.AsOfOut), or of the log as of the sequence of the removal's gone statement, answers
+// the first row's id and created_at, which the second write's overlay of the attributes took off
+// the row and no write took out of the log.
+//
+// Its control is graphstore.AttributeFacts leaving the two values out again, so they ride on the
+// node's attributes alone: the reads as of that time and that sequence then answer neither.
+func TestADocumentsNodeAnswersTheRowItProjectedAsOfAnEarlierTime(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "ASOF", "A document made again at its address", "The spec.\n")
+	first := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	removedDocument(t, handler, first.ID)
+	second := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	if second.RefKey != first.RefKey || second.ID == first.ID {
+		t.Fatalf("the second document is %s at %q, want another row at the removed one's address %q, so this test proves nothing",
+			second.ID, second.RefKey, first.RefKey)
+	}
+	values := []string{graphstore.AttributeArtifactID, graphstore.AttributeCreatedAt}
+	want := func(row model.Artifact) map[string]string {
+		return map[string]string{
+			graphstore.AttributeArtifactID: row.ID,
+			graphstore.AttributeCreatedAt:  graphstore.ArtifactCreatedAtValue(row.CreatedAt),
+		}
+	}
+	current := map[string]string{}
+	for _, attribute := range values {
+		value, held, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindArtifact, first.RefKey, attribute)
+		if err != nil {
+			t.Fatalf("read the node's current %s: %v", attribute, err)
+		}
+		if held {
+			current[attribute] = value
+		}
+	}
+	if !maps.Equal(current, want(second)) {
+		t.Errorf("the node's current values are %v, want the second row's %v", current, want(second))
+	}
+	before := second.CreatedAt.Add(-time.Microsecond)
+	asOf, err := graphstore.AsOfOut(ctx, database.Pool, graphstore.KindArtifact, first.RefKey, before, values)
+	if err != nil {
+		t.Fatalf("read the node as of %s: %v", before, err)
+	}
+	answered := map[string]string{}
+	for _, tuple := range asOf {
+		answered[tuple.Kind] = tuple.ToID
+	}
+	if !maps.Equal(answered, want(first)) {
+		t.Errorf("as of %s, before the second document's create, the node answers %v, want the first row's %v", before, answered, want(first))
+	}
+	var gone int64
+	if err := database.Pool.QueryRow(ctx, `
+		select max(seq) from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_id = $4
+	`, graphstore.KindArtifact, first.RefKey, graphstore.AttributeState, graphstore.StateGone).Scan(&gone); err != nil {
+		t.Fatalf("read the sequence of the removal's gone statement: %v", err)
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select distinct on (kind) kind, to_id, asserted from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = any($3) and to_kind = $4 and seq <= $5
+		order by kind, seq desc
+	`, graphstore.KindArtifact, first.RefKey, values, graphstore.KindValue, gone)
+	if err != nil {
+		t.Fatalf("read the node's values as of sequence %d: %v", gone, err)
+	}
+	logged := map[string]string{}
+	var kind, value string
+	var asserted bool
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &value, &asserted}, func() error {
+		if asserted {
+			logged[kind] = value
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the node's values as of sequence %d: %v", gone, err)
+	}
+	if !maps.Equal(logged, want(first)) {
+		t.Errorf("as of sequence %d, the removal's gone statement, the log holds the values %v, want the first row's %v", gone, logged, want(first))
+	}
 }
 
 // removeAsAnEarlierBuild removes the untouched document as a build before this one does

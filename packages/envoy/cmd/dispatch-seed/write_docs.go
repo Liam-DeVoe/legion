@@ -62,7 +62,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// issue owns it, and the row names it, as the server's upload writes them (api's
 	// storeArtifact); the seed records no event of a document, so what the node write states
 	// carries the sentinel. On this release's database the node holds the row's id and
-	// created_at (graphstore.ArtifactRow), as the upload's does; the release before's names none.
+	// created_at and states them as its values (graphstore.ArtifactRow, AttributeFacts), as the
+	// upload's does; the release before's names none.
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
 	var row graphstore.ArtifactRow
 	if marked {
@@ -73,7 +74,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	if marked && issueKey != nil {
 		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))
 	}
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, graphstore.AttributeFacts(facts, node)); err != nil {
 		return fmt.Errorf("artifact node: %w", err)
 	}
 	columns := "id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq"

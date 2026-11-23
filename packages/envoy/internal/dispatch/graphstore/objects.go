@@ -64,26 +64,31 @@ func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time
 }
 
 // ArtifactRow is what a document's node holds of the artifacts row that projects it: the row's id
-// and its created_at, each a value of the node in its attributes, under the names a lens records a
-// row by (AttributeArtifactID) and a version its time by (AttributeCreatedAt). graph_edges names a
-// document by that uuid, where the store addresses its node by its ref_key, and dates its
-// attached_to by that created_at, so once the boot step has deleted dispatch://INFRA-1253's arms
-// the view reads both off the node rather than off the row (store.GraphEdgesViewRetired). A
-// document removed and made again under its name is a new row at the same address, so every write
-// that names a row states both again, a write that restates the node included (Node.Restates,
-// writtenAttributes), and the node holds the newest row's; a removal states the node gone and
-// keeps them. The zero ArtifactRow names no row.
+// and its created_at, each a value of the node, under the names a lens records a row by
+// (AttributeArtifactID) and a version its time by (AttributeCreatedAt). As every value of a node,
+// each is a value tuple out of the node, and the node row's attributes are their projection (R21 of
+// the root, R1 of dispatch://INFRA-1149), so a read of the node as of a time answers the row the
+// node projected then (AsOfOut). graph_edges names a document by that uuid, where the store
+// addresses its node by its ref_key, and dates its attached_to by that created_at, so once the boot
+// step has deleted dispatch://INFRA-1253's arms the view reads both off the node rather than off the
+// row (store.GraphEdgesViewRetired). A document removed and made again under its name is a new row
+// at the same address, so every write that names a row states both again where they change, a
+// write that restates the node included (Node.Restates, writtenAttributes), and the node holds the
+// newest row's while its tuples keep each earlier one; a removal states the node gone and keeps
+// them. The zero ArtifactRow names no row.
 type ArtifactRow struct {
 	ID        string
 	CreatedAt time.Time
 }
 
 // WithArtifactRow is node, a document's (ArtifactNode, QueryNode), naming row, the artifacts row
-// that projects it: the row's id and created_at laid over the node's attributes. Every writer of
-// a document's node that knows its row writes it so - the upload, the issue's create of its spec,
-// its tree and its decisions query, the seed, a removal of a document whose node was never
-// written, and the backfill's object pass and its pass over the nodes that name no row
-// (graphcensus' artifact_row kind holds each node to its row).
+// that projects it: the row's id and created_at laid over the node's attributes. Every writer of a
+// document's node that knows its row writes it so and states the two values with it, each where it
+// changes: the upload, the issue's create of its spec, its tree and its decisions query, the seed,
+// and a removal of a document whose node was never written, each of a new row, whose values are
+// new, through AttributeFacts; and the backfill's object pass and its pass over the nodes that name
+// another row or none, through ArtifactRowFacts, against the values the node's tuples state
+// (graphcensus' artifact_row kind holds each node, its attributes and its tuples, to its row).
 func WithArtifactRow(node Node, row ArtifactRow) Node {
 	if row.ID == "" {
 		return node
@@ -102,6 +107,22 @@ func WithArtifactRow(node Node, row ArtifactRow) Node {
 // UTC at the microsecond Postgres keeps, which `::timestamptz` reads back as the row's own value.
 func ArtifactCreatedAtValue(at time.Time) string {
 	return at.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
+}
+
+// ArtifactRowFacts appends to tuples the value tuple of each of the two values node names of its
+// row (WithArtifactRow) that the node's newest tuples do not state already: statedID and
+// statedCreatedAt are the values those tuples state, empty for none. Each is stated as
+// AttributeFacts states it, with the node's time, writer and cause. It is for a writer that writes
+// the node of a row the store may hold the values of already - the backfill - so a value is
+// appended only where it changes, as a lens's artifact_id is (lensArtifactIDsStatement).
+func ArtifactRowFacts(tuples []Tuple, node Node, statedID, statedCreatedAt string) []Tuple {
+	stated := map[string]string{AttributeArtifactID: statedID, AttributeCreatedAt: statedCreatedAt}
+	for _, fact := range AttributeFacts(nil, node) {
+		if held, named := stated[fact.Kind]; named && fact.ToID != held {
+			tuples = append(tuples, fact)
+		}
+	}
+	return tuples
 }
 
 // ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
@@ -329,16 +350,8 @@ func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Acto
 // column is the projection of these tuples, so a writer that gives a node attributes states them
 // with it. Each carries the node's own time, writer and cause. A value that has no JSON states no
 // tuple here, and the write of the node carrying it refuses it (nodeParams), so neither lands.
-//
-// The one exception is what a document's node holds of the row that projects it (ArtifactRow): its
-// id and created_at are that row's own columns copied onto the node, which the census holds to the
-// row (graphcensus' artifact_row kind) and which no read takes out of the log, so they ride on the
-// node's attributes alone and state no tuple.
 func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 	for _, name := range slices.Sorted(maps.Keys(node.Attributes)) {
-		if node.Kind == KindArtifact && (name == AttributeArtifactID || name == AttributeCreatedAt) {
-			continue
-		}
 		value, isText := node.Attributes[name].(string)
 		if !isText {
 			encoded, err := json.Marshal(node.Attributes[name])

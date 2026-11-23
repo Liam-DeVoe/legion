@@ -34,6 +34,7 @@ import (
 // and that no drive before them runs (internalDrives).
 const (
 	versionBatchDrive          = "graphcensus/census_versions.go#writeVersionBatch"
+	artifactRowBatchDrive      = "graphcensus/census_versions.go#writeArtifactRowBatch"
 	missingVersionsDrive       = "graphcensus/census_versions.go#Queue, a block-index drain's"
 	issueLinkBatchDrive        = "graphcensus/census_issues.go#writeIssueLinkBatch"
 	referenceBatchDrive        = "graphcensus/census_refs.go#writeReferenceBatch"
@@ -203,6 +204,19 @@ func passDrives(t *testing.T) []StoreDrive {
 		},
 		Drive:  drivenPass(database, backfillVersions),
 		Counts: versionKindsCounted(),
+	}, {
+		// The pass over the documents whose node names another row or none (backfillArtifactRows),
+		// over a document of DRIVE-1 whose node a build before graphstore.ArtifactRow wrote, naming
+		// no row: its row's id and created_at values, which the term artifact counts. It runs over
+		// every such document the drives above stood up, each counted the same way.
+		Name: artifactRowBatchDrive, Database: database,
+		Sites: []string{"graphcensus/census_versions.go#writeArtifactRowBatch"},
+		Ready: func(t *testing.T) { drivenDocument(t, database, "unnamed-md") },
+		Drive: drivenPass(database, backfillArtifactRows),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindArtifact, graphstore.AttributeArtifactID}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeCreatedAt}:  {graphstore.KindArtifact},
+		},
 	}, {
 		// A block-index pass's drain of a document's versions that hold no node, as docs'
 		// indexRenderedVersion drains it: under the document's owner lock, the read of the

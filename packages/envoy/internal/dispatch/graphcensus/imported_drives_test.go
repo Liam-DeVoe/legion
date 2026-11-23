@@ -957,13 +957,19 @@ var (
 
 // objectNodeCounted is what a create of an issue, a document, an ask or a message of a project
 // appends of the object's node: its visibility, its state and its project, which the term of its
-// kind counts.
+// kind counts, and for a document its row's id and created_at values (graphstore.ArtifactRow),
+// which the term artifact counts too.
 func objectNodeCounted(kind string) map[graphcensus.StoredKind][]string {
-	return map[graphcensus.StoredKind][]string{
+	counted := map[graphcensus.StoredKind][]string{
 		{kind, graphstore.AttributeVisibility}: {kind},
 		{kind, graphstore.AttributeState}:      {kind},
 		{kind, graphstore.AttributeProject}:    {kind},
 	}
+	if kind == graphstore.KindArtifact {
+		counted[graphcensus.StoredKind{From: kind, Kind: graphstore.AttributeArtifactID}] = []string{kind}
+		counted[graphcensus.StoredKind{From: kind, Kind: graphstore.AttributeCreatedAt}] = []string{kind}
+	}
+	return counted
 }
 
 // versionNodeCounted is what a version's node appends - its visibility, its state, its document's

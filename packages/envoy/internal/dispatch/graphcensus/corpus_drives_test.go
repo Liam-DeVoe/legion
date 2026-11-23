@@ -88,6 +88,7 @@ func corpusSeedCounted() map[graphcensus.StoredKind][]string {
 	count(graphstore.KindIssue, []string{graphstore.KindIssue}, base...)
 	count(graphstore.KindIssue, []string{"issue_relation"}, graphstore.TupleChildOf, graphstore.TupleNeeds)
 	count(graphstore.KindArtifact, []string{graphstore.KindArtifact, "issue_room"}, base...)
+	count(graphstore.KindArtifact, []string{graphstore.KindArtifact}, graphstore.AttributeArtifactID, graphstore.AttributeCreatedAt)
 	count(graphstore.KindArtifact, []string{"document_part_of", "issue_room"}, graphstore.TuplePartOf)
 	count(graphstore.KindArtifact, []string{"document_ref"}, graphstore.TupleMentions)
 	count(graphstore.KindArtifact, []string{"document_move"}, graphstore.TupleMovedTo)

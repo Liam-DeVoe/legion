@@ -642,8 +642,9 @@ func derefText(value *string) string {
 // names is read under it (heldRowMarks).
 //
 // Beside each node it states what its kind's writer states: a document's part_of the issue that
-// owns it, with the node's time, its writer and its cause (graphstore.ArtifactPartOf), among the
-// run's own tuples, and, once the nodes are written, an image's or a file's newest bytes
+// owns it, with the node's time, its writer and its cause (graphstore.ArtifactPartOf), and its
+// row's id and created_at where its tuples state other values or none (graphstore.ArtifactRowFacts),
+// among the run's own tuples, and, once the nodes are written, an image's or a file's newest bytes
 // (nameArtifactNodes); an issue's child_of to the parent its row names, as a claim
 // (issueParentClaims), so graph_edges answers that parent from the store once the row names its
 // node, and a parent the release before moved in place on a marked row replaces the one the node
@@ -780,6 +781,12 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				}
 				if fact, ok := partOf[node.ID]; ok {
 					stated = append(stated, fact)
+				}
+				// A document's node names its row (graphstore.WithArtifactRow): its id and
+				// created_at are stated where the node's tuples state other values or none.
+				if node.Kind == graphstore.KindArtifact {
+					stored := held[node.ID]
+					stated = graphstore.ArtifactRowFacts(stated, node, stored.statedID, stored.statedCreatedAt)
 				}
 			}
 			// PlanUncaused sets each node's SourceEvent to the sentinel where it stands, so the
@@ -1019,10 +1026,13 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 
 // storedNode is what the store holds of one node of a batch: whether it is present, at any state
 // but gone, whether its live statement is its row's own, whether it names a project or parties,
-// whether it is the node of a retired document, and when its newest statement is dated.
+// whether it is the node of a retired document, when its newest statement is dated, and, of a
+// document's node, the row's id and created_at its newest value tuples state (graphstore.ArtifactRow),
+// empty for none, which the object pass states again only where they change.
 type storedNode struct {
 	present, own, scoped, retired bool
 	newest                        time.Time
+	statedID, statedCreatedAt     string
 }
 
 // heldNodes answers, of the batch's ids, each node the store holds (storedNode). A node is its
@@ -1040,7 +1050,9 @@ func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[s
 		       `+scopedNode+`,
 		       coalesce((select `+retiredDocument("a")+`
 		                 from artifacts a where n.kind = '`+graphstore.KindArtifact+`' and a.ref_key = n.id), false),
-		       (select max(t.at) from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id)
+		       (select max(t.at) from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id),
+		       coalesce(case when n.kind = '`+graphstore.KindArtifact+`' then `+currentValue(graphstore.AttributeArtifactID)+` end, ''),
+		       coalesce(case when n.kind = '`+graphstore.KindArtifact+`' then `+currentValue(graphstore.AttributeCreatedAt)+` end, '')
 		from graph_nodes n where n.kind = $1 and n.id = any($2::text[])
 	`, kind, ids)
 	if err != nil {
@@ -1050,7 +1062,8 @@ func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[s
 	var id string
 	var stored storedNode
 	var newest *time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.present, &stored.own, &stored.scoped, &stored.retired, &newest}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.present, &stored.own, &stored.scoped, &stored.retired, &newest,
+		&stored.statedID, &stored.statedCreatedAt}, func() error {
 		stored.newest = time.Time{}
 		if newest != nil {
 			stored.newest = *newest

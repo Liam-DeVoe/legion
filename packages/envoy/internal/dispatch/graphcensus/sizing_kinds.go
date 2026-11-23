@@ -424,9 +424,10 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from artifacts where created_at > ` + sizingWindow + ` and ` + roleDocument("artifacts") + `)
 			+ (select count(*) from issues where created_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 3,
-		Driver: "artifacts.created_at: the artifact's node and its visibility, state and project or parties",
-		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
+		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 5,
+		Driver: "artifacts.created_at: the artifact's node, its visibility, state and project or parties, and its row's" +
+			" artifact_id and created_at values (graphstore.ArtifactRow)",
+		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
 		Driver: "artifact.removed and " + model.DocumentRetiredEventType + " events in the window: the removed or retired" +

@@ -290,6 +290,13 @@ var storeWriteCallSites = map[string]string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch": "graphcensus#TestTheVersionBatchTakesTheStoreLockOrder",
+	// The backfill's pass over the documents whose node names another row than the artifacts row
+	// at its address, or none (dispatch://INFRA-1098's T7b): the owner rows of the batch's
+	// documents first, then the rows read again under them, then one graphstore.Write per batch of
+	// the nodes and the values their tuples do not state already, after the rows its path already
+	// holds, so the writer's own order is the one to prove (graphstore's
+	// TestEveryStoreWriteTakesOneLockOrder).
+	"graphcensus/census_versions.go#writeArtifactRowBatch": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The same nodes written by the block-index pass that drains a mark, or that reads the store's
 	// statement of its document stale, for the versions of the documents it covers that hold none
 	// (docs' indexRenderedVersion: the reconciliation's drain on either mark, and a request's

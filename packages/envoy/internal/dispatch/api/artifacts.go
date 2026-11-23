@@ -612,12 +612,14 @@ func (s *server) queueNewArtifact(
 		if kind != "doc" {
 			facts = graphstore.ArtifactBytes(facts, artifact.RefKey, input.contentType, int64(len(input.content)), sha, actor, at)
 		}
+		// The node names its new row, whose id and created_at are new values of it, so they are
+		// stated with its other values (graphstore.ArtifactRow, AttributeFacts).
 		row := graphstore.ArtifactRow{ID: artifact.ID, CreatedAt: artifact.CreatedAt}
 		node := graphstore.Created(graphstore.WithArtifactRow(graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, at), row))
 		if query != "" {
 			node = graphstore.Created(graphstore.WithArtifactRow(graphstore.QueryNode(artifact.RefKey, deref(project), query, actor, at), row))
-			facts = graphstore.AttributeFacts(facts, node)
 		}
+		facts = graphstore.AttributeFacts(facts, node)
 		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
 		if err != nil {
 			return model.Artifact{}, graphstore.Uncaused{}, err
@@ -3187,13 +3189,15 @@ func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncause
 
 // issueTreeWrite is the node write of the tree artifact id of the issue key in project under slug,
 // planned (graphstore.PlanUncaused) for createIssueTree to queue: the tree's node
-// (graphstore.ArtifactNode) naming its row, which createIssueTree dates at at, made by actor at at
-// and marked changed, with its part_of the issue (graphstore.ArtifactPartOf).
+// (graphstore.ArtifactNode) naming its row, which createIssueTree dates at at, with that row's id
+// and created_at as its values (graphstore.AttributeFacts), made by actor at at and marked changed,
+// with its part_of the issue (graphstore.ArtifactPartOf).
 func issueTreeWrite(id, slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
 	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
 	node := graphstore.WithArtifactRow(graphstore.ArtifactNode(refKey, project, "", actor, at), graphstore.ArtifactRow{ID: id, CreatedAt: at})
 	node.Changed = true
-	return graphstore.PlanUncaused([]graphstore.Node{node}, []graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
+	return graphstore.PlanUncaused([]graphstore.Node{node},
+		graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)}, node))
 }
 
 // quiesceDocuments closes every live document on every process, flushing each through the store,
