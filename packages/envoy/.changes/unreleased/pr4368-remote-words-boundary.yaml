@@ -20,7 +20,15 @@ body: |-
   token, a subject token or a proof among it, no longer prints it, in the broker's trade, the
   helper's broker calls and every client this change hands x/oauth2, go-oidc or Google's
   impersonation (`redact.Tokens`, `redact.Carried`). A credential shorter than 8 characters is
-  redacted only where it stands as a token of its own. `redact.RefusalClient` hands every answer on
+  redacted only where it stands as a token of its own. The enrollment's `projects` is public on
+  `POST /v1/enrollments` too, and a writer's `kind` on Dispatch's `DELETE
+  /api/v1/issues/{key}/claim`, `POST /api/v1/issues/{key}/messages`, `POST
+  /api/v1/issues/{key}/artifacts`, `PUT /api/v1/projects/{key}/gated-steps`, `PUT
+  /api/v1/issues/{key}/design-gates`, `PUT /api/v1/issues/{key}/role-holders`, `PUT
+  /api/v1/issues/{key}/steps/{id}`, `PUT /api/v1/issues/{key}/steps/{id}/rating` and `PUT
+  /api/v1/issues/{key}/plans/{id}`, with `role` on the role-holder, step and rating writes, so a
+  Dispatch refusal of the Legion daemon's own writes prints the word `session` and the role and
+  step kind it quotes. `redact.RefusalClient` hands every answer on
   as it came, so a library parses what was answered and the code a client acts on is the answer's
   own; it records each refused request's credentials, and the boundary reads with them only an
   error that quotes that refusal's body. Every field

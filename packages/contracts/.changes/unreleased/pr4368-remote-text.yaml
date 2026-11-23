@@ -28,7 +28,15 @@ body: |-
   Go's `redact.OAuth2`. `requestCredentials` is the list of credentials a request carries as
   `refusalFetch` records them. `RemoteText.knownReading` is the rule's reading of a field where a
   caller's test accepts it as one of a closed set of shapes, with the box's credentials redacted,
-  and nothing otherwise.
+  and nothing otherwise. `PUBLIC_REQUEST_NAMES` declares `projects` public on `POST
+  /v1/enrollments` too, `kind` on Dispatch's claim release, message, document upload, gated-steps,
+  design-gates, role-holder, step, rating and plan writes (`DELETE /api/v1/issues/{key}/claim`,
+  `POST /api/v1/issues/{key}/messages`, `POST /api/v1/issues/{key}/artifacts`, `PUT
+  /api/v1/projects/{key}/gated-steps`, `PUT /api/v1/issues/{key}/design-gates`, `PUT
+  /api/v1/issues/{key}/role-holders`, `PUT /api/v1/issues/{key}/steps/{id}`, `PUT
+  /api/v1/issues/{key}/steps/{id}/rating`, `PUT /api/v1/issues/{key}/plans/{id}`), and `role` on
+  the role-holder, step and rating writes, the routes where every value sent under those names is
+  the sender's own.
 time: 2026-11-18T05:15:23Z
 custom:
     Issue: pr4368

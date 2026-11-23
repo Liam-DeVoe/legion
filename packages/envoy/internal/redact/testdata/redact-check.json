@@ -4475,7 +4475,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestAnEnrollmentsNamesArePublicOnlyOnPostEnrollments",
-      "production": "redact.requestTokens with the public-name table's routes: an enrollment's kind, runtime_id, session_id, operator and thumbprint print on POST /v1/enrollments and are redacted below it, on a GET and on the broker's other routes"
+      "production": "redact.requestTokens with the public-name table's routes: an enrollment's kind, runtime_id, session_id, operator, thumbprint and projects print on POST /v1/enrollments and are redacted below it, on a GET and on the broker's other routes"
     },
     {
       "id": "redact-routes-broker-requests",
@@ -4511,6 +4511,27 @@
       "package": "./internal/redact",
       "test": "TestAMetadataFlavorIsPublicOnlyOnAMetadataRead",
       "production": "redact.requestTokens with the public-name table's routes: Metadata-Flavor prints on a GET of /computeMetadata/v1 or below it and is redacted on a PUT, the metadata server's root and another server's path"
+    },
+    {
+      "id": "redact-routes-dispatch-writes",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestADaemonsDispatchWriteNamesArePublicOnlyOnItsWriteRoutes",
+      "production": "redact.requestTokens with the public-name table's routes: kind prints on Dispatch's claim release, message, document upload, gated-steps, design-gates, role-holder, step, rating and plan writes and role on the role-holder, step and rating writes; kind on the issue's PATCH, the claim route's POST, below a route, on a step list with no record id and on a comment, role on the claim's release, and a role holder's or a step's session are redacted"
+    },
+    {
+      "id": "dispatch-own-session-prints",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestTheDaemonsSessionPrintsInDispatchsRefusalOfItsOwnWrites",
+      "production": "daemon dispatch HTTPClient (answer, dispatchError) with the public-name table's routes: Dispatch's refusal of each of the daemon's own writes but the issue's PATCH prints the word session its actor.kind carries, and the same actor's word stays redacted on the PATCH, the claim route's POST, a comment and below the role holders"
+    },
+    {
+      "id": "dispatch-own-roles-print",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestTheRolesAndStepKindsPrintInDispatchsRefusalOfRoleHolderAndStepWrites",
+      "production": "daemon dispatch HTTPClient.PutRoleHolders, PutStep and PutStepRating with the public-name table's routes: Dispatch's refusal prints the role and the step kind it quotes, and the holder's or step's session stays redacted; below the role holders, on a step list with no record id and on the claim's release the role and kind stay redacted"
     },
     {
       "id": "library-error-needs-its-record",
@@ -9377,7 +9398,7 @@
       "requirement": "r3-each-site",
       "file": "packages/contracts/src/public-request-routes.test.ts",
       "test": "an enrollment's names are public only on POST /v1/enrollments",
-      "production": "requestCredentials with the public-name table's routes: an enrollment's names are no credential on POST /v1/enrollments and are one below it, on a GET and on the broker's other routes"
+      "production": "requestCredentials with the public-name table's routes: an enrollment's names, its projects among them, are no credential on POST /v1/enrollments and are one below it, on a GET and on the broker's other routes"
     },
     {
       "id": "public-routes-ts-broker-requests",
@@ -9413,6 +9434,13 @@
       "file": "packages/contracts/src/public-request-routes.test.ts",
       "test": "a Metadata-Flavor is public only on a metadata read",
       "production": "requestCredentials with the public-name table's routes: Metadata-Flavor is no credential on a GET of /computeMetadata/v1 or below it and is one on a PUT, the metadata server's root and another server's path"
+    },
+    {
+      "id": "public-routes-ts-dispatch-writes",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a daemon's Dispatch write names are public only on its write routes",
+      "production": "requestCredentials with the public-name table's routes: kind on Dispatch's claim release, message, document upload, gated-steps, design-gates, role-holder, step, rating and plan writes and role on the role-holder, step and rating writes are no credential; kind on the issue's PATCH, the claim route's POST, below a route, on a step list with no record id and on a comment, role on the claim's release, and a role holder's or a step's session are"
     },
     {
       "id": "ts-record-interleaved",

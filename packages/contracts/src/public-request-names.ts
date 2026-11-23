@@ -35,6 +35,29 @@ const BROKER_TOKEN = ["POST /v1/oauth/token"];
 /** The broker's enrollment route. */
 const ENROLLMENT = ["POST /v1/enrollments"];
 
+/** The Dispatch writes whose every `kind` is the writer's own: the actor's, `session`, and a step
+ *  record's, one of `step`, `retro` and `merge`. Not `PATCH /api/v1/issues/{key}`, whose
+ *  `external_links[].kind` the dispatch command sends back as Dispatch answered it
+ *  (packages/envoy-client/src/dispatch-commands/issues.ts:318,326). */
+const DISPATCH_OWN_KIND = [
+  "DELETE /api/v1/issues/{key}/claim",
+  "POST /api/v1/issues/{key}/messages",
+  "POST /api/v1/issues/{key}/artifacts",
+  "PUT /api/v1/projects/{key}/gated-steps",
+  "PUT /api/v1/issues/{key}/design-gates",
+  "PUT /api/v1/issues/{key}/role-holders",
+  "PUT /api/v1/issues/{key}/steps/{id}",
+  "PUT /api/v1/issues/{key}/steps/{id}/rating",
+  "PUT /api/v1/issues/{key}/plans/{id}",
+];
+
+/** The Dispatch writes that name a Legion role: an issue's role holders and a step record. */
+const DISPATCH_ROLE = [
+  "PUT /api/v1/issues/{key}/role-holders",
+  "PUT /api/v1/issues/{key}/steps/{id}",
+  "PUT /api/v1/issues/{key}/steps/{id}/rating",
+];
+
 /** The routes of the broker that narrow a GitHub App token: a request, and a grant's release. */
 const NARROWING = ["POST /v1/requests", "POST /v1/grants/{id}/values"];
 
@@ -118,8 +141,8 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "projects",
     source:
-      "POST /v1/oauth/token (the broker's token exchange, cipherclient/testdata/wire.json endpoint): form.projects",
-    routes: BROKER_TOKEN,
+      "POST /v1/oauth/token (the broker's token exchange, cipherclient/testdata/wire.json endpoint): form.projects; POST /v1/enrollments (the broker contract's enrollment projects): project keys the sender checked against the project-key rule before it sent them (packages/envoy/cmd/cipher/pod.go:141, the keys packages/envoy/cmd/cipher/register.go:216-220 parsed; packages/envoy/internal/cipher/helper/broker.go:1594, the keys packages/envoy/internal/cipher/helper/server.go:621-629 held)",
+    routes: [...BROKER_TOKEN, ...ENROLLMENT],
   },
   {
     place: "field",
@@ -131,8 +154,9 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   {
     place: "field",
     name: "kind",
-    source: "POST /v1/enrollments: the broker contract's enrollment kind",
-    routes: ENROLLMENT,
+    source:
+      "POST /v1/enrollments: the broker contract's enrollment kind; DELETE /api/v1/issues/{key}/claim, POST /api/v1/issues/{key}/messages, POST /api/v1/issues/{key}/artifacts, PUT /api/v1/projects/{key}/gated-steps, PUT /api/v1/issues/{key}/design-gates, PUT /api/v1/issues/{key}/role-holders, PUT /api/v1/issues/{key}/steps/{id}, PUT /api/v1/issues/{key}/steps/{id}/rating and PUT /api/v1/issues/{key}/plans/{id} (Dispatch's issue writes): the writer's actor.kind, the constant session (the Legion daemon's packages/daemon/internal/dispatch/client.go:761, sent at :156, :284, :322, :170, :196, :214, :228, :243 and :261; the dispatch command's packages/envoy-client/src/dispatch-commands/command-context.ts:17), and a step record's kind, step, retro or merge (packages/daemon/internal/workflow/steps.go:412, sent at client.go:228 and :243)",
+    routes: [...ENROLLMENT, ...DISPATCH_OWN_KIND],
   },
   {
     place: "field",
@@ -253,8 +277,8 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
     place: "field",
     name: "role",
     source:
-      "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for",
-    routes: ["POST /legion/v1/operator/claims/*"],
+      "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for; PUT /api/v1/issues/{key}/role-holders, PUT /api/v1/issues/{key}/steps/{id} and PUT /api/v1/issues/{key}/steps/{id}/rating (Dispatch's role-holder and step writes): a role of the Legion daemon's own role table, a claim's role (packages/daemon/internal/daemon/outbox.go:1508, sent at packages/daemon/internal/dispatch/client.go:214) or a step's (packages/daemon/internal/workflow/steps.go:47,49,53, sent at client.go:228 and :243)",
+    routes: ["POST /legion/v1/operator/claims/*", ...DISPATCH_ROLE],
   },
   {
     place: "field",

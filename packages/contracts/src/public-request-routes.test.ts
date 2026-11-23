@@ -47,6 +47,7 @@ const broker = "https://broker.example";
 const daemon = "http://127.0.0.1:7600";
 const iam = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/";
 const metadata = "http://169.254.169.254";
+const dispatch = "https://dispatch.example";
 
 // Go's TestAListenerMessagesNamesArePublicOnlyOnTheSendAndPublishRoutes.
 test("a listener message's names are public only on the send and publish routes", () => {
@@ -90,6 +91,7 @@ test("a listener read's names are public only on its registry reads", () => {
     ["POST", `${listener}/v1/sessions`, "query", "include", "registry-states", false],
     ["GET", `${listener}/v1/legion/agents`, "query", "include", "registry-states", false],
     ["GET", `${listener}/v1/sessions`, "query", "issue", "issue-key-read", false],
+    ["POST", `${daemon}/legion/v1/operator/claims`, "json", "issue", "issue-key-read", false],
   ]);
 });
 
@@ -102,6 +104,7 @@ test("a role is public only on the daemon's operator claim routes", () => {
     ["GET", claims, "query", "role", "worker-role-name", false],
     ["POST", `${daemon}/legion/v1/claims/fresh-session`, "json", "role", "worker-role-name", false],
     ["POST", `${daemon}/legion/v1/operator/claimsets`, "json", "role", "worker-role-name", false],
+    ["POST", `${listener}/v1/messages/send`, "json", "role", "worker-role-name", false],
   ]);
 });
 
@@ -114,10 +117,21 @@ test("an enrollment's names are public only on POST /v1/enrollments", () => {
     ["POST", enrollments, "json", "session_id", "session-enrolled", true],
     ["POST", enrollments, "json", "operator", "operator-sign-in", true],
     ["POST", enrollments, "json", "thumbprint", "thumbprint-of-key", true],
+    ["POST", enrollments, "json-list", "projects", "PROJECTKEY", true],
     ["POST", `${enrollments}/enrollment-id`, "json", "session_id", "session-enrolled", false],
     ["GET", enrollments, "query", "kind", "enrollment-kind", false],
     ["POST", `${broker}/v1/requests`, "json", "operator", "operator-sign-in", false],
     ["POST", `${broker}/v1/oauth/token`, "form", "thumbprint", "thumbprint-of-key", false],
+    ["POST", `${enrollments}/carried`, "json-list", "projects", "PROJECTKEY", false],
+    ["GET", enrollments, "query", "projects", "PROJECTKEY", false],
+    [
+      "POST",
+      `${broker}/v1/oauth/exchange/pod-sessions`,
+      "json",
+      "thumbprint",
+      "thumbprint-of-key",
+      false,
+    ],
   ]);
 });
 
@@ -139,6 +153,7 @@ test("the broker's request and release names are public only on their routes", (
     ["POST", requests, "json", "command", "release-command-words", false],
     ["POST", `${broker}/v1/grants/grant-id/revoke`, "json", "owner", "owner-narrowed", false],
     ["GET", values, "query", "repositories", "repository-narrowed", false],
+    ["POST", "https://api.github.com/graphql", "json", "owner", "owner-narrowed", false],
   ]);
 });
 
@@ -160,6 +175,14 @@ test("a token exchange's names are public only on its routes", () => {
     ["GET", "https://idp.example/authorize", "query", "scope", "openid-profile", true],
     ["POST", `${broker}/token`, "form", "session", "worker-session", false],
     ["GET", token, "query", "session", "worker-session", false],
+    [
+      "POST",
+      `${broker}/v1/oauth/exchange/pod-sessions`,
+      "json",
+      "session",
+      "worker-session",
+      false,
+    ],
     ["POST", `${broker}/v1/oauth/revoke`, "form", "launcher_credential", "launcher-false", false],
     ["GET", identity, "query", "audience", "audience-of-token", false],
     ["GET", token, "query", "grant_type", "token-exchange-grant", false],
@@ -227,5 +250,34 @@ test("a Metadata-Flavor is public only on a metadata read", () => {
     ],
     ["GET", `${metadata}/`, "header", "Metadata-Flavor", "flavor-of-google", false],
     ["GET", `${broker}/v1/token`, "header", "Metadata-Flavor", "flavor-of-google", false],
+  ]);
+});
+
+// Go's TestADaemonsDispatchWriteNamesArePublicOnlyOnItsWriteRoutes.
+test("a daemon's Dispatch write names are public only on its write routes", () => {
+  const issue = `${dispatch}/api/v1/issues/issue-key-path`;
+  const project = `${dispatch}/api/v1/projects/project-key-path`;
+  const step = `${issue}/steps/step-record-id`;
+  requireRoutes([
+    ["DELETE", `${issue}/claim`, "json", "kind", "writer-kind-word", true],
+    ["POST", `${issue}/messages`, "json", "kind", "writer-kind-word", true],
+    ["POST", `${issue}/artifacts`, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${project}/gated-steps`, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${issue}/design-gates`, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${issue}/role-holders`, "json", "kind", "writer-kind-word", true],
+    ["PUT", step, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${step}/rating`, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${issue}/plans/plan-record-id`, "json", "kind", "writer-kind-word", true],
+    ["PUT", `${issue}/role-holders`, "json", "role", "worker-role-name", true],
+    ["PUT", step, "json", "role", "worker-role-name", true],
+    ["PUT", `${step}/rating`, "json", "role", "worker-role-name", true],
+    ["PATCH", issue, "json", "kind", "writer-kind-word", false],
+    ["POST", `${issue}/claim`, "json", "kind", "writer-kind-word", false],
+    ["PUT", `${issue}/role-holders/extra`, "json", "kind", "writer-kind-word", false],
+    ["PUT", `${issue}/steps`, "json", "kind", "writer-kind-word", false],
+    ["POST", `${issue}/comments`, "json", "kind", "writer-kind-word", false],
+    ["DELETE", `${issue}/claim`, "json", "role", "worker-role-name", false],
+    ["PUT", `${issue}/role-holders`, "json", "session", "session-held-name", false],
+    ["PUT", step, "json", "session", "session-held-name", false],
   ]);
 });
