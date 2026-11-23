@@ -431,6 +431,17 @@ Each item below names a script, then what it proves.
   its controls delete an issue's plan rows, during its planner's work and before its gate opens, give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`, and give the plan `tester implementer`, which is refused `409 PLAN_REFUSED` too.
   No GitHub, no cluster
 
+- `tasks.sh`
+
+  an issue's plan of several tasks runs each task once the tasks it needs are done, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  the example plan's tasks `a` and `b` run at one time while `c`, `d` and `e` wait, each of those starts once the tasks it needs are done, and `e`'s pull request merges;
+  `dispatch steps --issue <KEY>`, run as a person, prints each task with its needs and each planned step passed;
+  a step whose agent works a step of another task waits for it and then starts in that agent's one session;
+  a later version adds, changes and removes waiting tasks while one runs, and a version that changes the running task is refused `409 PLAN_REFUSED`;
+  a plan whose needs form a cycle is refused `409 PLAN_REFUSED` naming the cycle.
+  `TASKS_CONTROL` names one control, which makes its check fail.
+  No GitHub, no cluster
+
 - `owner-steps-client.sh`
 
   the calls the `legion` tool makes for an owner's plan, made by the plugin's own daemon client (`createLegionDaemonClient` under bun, each grant from `mintClaimGrant`, each completion through the phase op `executePhaseOp`) against the whole daemon booted as [`owner-steps.sh`](#owner-stepssh) boots it, over four issues of one project:
@@ -5379,6 +5390,54 @@ The planner's launch follows the move into planning, so the list the line names 
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## tasks.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] [TASKS_CONTROL=<control>] bash scripts/e2e/tasks.sh     # → "tasks e2e: PASS in <n>s", exit 0
+```
+
+The live proof that an issue's plan of several tasks runs each task once the tasks it needs are done, run before the change merges.
+It needs what [`owner-steps.sh`](#owner-stepssh) needs: before the checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) the script refuses a host with no `bun` or no `node_modules` (`require_dispatch_cli`), and exports `LEGION_E2E_REPO_ROOT`.
+The script starts no database, and the broker is the run's own.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestTasksLive` (`internal/daemon/tasks_live_test.go`, `-tags e2e`) |
+| `proof` | the checks below, each printing what it drove and what it read back between its own `== <name>` and one line `ok <name>`, `FAIL <name>`, or `UNKNOWN <name>: <why>` when it read nothing to judge |
+
+The rig is the package's rig of a plan of several tasks (`tasksRig`, `internal/daemon/tasks_test.go`, through `newTasksRigWith`), over four issues of one project of the run's own (`TK<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request.
+The owner gives each plan as `plan.md` on Dispatch, each `needs` a reference to a block of that document, and `register_plan` through the daemon's API, which reads the version from Dispatch with the daemon's own client.
+GitHub is a fake API over a real bare repository (`tasksGitHub`), so each task's branch, the join of its needs and its pull request are ones git can read; a review is a person's on the run's broker, and the merge is GitHub's envelope there.
+This release runs one agent of each role for an issue, so the steps of one role share one key in every task (`implementer:i`, `reviewer:r`).
+
+| check | driven by | read back as | the fault it catches |
+| :--- | :--- | :--- | :--- |
+| `tasks-at-one-time` | the example plan: `a` (`implementer:i reviewer:r`) and `b` (`planner:p implementer:i reviewer:r`) needing nothing, `c` needing `b`, `d` needing `a` and `c`, `e` (`implementer:i tester:t`) needing `d`; the gate opened, then each step played task by task to `e`'s merge | `plan_tasks`: `a` and `b` both running at their first steps while `c`, `d` and `e` wait; `c` running once `b` is done, `d` once `a` and `c` are, `e` once `d` is; the issue done | a task that starts before the tasks it needs are done, or a task that waits for one it does not need |
+| `steps-read` | `dispatch steps --issue <KEY>` as the person, on that issue once it is done | the header's 5 tasks, then `task a needs nothing: 1 implementer:i passed, 2 reviewer:r passed` and one such line for each task, in id order, each with its needs | a task of the plan that a person cannot see, or its needs or planned steps left out |
+| `step-waits-for-agent` | tasks `x` and `y`, each first step `implementer:k`, and `z` needing both; the gate opened, `x`'s step played, then `y`'s | `y`'s step waiting for its agent while `x`'s runs, then running once `x`'s step ended; the claim of `k` in the one session of `x`'s step; the implementer launched once | one agent given two tasks at one time |
+| `later-version` | while `a` runs, version 2 adds `f` (needing nothing, which `z` now needs), changes the waiting `g` to `implementer:i reviewer:r` and removes the waiting `k`; version 3 changes `a`'s steps | version 2 taken: `f` running, `g` waiting with its two steps, `k` gone with no step start; version 3 `409 PLAN_REFUSED` with the one reason `task a is running: stop it with stop_task before you change it.`, and `a` on the steps it started with | a version that changes what runs, or that loses a task it adds or changes |
+| `cycle-refused` | `register_plan` of a plan whose `a` needs `b` and `b` needs `a`, on an issue at admitted | `409 PLAN_REFUSED` holding the reason `task a needs itself: a needs b, b needs a.`, and no plan rows | a cycle taken, or refused without naming it |
+
+Each check has its control, a change of the driver's input that `TASKS_CONTROL` names, one per run; a run with a control never passes, and its check must be the one that fails:
+
+| `TASKS_CONTROL` | the change | the check that fails, and why |
+| :--- | :--- | :--- |
+| `c-needs-nothing` | `c` needs nothing, and `d` needs `a`, `b` and `c` | `tasks-at-one-time`: `c` runs at the gate beside `a` and `b` |
+| `rows-deleted` | the example issue's rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` once its plan is given | `tasks-at-one-time` ends `UNKNOWN`: it read no task |
+| `node-task-deleted` | task `e` deleted from the issue's plan node in Dispatch's own store before the read | `steps-read`: no line of task `e` |
+| `y-own-agent` | `y`'s first step a planner of its own, before its `implementer:k` | `step-waits-for-agent`: `y`'s first step starts at the gate beside `x`'s |
+| `v3-changes-g` | version 3 changes only the waiting `g` | `later-version`: version 3 is taken, `200` |
+| `cycle-cut` | `a` needs nothing | `cycle-refused`: the plan is taken, `200` |
+
+The controls of `tasks-at-one-time` and `step-waits-for-agent` are not the plain ones (`c`'s needs taken out; the key taken off `y`'s step): `register_plan` refuses those in this release, the first for leaving `b` a second task no task needs, whose work would merge by itself, and the second for a second implementer on one issue.
+Each control used makes the same fault: a task, or a step, that starts at the gate when its check wants it to wait.
+
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for, and GitHub's REST API is `tasksGitHub`.
+`TASKS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
 ## owner-steps-client.sh
 
 ```sh
@@ -7464,13 +7523,13 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 | `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `TASKS_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
 the configuration the daemon boots with (`newLiveProof` reads `LEGION_E2E_NATS_URL`, skips when it is unset, and builds the workflow configuration around it);
 the stream the daemon's intake consumes;
-the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `owner-steps.sh` and `owner-steps-client.sh` replace with the real Dispatch server;
+the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `owner-steps.sh`, `owner-steps-client.sh` and `tasks.sh` replace with the real Dispatch server;
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`).
 The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s and `phase-entry-converge.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of the implementer's push, GitHub's synchronize and a push onto the base.
