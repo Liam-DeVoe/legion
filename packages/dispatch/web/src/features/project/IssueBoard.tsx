@@ -190,17 +190,32 @@ function OpenAsks({ count }: { count: number }): ReactNode {
 }
 
 /** The Time in Legion phase a card draws at its row's clock (`Item.at`), the clock its Work time
- *  is closed at, or undefined for a card with none: the one text on a card that counts from that
- *  clock. A claim's age keeps itself current through `Timestamp`'s own tick, and a wait's since
- *  is a date. */
+ *  is closed at (`workTimeOf`), or undefined for a card with none. Those two are the texts on a
+ *  card that count from that clock. A claim's age keeps itself current through `Timestamp`'s own
+ *  tick, and a wait's since is a date. */
 function phaseTimeOf(item: Item): string | undefined {
   const since = item.card?.card.phase_since ?? null;
   return sinceMs(since) === undefined ? undefined : formatPhaseTime(since, item.at);
 }
 
+/** The Work time a card draws, its facts closed at its row's clock (`boardFactsAt`), or undefined
+ *  for a card with none: one with no Legion card, or whose facts hold no measured work. */
+function workTimeOf(item: Item): string | undefined {
+  const hours = item.card === undefined ? undefined : workHoursOf(item);
+  return hours === undefined ? undefined : formatWorkTime(hours);
+}
+
 /** What a card on the Legion board shows beside today's card, from the board route, each fact
  *  left out where the board gives it no value, never drawn as 0 or a dash. */
-function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): ReactNode {
+function LegionFacts({
+  item,
+  phaseTime,
+  workTime,
+}: {
+  item: Item;
+  phaseTime?: string;
+  workTime?: string;
+}): ReactNode {
   const legion = item.card?.card;
   if (legion === undefined) return null;
   // Workers are the roles in a turn: a card whose issue has none running leaves the fact out
@@ -208,11 +223,10 @@ function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): R
   const roles = (legion.roles ?? []).map(workerName);
   const own = legion.blocked_by ?? [];
   const blockedBy = own.length > 0 ? own : (legion.waiting?.blocked_by ?? []);
-  const workHours = workHoursOf(item);
   const waitingOn = legion.waiting_on;
   return (
     <>
-      {phaseTime === undefined && workHours === undefined && roles.length === 0 ? null : (
+      {phaseTime === undefined && workTime === undefined && roles.length === 0 ? null : (
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           {phaseTime === undefined ? null : (
             <Fact
@@ -222,12 +236,12 @@ function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): R
               value={phaseTime}
             />
           )}
-          {workHours === undefined ? null : (
+          {workTime === undefined ? null : (
             <Fact
               hook="work-time"
               label="Work time"
               method={MEASURE_METHODS.work_hours}
-              value={formatWorkTime(workHours)}
+              value={workTime}
             />
           )}
           {roles.length === 0 ? null : (
@@ -263,11 +277,12 @@ function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): R
 }
 
 /** What a card is drawn from. A card draws again only when one of these changes (`sameCard`):
- *  the issue, its Legion card, its facts and its Place keep their objects or values across reads
- *  that did not change them (the listings pair a read's issues with the cached ones by key,
- *  `api/queries.ts`), and its time is the text it draws. So a build of the rows draws again only
- *  the card of an issue a live change moved, a card whose time reads differently in a new minute,
- *  and a card whose facts grow, which each build closes at its own clock (`boardFactsAt`). */
+ *  the issue, its Legion card and its Place keep their objects or values across reads that did
+ *  not change them (the listings pair a read's issues with the cached ones by key,
+ *  `api/queries.ts`), and its times are the texts it draws, not the clock or its facts, which
+ *  each build closes at its own clock (`boardFactsAt`) in a new object. So a build of the rows
+ *  draws again only the card of an issue a live change moved, and a card whose Time in Legion
+ *  phase or Work time reads differently at the new clock. */
 interface CardProps {
   readonly item: Item;
   /** The Time in Legion phase the card draws (`phaseTimeOf`); undefined where it draws none. */
@@ -275,14 +290,16 @@ interface CardProps {
   /** The cell the card stands in, by its drop id (`cellId`). */
   readonly place: string;
   readonly unread: boolean;
+  /** The Work time the card draws (`workTimeOf`); undefined where it draws none. */
+  readonly workTime?: string;
 }
 
 const sameCard = (a: CardProps, b: CardProps): boolean =>
   a.item.issue === b.item.issue &&
   a.item.place === b.item.place &&
   a.item.card?.card === b.item.card?.card &&
-  a.item.facts === b.item.facts &&
   a.phaseTime === b.phaseTime &&
+  a.workTime === b.workTime &&
   a.place === b.place &&
   a.unread === b.unread;
 
@@ -305,6 +322,7 @@ const BoardCard = memo(function BoardCard({
   phaseTime,
   place,
   unread,
+  workTime,
 }: CardProps): ReactNode {
   const { issue } = item;
   const { attributes, isDragging, listeners, setNodeRef, transform } = useDraggable({
@@ -337,7 +355,13 @@ const BoardCard = memo(function BoardCard({
       {...attributes}
       {...listeners}
     >
-      <CardBody item={item} phaseTime={phaseTime} place={place} unread={unread} />
+      <CardBody
+        item={item}
+        phaseTime={phaseTime}
+        place={place}
+        unread={unread}
+        workTime={workTime}
+      />
     </article>
   );
 }, sameCard);
@@ -346,7 +370,12 @@ const BoardCard = memo(function BoardCard({
  *  claim, progress, route reach, labels, open asks), its Place in the Legion queue beside its key
  *  where it has one (the Queue column's number), and, for an issue with a card on the Legion
  *  board, its Legion facts. It draws no slot number. */
-const CardBody = memo(function CardBody({ item, phaseTime, unread }: CardProps): ReactNode {
+const CardBody = memo(function CardBody({
+  item,
+  phaseTime,
+  unread,
+  workTime,
+}: CardProps): ReactNode {
   const { issue } = item;
   return (
     <>
@@ -385,7 +414,7 @@ const CardBody = memo(function CardBody({ item, phaseTime, unread }: CardProps):
         ))}
         {issue.open_asks === 0 ? null : <OpenAsks count={issue.open_asks} />}
       </div>
-      <LegionFacts item={item} phaseTime={phaseTime} />
+      <LegionFacts item={item} phaseTime={phaseTime} workTime={workTime} />
     </>
   );
 }, sameCard);
@@ -448,6 +477,7 @@ function BoardColumnView({
               phaseTime={phaseTimeOf(item)}
               place={place}
               unread={issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0)}
+              workTime={workTimeOf(item)}
             />
           ))}
         </div>
@@ -714,8 +744,8 @@ interface MoveFollow {
  * region, where every key move is read out too, with the place the card lands.
  *
  * A live change to one issue draws that issue's card alone: the cards are memoised on what they
- * draw (`sameCard`), the sensors' options are made once, and a card compares the Time in Legion
- * phase text it draws, which counts to its row's clock (`Item.at`).
+ * draw (`sameCard`), the sensors' options are made once, and a card compares the time texts it
+ * draws, its Time in Legion phase and its Work time, which count to its row's clock (`Item.at`).
  *
  * The reader keeps their place, as in a table (R11): the card the reader's hand is on (focus,
  * then the pointer), else, once they have scrolled, the card at the middle of the Board, and at

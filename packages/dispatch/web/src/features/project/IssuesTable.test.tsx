@@ -3755,6 +3755,78 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   expect(steadyWork()).toEqual(steady.map(() => expect.stringContaining("1 d 6 h")));
 }, 120_000);
 
+// k13 (R11): a card's Work time is a text it draws, so a live change draws again a card whose
+// drawn Work time changed since the Board last drew, though it draws no Time in Legion phase, and
+// not a card whose growing Work time still reads the same. CORE-1 has no phase_since and has
+// worked 2 h 30 m 30 s at the start, an hour an hour, which reads 2 h 31 m 61 s on. CORE-2 has
+// worked 30 h 10 m and been in its phase a day and ten minutes, which read the same 61 s on. As in
+// the card count above, the calls of `UnreachableRouteMarker` name the card bodies a change drew,
+// and those of `useDraggable` the card shells.
+test("a live change draws again a card whose drawn Work time changed, and no card whose texts read the same", async () => {
+  const start = new Date("2026-11-17T12:00:30Z");
+  setSystemTime(start);
+  restores.push(() => setSystemTime());
+  const sockets = liveSockets(restores);
+  const rows = [
+    issue("CORE-1", { status: "in_progress" }),
+    issue("CORE-2", { status: "in_progress" }),
+    issue("CORE-3"),
+    issue("CORE-4"),
+  ];
+  const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
+  const { client } = table(rows, "?layout=board", {}, {}, Promise.resolve(DAEMON));
+  await answerBoard(sockets, {
+    ...legionBoard({ "CORE-1": openFacts(ago(90.5)), "CORE-2": openFacts(ago(29 * 60 + 10)) }),
+    columns: [
+      {
+        id: "implementing",
+        label: "Implementing",
+        cards: [
+          { ...phaseCard("CORE-1", start.toISOString()), phase_since: null },
+          phaseCard("CORE-2", ago(24 * 60 + 10)),
+        ],
+      },
+    ],
+  });
+  /** The text of a card's Legion fact, by its hook. */
+  const fact = (key: string, hook: string) =>
+    document.querySelector(`[data-board-card="${key}"] [data-legion-fact=${hook}]`)?.textContent;
+  await waitFor(() => expect(fact("CORE-1", "work-time")).toBe("Work time2 h 30 m"));
+  expect(fact("CORE-1", "phase-time")).toBeUndefined();
+  expect(fact("CORE-2", "work-time")).toBe("Work time1 d 6 h");
+  expect(fact("CORE-2", "phase-time")).toBe("Time in Legion phase1 d 0 h");
+  const bodies = spyOn(routeReach, "UnreachableRouteMarker");
+  const shells = spyOn(dndCore, "useDraggable");
+  restores.push(() => {
+    bodies.mockRestore();
+    shells.mockRestore();
+  });
+
+  // Another reader moves CORE-3 to In progress 61 s on, and the listing is read again.
+  setSystemTime(new Date(start.getTime() + 61_000));
+  rows[2] = issue("CORE-3", { status: "in_progress", updated_at: "2026-11-17T12:01:31Z" });
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() =>
+    expect(
+      document.querySelector('[data-board-column="in_progress"] [data-board-card="CORE-3"]')
+    ).not.toBeNull()
+  );
+  // Whatever the change still draws after the card lands is counted too.
+  await waitMs(200);
+  const drawnBodies = bodies.mock.calls.map(([props]) => {
+    // The marker's props type names the route fields alone; a card body hands it the card's
+    // whole issue, whose key names the body.
+    const routed: object = props.issue;
+    return "key" in routed ? String(routed.key) : "";
+  });
+  const drawnShells = shells.mock.calls.map(([options]) => String(options.id));
+  for (const drawn of [drawnBodies, drawnShells])
+    expect([...new Set(drawn)].sort()).toEqual(["CORE-1", "CORE-3"]);
+  expect(fact("CORE-1", "work-time")).toBe("Work time2 h 31 m");
+  expect(fact("CORE-2", "work-time")).toBe("Work time1 d 6 h");
+  expect(fact("CORE-2", "phase-time")).toBe("Time in Legion phase1 d 0 h");
+});
+
 // The live view sends a board entry again only when its stored row moves, so the page grows an
 // open issue's values itself: the value plus its rate times the hours from as_of to its clock.
 test("an open row's Work time is its board entry grown from its as_of to the page's clock", async () => {

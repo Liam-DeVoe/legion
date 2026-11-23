@@ -8,9 +8,10 @@
 //
 // ACME is seeded with `seedLegionFixture`, its daemon named at a `startFakeLegionDaemon`, with
 // `seedLegionMetricsCorpus` and with `pushLegionObservation`, WIDGETS with
-// `seedLegionFactsFixture`. Each facts wait (up to 75 s) and each close step (up to 135 s) is a
-// row of its own (the plan's D16). A row that measures a position on ACME seeds a failed read of
-// its daemon first and holds every board frame after the first (`seedMeasuredAcme`).
+// `seedLegionFactsFixture`. Each facts wait (up to 75 s) and each close step (135 s from the
+// close) is a row of its own (the plan's D16). A row that measures a position on ACME seeds a
+// failed read of its daemon first and holds every board frame after the first
+// (`seedMeasuredAcme`).
 import {
   createIssue,
   createPriority,
@@ -18,6 +19,7 @@ import {
   getIssue,
   getLegionBoard,
   getLegionWorkTimeItems,
+  legionWorkTimeEval,
   listIssuesWhere,
   patchIssue,
   patchPriority,
@@ -909,43 +911,55 @@ test("a second role event's facts write moves the open table's and the open Boar
   }
 });
 
+/** The items route of `legion-work-time` with row_kind=issue over the two days from the start of
+ *  the day that holds `at`, so over a window that holds `at`. */
+function issueItems(at: number) {
+  const day = Math.floor(at / 86_400_000) * 86_400_000;
+  return getLegionWorkTimeItems(WIDGETS, {
+    from: new Date(day).toISOString(),
+    limit: 200,
+    row_kind: "issue",
+    to: new Date(day + 2 * 86_400_000).toISOString(),
+  });
+}
+
 /** An issue of WIDGETS with no parent, no child and no phase observation, so no observation names
  *  it and the board never shows it, with an implementer's role event of 70 minutes ago and its
- *  facts row; then closed at once. */
-async function closeUnseen(title: string): Promise<{ key: string; closedAt: number }> {
+ *  facts row. Once that row is written, the items route of `legion-work-time` is read over a
+ *  window that holds now, and the issue is closed at once. `page`'s first read of the items route
+ *  after the close is answered from that earlier read, which lacks the issue, so only a later
+ *  read can show it: the page's read 60 s after that answer (`CLOSE_ITEMS_AGAIN_MS`). */
+async function closeUnseen(page: Page, title: string): Promise<{ key: string; closedAt: number }> {
+  let earlier: string | undefined;
+  await page.route(
+    `**/api/v1/projects/${WIDGETS}/evals/${legionWorkTimeEval}/items?**`,
+    (route) => {
+      const body = earlier;
+      if (body === undefined) return route.fallback();
+      earlier = undefined;
+      return route.fulfill({ body, contentType: "application/json" });
+    }
+  );
   const issue = await createIssue({ project: WIDGETS, title }, B);
   await patchIssue(issue.key, { status: "in_progress" }, B);
   // Made two hours ago, so a role event of 70 minutes ago falls in its life.
   await sql(`UPDATE issues SET created_at = now() - interval '2 hours' WHERE key = '${issue.key}'`);
   await writeRoleEvent(issue.key, "implementer", "70 minutes");
   await waitForIssueFacts([issue.key]);
+  earlier = JSON.stringify(await issueItems(Date.now()));
   await patchIssue(issue.key, { status: "done" }, B);
   return { key: issue.key, closedAt: Date.now() };
 }
 
-/** Waits up to 135 s from the close for `key`'s Work time cell to equal its items row. */
+/** Waits 135 s from the close, then reads `key`'s row in the items route over a window that holds
+ *  the close and its Work time cell on `page`, which equals that row's `work_hours`. */
 async function workFromItems(page: Page, key: string, closedAt: number): Promise<void> {
-  const day = Math.floor(closedAt / 86_400_000) * 86_400_000;
-  const items = async () => {
-    const answer = await getLegionWorkTimeItems(WIDGETS, {
-      from: new Date(day).toISOString(),
-      limit: 200,
-      row_kind: "issue",
-      to: new Date(day + 2 * 86_400_000).toISOString(),
-    });
-    const row = (answer.items ?? []).find((one) => one.row_key === key);
-    return row === undefined ? undefined : Number(row.cols?.work_hours);
-  };
-  await expect
-    .poll(
-      async () => {
-        const hours = await items();
-        const cell = await workText(page, key);
-        return hours !== undefined && cell === workWords(hours) ? "equal" : `${cell} / ${hours}`;
-      },
-      { intervals: [2_000], timeout: Math.max(5_000, closedAt + 135_000 - Date.now()) }
-    )
-    .toBe("equal");
+  // The span the check gives: 75 s for a facts consumer pass to store the close, then the page's
+  // 60 s before it reads the items again. A read before then cannot show that the page read again.
+  await page.waitForTimeout(Math.max(0, closedAt + 135_000 - Date.now()));
+  const row = ((await issueItems(closedAt)).items ?? []).find((one) => one.row_key === key);
+  expect(row, `the items route's row of ${key}`).toBeDefined();
+  expect(await workText(page, key)).toBe(workWords(Number(row?.cols?.work_hours)));
 }
 
 /** Wakes a pass of the eval refresher, the pass that gives WIDGETS its eval. The fixture writes
@@ -953,12 +967,13 @@ async function workFromItems(page: Page, key: string, closedAt: number): Promise
  *  wakes one: a role event of WIDGETS-1, an issue neither of the two rows below lists. */
 const wakeEvalRefresher = () => writeRoleEvent(`${WIDGETS}-1`, "implementer", "70 minutes");
 
-// SLOW(>=2s): the eval refresher's pass for WIDGETS, a facts consumer's row, up to 75 s, then up to
-// 135 s from a close for the open Done page's Work time.
+// SLOW(>=2s): the eval refresher's pass for WIDGETS, a facts consumer's row, up to 75 s, then 135 s
+// from a close before the open Done page's Work time is read.
 test("the close of an issue the board never shows fills its Work time on an open Done with no reload and no other event", async ({
   browser,
 }) => {
-  test.setTimeout(270_000);
+  // Up to 60 s for the eval, up to 75 s for the facts row, 135 s from the close, and the seed.
+  test.setTimeout(330_000);
   const daemon = await startFakeLegionDaemon();
   const context = await asUser(browser, "alice");
   try {
@@ -969,7 +984,7 @@ test("the close of an issue the board never shows fills its Work time on an open
       context,
       `/projects/${WIDGETS}/issues?view=done&cols=key,title,closed,work_hours`
     );
-    const { key, closedAt } = await closeUnseen("Closed out of the board's sight");
+    const { key, closedAt } = await closeUnseen(done.page, "Closed out of the board's sight");
     await expect(issuesTable(done.page).locator(`tr[data-issue-row="${key}"]`)).toBeVisible();
     await workFromItems(done.page, key, closedAt);
     expect(done.loads.count).toBe(1);
@@ -979,12 +994,13 @@ test("the close of an issue the board never shows fills its Work time on an open
   }
 });
 
-// SLOW(>=2s): the eval refresher's pass for WIDGETS, a facts consumer's row, up to 75 s, then up to
-// 135 s from a close for an open page of Open with status=done.
+// SLOW(>=2s): the eval refresher's pass for WIDGETS, a facts consumer's row, up to 75 s, then 135 s
+// from a close before the Work time of an open page of Open with status=done is read.
 test("the close of an issue the board never shows fills its Work time on an open Open with status=done with no reload and no other event", async ({
   browser,
 }) => {
-  test.setTimeout(270_000);
+  // Up to 60 s for the eval, up to 75 s for the facts row, 135 s from the close, and the seed.
+  test.setTimeout(330_000);
   const daemon = await startFakeLegionDaemon();
   const context = await asUser(browser, "alice");
   try {
@@ -995,7 +1011,7 @@ test("the close of an issue the board never shows fills its Work time on an open
       context,
       `/projects/${WIDGETS}/issues?view=open&status=done&cols=key,title,closed,work_hours`
     );
-    const { key, closedAt } = await closeUnseen("Closed out of sight on Open");
+    const { key, closedAt } = await closeUnseen(open.page, "Closed out of sight on Open");
     await expect(issuesTable(open.page).locator(`tr[data-issue-row="${key}"]`)).toBeVisible();
     await workFromItems(open.page, key, closedAt);
     expect(open.loads.count).toBe(1);
