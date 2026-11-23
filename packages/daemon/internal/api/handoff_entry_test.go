@@ -762,8 +762,8 @@ func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64
 	return id, request
 }
 
-// takeStart hands the claim the newest start queued for its role, which names that claim here, as
-// the outbox runner hands a start to the claim it names, and answers the entry that start is of.
+// takeStart hands the claim the newest start queued for its role, standing in for the outbox
+// runner, which hands a start to the claim it names, and answers the entry that start is of.
 // The turn the claim is in ends first, which retires the task it held: the outbox's delivery waits
 // for that anyway, since a machine refuses a second delivery while one is pending.
 func takeStart(t *testing.T, h *harness, token claim.Token, issue string, role claim.Role) int64 {
