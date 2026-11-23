@@ -1046,6 +1046,19 @@ test("the architect skill says an open child keeps a parent's first phase from s
   expect(skill).not.toContain("first phase waits while Dispatch shows an open child");
 });
 
+// A role token comes from the addressing line or from `roleToken`, which encodes the project and
+// the key as the daemon does (claim.NewToken): a typed one may reach nobody (SKILL.md, "Every
+// turn"), so the decomposition guide gives no recipe to type one.
+test("the decomposition guide takes a role token from the addressing line or roleToken", () => {
+  const decomposition = collapsed(
+    path.join(staged, "legion-architect", "references", "decomposition.md")
+  );
+  expect(decomposition).toContain(
+    "- A role token (`legion-acme-legion-41-architect`) comes from your addressing line or `roleToken` (`@legion/contracts`): never type one."
+  );
+  expect(decomposition).not.toContain("with the daemon's project and the key lower-cased");
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.
