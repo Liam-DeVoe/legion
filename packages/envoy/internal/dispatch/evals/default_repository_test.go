@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The attribution of what a repository holds to the projects whose default repository it is
@@ -39,11 +38,11 @@ func (r *refresherRig) readTallies(t *testing.T, project string, series map[stri
 	if len(entries) != len(series) {
 		t.Fatalf("%s holds %d of the %d evals the read tallies", project, len(entries), len(series))
 	}
-	deployRepo, err := DeployRepoIn(ctx, r.database.Pool)
+	deployRepos, err := DeployReposIn(ctx, r.database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := r.registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
+	rows, err := r.registry.DayWindow(ctx, []string{project}, entries, deployRepos, nil, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
 	}
@@ -74,19 +73,16 @@ func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t 
 	at := func(hour, minute int) time.Time {
 		return day.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
 	}
-	actor := model.Actor{Kind: "system", ID: "default-repository-test"}
 	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
 		values ('ALPHA', 'Alpha', 'alice', 2, $1), ('BETA', 'Beta', 'alice', 1, $1)`, alphaRepo)
 	r.exec(t, "the issue", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
 		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"default-repository-test"}', $2)`,
 		alphaRepo, day.AddDate(0, 0, -1))
 	production := "production / apply"
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
-		DeployRepo: alphaRepo, DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
-		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml", PopulationAuthors: []string{"dev-ana"}, ExcludedRepos: []string{},
-	}, actor); err != nil {
-		t.Fatalf("write the delivery settings: %v", err)
-	}
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, sourceOf(delivery.DeliverySettings{
+		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{production},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+	}, nil))
 	for _, pr := range []struct {
 		number int
 		issue  *string

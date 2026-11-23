@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -100,6 +102,7 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	t.Helper()
 	ctx, pool := t.Context(), r.database.Pool
 	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
+	seedProjectSettings(t, pool, deliveries)
 	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
 	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
 	if err != nil {
@@ -113,6 +116,77 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	}
 	t.Logf("stored %d facts rows and %d filings of %s", len(rows), len(filings), legion.Project)
 	return deliveries, legion
+}
+
+// seedProjectSettings writes, after deliverytest.Seed, the fixture's delivery settings as its
+// project's own (project_delivery_settings, project_deploy_sources): delivery on, the fixture's
+// population rule, and one github_workflow source that names no repository, so it reads the
+// project's default repository (the fixture's deploy repository) under the fixture's rule. A second
+// call saves the same settings and moves nothing. Removed when deliverytest writes the project
+// tables.
+func seedProjectSettings(t testing.TB, pool *store.Pool, fixture deliverytest.Fixture) {
+	t.Helper()
+	putSources(t, pool, fixture.Project, fixture.Settings.PopulationAuthors, sourceOf(fixture.Settings, nil))
+}
+
+// deployRule is the rule of the deploy source that reads repo as a pass reads it
+// (delivery.DeployRules over every project's settings), its DeployRepo repo.
+func deployRule(t testing.TB, pool *store.Pool, repo string) delivery.DeliverySettings {
+	t.Helper()
+	projects, err := delivery.ListProjectSettings(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	for _, rule := range delivery.DeployRules(projects) {
+		if strings.EqualFold(rule.DeployRepo, repo) {
+			rule.DeployRepo = repo
+			return rule
+		}
+	}
+	t.Fatalf("no deploy source reads %s", repo)
+	return delivery.DeliverySettings{}
+}
+
+// sourceOf is a github_workflow source holding rule's workflow, jobs and steps, naming repo (nil:
+// the project's default repository).
+func sourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput {
+	return delivery.SourceInput{
+		Kind: delivery.SourceKindGitHubWorkflow, Repo: repo, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+		ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+		StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+		PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+	}
+}
+
+// eventsSource is a source that reads the project's posted deploys.
+var eventsSource = delivery.SourceInput{Kind: delivery.SourceKindEvents}
+
+// putSources saves project's delivery settings through delivery.PutProjectSettings, in a
+// transaction of its own: delivery on, authors as the population rule, and sources.
+func putSources(t testing.TB, pool *store.Pool, project string, authors []string, sources ...delivery.SourceInput) delivery.ProjectSettings {
+	t.Helper()
+	return putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: sources, PopulationAuthors: authors, ExcludedRepos: []string{},
+	})
+}
+
+// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own.
+func putProjectSettings(t testing.TB, pool *store.Pool, input delivery.ProjectSettingsInput) delivery.ProjectSettings {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the delivery settings of %s: %v", input.Project, err)
+	}
+	defer tx.Rollback(ctx)
+	saved, err := delivery.PutProjectSettings(ctx, tx, input, model.Actor{Kind: "system", ID: "evals-test"})
+	if err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the delivery settings of %s: %v", input.Project, err)
+	}
+	return saved
 }
 
 // rowKey is a day row's identity, `<project> <eval id> <series> <repo> <day>`, and ` as <deploy

@@ -89,17 +89,23 @@ func (c *headChecks) captured(ctx context.Context, name, marker string, fn func(
 }
 
 // k13 reads the named-jobs statement through delivery.ListRunJobsForRuns over the deploy runs of
-// the 84-day window and the production jobs the settings judge a deploy by, and the count of P0
+// the 84-day window and the production jobs INFRA's source judges a deploy by, and the count of P0
 // issues with no owner through delivery.CountUnownedP0, the unowned-p0 eval's own read: the first
 // must carry the job names in its index condition, the second read issues_open_p0 and scan no
 // table of issues.
 func (c *headChecks) k13() {
 	ctx := context.Background()
-	settings, err := delivery.GetSettings(ctx, c.pool)
+	project, err := delivery.GetProjectSettings(ctx, c.pool, evalbench.Project)
 	if err != nil {
-		c.r.fail("k13: read the delivery settings: %v", err)
+		c.r.fail("k13: read the delivery settings of %s: %v", evalbench.Project, err)
 		return
 	}
+	rules := project.Rules()
+	if len(rules) == 0 {
+		c.r.fail("k13: %s's delivery settings read no deploy repository", evalbench.Project)
+		return
+	}
+	settings := rules[0]
 	w84 := before(c.today, 84)
 	rows, err := c.pool.Query(ctx, `select run_id from delivery_runs where repo = $1 and kind = 'deploy' and started_at >= $2 and started_at < $3 order by run_id`,
 		settings.DeployRepo, w84.from, w84.to)

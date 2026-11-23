@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -432,7 +433,9 @@ func (s *jobSource) Values() ([]any, error) {
 
 func (s *jobSource) Err() error { return nil }
 
-// writeDelivery writes the delivery settings, the pull requests, the runs and their jobs.
+// writeDelivery writes INFRA's delivery settings (evalfixture.PutDeliverySettings: one source
+// reading its default repository, the first of Repos, under Settings' rule), the pull requests,
+// the runs and their jobs.
 //
 // The three tables' triggers log each row into delivery_changes, the 24-hour feed of what changed
 // that the refresher and the live views read from their cursors. The history is no change any
@@ -441,7 +444,7 @@ func (s *jobSource) Err() error { return nil }
 // own length (a DDL Postgres rolls back with the transaction, so a load that fails leaves them on),
 // rather than logging millions of rows no reader reads before the retention prunes them.
 func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
-	if _, err := delivery.PutSettings(ctx, pool, Settings(), actor); err != nil {
+	if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
 		return fmt.Errorf("write the delivery settings: %w", err)
 	}
 	prs := planPullRequests(spec, history)

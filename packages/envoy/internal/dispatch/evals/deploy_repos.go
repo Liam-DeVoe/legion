@@ -5,23 +5,28 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // deploy_repos.go is how the delivery and CI evals that read the deploy repository are kept
-// (dispatch://INFRA-2916, R14): once for every repository that holds a delivery run, each
-// repository's rows computed as if it were the deploy repository and keyed by it
-// (eval_days.deploy_repo, migration 20261117100006), with their stored figures and their members.
-// A read folds the rows of the repository recorded with them as the deploy repository
-// (DeployRepoIn), so a move of the deploy repository is a selection at read time: it rewrites no
-// row and begins no walk, the refresher's page records it in the commit that says the rows stand
-// at the settings, and a move back reads the old repository's rows as they stand, which every
-// write of a day keeps beside the others.
+// (dispatch://INFRA-2916, R14; dispatch://INFRA-978, T8): once for every deploy source repository
+// that holds a delivery run, each repository's rows computed under its own source's rule
+// (delivery.DeployRules) and keyed by it (eval_days.deploy_repo, migration 20261117100006), with
+// their stored figures and their members. A project's read folds the rows of each of its source
+// repositories as the refresher last recorded them (eval_days_rules, DeployReposIn): counts and
+// hours summed, a share or a quantile folded over the union of the repositories' parts, as a
+// repository filter folds several repositories' rows. So a source that moves, a named repository
+// changed or the default repository a source naming none reads moved, is a selection the
+// refresher's page records in the commit that brings the rows to it, and a read answers the old
+// selection whole or the new one whole.
 //
 // What reads the deploy repository is what a day reads of it (readDeliveryDay): its deploy runs
 // (delivery.ReadDeploys), its apply runs, under which containment ships its pull requests alone
@@ -33,17 +38,28 @@ import (
 // merge and rework and no deploy, and keep one row, as do the Legion evals, the logged evals and
 // unowned-p0; the pull requests the first two count are kept once more under no deploy repository.
 //
-// The repositories kept are those that hold a delivery run (readDeployRepos). The intake keeps the
-// runs of the deploy repository alone, so a repository's runs are those stored while it was the
-// deploy repository; one that never was holds none, and so no row: a move to it reads "no data"
-// for every eval that reads the deploy repository (a repository that never deployed has nothing to
-// count), and the rest as before. The set of them, each with its start (keptRepo.since), is
-// recorded beside the settings the rows stand built under (eval_days_settings), and a page that
-// reads another set, a repository whose first runs arrived, one whose runs went or one whose start
-// moved, builds the days of each that differs in its own commit (syncKept, span.go): every day of
-// a new repository from its start on, its rows and its members of every pull request it counts,
-// as a whole walk over the same runs builds them, where the change that brought the runs names
-// only the days of the runs.
+// A project's events source reads its posted deploys (production_events rows of kind deploy and
+// source api, dispatch://INFRA-978 D1, R12), which count for that project alone while it has
+// delivery on and the source: they are kept under a deploy repository of the project's own
+// (EventsRepo), whose deploy-frequency counts each posted deploy on the day it finished and whose
+// merge-to-production times each pull request a posted deploy names from its merge to the deploy
+// (postedDayAs), where that deploy ships it before any GitHub deploy does: a pull request's lead
+// times count once, at the first deploy that ships it (firstShipped). It is kept, recorded and
+// selected as a source repository is, under no job name.
+//
+// The repositories kept are the source repositories that hold a delivery run (readDeployRepos),
+// and the events repository of each project with an events source that holds a posted deploy
+// (readPostedRepos). The intake keeps the runs of a source repository alone, so a repository's
+// runs are those stored while it was a source; one that never was holds none, and so no row: a
+// source naming it reads "no data" for every eval that reads the deploy repository (a repository
+// that never deployed has nothing to count), and the rest as before. A repository that stops
+// being a source is no longer kept, and its rows go. The set of them, each with its start
+// (keptRepo.since), is recorded with each one's rule (eval_days_rules), and a page that reads
+// another set, a repository whose first runs arrived, one whose runs went, one whose start moved
+// or one that became or stopped being a source, builds the days of each that differs in its own
+// commit (syncKept, span.go): every day of a new repository from its start on, its rows and its
+// members of every pull request it counts, as a whole walk over the same runs builds them, where
+// the change that brought the runs names only the days of the runs.
 //
 // The first day of each of a repository's series, which a read names (data_since, each series its
 // own) and before which a range reads "no data", is that repository's own, and never earlier than
@@ -54,13 +70,12 @@ import (
 // it, where a day after it holds its row, a zero one included.
 
 // deployRepoSlugs is the evals (by slug) whose rows and items read the deploy repository: the
-// delivery and CI evals a day keeps once per repository, and change-fail-rate and
-// failed-deploy-recovery, which have no row (no failure source exists) and whose items are the
-// deploy repository's deploys and the pull requests it ships.
+// delivery and CI evals a day keeps once per repository. The failure measures (change-fail-rate,
+// failed-deploy-recovery and deployment-rework-rate) are none of them: their rows are the project's
+// own, built from the record of its deploys and failures (dispatch://INFRA-978, D7).
 var deployRepoSlugs = []string{
 	SlugMergeToProduction, SlugFirstCommitToProduction, SlugOpenToProduction, SlugDeployFrequency,
 	SlugDeployRunSuccess, SlugPRCI, SlugStagingE2E, SlugStagingDeploy, SlugProductionDeploy,
-	SlugChangeFailRate, SlugFailedDeployRecovery,
 }
 
 // readsDeployRepo reports whether the eval slug names is one whose rows are kept per deploy
@@ -76,43 +91,120 @@ func KeyedByDeployRepo(definition Definition) bool {
 	return definition.Computed() && readsDeployRepo(definition.Slug)
 }
 
-// DeployRepoOf is the deploy repository whose day rows, stored figures and members a read of
-// definition's eval reads, where the rows are recorded under deployRepo (DeployRepoIn, "" where
-// none is set): deployRepo for an eval keyed by it (KeyedByDeployRepo), and "" for every other,
-// whose rows no deploy repository moves.
-func DeployRepoOf(definition Definition, deployRepo string) string {
-	if KeyedByDeployRepo(definition) {
-		return deployRepo
-	}
-	return ""
+// DeployRepos is the repositories whose rows a read of a project's evals that read the deploy
+// repository folds, as the refresher last recorded them with the rows (eval_days_rules,
+// DeployReposIn): every source repository of every delivery-on project, whose rows count for a
+// project only where the attribution counts a pull request, a deploy or a run for it (a deploy of
+// one project's repository that ships another's pull request counts for both, dispatch://INFRA-978
+// A8, and one that ships none for its source's project alone, R12), and the project's own events
+// repository. owners is each source repository's project, by repository.
+type DeployRepos struct {
+	sources []string
+	events  map[string]string
+	owners  map[string]string
 }
 
-// DeployRepoIn is, read in q, the deploy repository whose rows a read of the evals that read it
-// answers: the one recorded with the stored rows (eval_days_settings.deploy_repo,
-// recordBuiltUnder), or, where no pass has recorded the rows' settings, the one the delivery
-// settings name; "" where neither names one. The delivery settings name the new repository from
-// their save on, while the rows of the evals whose rule the same save moved stand under the old
-// rule until the refresher's rewrite commits, so a read by the saved one would answer a state
-// between the two; the record moves in the commit that brings the rows to the settings
-// (rewriteSettings, or the page's commit where no row moved), so a read in one snapshot answers
-// the old settings whole or the new ones whole (BuiltSettingsIn says the same of every field).
-// One statement, two primary-key reads.
-func DeployRepoIn(ctx context.Context, q delivery.Querier) (string, error) {
-	var repo string
-	if err := q.QueryRow(ctx, `
-		select coalesce(
-			(select deploy_repo from eval_days_settings where singleton),
-			(select deploy_repo from delivery_settings where singleton),
-			'')
-	`).Scan(&repo); err != nil {
-		return "", fmt.Errorf("read the deploy repository the day rows stand recorded under: %w", err)
+// Of is the repositories project's read folds: every source repository, and its events repository
+// where one is recorded; none for a nil DeployRepos.
+func (d *DeployRepos) Of(project string) []string {
+	if d == nil {
+		return []string{}
 	}
-	return repo, nil
+	repos := slices.Clone(d.sources)
+	if repo, held := d.events[project]; held {
+		repos = append(repos, repo)
+	}
+	return nonNil(repos)
+}
+
+// Owned is the source repositories project's own sources read, in the byte order of their names.
+func (d *DeployRepos) Owned(project string) []string {
+	if d == nil {
+		return nil
+	}
+	var owned []string
+	for _, repo := range d.sources {
+		if d.owners[repo] == project {
+			owned = append(owned, repo)
+		}
+	}
+	return owned
+}
+
+// DeployRepoOf is the deploy repositories whose day rows, stored figures and members a read of
+// definition's eval reads, where the rows are recorded under deployRepos (DeployReposIn): its
+// project's repositories for an eval keyed by them (KeyedByDeployRepo, DeployRepos.Of), and the
+// rows of none ("") for every other eval, whose rows no deploy repository moves.
+func DeployRepoOf(definition Definition, deployRepos *DeployRepos) []string {
+	if KeyedByDeployRepo(definition) {
+		return deployRepos.Of(definition.ProjectKey)
+	}
+	return []string{""}
+}
+
+// pairs is each of projects' repositories (Of), as two arrays of one element per project and
+// repository, which deployRepoCase reads.
+func (d *DeployRepos) pairs(projects []string) (keys, repos []string) {
+	keys, repos = []string{}, []string{}
+	for _, project := range projects {
+		for _, repo := range d.Of(project) {
+			keys, repos = append(keys, project), append(repos, repo)
+		}
+	}
+	return keys, repos
+}
+
+// DeployReposOf is the DeployRepos that read repo alone ("" for none): one cut of the stored
+// figures (figureCut), or one repository a test reads, project's where repo is its events
+// repository.
+func DeployReposOf(project, repo string) *DeployRepos {
+	switch _, posted := eventsProject(repo); {
+	case repo == "":
+		return nil
+	case posted:
+		return &DeployRepos{events: map[string]string{project: repo}}
+	}
+	return &DeployRepos{sources: []string{repo}, owners: map[string]string{repo: project}}
+}
+
+// DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
+// the deploy repository answers (DeployRepos): those the refresher recorded with the stored rows
+// (eval_days_rules, recordRules), every source repository and each project's events repository
+// once a posted deploy is kept under it (kept_since set: one with no post holds no row). The
+// project settings name another source from their save on, or another default repository from its
+// move on, while the rows of the repositories the move brings in stand under another rule, or
+// none, until the refresher's page commits, so a read by the saved settings would answer a state
+// between the two; the record moves in the commit that brings the rows to the settings
+// (rewriteSettings, or the page's commit), so a read in one snapshot answers the old selection
+// whole or the new one whole (BuiltSettingsIn says the same of a repository's rule). One statement
+// over a table of one row per source repository.
+func DeployReposIn(ctx context.Context, q delivery.Querier) (*DeployRepos, error) {
+	rows, err := q.Query(ctx, `
+		select project_key, repo, kept_since is not null from eval_days_rules order by repo
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("read the deploy repositories the day rows stand recorded under: %w", err)
+	}
+	repos := &DeployRepos{events: map[string]string{}, owners: map[string]string{}}
+	var project, repo string
+	var kept bool
+	if _, err := pgx.ForEachRow(rows, []any{&project, &repo, &kept}, func() error {
+		switch _, posted := eventsProject(repo); {
+		case !posted:
+			repos.sources, repos.owners[repo] = append(repos.sources, repo), project
+		case kept:
+			repos.events[project] = repo
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the deploy repositories the day rows stand recorded under: %w", err)
+	}
+	return repos, nil
 }
 
 // keyedEvals is the ids of entries' evals keyed by the deploy repository (KeyedByDeployRepo): the
-// evals a read's `case` gives a repository's rows (deployRepoCase), every other eval reading the
-// rows of none.
+// evals a read's `case` gives their project's repositories' rows (deployRepoCase), every other
+// eval reading the rows of none.
 func keyedEvals(entries []Entry) []string {
 	keyed := []string{}
 	for _, entry := range entries {
@@ -124,16 +216,40 @@ func keyedEvals(entries []Entry) []string {
 }
 
 // deployRepoCase is the condition that keeps, of the day rows or the stored figures of the evals
-// it is applied to, those of the deploy repository each eval's read reads (DeployRepoOf): of the
-// evals the array parameter keyed names (keyedEvals) the rows of the repository the text parameter
-// deployRepo names, and of every other eval the rows of none.
-func deployRepoCase(column, keyed, deployRepo string) string {
-	return column + ` = case when eval_id = any(` + keyed + `::text[]) then ` + deployRepo + `::text else '' end`
+// it is applied to, those of the deploy repositories each eval's read reads (DeployRepoOf): of the
+// evals the array parameter keyed names (keyedEvals) the rows of each repository of their project
+// the array parameters projects and repos name pairwise (DeployRepos.pairs), and of every other
+// eval the rows of none.
+func deployRepoCase(column, keyed, projects, repos string) string {
+	return `(case when eval_id = any(` + keyed + `::text[])
+		then (project_key, ` + column + `) in (select * from unnest(` + projects + `::text[], ` + repos + `::text[]))
+		else ` + column + ` = '' end)`
 }
 
-// keptRepo is one repository whose rows of the evals that read the deploy repository are kept,
-// whether it holds a deploy run, which the production rule and the deploy cards read, and since,
-// the UTC midnight of its first deploy or PR-checks run, before which no row of it is kept.
+// EventsRepo is the deploy repository project's posted deploys are kept under (the package
+// comment's events repository): no repository's name, which holds a slash.
+func EventsRepo(project string) string {
+	return delivery.SourceKindEvents + ":" + project
+}
+
+// eventsProject is the project whose events repository repo is (EventsRepo), false for a
+// repository's name.
+func eventsProject(repo string) (string, bool) {
+	return strings.CutPrefix(repo, delivery.SourceKindEvents+":")
+}
+
+// ruleKey is the key a repository's rule is held by (refresh.rules, refresh.builtUnder): its name
+// without case, as a source names it and as the runs of it are stored either way.
+func ruleKey(repo string) string {
+	return strings.ToLower(repo)
+}
+
+// keptRepo is one repository whose rows of the evals that read the deploy repository are kept:
+// its rule (rule.DeployRepo the repository as its rows are keyed, rule.Project its source's
+// project), whether it holds a deploy run, which the production rule and the deploy cards read,
+// and since, the UTC midnight of its first deploy or PR-checks run, before which no row of it is
+// kept. An events repository (EventsRepo) holds no deploy run and no job name in its rule, and its
+// since is the first day a posted deploy of the project finished (readPostedRepos).
 //
 // since is the start of the history the reconcile holds for the repository: the reconcile lists
 // the deploy repository's runs from delivery.BackfillWindow before the first pass after the
@@ -147,6 +263,7 @@ type keptRepo struct {
 	name    string
 	deploys bool
 	since   time.Time
+	rule    delivery.DeliverySettings
 }
 
 // readDeployRepos reads the repositories whose rows of the evals that read the deploy repository
@@ -184,6 +301,100 @@ func readDeployRepos(ctx context.Context, q delivery.Querier) ([]keptRepo, error
 	}
 	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.name, b.name) })
 	return repos, nil
+}
+
+// readPostedRepos reads the events repository of each of rules (eventsRule: one per project with
+// delivery on and an events source) that holds a posted deploy, with its rule and its start: the
+// UTC midnight of its first posted deploy's finish, one probe of production_events_window
+// (project_key, kind, finished_at desc) read from its low end, so a page reads no more of the
+// record than that row whatever its length. A pull request merged before that day that a posted
+// deploy names is an item of no day of the repository, as one merged before a source repository's
+// first run is of no day of it (keptRepo.since).
+func readPostedRepos(ctx context.Context, q delivery.Querier, rules []delivery.DeliverySettings) ([]keptRepo, error) {
+	var repos []keptRepo
+	for _, rule := range rules {
+		var first *time.Time
+		if err := q.QueryRow(ctx, `
+			select min(finished_at) from (
+				select finished_at from production_events
+				where project_key = $1 and kind = $2 and source = $3 and finished_at is not null
+				order by finished_at
+				limit 1
+			) as first
+		`, rule.Project, prodevents.KindDeploy, prodevents.SourceAPI).Scan(&first); err != nil {
+			return nil, fmt.Errorf("read the first posted deploy of %s: %w", rule.Project, err)
+		}
+		if first != nil {
+			repos = append(repos, keptRepo{name: rule.DeployRepo, since: measures.Midnight(*first), rule: rule})
+		}
+	}
+	return repos, nil
+}
+
+// eventsRule is the rule of project's events repository (EventsRepo): its project alone, which
+// its posted deploys count for, and no job name, since no run of it is judged.
+func eventsRule(project string) delivery.DeliverySettings {
+	return delivery.DeliverySettings{Project: project, DeployRepo: EventsRepo(project), ProductionJobNames: []string{}}
+}
+
+// postedPage is how many rows postedDeploys reads of the record at a time.
+const postedPage = 1000
+
+// postedEnd is the end of the window postedDeploys reads: later than any deploy finishes.
+var postedEnd = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// postedDeploys reads, in q, project's posted deploys that finished from from up to to, newest
+// first: the rows of the record (prodevents.List, a range of production_events_window) of kind
+// deploy and source api, which a system posted to the project's route (dispatch://INFRA-978, R1
+// and R12). The GitHub adapter's deploy rows, source github, are a repository's runs, which a
+// source repository's rows count already.
+func postedDeploys(ctx context.Context, q delivery.Querier, project string, from, to time.Time) ([]prodevents.Event, error) {
+	var posted []prodevents.Event
+	for offset := 0; ; offset += postedPage {
+		page, total, err := prodevents.List(ctx, q, prodevents.ListQuery{
+			Project: project, From: from, To: to, Kind: prodevents.KindDeploy, Limit: postedPage, Offset: offset,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read the posted deploys of %s: %w", project, err)
+		}
+		for _, event := range page {
+			if event.Source == prodevents.SourceAPI && event.FinishedAt != nil {
+				posted = append(posted, event)
+			}
+		}
+		if len(page) < postedPage || offset+len(page) >= total {
+			return posted, nil
+		}
+	}
+}
+
+// parsePullRequestRef is the repository and number of a pull request a posted deploy names as
+// `owner/repo#n` (production_events.pull_requests), false for a name of no other shape.
+func parsePullRequestRef(ref string) (string, int, bool) {
+	hash := strings.LastIndex(ref, "#")
+	if hash <= 0 || !strings.Contains(ref[:hash], "/") {
+		return "", 0, false
+	}
+	number, err := strconv.ParseInt(ref[hash+1:], 10, 32)
+	if err != nil || number <= 0 {
+		return "", 0, false
+	}
+	return ref[:hash], int(number), true
+}
+
+// PostedMember is a posted deploy's row key in eval_day_members: `production_event:<id>`.
+func PostedMember(id string) string {
+	return "production_event:" + id
+}
+
+// keptRules is each of repos' rule, its DeployRepo the repository as its rows are keyed, in their
+// order: what ZeroDeliveryDay builds each repository's zero rows under.
+func keptRules(repos []keptRepo) []delivery.DeliverySettings {
+	rules := make([]delivery.DeliverySettings, len(repos))
+	for i, repo := range repos {
+		rules[i] = repo.rule
+	}
+	return rules
 }
 
 // deployRepoNames is the names of repos, in their order.

@@ -512,15 +512,15 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 
 // commitPage moves the two cursors to the positions a page read, begins again each walk the page's
 // changes call for, begins the rebuild they call for (work.rebuild: of every served family,
-// replaceRebuild), records work.built, where it is set, as the delivery settings the delivery and
-// CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
-// repositories they stand built for (syncKept), in one transaction, which first writes rebuilds:
-// the days of each family whose days the page writes in its commit, with every other day they
-// move (writeRebuilds: the rows, then the members, then the stored figures, ahead of the cursors,
-// the walks and the settings). The days the page named that move no other day are written before
-// it, so a crash between the two reads the same changes again, and a walk or a rebuild the changes
-// begin is recorded with the cursor that passed them, and with the settings it builds under where
-// none were recorded (syncSettings). A walk a lost cursor begins again is one of a family no rows
+// replaceRebuild), records, where work.record is set, the rules the delivery and CI rows stand
+// built under and the repositories they stand built for (eval_days_rules, refresh.builtUnder:
+// syncSettings, syncKept), in one transaction, which first writes rebuilds: the days of each family
+// whose days the page writes in its commit, with every other day they move (writeRebuilds: the
+// rows, then the members, then the stored figures, ahead of the cursors, the walks and the rules).
+// The days the page named that move no other day are written before it, so a crash between the
+// two reads the same changes again, and a walk or a rebuild the changes begin is recorded with the
+// cursor that passed them, and with the rules it builds under where none were recorded
+// (syncSettings). A walk a lost cursor begins again is one of a family no rows
 // are served of, which a walk builds in the open; a served family's is the rebuild's. Where one of
 // the page's changes is of the delivery settings row and no rewrite of the page said so already,
 // the commit says that the day rows stand at the settings (markSettingsApplied). The event cursor
@@ -588,13 +588,8 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return err
 		}
 	}
-	if work.built != nil {
-		if err := recordBuiltUnder(ctx, tx, *work.built); err != nil {
-			return err
-		}
-	}
-	if work.kept != nil {
-		if err := recordKept(ctx, tx, work.kept); err != nil {
+	if work.record {
+		if err := recordRules(ctx, tx, r.builtUnder); err != nil {
 			return err
 		}
 	}

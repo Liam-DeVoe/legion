@@ -232,7 +232,7 @@ func (r *refresh) servedWalks(ctx context.Context) ([]walkKey, error) {
 		return nil, err
 	}
 	var keys []walkKey
-	if r.settings != nil && served(serving, walkKey{family: walkDelivery}) {
+	if r.delivers() && served(serving, walkKey{family: walkDelivery}) {
 		keys = append(keys, walkKey{family: walkDelivery})
 	}
 	for _, project := range r.projects {
@@ -394,7 +394,7 @@ func (r *refresh) walkRebuild(ctx context.Context, walks map[walkKey]walkState) 
 	pending := false
 	for _, family := range []dayFamily{deliveryFamily, legionFamily} {
 		for _, key := range rb.walksOf(family.walk) {
-			if family.walk == walkDelivery && r.settings == nil {
+			if family.walk == walkDelivery && !r.delivers() {
 				continue
 			}
 			if !r.caughtUp(walks, r.serving, family.walk) {
@@ -1272,7 +1272,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if cut.repo != "" {
 		repos = []string{cut.repo}
 	}
-	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), repos, r, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1365,8 +1365,8 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 		named := make([]*namedDay, 0, len(days))
 		for _, one := range days {
 			switch {
-			case family.walk == walkDelivery && r.settings == nil:
-				// No delivery settings, no delivery row: the day holds none.
+			case family.walk == walkDelivery && !r.delivers():
+				// No project has delivery on, no delivery row: the day holds none.
 				named = append(named, &namedDay{project: one.project, day: one.day, raw: ProjectDay{Project: one.project, Day: one.day}})
 			case family.walk == walkDelivery:
 				read, err := r.readDelivery(ctx, one.day, nil)
@@ -1374,7 +1374,7 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 					return false, err
 				}
 				named = append(named, &namedDay{project: one.project, day: one.day, raw: read.Rows(one.project),
-					zeros: ZeroDeliveryDay(*r.settings, one.project, one.day, read.repos).Rows})
+					zeros: ZeroDeliveryDay(one.project, one.day, read.rules).Rows})
 			default:
 				read, err := r.store.ReadLegionDay(ctx, one.project, one.day)
 				if err != nil {

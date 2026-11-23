@@ -42,7 +42,8 @@ import (
 //
 // Each is kept for the rows of each deploy repository apart, as the day rows are (deploy_repos.go):
 // a fold of the evals that read the deploy repository for each repository whose rows of them are
-// kept, and a read looks up the fold of the repository recorded with the rows (DeployRepoIn).
+// kept, and a read looks up the fold of its project's repository recorded with the rows
+// (DeployReposIn), or folds the day rows where the project reads several (StoredFigures.several).
 //
 // A range exists for every length of FigureLengths and every end day from the day after the
 // eval's first row through FigureLead days after today, for the project's own rows and for each
@@ -876,7 +877,7 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 	if cut.repo != "" {
 		repos = []string{cut.repo}
 	}
-	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, cut.deployRepo, repos, r, nil)
+	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), repos, r, nil)
 	if err != nil {
 		return nil, err
 	}

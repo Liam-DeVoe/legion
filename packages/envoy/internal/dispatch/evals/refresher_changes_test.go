@@ -30,7 +30,7 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: settings.DeployRepo, deploys: true, rule: deployRule(t, r.database.Pool, settings.DeployRepo)}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -795,7 +795,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 		rig.putSettings(t, settings, alice)
 	}
 	r.pass(t)
-	walk.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walk.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
 	walk.settle(t)
 	if left := r.count(t, `select count(*) from eval_days where eval_id = $1`, gate); left != 0 {
 		t.Errorf("%s holds %d rows once the settings stop making its card, want none", gate, left)
@@ -858,14 +858,14 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		t.Fatalf("%s has no deploy-frequency eval", main)
 	}
 	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
-	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, repo)
+	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, DeployReposOf(main, repo))
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, repo, nil, window, nil)
+		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, DeployReposOf(main, repo), nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}

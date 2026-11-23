@@ -151,9 +151,6 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		}
 		return nil
 	}
-	if _, err := delivery.PutSettings(ctx, pool, deliverySettingsOf(deployRepo), actor); err != nil {
-		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
-	}
 	// Each project names alice as its default assignee, the column every project fills (store
 	// migration 20261111210103), as the Legion mode's history does; no attribution reads it. A
 	// project the database holds already takes the case's default repository too.
@@ -163,6 +160,9 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 		on conflict (key) do update set default_repo = excluded.default_repo`,
 		result.Projects, []string{deployRepo, otherRepo, ""}); err != nil {
 		return AttributionResult{}, err
+	}
+	if _, err := PutDeliverySettings(ctx, pool, project, deliverySettingsOf(deployRepo), actor); err != nil {
+		return AttributionResult{}, fmt.Errorf("write the delivery settings of k15's case: %w", err)
 	}
 	day := measures.Midnight(now).AddDate(0, 0, -1)
 	at := func(minutes int) time.Time { return day.Add(10*time.Hour + time.Duration(minutes)*time.Minute) }

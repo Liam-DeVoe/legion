@@ -499,7 +499,7 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	r.write(t, slug, alice, reading("c", 6))
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	for _, repos := range [][]string{nil, {"acme/web"}} {
-		days, err := r.registry.DayWindow(ctx, []string{r.project}, r.entries(t, evalID), "", repos, window, nil)
+		days, err := r.registry.DayWindow(ctx, []string{r.project}, r.entries(t, evalID), nil, repos, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of %v: %v", repos, err)
 		}

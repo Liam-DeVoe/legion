@@ -53,7 +53,7 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	}
 	entry := Entry{Definition: Definition{EvalID: row.EvalID, Source: SourceFoldTiming},
 		Series: []Series{{EvalID: row.EvalID, Series: part.Series, SeriesComputation: SeriesComputation{Agg: AggLast}}}}
-	window, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, "", []string{row.Repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
+	window, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, nil, []string{row.Repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read the row's window: %v", err)
 	}

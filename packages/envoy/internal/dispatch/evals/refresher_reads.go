@@ -419,11 +419,18 @@ func (s *Store) heldDays(ctx context.Context, family string, projects, slugs []s
 }
 
 // deliveryInputStart is the earliest moment a delivery day can hold input: the first merge of a
-// pull request (delivery_pull_requests_merged_at) and the first start of a deploy or PR-checks run
-// of any of repos, the repositories whose rows are kept per deploy repository (one probe of
-// delivery_runs_kind_started_at for each repository and kind), nil where neither exists.
-func (s *Store) deliveryInputStart(ctx context.Context, repos []string) (*time.Time, error) {
+// pull request (delivery_pull_requests_merged_at), the first start of a deploy or PR-checks run of
+// any of repos, the repositories whose rows are kept per deploy repository (one probe of
+// delivery_runs_kind_started_at for each repository and kind), and the start of each events
+// repository among them (keptRepo.since, its first posted deploy's day); nil where none exists.
+func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time.Time, error) {
 	var earliest *time.Time
+	names := []string{}
+	for _, repo := range repos {
+		if _, posted := eventsProject(repo.name); !posted {
+			names = append(names, repo.name)
+		}
+	}
 	if err := s.database.Pool.QueryRow(ctx, `
 		select least(
 			(select min(merged_at) from delivery_pull_requests where merged_at is not null),
@@ -431,8 +438,14 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []string) (*time.T
 				cross join lateral (select least(
 					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $2),
 					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $3)) as first) runs))
-	`, nonNil(repos), string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
+	`, names, string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
+	}
+	for _, repo := range repos {
+		if _, posted := eventsProject(repo.name); posted && (earliest == nil || repo.since.Before(*earliest)) {
+			since := repo.since
+			earliest = &since
+		}
 	}
 	return earliest, nil
 }

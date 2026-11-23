@@ -392,7 +392,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	pipelineDays := measures.ShownDays(pipelineAt)
 	query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
 	read := func(repos []string, span evals.Range) map[string][]measures.DayPart {
-		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, fixture.DeployRepo, repos, span, nil)
+		rows, err := registry.DayWindow(t.Context(), []string{fixture.Project}, entries, evals.DeployReposOf(fixture.Project, fixture.DeployRepo), repos, span, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s..%s for %v: %v", span.From.Format(time.DateOnly), span.To.Format(time.DateOnly), repos, err)
 		}
@@ -644,7 +644,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		entries = slices.DeleteFunc(entries, func(entry evals.Entry) bool {
 			return entry.Definition.EvalID != evals.EvalID(project, evals.SlugDeployFrequency)
 		})
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, fixture.DeployRepo, nil, evals.Range{From: from, To: to}, nil)
+		rows, err := registry.DayWindow(ctx, []string{project}, entries, evals.DeployReposOf(project, fixture.DeployRepo), nil, evals.Range{From: from, To: to}, nil)
 		if err != nil {
 			t.Fatalf("read the deploy-frequency rows of %s: %v", project, err)
 		}

@@ -177,7 +177,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 					entries = append(entries, entry)
 				}
 			}
-			read, err := r.registry.DayWindow(ctx, []string{project}, entries, cut.deployRepo, named, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
+			read, err := r.registry.DayWindow(ctx, []string{project}, entries, DeployReposOf(project, cut.deployRepo), named, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
 			if err != nil {
 				t.Fatalf("read the day rows of %s %q of %q: %v", project, repo, cut.deployRepo, err)
 			}
@@ -551,9 +551,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	// day of staging-e2e, folding the figures of the days it moved in its own transaction.
 	settings := deliveries.Settings
 	settings.StagingE2EJobName = new("no-such-job")
-	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, model.Actor{Kind: "system", ID: "figures-test"}); err != nil {
-		t.Fatalf("rename the staging e2e job: %v", err)
-	}
+	r.putSettings(t, settings, model.Actor{Kind: "system", ID: "figures-test"})
 	r.settle(t)
 	state = r.expectRewrites(t, "a settings change", state, true, nil)
 
@@ -1654,6 +1652,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	seedProjectSettings(t, r.database.Pool, deliveries)
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)
@@ -2079,4 +2078,67 @@ func TestTheFoldOfOneCutOfSixEvalsIsTimed(t *testing.T) {
 	}
 	t.Logf("a fold of %d ranges and days of %d evals on %d workers (GOMAXPROCS %d): wall median %v, min %v; CPU median %v, min %v; allocated %v bytes, %v collections; walls %v, CPU %v",
 		folds, len(groups), workers, runtime.GOMAXPROCS(0), median(walls), slices.Min(walls), median(cpus), slices.Min(cpus), allocated, collections, walls, cpus)
+}
+
+// TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository: over the settled three-source
+// history, OMEGA reads one deploy repository, so the stored figures answer its deploy-frequency over
+// the last seven days by lookup, bit for bit the fold of its day rows; ALPHA reads two, which no
+// stored row folds together, so the stored figures decline its deploy-frequency and the day rows'
+// fold counts both repositories' deploys, each under its own rule.
+func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	ctx := t.Context()
+	window := Range{From: refresherToday.AddDate(0, 0, -6), To: refresherToday.AddDate(0, 0, 1)}
+	if !FiguresOffered(nil, window, nil) {
+		t.Fatalf("the stored figures offer no read of %v", window)
+	}
+	repos, err := DeployReposIn(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for project, want := range map[string]struct {
+		stored bool
+		n      int
+	}{"OMEGA": {true, 1}, "ALPHA": {false, 2}} {
+		page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
+		if err != nil {
+			t.Fatalf("read %s's evals: %v", project, err)
+		}
+		index := slices.IndexFunc(page.Items, func(entry Entry) bool { return entry.Definition.Slug == SlugDeployFrequency })
+		if index < 0 {
+			t.Fatalf("%s holds no deploy-frequency eval", project)
+		}
+		entry := page.Items[index]
+		firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := r.registry.DayWindow(ctx, []string{project}, []Entry{entry}, repos, nil, window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil)
+		n := 0
+		for _, row := range rows {
+			if row.Part.Series == "deploys" {
+				n += row.Part.N
+			}
+		}
+		if n != want.n {
+			t.Errorf("%s's day rows of deploy-frequency count %d deploys over the week, want %d", project, n, want.n)
+		}
+		stored, err := r.registry.ReadStoredFigures(ctx, []string{project}, []Entry{entry}, repos, "", window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, _, ok := stored.SeriesValues(entry, firsts[entry.Definition.EvalID], window, nil)
+		if ok != want.stored {
+			t.Fatalf("the stored figures answer %s's deploy-frequency: %t, want %t", project, ok, want.stored)
+		}
+		if ok && !reflect.DeepEqual(values, folded) {
+			t.Errorf("the stored figures of %s's deploy-frequency answer %+v, the day rows' fold %+v", project, values, folded)
+		}
+	}
 }

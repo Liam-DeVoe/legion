@@ -876,14 +876,12 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	fixture := deliverytest.Seed(t, r.database.Pool, recorded.Fixture.Spec)
-	settings, err := delivery.GetSettings(ctx, r.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	seedProjectSettings(t, r.database.Pool, fixture)
+	settings := deployRule(t, r.database.Pool, fixture.DeployRepo)
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
+		read, err := r.registry.readDeliveryDay(ctx, []keptRepo{{name: settings.DeployRepo, deploys: true, rule: settings}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery day %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -894,7 +892,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 		}
 		days++
 	}
-	storedSeries(fixture.Project, ZeroDeliveryDay(settings, fixture.Project, fixture.To, []string{settings.DeployRepo}).Rows, written)
+	storedSeries(fixture.Project, ZeroDeliveryDay(fixture.Project, fixture.To, []delivery.DeliverySettings{settings}).Rows, written)
 	if err := r.registry.WriteUnownedP0Day(ctx, fixture.Project, fixture.To, testBuild); err != nil {
 		t.Fatalf("write the unowned-p0 row: %v", err)
 	}
