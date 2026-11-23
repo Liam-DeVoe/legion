@@ -631,11 +631,14 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // The architect's phase starts nobody, except where the issue stands at a step or a retro the
 // owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): there the
 // retry tells the owner its step again, with the retry's task, as a worker is sent its task again,
-// and starts no run (tellOwner). The operator's retry of the owner's claim (`legion claims retry`)
-// reaches it through restartPhase, after the route relaunched the claim through its machine (api's
-// retryStart), and it gives the owner every restart of the step's run again
-// (record.Store.ResetOwnerRestarts): a retry is a person's move, and the daemon starts the owner
-// again after a later failure as it did after the first (restartFailedOwner).
+// and starts no run (tellOwner). It tells nothing while an owner-step of the issue still waits in
+// the outbox (record.Store.NoticePending, the check owedOwnersStep reads): that row names the same
+// run, since a retry starts none, and a second would tell the owner its step twice. The operator's
+// retry of the owner's claim (`legion claims retry`) reaches it through restartPhase, after the
+// route relaunched the claim through its machine (api's retryStart), and it gives the owner every
+// restart of the step's run again (record.Store.ResetOwnerRestarts), whether or not it tells the
+// step: a retry is a person's move, and the daemon starts the owner again after a later failure as
+// it did after the first (restartFailedOwner).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" {
 		return nil
@@ -654,6 +657,9 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 			return err
 		}
 		if err := e.store.ResetOwnerRestarts(ctx, tx, issue.Key, step.place); err != nil {
+			return err
+		}
+		if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
 			return err
 		}
 		return e.tellOwner(ctx, tx, issue, step, told(at))

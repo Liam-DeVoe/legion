@@ -48,15 +48,18 @@ func stepStartsAt(t *testing.T, pool *pgxpool.Pool, key, kind string, place int)
 // starts no claim. An issue with no plan rows at the move into accepting writes today's start record
 // under the architect alone, raises no entry and tells no owner-step: the reviewer's phase-finished
 // tells it, as today. The operator's retry of the owner's claim at its step (restartPhase) tells the
-// owner its step again with the retry's reason, and starts no second run, as a worker's retry
-// hands it its entry again. (A re-admission's promotion is admit's
+// owner its step again with the retry's reason once the owner-step it was told is published, and
+// starts no second run, as a worker's retry hands it its entry again; while an owner-step of the
+// step still waits in the outbox, which names the same run, the retry tells nothing more, so the
+// owner hears its step once. (A re-admission's promotion is admit's
 // TestATreeAdmittedAgainTellsTheOwnerItsStep.)
 //
 // The controls: start as it was (the caller's role decides; the architect starts nothing) starts the
 // implementer and tells no owner-step in the first three paths, and writes no start record at the
 // two moves into accepting; the owner's branch taken only where the caller passes the architect
 // starts the implementer at the first and a claim of acceptance at the fourth; restart as it was
-// (the architect's phase starts nobody) tells nothing at the retry.
+// (the architect's phase starts nobody) tells nothing at the retry; the retry that told the owner
+// whatever stood queued writes a second owner-step of the same run beside a queued one.
 func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 	owner := treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
 
@@ -176,27 +179,49 @@ func TestAnOwnerStepIsToldToTheOwnerFromEachStartPath(t *testing.T) {
 		}
 	})
 
-	t.Run("the operator's retry of the owner's claim at its step", func(t *testing.T) {
+	// retried is LEGION-208 at the owner's implementer step of `implementer:owner reviewer` after
+	// the operator's retry of the owner's claim, with the gate's owner-step published (deleted from
+	// the outbox, as a published row is) first where published is true.
+	retried := func(t *testing.T, published bool) (*pgxpool.Pool, record.Issue) {
+		t.Helper()
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:owner", "reviewer")
 		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		if published {
+			if _, err := pool.Exec(t.Context(), `delete from outbox where kind = 'notice' and issue = $1 and payload->>'kind' = $2`,
+				root.Key, string(record.OwnerStepNotice)); err != nil {
+				t.Fatalf("publish the gate's owner-step: %v", err)
+			}
+		}
 		if result := applyFacts(t, pool, engine)("retry", intake.RestartPhase{Issue: root.Key, Role: claim.RoleArchitect}); result.Refusal != nil {
 			t.Fatalf("the operator's retry of the owner was refused: %+v", result.Refusal)
-		}
-
-		notices := ownerSteps(t, pool, root.Key)
-		if len(notices) != 2 || notices[1].Role != claim.RoleImplementer || notices[1].Phase != phase.Implementing {
-			t.Fatalf("the retry told %+v, want a second owner-step of the implementer's step", notices)
-		}
-		if !strings.Contains(notices[1].Reason, " Reason: the operator retried this phase's worker.") || !strings.Contains(notices[1].Reason, " Step 1 of 2: implementer:owner.") {
-			t.Fatalf("the retry's owner-step task = %q, want it to name step 1 and the retry's reason", notices[1].Reason)
 		}
 		if starts := stepStartsAt(t, pool, root.Key, "step", 1); len(starts) != 1 {
 			t.Fatalf("the start records of step 1 = %+v, want the one of the gate's opening: a retry starts no run", starts)
 		}
 		assertNoClaimStarts(t, pool, root.Key)
+		return pool, root
+	}
+
+	t.Run("the operator's retry of the owner's claim at its step", func(t *testing.T) {
+		pool, root := retried(t, true)
+		notices := ownerSteps(t, pool, root.Key)
+		if len(notices) != 1 || notices[0].Role != claim.RoleImplementer || notices[0].Phase != phase.Implementing {
+			t.Fatalf("the retry told %+v, want one owner-step of the implementer's step", notices)
+		}
+		if !strings.Contains(notices[0].Reason, " Reason: the operator retried this phase's worker.") || !strings.Contains(notices[0].Reason, " Step 1 of 2: implementer:owner.") {
+			t.Fatalf("the retry's owner-step task = %q, want it to name step 1 and the retry's reason", notices[0].Reason)
+		}
+	})
+
+	t.Run("the operator's retry of the owner's claim while its owner-step is still queued", func(t *testing.T) {
+		pool, root := retried(t, false)
+		notices := ownerSteps(t, pool, root.Key)
+		if len(notices) != 1 || strings.Contains(notices[0].Reason, "the operator retried") {
+			t.Fatalf("the owner-steps after the retry = %+v, want the gate's one alone: the queued row already tells the run's step", notices)
+		}
 	})
 }
 
