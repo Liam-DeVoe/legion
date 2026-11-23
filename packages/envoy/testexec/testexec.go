@@ -6,16 +6,21 @@
 // refuses to exec a file some process holds open for writing. WriteFile writes it with
 // programfile.Write, the writer of every program file in the code a deployment runs too, which
 // keeps every fork of the process out of that span, so no process the test binary starts can hold
-// the file open when it runs. ForkBeside is the forking a test of such a write runs beside it.
-// Unguarded is the check the modules' text checks hold their code and their tests to.
+// the file open when it runs. ForkBeside is the forking a test of such a write runs beside it, on
+// a kernel that refuses such a run at all. Unguarded is the check the modules' text checks hold
+// their code and their tests to.
 package testexec
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/envoy/programfile"
@@ -32,12 +37,18 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 // goroutines start commands, as a daemon's do and as tests running beside each other do. A test
 // that writes a file and then runs it beside them meets ETXTBSY whenever a child forked inside the
 // write still holds the file open at the run. A machine with no true command fails the test, since
-// such a test would then measure nothing.
+// such a test would then measure nothing. So would a kernel that runs a file some process holds
+// open for writing, as gVisor does: there no run can meet ETXTBSY and the test would pass with the
+// fault present, so ForkBeside first runs a program it holds open for writing itself and skips the
+// test, naming what the run did, unless the kernel refused it.
 func ForkBeside(t testing.TB, n int) {
 	t.Helper()
 	forker, err := exec.LookPath("true")
 	if err != nil {
 		t.Fatalf("no true command to fork beside the test: %v", err)
+	}
+	if err := runHeldOpen(t); !errors.Is(err, syscall.ETXTBSY) {
+		t.Skipf("this kernel ran a program this process held open for writing (it answered %v, not ETXTBSY), as gVisor does, so no run of this test can meet the fault it looks for", err)
 	}
 	var stop atomic.Bool
 	var forks sync.WaitGroup
@@ -52,4 +63,21 @@ func ForkBeside(t testing.TB, n int) {
 		stop.Store(true)
 		forks.Wait()
 	})
+}
+
+// runHeldOpen writes a program, opens it again for writing, runs it while it is open and answers
+// the run's error: ETXTBSY on a kernel that refuses to run a file some process holds open for
+// writing, as Linux does every time, and nil on one that runs it.
+func runHeldOpen(t testing.TB) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "held-open")
+	if err := programfile.Write(path, os.O_EXCL, 0o700, strings.NewReader("#!/bin/sh\nexit 0\n")); err != nil {
+		t.Fatalf("write the program the kernel's refusal is read from: %v", err)
+	}
+	held, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("hold the program open for writing: %v", err)
+	}
+	defer held.Close()
+	return exec.Command(path).Run()
 }

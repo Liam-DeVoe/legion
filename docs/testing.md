@@ -571,8 +571,10 @@ of such a file: it holds `syscall.ForkLock` for reading from the open to the clo
 fork of a Go process takes for writing, so no fork falls inside the write.
 `testexec.WriteFile` is `os.WriteFile`'s shape for a test, and writes with `programfile.Write`.
 A test of a place that writes such a file starts `testexec.ForkBeside` and runs the file as soon
-as it is written, many times; it fails on a run refused with `ETXTBSY`. Run such a test on a Linux
-kernel: gVisor has not refused such an exec at every version.
+as it is written, many times; it fails on a run refused with `ETXTBSY`. gVisor runs a file some
+process holds open for writing, so there such a test passed with the fault present (every one of
+them, under gVisor in a build pod, 2026-11-23). `ForkBeside` first runs a program it holds open
+for writing itself, and skips the test, saying why, on a kernel that does not refuse it.
 
 Three kinds of file write such a file with `programfile.Write`, or with `testexec.WriteFile` in a
 test: every file that is no test file (the code a deployment runs, and a test-support package, a
