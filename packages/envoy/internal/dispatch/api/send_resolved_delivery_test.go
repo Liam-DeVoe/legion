@@ -109,12 +109,12 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 	}
 }
 
-// A send the listener answers with an outage - a 408 a proxy in front of it answered, the 429 of
-// its check of too many access tokens from one address, a 502, or a 501 or 505 from whatever sits
-// in front of it - is a failure a later try can outlast: the attempt records it under
-// listenerUnreachablePrefix, and the take-over retry asks again (retryableDeliveryFailure). The
-// listener's own 500, for a record it holds and cannot decode, and its 400 are its answers, which
-// settle the attempt at once.
+// A send the listener answers with an outage - a 408 or a 429 from something in front of it (the
+// listener answers no 408, and its own 429s reach no Bearer caller such as Dispatch), a 502, or a
+// 501 or 505 from whatever sits in front of it - is a failure a later try can outlast: the
+// attempt records it under listenerUnreachablePrefix, and the take-over retry asks again
+// (retryableDeliveryFailure). The listener's own 500 (listenerwire.FaultStatus) and its 400 are
+// its answers, which settle the attempt at once.
 func TestASendTheListenerAnsweredWithAnOutageIsTriedAgain(t *testing.T) {
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
@@ -124,7 +124,7 @@ func TestASendTheListenerAnsweredWithAnOutageIsTriedAgain(t *testing.T) {
 		retried bool
 	}{
 		{http.StatusRequestTimeout, `<html>408 Request Timeout</html>`, true},
-		{http.StatusTooManyRequests, `{"error":"too many access tokens checked from this address"}`, true},
+		{http.StatusTooManyRequests, `<html>429 Too Many Requests</html>`, true},
 		{http.StatusBadGateway, `{"error":"upstream connect error"}`, true},
 		{http.StatusNotImplemented, ``, true},
 		{http.StatusHTTPVersionNotSupported, `{"error":"HTTP version not supported"}`, true},

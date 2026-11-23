@@ -19,9 +19,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
-	"github.com/sjawhar/legion/daemon/internal/httpstatus"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -72,7 +73,7 @@ type Lease struct {
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
 // same request may pass when it is made again: no answer at all (a transport failure, including a
-// request or a body read cut off by its deadline), an outage (httpstatus.Outage: a 5xx, a 408 for
+// request or a body read cut off by its deadline), an outage (httpoutage.Is: a 5xx, a 408 for
 // a request the server did not take in time, or a 429), or a rate limit (a 403 that says it is
 // one). Every other failure is GitHub's definitive answer, or one about the configuration, and
 // asking again changes nothing.
@@ -108,12 +109,12 @@ func (m *Manager) answered(response *http.Response, body []byte, err error) *Ans
 }
 
 // transient marks a response, whose body is body, as GitHub's trouble rather than an answer: an
-// outage (httpstatus.Outage: a 5xx, a 408 or a 429), or a rate limit (the answer's RateLimited,
+// outage (httpoutage.Is: a 5xx, a 408 or a 429), or a rate limit (the answer's RateLimited,
 // githubrest.RateLimited, which reads the body for a secondary limit GitHub names there alone).
 // Either way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, body []byte, err error) error {
 	refused := m.answered(response, body, err)
-	if httpstatus.Outage(response.StatusCode) || refused.Answer.RateLimited {
+	if httpoutage.Is(response.StatusCode) || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused

@@ -16,7 +16,7 @@ import (
 
 // Whether an App is installed on a repository is GitHub's answer to the App's own JWT on GET
 // /repos/{owner}/{repo}/installation: 2xx is installed, 404 is not, and anything else is no
-// answer, transient when GitHub's trouble: an outage (httpstatus.Outage: a 5xx, a 408 or a 429)
+// answer, transient when GitHub's trouble: an outage (httpoutage.Is: a 5xx, a 408 or a 429)
 // or a rate limit. It is read per repository, as an installation on an owner may cover only some
 // of its repositories.
 func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {

@@ -53,15 +53,13 @@ func unreachable(err error) error { return unreachableError{err} }
 
 // outageStatus reports whether a listener answered with a status that says it could not answer
 // now rather than a decision about the request: an outage (oauthrefusal.Outage, RFC 9110: a 408,
-// a 429, a 5xx), but for a 500. The listener answers a 500 where its store answered and will
-// answer the same way again, a record it holds and cannot decode (cmd/listener
-// writeRoleClaimUnreadable, writeStoreError), and its bus failing as a 503 (writeBusUnavailable),
-// so its 500 is its answer and no outage. A 502, 503 or 504 also comes from a gateway in front of
-// a listener that is gone, a 408 only from a proxy in front of it, which did not take the request
-// in time (the listener, a Go server, answers none), and a 429 from its own check of too many
-// access tokens from one address, with a Retry-After.
+// a 429, a 5xx), but for listenerwire.FaultStatus, the 500 that is the listener's own lasting
+// answer (its doc names each cause). A 502, 503 or 504 also comes from a gateway in front of a
+// listener that is gone, and a 408 or a 429 only from something in front of it: the listener, a
+// Go server, answers no 408, and its 429s reach no Bearer caller such as this one (a DPoP token
+// presented too often, an agent sender's limit, the relay socket's).
 func outageStatus(code int) bool {
-	return oauthrefusal.Outage(code) && code != http.StatusInternalServerError
+	return oauthrefusal.Outage(code) && code != listenerwire.FaultStatus
 }
 
 // unavailableStatus is the ErrUnavailable failure err a non-200 answer reads as, marked

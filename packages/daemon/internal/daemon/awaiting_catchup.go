@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -338,10 +339,11 @@ func dispatchAnswered(err error) (*dispatch.Error, bool) {
 	return refusal, true
 }
 
-// retriable says whether Dispatch may stop giving refusal on its own: a 5xx, 408 or 429. A
-// credential refusal (401, 403) waits on an operator, and a coded 4xx on nothing at all.
+// retriable says whether Dispatch may stop giving refusal on its own: an outage (httpoutage.Is: a
+// 5xx, 408 or 429). A credential refusal (401, 403) waits on an operator, and a coded 4xx on
+// nothing at all.
 func retriable(refusal *dispatch.Error) bool {
-	return refusal.Status >= 500 || refusal.Status == http.StatusRequestTimeout || refusal.Status == http.StatusTooManyRequests
+	return httpoutage.Is(refusal.Status)
 }
 
 // catchUpRoot catches up one root: it reads the issue's latest sequence on Dispatch, mirrors the

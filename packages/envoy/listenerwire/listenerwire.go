@@ -24,7 +24,29 @@
 // always written them with.
 package listenerwire
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
+
+// FaultStatus is the one outage status the listener answers its API routes with for its own
+// lasting answer, so its clients read it as the listener answering, not as an outage, though it
+// is a 5xx: the listener gives it the same way however often it is asked, and with no Retry-After.
+// On the routes its Go clients call it means a record the listener cannot decode - a role's claim
+// record (writeRoleClaimUnreadable, GET /v1/roles/<role>) or a session's interest record
+// (writeInterestRecordUnreadable, GET /v1/registry/<session_id> and the interest reads) - or, on a
+// write route (POST /v1/interests/unsubscribe, DELETE /v1/sessions/<session_id> and the listener's
+// other writes), a store answer (writeStoreError when storeAnswered: a key the store refuses, no
+// key, a conditional write another writer beat, a record it cannot decode), and on the listings of
+// GET /v1/sessions and GET /v1/interests/ a failure of the copy they serve from other than a
+// refill, which is their 503.
+// Its bus failing, which asking again can clear, it answers 503 with Retry-After: 1
+// (writeBusUnavailable), never this. Every other outage status (httpoutage.Is) - a 408 or a 429
+// from something in front of the listener, which answers neither to a Bearer caller itself, or any
+// other 5xx - is the listener not answering now. The listener writes it through this constant and
+// both readers except it by it: the daemon's role lookup (packages/daemon/internal/notify,
+// RoleHolder) and Dispatch's client (internal/dispatch/envoy, outageStatus).
+const FaultStatus = http.StatusInternalServerError
 
 // SessionState is what a session's last registration says about it: live, unresponsive or gone.
 // The listener's internal/session declares its values (session.Live, session.Unresponsive and

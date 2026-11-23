@@ -12,9 +12,15 @@
 // TypeScript broker client by the same rule in its own language
 // (packages/cipher-client/src/person-identity.ts, grantRefused). The broker's minters read
 // GitHub's and Google's statuses by Refuses and Outage too (internal/cipher/secrets,
-// mintStatusError and classify), beside their own rate-limit reading. It imports only the
-// standard library and golang.org/x/oauth2, so a command that links no OpenID Connect verifier can
-// use it.
+// mintStatusError and classify), beside their own rate-limit reading.
+//
+// Outage is this module's one rule for any service's status, not a token endpoint's alone: every
+// envoy reader that decides on a status whether the same request may be answered if asked again
+// reads it - beside those, the agent loop's model calls (agentloop), the Azure embedder
+// (internal/dispatch/embed), Dispatch's listener client (internal/dispatch/envoy) and the load
+// test - and it is httpoutage.Is, the public door the Legion daemon reads the same definition
+// through. It imports only the standard library, golang.org/x/oauth2 and httpoutage, so a command
+// that links no OpenID Connect verifier can use it.
 package oauthrefusal
 
 import (
@@ -22,13 +28,16 @@ import (
 	"net/http"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/httpoutage"
 )
 
 // Outage reports whether status is a server that could not answer the request now: any 5xx, a 408
 // Request Timeout (it did not take the request) and a 429 Too Many Requests (it will not take one
 // yet). The set is closed: every other status is the server answering, whatever its body names.
+// It is httpoutage.Is, which says why a 501 and a 505 are in it.
 func Outage(status int) bool {
-	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
+	return httpoutage.Is(status)
 }
 
 // Refuses reports whether status is one a token endpoint refuses a request with: any 4xx that is no

@@ -983,12 +983,12 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 	}
 }
 
-// Only what says the listener could not answer now - no connection, or an outage status (a 408 a
-// proxy answered, a 429, a 502, 503 or 504, any other 5xx but 500) - is ErrUnreachable, the
-// failure a sender may wait out; a status the listener chose (a 401 for a token it refuses, a 403,
-// a 500 for a record it cannot decode) and an answer that does not decode are its answer, which
-// asking again repeats. ErrUnreachable is ErrUnavailable too, with the same text, so a caller that
-// asks only for ErrUnavailable reads a take-over exactly as before.
+// Only what says the listener could not answer now - no connection, or an outage status (a 408 or
+// a 429 from something in front of it, a 502, 503 or 504, any other 5xx but the listener's own 500,
+// listenerwire.FaultStatus) - is ErrUnreachable, the failure a sender may wait out; a status the
+// listener chose (a 401 for a token it refuses, a 403, its 500) and an answer that does not decode
+// are its answer, which asking again repeats. ErrUnreachable is ErrUnavailable too, with the same
+// text, so a caller that asks only for ErrUnavailable reads a take-over exactly as before.
 func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 	calls := map[string]func(*Client) error{
 		"session": func(client *Client) error {
@@ -1022,7 +1022,7 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 		{status: http.StatusGatewayTimeout, body: `{"error":"upstream timed out"}`, unreachable: true},
 		{status: http.StatusRequestTimeout, body: `<html>408 Request Timeout</html>`, unreachable: true},
 		{status: http.StatusRequestTimeout, body: `{"error":"request timed out"}`, unreachable: true},
-		{status: http.StatusTooManyRequests, body: `{"error":"too many access tokens checked from this address"}`, unreachable: true},
+		{status: http.StatusTooManyRequests, body: `<html>429 Too Many Requests</html>`, unreachable: true},
 		{status: http.StatusNotImplemented, body: ``, unreachable: true},
 		{status: http.StatusHTTPVersionNotSupported, body: `{"error":"HTTP version not supported"}`, unreachable: true},
 		{status: 599, body: ``, unreachable: true},

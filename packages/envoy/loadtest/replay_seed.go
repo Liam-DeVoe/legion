@@ -1290,11 +1290,11 @@ func (s *replaySeeder) anchored(ctx context.Context, kind, key string, d *issueD
 				s.addMark(d.local, 1)
 				return local, s.ids.put(ctx, rowKind, logged, local)
 			}
-			// Only a 4xx that is no outage refuses the quote: an outage status (a 408 or a 429,
-			// past write's retries) says nothing of the quote, so the seed stops on it rather than
-			// anchoring the item on another sentence.
+			// Only a 4xx that is no outage refuses the quote (oauthrefusal.Refuses): an outage
+			// status (a 408 or a 429, past write's retries) says nothing of the quote, so the seed
+			// stops on it rather than anchoring the item on another sentence.
 			var se *seedError
-			if !errors.As(err, &se) || se.status/100 != 4 || oauthrefusal.Outage(se.status) {
+			if !errors.As(err, &se) || !oauthrefusal.Refuses(se.status) {
 				return "", err
 			}
 			s.lg.Printf("%s %s: quote refused (branch %s, status %d code %q)", kind, logged, choice.Branch, se.status, se.code)
