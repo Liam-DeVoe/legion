@@ -1778,11 +1778,25 @@ address (`0.0.0.0/0` and `::/0`) and permits no IP range. The exclusion is there
 constraint applies only to names of its own kind (RFC 5280, section 4.2.1.10): permitted DNS
 names alone constrain no IP address, so the intermediate's key would sign a trusted leaf for any
 address. URI and email names are left unconstrained, since no TLS client takes either as the
-server's identity: Go's `crypto/tls` reads a leaf's DNS and IP names alone, and OpenSSL, which
-curl uses, reads the subject's common name only when the leaf has no DNS name, and holds that
-common name to the DNS constraints. A pod refuses an intermediate with a DNS name more or a name
-less, or one without the exclusion. So a change that adds a bound host to the profiles file, or
-removes one, changes the names every intermediate must carry, and it follows these rules.
+server's identity.
+
+What the constraints bound depends on the client, measured on an intermediate of this shape with
+leaves signed by its own key:
+
+- Go's `crypto/tls` and GnuTLS (which git uses) hold every name a leaf carries, its subject's
+  common name included, and refuse a leaf outside the constraints.
+- Clients built on OpenSSL (`openssl verify`, curl, Python's `ssl`, Node) read the subject's
+  common name when the leaf has no DNS name. They hold a multi-label common name such as
+  `a.evil.example` to the DNS constraints, but not a wildcard common name (`*.evil.example`,
+  `*.github.com`) or a single-label one (`localhost`): such a leaf is trusted for any name it
+  matches. Bun trusts the same leaves once they carry any URI or registeredID name.
+
+So against OpenSSL-based clients and Bun, a leaked pod key is bounded by the intermediate's life,
+at most 7 days and 5 minutes, and not by its names.
+
+A pod refuses an intermediate with a DNS name more or a name less, or one without the exclusion.
+So a change that adds a bound host to the profiles file, or removes one, changes the names every
+intermediate must carry, and it follows these rules.
 
 - **On a pool (`BROKER_PROXY_CA_POOL`), apply the pool's issuance policy first, then roll the
   pods.** The policy's name constraints become the new hosts' names, and only then do pods start

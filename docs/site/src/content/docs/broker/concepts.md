@@ -1625,8 +1625,8 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   credential: an authority of path length 0, for 7 days, whose name constraints, marked critical,
   permit the names of the profiles file's hosts, a `*.` pattern as its domain, and exclude every
   IPv4 and IPv6 address (`0.0.0.0/0` and `::/0`). The pool's issuance policy fixes what the
-  answer may be, and the pod holds the answer to it too, so a leaked pod key is never more than
-  that: the answer must certify the pod's key, chain to a root, be an authority of path length 0
+  answer may be, and the pod holds the answer to it too: the answer must certify the pod's key,
+  chain to a root, be an authority of path length 0
   whose key usage signs certificates, last 7 days and 5 minutes at most, have critical name
   constraints that permit exactly the DNS names of the bound hosts (no other name, and not no
   constraint at all), permit no IP range and exclude all of `0.0.0.0/0` and `::/0`, sign a leaf a
@@ -1634,7 +1634,13 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   answer, since every release the pod has made names that root. A name constraint applies only to
   names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS names alone would leave the
   key free to sign a trusted leaf for any IP address; the exclusion closes that. URI and email
-  names are left unconstrained, since no TLS client takes either as a server's identity. The pod
+  names are left unconstrained, since no TLS client takes either as a server's identity. What the
+  constraints bound depends on the client. Go's `crypto/tls` and GnuTLS hold every name a leaf
+  carries, its subject's common name included. Clients built on OpenSSL (`openssl verify`, curl,
+  Python's `ssl`, Node) hold a multi-label common name to the DNS constraints but not a wildcard
+  (`*.evil.example`) or single-label (`localhost`) one, and Bun trusts the same leaves once they
+  carry any URI or registeredID name; against those clients a leaked pod key is bounded by the
+  intermediate's life, at most 7 days and 5 minutes, and not by its names. The pod
   asks for the next intermediate when the one it holds has less than 2 days left, and goes on
   asking with a backoff
   of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.

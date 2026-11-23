@@ -232,15 +232,23 @@ const intermediateLifeSlack = 5 * time.Minute
 // permit no IP range, and exclude every IPv4 and every IPv6 address (0.0.0.0/0 and ::/0). The
 // policy should make each of these so, but a pod's own key signs under the intermediate, so an
 // intermediate wider than these would make a leaked pod key an authority for other authorities,
-// for longer, or for names no profile binds, under a root every command trusts.
+// for longer, for names no profile binds, or for any IP address, under a root every command
+// trusts.
 //
 // Name constraints apply to each kind of name on its own (RFC 5280, section 4.2.1.10): permitted
 // DNS names constrain no IP address, so without the exclusion the key would sign a trusted leaf
 // for any address. URI and email names are left unconstrained: no TLS client takes either as the
-// server's identity. Go's crypto/tls reads DNS and IP names alone, and OpenSSL, which curl uses,
-// reads the subject's common name only when the leaf has no DNS name, and holds that common name
-// to the DNS constraints. The constraints are critical because RFC 5280 says they MUST be, and
-// because a verifier that does not implement them ignores a non-critical extension.
+// server's identity. What the constraints bound depends on the client, measured on an intermediate
+// of this shape with leaves its own key signed: Go's crypto/tls and GnuTLS hold every name a leaf
+// carries, its subject's common name included, and refuse a leaf outside them. Clients built on
+// OpenSSL (openssl verify, curl, Python's ssl, Node) read the common name when the leaf has no DNS
+// name, and hold a multi-label common name such as a.evil.example to the DNS constraints, but not
+// a wildcard (*.evil.example, *.github.com) or single-label (localhost) one: such a leaf is
+// trusted for any name it matches. Bun trusts the same once the leaf carries any URI or
+// registeredID name. So against those clients a leaked pod key is bounded by the intermediate's
+// life, at most 7 days and intermediateLifeSlack, and not by its names. The constraints are
+// critical because RFC 5280 says they MUST be, and because a verifier that does not implement them
+// ignores a non-critical extension.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
 		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))
