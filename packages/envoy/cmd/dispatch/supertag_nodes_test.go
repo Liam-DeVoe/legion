@@ -39,6 +39,7 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
+	"../../internal/dispatch/store/migrations/20261123080000_graph_supertags_plan_task_steps.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
