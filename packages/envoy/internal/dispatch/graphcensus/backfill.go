@@ -319,7 +319,7 @@ const runOwed = `
 // neither this pass nor the sweep states it gone.
 var runRowless = `
 		from graph_nodes n
-		where ` + graphstore.RowlessRunSQL("n")
+		where ` + graphstore.RowlessRunSQL
 
 // owedBatches reads, by read, the keys a pass owes past after, in batches of backfillBatch, and
 // hands each batch that holds a key to write, until a batch comes back short. read is one text
@@ -546,7 +546,7 @@ func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, 
 		return false, err
 	}
 	var rowless bool
-	if err := tx.QueryRow(ctx, `select `+graphstore.RowlessRunSQL("n")+` from graph_nodes n where n.kind = $1 and n.id = $2`,
+	if err := tx.QueryRow(ctx, `select `+graphstore.RowlessRunSQL+` from graph_nodes n where n.kind = $1 and n.id = $2`,
 		graphstore.KindInteraction, id).Scan(&rowless); err != nil {
 		return false, fmt.Errorf("read whether run %s is still a run whose row is gone: %w", id, err)
 	}

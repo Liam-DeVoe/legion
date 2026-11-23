@@ -630,7 +630,7 @@ var goingRunsPastTheHour = `
 var goingRowlessRuns = `
 	select n.id
 	from graph_nodes n
-	where ` + graphstore.RowlessRunSQL("n") + `
+	where ` + graphstore.RowlessRunSQL + `
 	  and n.made_at < now() - make_interval(secs => $1)
 	order by n.made_at
 	limit $2`

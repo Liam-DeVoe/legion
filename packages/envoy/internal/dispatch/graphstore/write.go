@@ -86,12 +86,14 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 // beneath it, so the first is the first root as written. With no node to write it writes nothing
 // and answers none.
 func WriteState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at time.Time, who model.Actor) ([]Node, error) {
-	nodes := slices.Clone(roots)
+	var nodes []Node
 	if state == StateGone {
 		var err error
 		if nodes, err = withBeneath(ctx, tx, roots); err != nil {
 			return nil, err
 		}
+	} else {
+		nodes = slices.Clone(roots)
 	}
 	if len(nodes) == 0 {
 		return nil, nil
