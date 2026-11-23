@@ -1,20 +1,24 @@
 import type { Artifact } from "@legion/contracts";
-import { ARTIFACT_NAME_EXISTS_RULE, PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
-import { goTrimSpace } from "@legion/contracts/go-blank";
+import {
+  ARTIFACT_NAME_EXISTS_RULE,
+  PATH_KEEPS_BYTES,
+  pathKeepsBytesOf,
+  uploadStoredName,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
 /** The document an upload under `name` would write the next version of: the owner's artifact
  *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
- *  the slug first), after Dispatch trims the name with Go's `strings.TrimSpace` (`goTrimSpace`,
- *  which is not `trim`; `packages/envoy/internal/dispatch/api/artifacts.go`). Undefined where
- *  the owner holds no such document. */
+ *  the slug first), under the name Dispatch stores (`uploadStoredName`, trimmed with Go's
+ *  `strings.TrimSpace`, which is not `trim`; `packages/envoy/internal/dispatch/api/artifacts.go`).
+ *  Undefined where the owner holds no such document. */
 export function artifactUnderName(
   artifacts: readonly Artifact[],
   name: string
 ): Artifact | undefined {
-  const written = goTrimSpace(name);
+  const written = uploadStoredName(name);
   return (
     artifacts.find((held) => held.slug === written) ??
     artifacts.find((held) => held.name === written)

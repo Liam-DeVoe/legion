@@ -1,15 +1,14 @@
 import type { Handoff, HandoffSummary } from "@legion/contracts";
-import { goTrimSpace } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import { type CommandContext, type DispatchToolResult, optionalNumber, stringArg } from "./context";
 import { refusalWithCode } from "./failures";
 
 /** `dispatch handoff-write`: record this phase's handoff on the issue. */
 export async function handoffWriteCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, issue } = context;
+  const { args, client, actor, issue, hostSession } = context;
   // The Legion daemon accepts a handoff only from the session that holds the phase's claim,
   // so a write names this session and no stand-in.
-  if (!goTrimSpace(input.sessionId ?? "")) {
+  if (!hostSession) {
     throw new Error("host session id is required for dispatch handoff-write");
   }
   let recorded: HandoffSummary;

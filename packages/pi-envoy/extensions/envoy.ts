@@ -389,15 +389,6 @@ export function resetSessionRoleLoggedForTests(): void {
   delete sessionRoleLoggedStore[SESSION_ROLE_LOGGED];
 }
 
-/**
- * A role's name as the listener reads a claim's: with the characters Go's `strings.TrimSpace`
- * takes trimmed from both ends (`goTrimSpace`), which is Go's set and not JavaScript's `trim`
- * (`goBlankPattern` says where the two differ).
- */
-function listenerRoleName(role: string): string {
-  return goTrimSpace(role);
-}
-
 const NATS_RETRY_INTERVAL_MS = 15_000;
 /** Why the session's relay subject went when nats.js closed its connection and named no error. */
 const RELAY_CONNECTION_CLOSED = "the NATS connection closed";
@@ -3267,19 +3258,20 @@ export default function envoyExtension(hostApi: PiApi): void {
   // fork's or a branch's transcript carries the named session's record of the claim. Each pass
   // compares the session open then. Read when the instance is created; nothing takes them out of
   // the environment.
-  const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
+  const sessionRole = goTrimSpace(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
-  // name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`), whichever
-  // session and path meets it first, and the person is told once for each session refused, on
-  // screen, where the role stays and how to take it back.
+  // session is. The name is read as the listener reads a claim's, with the characters Go's
+  // `strings.TrimSpace` takes trimmed from both ends (`goTrimSpace`, Go's set and not `trim`'s),
+  // so a padded name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`),
+  // whichever session and path meets it first, and the person is told once for each session
+  // refused, on screen, where the role stays and how to take it back.
   const sessionRoleNotified = new Set<string>();
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
     if (
       sessionRole === undefined ||
-      listenerRoleName(role) !== sessionRole ||
+      goTrimSpace(role) !== sessionRole ||
       id === sessionRoleSession
     ) {
       return undefined;

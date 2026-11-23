@@ -312,9 +312,9 @@ func shapeRules() []shapeRule {
 				if route.CrossProject && table.projectCollections[route.Resource] && !shapeR13Rows[name] {
 					faults = append(faults, "lists across projects the rows /projects/{key}/"+route.Resource+" lists: two addresses")
 				}
-				// Only a create is held to it: a PUT of an item outside /projects/{key} that requires
-				// a project, PUT /repositories/{owner}/{repo}, writes the project as a field of the
-				// item (the project the repository maps to), not as where the item is created.
+				// Only a create is held to it, because a write of an item outside /projects/{key}, a
+				// PUT or a PATCH, names its project as a field of the item, not as where the item is
+				// created.
 				if route.Method == http.MethodPost && route.Body.Kind == bodyJSON && (len(segments) == 0 || segments[0] != "projects") && !shapeR13Rows[name] {
 					if member, named := shapeMembersOf(reflect.TypeOf(route.Body.Type))["project"]; named && member.Tag.Get("required") == "true" {
 						faults = append(faults, "creates in the one project its body requires, outside /projects/{key}")

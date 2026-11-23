@@ -9,7 +9,7 @@
 // request, and asks the model `createAskGate` resolved for the charter
 // call, on the same chain, deadline, transcript and stop. It never imports `askgate-core.ts`: the
 // walk, the dump and the stop are passed in, so the core owns them once for both calls.
-import { goTrimSpace } from "@legion/contracts/go-blank";
+import { uploadStoredName } from "@legion/contracts/dispatch-tools";
 import { askBlocks, type NewAsk, newAsks, openingOf } from "@legion/envoy-client/askgate-new-asks";
 import {
   type DocumentBlocks,
@@ -378,13 +378,12 @@ function askName(ask: NewAsk): string {
 }
 
 /**
- * The name an upload's document is stored under: Dispatch trims the name it is given with Go's
- * `strings.TrimSpace` (`packages/envoy/internal/dispatch/api/artifacts.go`), which is
- * `goTrimSpace` and not `trim`, while the dry run prints it as the command wrote it, so the read
- * and the comparison both go by the trimmed one.
+ * The name an upload's document is stored under (`uploadStoredName`): Dispatch trims the name it
+ * is given with Go's `strings.TrimSpace`, which is not `trim`, while the dry run prints it as the
+ * command wrote it, so the read and the comparison both go by the trimmed one.
  */
 const uploadName = (input: Readonly<Record<string, unknown>>) =>
-  typeof input.name === "string" ? goTrimSpace(input.name) : undefined;
+  typeof input.name === "string" ? uploadStoredName(input.name) : undefined;
 
 /**
  * The new asks a call opens, read from `first` (the scan of its arguments): a retype gets its

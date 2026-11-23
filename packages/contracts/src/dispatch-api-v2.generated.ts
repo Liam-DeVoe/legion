@@ -1859,7 +1859,7 @@ export interface paths {
     /** @description List every project by key: {key, name, open_asks, gated_steps, default_repository?, created_at}, open_asks the open asks on its open issues and its documents, gated_steps the design-gate steps the Legion deployment that serves it gates, in the order it gates them ([] for none), default_repository the repository, owner/name, an issue of the project resolves to when neither the issue nor an issue above it names one, absent for a project with none. include=default_assignee adds default_assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches, which needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise): the default names a person. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. */
     get: operations["getApiV2Projects"];
     put?: never;
-    /** @description Create a project {key, name, default_assignee?}, a bearer naming its session in actor. Every project names a default assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A credential that acts for nobody and names no default_assignee, a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. A credential scoped to one project is refused, since a project belongs to the deployment. Answers 201 the project with the default_assignee the create stored, and appends project.created. */
+    /** @description Create a project {key, name, default_assignee?}, a bearer naming its session in actor. Every project names a default assignee, the person a project's unowned work lands on: who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A login nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED. A credential that acts for nobody and names no default_assignee, a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. A credential scoped to one project is refused, since a project belongs to the deployment. Answers 201 the project as GET /api/v2/projects lists it, with the default_assignee the create stored, and appends project.created. */
     post: operations["postApiV2Projects"];
     delete?: never;
     options?: never;
@@ -3699,16 +3699,6 @@ export interface components {
       revoked_at: null | string;
       scopes: string[] | null;
       token: string;
-    };
-    CreatedProject: {
-      /** Format: date-time */
-      created_at: string;
-      default_assignee: string;
-      default_repo?: string;
-      gated_steps: string[] | null;
-      key: string;
-      name: string;
-      open_asks: number;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -12861,7 +12851,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["CreatedProject"];
+          "application/json": components["schemas"]["ProjectV2"];
         };
       };
       /** @description Bad Request */
@@ -14545,7 +14535,6 @@ export type CreatePriorityInput = components["schemas"]["CreatePriorityInput"];
 export type CreateProjectInput = components["schemas"]["CreateProjectInput"];
 export type CreateVersionInput = components["schemas"]["CreateVersionInput"];
 export type CreatedAgentToken = components["schemas"]["CreatedAgentToken"];
-export type CreatedProject = components["schemas"]["CreatedProject"];
 export type CredentialCapabilities = components["schemas"]["CredentialCapabilities"];
 export type CredentialPendingRow = components["schemas"]["CredentialPendingRow"];
 export type CredentialRequestDismissV2Input =

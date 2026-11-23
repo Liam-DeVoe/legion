@@ -7,7 +7,6 @@ import type {
   OpenAsk,
 } from "@legion/contracts";
 import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
-import { goTrimSpace } from "@legion/contracts/go-blank";
 import { textHead } from "../ask-answer";
 import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { issueTopic, type Owner, parseDispatchRef } from "../dispatch-owner";
@@ -220,14 +219,14 @@ export async function readAskRef(
   ]);
 }
 
-/** The open asks this session authored: the read `dispatch_open_asks` reports. */
+/** The open asks this session authored: the read `dispatch_open_asks` reports. `sessionId` is the
+ *  context's `hostSession`, already trimmed as Dispatch trims it. */
 async function sessionOpenAsks(
   client: DispatchClient,
   sessionId: string | undefined
 ): Promise<readonly Pick<OpenAsk, "id" | "question">[]> {
-  const session = goTrimSpace(sessionId ?? "");
-  if (!session) throw new Error("host session id is required to read this session's open asks");
-  return (await client.openAsks(session)).asks ?? [];
+  if (!sessionId) throw new Error("host session id is required to read this session's open asks");
+  return (await client.openAsks(sessionId)).asks ?? [];
 }
 
 /** The asks a refused ask id can be corrected to, in the server's own hint shape. */
@@ -276,14 +275,13 @@ async function resolveAskArgument(
 
 /** `dispatch open-asks`: the open asks this session, or one project, is waiting on. */
 export async function openAsksCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { input, linkBase, ownerArguments, newClient: dispatchClient } = context;
+  const { hostSession: sessionId, linkBase, ownerArguments, newClient: dispatchClient } = context;
   const client = dispatchClient();
   const project = optionalString(ownerArguments.args, "project");
   if (project !== undefined) {
     const response = await client.openAsksForProject(project);
     return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
   }
-  const sessionId = goTrimSpace(input.sessionId ?? "");
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
   const response = await client.openAsks(sessionId);
   return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
@@ -375,12 +373,12 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
 
 /** `dispatch edit-ask`: reword an open ask, or change its options, urgency or multiple. */
 export async function editAskCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input } = context;
+  const { args, client, actor, input, hostSession } = context;
   const question = optionalString(args, "question");
   const options = args.options;
   const multiple = optionalBoolean(args, "multiple");
   const urgency = askUrgency(args);
-  const { id } = await resolveAskArgument(input.tool, args, client, input.sessionId);
+  const { id } = await resolveAskArgument(input.tool, args, client, hostSession);
   const ask = await client.editAsk(id, {
     ...(question === undefined ? {} : { question }),
     ...(Array.isArray(options) ? { options: options as NonNullable<EditAskInput["options"]> } : {}),
@@ -396,9 +394,9 @@ export async function editAskCommand(context: CommandContext): Promise<DispatchT
 
 /** `dispatch resolve-ask`: close an ask nobody needs to answer, with the reason. */
 export async function resolveAskCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input } = context;
+  const { args, client, actor, input, hostSession } = context;
   const kind = stringArg(args, "kind") as "retracted" | "resolved";
-  const { id } = await resolveAskArgument(input.tool, args, client, input.sessionId);
+  const { id } = await resolveAskArgument(input.tool, args, client, hostSession);
   const ask = await client.resolveAsk(id, {
     kind,
     reason: stringArg(args, "reason"),
@@ -413,8 +411,7 @@ export async function resolveAskCommand(context: CommandContext): Promise<Dispat
 
 /** `dispatch follow`: have an ask's answer and replies reach this session, or stop them. */
 export async function followCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input } = context;
-  const sessionId = goTrimSpace(input.sessionId ?? "");
+  const { args, client, actor, input, hostSession: sessionId } = context;
   if (!sessionId) throw new Error("host session id is required for dispatch follow");
   const { id: ask, read: refRead } = await resolveAskArgument(input.tool, args, client, sessionId);
   const action = stringArg(args, "action");

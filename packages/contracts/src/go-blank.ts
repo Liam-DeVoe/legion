@@ -17,16 +17,25 @@
  * `dispatch artifact` (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the
  * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
  * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
- * and `goTrimSpace` below. It trims a role's name as the Envoy listener trims a claim's (the
- * Envoy plugin's `listenerRoleName`, `packages/pi-envoy/extensions/envoy.ts`), and each value
- * Dispatch trims with `strings.TrimSpace` as Dispatch trims it: an upload's name for its
- * extension (`uploadExtensionOf`, `./dispatch-tools.ts`), for the held-name check
+ * and `goTrimSpace` below. It trims a role's name as the Envoy listener trims a claim's, in
+ * `packages/pi-envoy/extensions/envoy.ts`'s session-role read, and each value Dispatch trims with
+ * `strings.TrimSpace` as Dispatch trims it: an upload's name (`uploadStoredName`,
+ * `./dispatch-tools.ts`) for its extension (`uploadExtensionOf`), for the held-name check
  * (`artifactUnderName`, `packages/envoy-client/src/dispatch-commands/upload-checks.ts`) and for
  * AskGate's rules check and breaker (`uploadName` and `callKeys`,
  * `packages/pi-envoy/extensions/askgate/`); the host session id the `dispatch` commands send
- * (`packages/envoy-client/src/dispatch-commands/`); a GitHub repository (`canonicalRepo`,
- * `./repo.ts`); an ask's question (`questionAsk`, `packages/envoy-client/src/askgate-new-asks.ts`);
- * and the reasons the tool specs refuse as blank before they send (`./dispatch-tools.ts`).
+ * (`packages/envoy-client/src/dispatch-commands/`), which Dispatch trims on the routes that read
+ * it with `strings.TrimSpace` (`dispatch open-asks`, `follow` and `read --message`) and refuses
+ * as no session id when it holds whitespace on the routes that read it with `requestSessionID`
+ * (`dispatch answers` and a picture upload), so an id blank to Go is no session id before any
+ * request; a GitHub repository as `refs.ExternalRepo` reads its owner and name (`canonicalRepo`,
+ * `./repo.ts`), for a reference `dispatch check` sends (`canonicalExternalIssueRef`,
+ * `packages/envoy-client/src/dispatch-commands/check.ts`) and for the default repository a
+ * command takes from the working directory's git remote (`parseGitHubRemoteUrl`,
+ * `packages/envoy-client/src/dispatch-cwd.ts`, whose own trim is of the remote URL git prints,
+ * which is never sent); an ask's question and an ask block's text (`questionAsk` and the block
+ * scan, `packages/envoy-client/src/askgate-new-asks.ts`); and the reasons the tool specs refuse
+ * as blank before they send (`./dispatch-tools.ts`).
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another

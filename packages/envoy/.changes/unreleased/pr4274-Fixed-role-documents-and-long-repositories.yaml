@@ -10,12 +10,11 @@ body: |-
   makes it a document, and its earlier versions stay readable as files. A plan review of a plan that
   is not a document is refused `409 NOT_PLAN_DOCUMENT`, naming its kind.
 
-  A first import of an external issue reference through the default project takes every GitHub
-  repository's name: its generated `repo:` label is held to neither the caller's 40 characters nor
-  the 20 labels, and stays so when a labels replacement sends it back unchanged. That label, like a
-  label filter value that starts with `repo:`, is held to 145 characters (an owner of 39 and a name
-  of 100), and a name past it is refused `400 LABELS_INPUT` before anything is written. Every other
-  label keeps its limits.
+  An issue's own `repo:` label, which an import of an external issue reference through the default
+  project wrote before such imports ended, is held to neither the caller's 40 characters nor the 20
+  labels: a labels replacement that sends it back unchanged keeps it, on `/api/v1` and `/api/v2`. A
+  label filter value that starts with `repo:` is held to 145 characters (`repo:`, an owner of 39, `/`
+  and a name of 100) on both issue lists. Every other label keeps its limits.
 
   The Dismissed view of a person's threads no longer answers `500` when a thread they dismissed
   holds no reply: its time falls back to the thread's own.

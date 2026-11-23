@@ -173,20 +173,33 @@ export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dis
 const EXTENSION = /^[\p{L}\p{M}\p{N}_+-]{1,32}$/u;
 
 /**
+ * The name Dispatch stores an upload under: the name the upload is sent as, trimmed as
+ * `packages/envoy/internal/dispatch/api/artifacts.go` trims it, with Go's `strings.TrimSpace`,
+ * which is `goTrimSpace` and not `trim` (`GO_TRIM_SPLIT`, `./go-blank.ts`). Every client reading
+ * of an upload's name goes through it: the extension its type is read from (`uploadExtensionOf`),
+ * the held-name check (`artifactUnderName`, `packages/envoy-client/src/dispatch-commands/`), and
+ * AskGate's rules check and breaker (`uploadName` and `callKeys`,
+ * `packages/pi-envoy/extensions/askgate/`), so two names Dispatch stores as one are one name to
+ * each of them.
+ */
+export function uploadStoredName(name: string): string {
+  return goTrimSpace(name);
+}
+
+/**
  * The extension that decides the type `dispatch artifact` sends an upload as, or undefined for a
- * name with none, read once from the end of the name trimmed as Dispatch trims it (Go's
- * `strings.TrimSpace`, `goTrimSpace`), in time linear in its length, because the name is the
- * writer's own argument and AskGate reads it on the session's thread. A last part of ASCII
- * digits alone is a version or a date rather than a type, so it is cut and the part before it
- * read: `rows.jsonl.1` reads as `jsonl`, `x.md.1` as `md`, and `Plan v1.2` as none. Any other
- * last part is the extension when it holds only Unicode letters, marks and digits, `_`, `-` and
- * `+` (`gz` in x.tar.gz, `jsonl_`, `данные`), and at most 32 of them; else the name has none:
- * `x.`, `notes.md/`, `Dr. Smith's notes`, `notes v2. draft`. The bound is there because a longer
- * tail is no type, and the type lookup (`x.<extension>`,
+ * name with none, read once from the end of the name Dispatch stores (`uploadStoredName`), in time
+ * linear in its length, because the name is the writer's own argument and AskGate reads it on the
+ * session's thread. A last part of ASCII digits alone is a version or a date rather than a type,
+ * so it is cut and the part before it read: `rows.jsonl.1` reads as `jsonl`, `x.md.1` as `md`,
+ * and `Plan v1.2` as none. Any other last part is the extension when it holds only Unicode
+ * letters, marks and digits, `_`, `-` and `+` (`gz` in x.tar.gz, `jsonl_`, `данные`), and at most
+ * 32 of them; else the name has none: `x.`, `notes.md/`, `Dr. Smith's notes`, `notes v2. draft`.
+ * The bound is there because a longer tail is no type, and the type lookup (`x.<extension>`,
  * packages/envoy-client/src/dispatch-commands/documents.ts) must never get a path the OS refuses.
  */
 export function uploadExtensionOf(name: string): string | undefined {
-  const trimmed = goTrimSpace(name);
+  const trimmed = uploadStoredName(name);
   let end = trimmed.length;
   while (end > 0) {
     const dot = trimmed.lastIndexOf(".", end - 1);

@@ -28,6 +28,7 @@ import {
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
+import { UPLOAD_MATRIX_NAMES, UPLOAD_MATRIX_PATHS } from "../../test/upload-type-matrix";
 import { gatedWrite } from "../askgate-marker";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
@@ -11775,9 +11776,9 @@ describe("executeDispatchTool", () => {
       expect(parted).toEqual([]);
     });
 
-    // The names and paths are the matrix the tester ran through the head's own command under a
-    // live AskGate record (dispatch://INFRA-4071/artifact/tester-tools-r20-tgz-b64-txt,
-    // gate16/matrix.py). The test holds that the gate and the declared type agree on every pair.
+    // The names and paths are the tester's matrix (test/upload-type-matrix.ts), which AskGate's
+    // pre-check test reads too. The test holds that the gate and the declared type agree on every
+    // pair.
     // Every path is read in one working directory, where notes.md/, notes.md/. and notes.md/x/..
     // resolve to notes.md, and each pair goes up both ways, read from the path and with the bytes
     // AskGate read; each pair whose two answers part is named with both.
@@ -11791,61 +11792,13 @@ describe("executeDispatchTool", () => {
     // alone would hold were it to read a path as written: each path that resolves to another is
     // also held exactly as the plain path it resolves to is, and each pair held otherwise is named.
     test("declares text/markdown exactly when AskGate holds the upload as a document, on the tester's matrix", async () => {
-      const names = [
-        "a.md",
-        "a.MD",
-        "a.Markdown",
-        "a.md.1",
-        "a.md.2026.11",
-        "a.MARKDOWN.0",
-        "a.mdown",
-        "a.mkd",
-        "a.txt",
-        "a.txt.1",
-        "a.json",
-        "a.jsonl",
-        "a.c++",
-        "a.tar.gz",
-        "a.данные",
-        "a.md\u200b",
-        "a.\uff4d\uff44",
-        "a.m d",
-        "a.",
-        "a.md/",
-        "a v1.2",
-        "a",
-        `a.${"x".repeat(32)}`,
-        `a.${"x".repeat(33)}`,
-        "a.md ",
-        " a.md",
-        "a.\u0661",
-        "a.md.\u0661",
-        "a.md..1",
-        "a.md.1.",
-        "dir/a.md",
-      ];
       const notes = text("# Notes\n");
       // The working directory is one of its own inside the row's, so `../notes.md/` names a file
       // the row wrote.
       const root = makeDirectory();
       const cwd = path.join(root, "work");
       const absolute = `${cwd}/notes.md/.`;
-      const paths = [
-        "x.md",
-        "x.txt",
-        "x.MD",
-        "x.mkd",
-        "dir/.md",
-        "notes.md/",
-        "notes.md/.",
-        "notes.md/x/..",
-        ".md",
-        "cases.txt",
-        "../notes.md/",
-        absolute,
-        "a/b/..",
-        "notes.md/..",
-      ];
+      const paths = [...UPLOAD_MATRIX_PATHS, absolute];
       // The paths that name a directory, which no upload reads.
       const directories = ["a/b/..", "notes.md/.."];
       // Each path that resolves to another, and the plain path it resolves to.
@@ -11874,7 +11827,7 @@ describe("executeDispatchTool", () => {
       }> = [];
       const moved: Array<{ name: string; path: string; held: boolean }> = [];
       const unrefused: Array<{ name: string; path: string; answer: string }> = [];
-      for (const name of names) {
+      for (const name of UPLOAD_MATRIX_NAMES) {
         for (const file of paths) {
           const shown = file === absolute ? "<cwd>/notes.md/." : file;
           const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);

@@ -22,6 +22,10 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import {
+  UPLOAD_MATRIX_NAMES,
+  UPLOAD_MATRIX_PATHS,
+} from "@legion/envoy-client/test/upload-type-matrix";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
@@ -4550,65 +4554,18 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
     // INFRA-4071, review 6012684631 at e0d2289b: the pre-check (uploadMayBeDocument) is the
     // gate's first, quick read of an upload, before it knows the directory the call runs in, so
     // it never says no where the CLI's gate (uploadIsDocument) says yes in any directory. The
-    // names and paths are the tester's matrix (dispatch-execute.test.ts, "on the tester's
-    // matrix", with its four more paths), each pair asked under two working directories; each
-    // pair the CLI holds there and the pre-check lets run unread is named.
+    // names and paths are the tester's matrix (packages/envoy-client/test/upload-type-matrix.ts,
+    // which the CLI's "on the tester's matrix" test in dispatch-execute.test.ts reads too), each
+    // pair asked under two working directories; each pair the CLI holds there and the pre-check
+    // lets run unread is named.
     test("the pre-check holds every upload the CLI's gate holds, in either of two working directories", () => {
-      const names = [
-        "a.md",
-        "a.MD",
-        "a.Markdown",
-        "a.md.1",
-        "a.md.2026.11",
-        "a.MARKDOWN.0",
-        "a.mdown",
-        "a.mkd",
-        "a.txt",
-        "a.txt.1",
-        "a.json",
-        "a.jsonl",
-        "a.c++",
-        "a.tar.gz",
-        "a.данные",
-        "a.md\u200b",
-        "a.\uff4d\uff44",
-        "a.m d",
-        "a.",
-        "a.md/",
-        "a v1.2",
-        "a",
-        `a.${"x".repeat(32)}`,
-        `a.${"x".repeat(33)}`,
-        "a.md ",
-        " a.md",
-        "a.\u0661",
-        "a.md.\u0661",
-        "a.md..1",
-        "a.md.1.",
-        "dir/a.md",
-      ];
-      const paths = [
-        "x.md",
-        "x.txt",
-        "x.MD",
-        "x.mkd",
-        "dir/.md",
-        "notes.md/",
-        "notes.md/.",
-        "notes.md/x/..",
-        ".md",
-        "cases.txt",
-        "../notes.md/",
-        "a/b/..",
-        "notes.md/..",
-      ];
       // Each value as one single-quoted literal word, as the shell scan reads one; no name or
       // path here holds a single quote.
       const quoted = (value: string) => ({ raw: `'${value}'`, value });
       const missed: Array<{ name: string; path: string; cwd: string }> = [];
       for (const cwd of ["/workspace", "/workspace/sub"]) {
-        for (const name of names) {
-          for (const file of [...paths, `${cwd}/notes.md/.`]) {
+        for (const name of UPLOAD_MATRIX_NAMES) {
+          for (const file of [...UPLOAD_MATRIX_PATHS, `${cwd}/notes.md/.`]) {
             const flags = [
               { raw: "--issue", value: "--issue" },
               quoted("DSP-1"),

@@ -85,6 +85,15 @@ var (
 	ArtifactNotDocument = Condition{"artifact not a document"}
 )
 
+// The conditions of what the caller's credential covers.
+var (
+	// DeploymentMemberScoped is a body member that belongs to the deployment rather than to a
+	// project, written by a credential scoped to one project through a row whose own class is a
+	// project's write: PATCH /api/v2/projects/{key}'s default_repository. A row whose whole write
+	// belongs to the deployment is refused the same code in front of its handler, from its class.
+	DeploymentMemberScoped = Condition{"deployment member written under a project scope"}
+)
+
 // The conditions of what a deployment configures.
 var (
 	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch

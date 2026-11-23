@@ -74,13 +74,14 @@ type createProjectInput struct {
 	Actor           *model.Actor `json:"actor"`
 }
 
-// createdProject is the answer of POST /api/v1/projects and of POST /api/v2/projects: the project
-// as created, and the default assignee the create stored, so the caller knows whom the project's
-// unowned work lands on without a second read. /api/v1's project list leaves the default out: GET
+// createdProject is the answer of POST /api/v1/projects: the project as created, and the default
+// assignee the create stored, so the caller knows whom the project's unowned work lands on without
+// a second read. /api/v1's project list leaves the default out: GET
 // /api/v1/settings/project-default-assignees, which needs the person scope, is its one read of
 // every project's default, so a credential that route refuses reads no default off the list
 // either; GET /api/v2/projects adds it only under include=default_assignee, which needs the same
-// scope. The project.created event carries the project alone.
+// scope. POST /api/v2/projects answers the same values in the shape GET /api/v2/projects lists a
+// project in (createProjectV2). The project.created event carries the project alone.
 type createdProject struct {
 	model.Project
 	DefaultAssignee string `json:"default_assignee"`
@@ -92,35 +93,39 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.createProjectFrom(w, r, input)
+	if created, ok := s.createProjectFrom(w, r, input); ok {
+		WriteJSON(w, http.StatusCreated, created)
+	}
 }
 
 // createProjectFrom creates the project input names, the work POST /api/v1/projects and POST
-// /api/v2/projects both do once each has read its body.
-func (s *server) createProjectFrom(w http.ResponseWriter, r *http.Request, input createProjectInput) {
+// /api/v2/projects both do once each has read its body. It returns the project as created and
+// true, and each route writes its own answer of it; where the create fails it has written the
+// refusal and returns false.
+func (s *server) createProjectFrom(w http.ResponseWriter, r *http.Request, input createProjectInput) (createdProject, bool) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
-		return
+		return createdProject{}, false
 	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
 	if !projectKeyPattern.MatchString(input.Key) {
 		writeError(w, r, apicode.InvalidProject, projectKeyProblem("key", input.Key))
-		return
+		return createdProject{}, false
 	}
 	if input.Name == "" {
 		writeError(w, r, apicode.InvalidProject, "project name is required")
-		return
+		return createdProject{}, false
 	}
 	// Any bearer writes a name into the project list every dashboard reads, and no route renames a
 	// project, so a name is capped as an issue title is and shows a reader what it says.
 	if length := itemblocks.Units16(input.Name); length > contracts.ProjectNameMax {
 		capExceeded(w, r, "name", length, contracts.ProjectNameMax)
-		return
+		return createdProject{}, false
 	}
 	if problem := projectNameProblem(input.Name); problem != "" {
 		writeError(w, r, apicode.InvalidProject, problem)
-		return
+		return createdProject{}, false
 	}
 	// Every project names a person. The column refuses nothing
 	// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql) because the
@@ -147,17 +152,17 @@ func (s *server) createProjectFrom(w http.ResponseWriter, r *http.Request, input
 		writeError(w, r, apicode.InvalidProject,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
-		return
+		return createdProject{}, false
 	}
 	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return createdProject{}, false
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return createdProject{}, false
 	}
 	defer tx.Rollback(r.Context())
 	var created createdProject
@@ -168,22 +173,22 @@ func (s *server) createProjectFrom(w http.ResponseWriter, r *http.Request, input
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultRepo, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, r, apicode.ProjectExists, "a project with this key already exists")
-			return
+			return createdProject{}, false
 		}
 		s.writeHandlerError(w, r, err)
-		return
+		return createdProject{}, false
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(created.Key).event("project.created", actor, created.Project))
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return createdProject{}, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return createdProject{}, false
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusCreated, created)
+	return created, true
 }
 
 // projectNameProblem refuses a project name that would mislead its reader: one holding a control

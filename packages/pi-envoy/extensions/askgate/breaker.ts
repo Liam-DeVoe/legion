@@ -3,7 +3,7 @@
 // arguments and the rules check's result, and imports nothing of the core, so `askgate-core.ts`
 // holds the decision and this holds the counting.
 import { createHash } from "node:crypto";
-import { goTrimSpace } from "@legion/contracts/go-blank";
+import { uploadStoredName } from "@legion/contracts/dispatch-tools";
 import { type NewAsk, newAsks } from "@legion/envoy-client/askgate-new-asks";
 import type { RulesCheck } from "./rules-check";
 
@@ -57,7 +57,7 @@ const WHOLE_CALL = "";
  *
  * An upload is each ask block its document holds, the ones its stored version already holds
  * included, since no check has run to tell them apart, and last its upload key: the document's
- * name as Dispatch stores it (trimmed with Go's `strings.TrimSpace`, which is `goTrimSpace` and
+ * name as Dispatch stores it (`uploadStoredName`, trimmed with Go's `strings.TrimSpace`, which is
  * not `trim`, so two names Dispatch stores as one are one key) and a digest of the text the gate
  * reviewed, which for a `--path` upload is the bytes the gate read from that path. Only the same
  * upload sent again yields that key, never another document on the same issue (the breaker's
@@ -72,7 +72,7 @@ export const callKeys = (toolName: string, input: Input): string[] => {
     typeof input.content === "string"
       ? createHash("sha256").update(input.content).digest("hex")
       : null;
-  const name = typeof input.name === "string" ? goTrimSpace(input.name) : null;
+  const name = typeof input.name === "string" ? uploadStoredName(input.name) : null;
   return [...asks.map(askIdentity), JSON.stringify(["upload", name, content])];
 };
 

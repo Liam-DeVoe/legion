@@ -5,7 +5,6 @@ import {
   type MessageDelivery,
   type MessageDeliveryMode,
 } from "@legion/contracts";
-import { goTrimSpace } from "@legion/contracts/go-blank";
 import { commandLine } from "../dispatch-command";
 import {
   dispatchChildRef,
@@ -196,7 +195,8 @@ function conversationReadBack(messageId: string): string {
 
 /** `dispatch message`: post on the issue's conversation, or answer a direct message. */
 export async function messageCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, owner, pictures, postWithPictures, issue } = context;
+  const { args, client, actor, input, owner, pictures, postWithPictures, issue, hostSession } =
+    context;
   const target = messageInReplyTo(args);
   const inReplyTo = target?.id;
   const written = stringArg(args, "body");
@@ -205,12 +205,11 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     // session's own conversation, where the person reads the reply.
     let body = written;
     if (pictures.length > 0) {
-      const sessionId = goTrimSpace(input.sessionId ?? "");
-      if (!sessionId) {
+      if (!hostSession) {
         throw new Error("host session id is required to send pictures in a direct-message reply");
       }
-      body = await postWithPictures(written, `agent/${sessionId}`, (upload) =>
-        client.agentArtifact(sessionId, upload)
+      body = await postWithPictures(written, `agent/${hostSession}`, (upload) =>
+        client.agentArtifact(hostSession, upload)
       );
     }
     // No owner beside an `in_reply_to`: `resolveOwnerArguments` left it that way because the

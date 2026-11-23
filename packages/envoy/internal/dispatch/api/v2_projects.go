@@ -97,12 +97,13 @@ func (s *server) v2ProjectRows() []routeRow {
 				"character is 400 INVALID_PROJECT; a name over %d characters is 400 CAP_EXCEEDED; a key that already "+
 				"exists is 409 "+
 				"PROJECT_EXISTS. A credential scoped to one project is refused, since a project belongs to the deployment. "+
-				"Answers 201 the project with the default_assignee the create stored, and appends project.created.",
+				"Answers 201 the project as GET /api/v2/projects lists it, with the default_assignee the create stored, "+
+				"and appends project.created.",
 				projectDefaultAssigneeText, contracts.ProjectNameMax),
 			Handler:  s.createProjectV2,
 			Resource: "projects", Kind: kindCollection, Key: "{key}",
 			Body:     requestBody{Kind: bodyJSON, Type: createProjectInput{}},
-			Shape:    routeShape{Status: http.StatusCreated, Response: createdProject{}},
+			Shape:    routeShape{Status: http.StatusCreated, Response: projectV2{}},
 			Scope:    scopeDeployment,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
 		},
@@ -135,7 +136,10 @@ func (s *server) v2ProjectRows() []routeRow {
 				Where: authorityWhere{In: partBody, Name: "default_assignee"}, Scopes: person,
 			}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{
+				undeclaredKeyRefusal, projectMissingRefusal,
+				{Condition: apicode.DeploymentMemberScoped, Code: apicode.ProjectScopeDeployment},
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/architecture", Auth: authAny, Versions: onlyV2,
@@ -481,8 +485,10 @@ type projectListV2Query struct {
 // projectV2 is a project as every /api/v2 read of projects answers it: model.Project's members,
 // with its default repository under the name PATCH /api/v2/projects/{key} writes it by, and its
 // default assignee where the request asks for it (include=default_assignee, or a patch that wrote
-// it), since the default names a person and only a caller holding the person scope reads it. It is
-// a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
+// it), since the default names a person and only a caller holding the person scope reads it, and
+// on the create's answer, which tells the creator the default the create stored as POST
+// /api/v1/projects does (createdProject). It is a type of its own, so no /api/v1 shape's tags
+// change (dispatch://INFRA-4071/spec R3).
 type projectV2 struct {
 	Key        string   `json:"key"`
 	Name       string   `json:"name"`
@@ -548,9 +554,18 @@ func (s *server) listProjectsV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // createProjectV2 answers POST /api/v2/projects: the create POST /api/v1/projects makes
-// (createProjectFrom).
+// (createProjectFrom), answered as GET /api/v2/projects lists the project, with the default
+// assignee the create stored, so one project has one shape at /api/v2 (dispatch://INFRA-4071/spec
+// R1).
 func (s *server) createProjectV2(w http.ResponseWriter, r *http.Request) {
-	s.createProjectFrom(w, r, v2Body[createProjectInput](r))
+	created, ok := s.createProjectFrom(w, r, v2Body[createProjectInput](r))
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusCreated, projectV2{
+		Key: created.Key, Name: created.Name, OpenAsks: created.OpenAsks, GatedSteps: created.GatedSteps,
+		DefaultRepository: created.DefaultRepo, CreatedAt: created.CreatedAt, DefaultAssignee: &created.DefaultAssignee,
+	})
 }
 
 // patchProjectV2Input is PATCH /api/v2/projects/{key}'s body: the three columns of a project three

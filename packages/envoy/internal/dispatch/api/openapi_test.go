@@ -881,3 +881,44 @@ func TestTheV2DocumentListsEveryCodeItCanAnswer(t *testing.T) {
 		t.Error("no operation of the /api/v2 document lists its refusal codes")
 	}
 }
+
+// R1 of dispatch://INFRA-4071/spec: one item has one shape. The 201 answer the /api/v2 document
+// gives POST /api/v2/projects holds exactly the members of an item of GET /api/v2/projects's page,
+// each $ref followed to the schema it names, default_assignee among them, the default the create
+// stored. A create that answers a project under another name of a member (default_repo, where every
+// other /api/v2 answer of a project says default_repository), or with a member the list's item
+// does not hold, fails here.
+func TestTheV2CreateOfAProjectAnswersTheItemItsListPages(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal(committedOpenAPIOf(t, apiV2), &document); err != nil {
+		t.Fatalf("read the committed /api/v2 document: %v", err)
+	}
+	resolve := func(schema map[string]any) map[string]any {
+		for {
+			reference, names := schema["$ref"].(string)
+			if !names {
+				return schema
+			}
+			schema = openAPIAt(document, "components", "schemas", strings.TrimPrefix(reference, openAPISchemaPrefix))
+		}
+	}
+	answer := func(method, status string) map[string]any {
+		return resolve(openAPIAt(document, "paths", "/api/v2/projects", method, "responses", status, "content", "application/json", "schema"))
+	}
+	membersOf := func(schema map[string]any) []string {
+		properties, _ := schema["properties"].(map[string]any)
+		return slices.Sorted(maps.Keys(properties))
+	}
+	created := membersOf(answer("post", "201"))
+	listed := membersOf(resolve(openAPIAt(answer("get", "200"), "properties", "items", "items")))
+	if len(listed) == 0 {
+		t.Fatalf("the /api/v2 document declares no members of an item of GET /api/v2/projects's page")
+	}
+	if !slices.Equal(created, listed) {
+		t.Errorf("POST /api/v2/projects answers 201 the members %v, and an item of GET /api/v2/projects's page "+
+			"holds %v: one project has one shape at /api/v2", created, listed)
+	}
+	if !slices.Contains(created, "default_assignee") {
+		t.Errorf("POST /api/v2/projects answers 201 the members %v, without default_assignee, the default the create stored", created)
+	}
+}

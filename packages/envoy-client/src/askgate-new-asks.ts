@@ -203,8 +203,10 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
     scan.index = index;
     readLine(scan, document, new Line(text));
   }
+  // Dispatch trims a block's question with Go's `strings.TrimSpace` (parseAskBlock,
+  // packages/envoy/internal/dispatch/docs/ask_blocks.go), so the text is cut as Go cuts it.
   return scan.drafts.map(({ id, lines: body }) => {
-    const text = body.join("\n").trim();
+    const text = goTrimSpace(body.join("\n"));
     return { kind: "block", ...(id === undefined ? {} : { id }), text, opening: openingOf(text) };
   });
 }

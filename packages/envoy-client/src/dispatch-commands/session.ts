@@ -5,7 +5,6 @@ import type {
   WhoamiResponse,
 } from "@legion/contracts";
 import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
-import { goTrimSpace } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -20,8 +19,7 @@ import { dispatchAnswered, refusalWithCode } from "./failures";
  * It names no owner, so it runs on the session's context alone.
  */
 export async function answersCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { configUrl, input, newClient: dispatchClient } = context;
-  const sessionId = goTrimSpace(input.sessionId ?? "");
+  const { configUrl, hostSession: sessionId, newClient: dispatchClient } = context;
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
   let response: SessionAnswersResponse;
   try {
@@ -53,8 +51,7 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
  * so it runs on the session's context alone.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { input, newClient: dispatchClient } = context;
-  const sessionId = goTrimSpace(input.sessionId ?? "");
+  const { hostSession: sessionId, newClient: dispatchClient } = context;
   if (!sessionId) throw new Error("host session id is required for dispatch whoami");
   const client = dispatchClient();
   const identity = await client.whoami();

@@ -168,6 +168,15 @@ describe("an ask block's text is its body, read past its containers", () => {
     ]);
   });
 
+  // Dispatch reads a block's question with Go's `strings.TrimSpace` (parseAskBlock), so the text
+  // and its opening are cut as Go cuts them (goTrimSpace): a trailing U+0085, which `trim` keeps,
+  // goes.
+  test("a block's text is trimmed as Go's strings.TrimSpace trims it", () => {
+    expect(askBlocks(":::ask{#window}\nWhich deployment window?\u0085\n:::")).toEqual(
+      askBlocks(":::ask{#window}\nWhich deployment window?\n:::")
+    );
+  });
+
   test("the opening is the text's first 60 code points", () => {
     const question = `${"🚀".repeat(59)}ab`;
     expect(askBlocks(`:::ask{#window}\n${question}\n:::`)[0]?.opening).toBe(`${"🚀".repeat(59)}a`);
