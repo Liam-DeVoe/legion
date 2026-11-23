@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -82,11 +83,21 @@ func publishOn(handler http.Handler, topic string) *httptest.ResponseRecorder {
 	return recorder
 }
 
-// requireStored fails the row unless the stream holds a message on topic.
+// requireStored fails the row unless the stream holds a message on topic within 5 s. The
+// publish's 200 says the server took it. In the roll window the route can send it over core NATS
+// (bus.Client.PublishTakesJetStream), confirmed by a flush alone, and the stream stores it just
+// after, so the row waits for the stored copy, at most 5 s, and past that fails with the stream's
+// last answer and how long it waited.
 func requireStored(t *testing.T, js natsgo.JetStreamContext, topic string) {
 	t.Helper()
-	if _, err := js.GetLastMsg(bus.Stream, topic); err != nil {
-		t.Fatalf("the stream holds no message on %s after a publish answered 200: %v", topic, err)
+	started := time.Now()
+	var err error
+	if !testwait.Holds(5*time.Second, 50*time.Millisecond, func() bool {
+		_, err = js.GetLastMsg(bus.Stream, topic)
+		return err == nil
+	}) {
+		t.Fatalf("the stream holds no message on %s after a publish answered 200 and a wait of %s for its stored copy: %v",
+			topic, time.Since(started).Round(time.Millisecond), err)
 	}
 }
 
