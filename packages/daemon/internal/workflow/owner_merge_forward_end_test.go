@@ -128,3 +128,70 @@ func TestEveryEndOfAMergeForwardAskedOfTheOwnerGivesItsSlotItsOwnApp(t *testing.
 		})
 	}
 }
+
+// A hold ends a merge forward asked of the owner and writes the owner's slot back to its own App,
+// but the pull request still holds the ask, so the hold's retry opens it again
+// (record.OwnersMergeForward): the owner's slot acts as the implementer once more, and the owner was
+// told of the ask before the hold. On `implementer:owner reviewer` at the reviewer's step, with the
+// ask open, the hold a failed reviewer's claim leaves and the architect's retry of it queue one
+// merge-forward ask of the owner's claim at the head of the record's ask. That ask's delivery has the
+// runtime write the slot for the implement App and tells the owner only once the slot holds it (the
+// daemon's ownerSlotActs); without it nothing writes the slot until its next refresh or launch.
+//
+// The controls: on `implementer reviewer` the ask went to the implementer's own claim, whose slot no
+// hold writes, so the retry asks nothing again; and an ask of the owner at that head still queued at
+// the retry is the one that writes the slot and tells the owner, so none is queued behind it.
+func TestARetriedHoldAsksTheOwnerAgainForTheMergeForwardItsPullRequestHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		queued bool
+		asked  int
+	}{
+		{name: "the owner's ask, told before the hold", steps: []string{"implementer:owner", "reviewer"}, asked: 1},
+		{name: "control: the ask of a fresh implementer", steps: []string{"implementer", "reviewer"}},
+		{name: "control: the owner's ask still queued at the retry", steps: []string{"implementer:owner", "reviewer"}, queued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, engine, issue := askedAtReview(t, tc.steps...)
+			owner := claim.Token(treeRoleToken(t, issue.Key, claim.RoleArchitect))
+			pr := recordedPR(t, pool, issue.Key)
+			asked := *pr.MergeForward
+			want := record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: owner, Step: record.MergeForwardAsk, Head: asked.Head, Base: asked.Base,
+				Phase: asked.Phase, PullRequest: pr.Number, Why: asked.Why}
+			if tc.queued {
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					row, err := record.NewOutboxRow(issue.Key, want, stepClock)
+					if err != nil {
+						return err
+					}
+					return record.NewStore().Enqueue(t.Context(), tx, row)
+				})
+			}
+			applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: issue.Key, Role: claim.RoleReviewer})
+			if held := issueOf(t, pool, engine, issue.Key); held.Hold == nil {
+				t.Fatalf("%s stands in %s after its reviewer's claim failed, want it held: this case proves nothing", issue.Key, held.Phase)
+			}
+			before := mergeForwardMessages(t, pool)
+			applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: issue.Key, Decision: intake.RetryDecision, Reason: "try again"})
+			retried := issueOf(t, pool, engine, issue.Key)
+			if retried.Hold != nil || !record.InWorkflow(retried) {
+				t.Fatalf("%s stands in %s after the retry, want it released from its hold: this case proves nothing", issue.Key, retried.Phase)
+			}
+			reopened := recordedPR(t, pool, issue.Key)
+			if owns := record.OwnersMergeForward(retried, false, &reopened, phaseRowsOf(t, pool, issue.Key)); owns != (tc.steps[0] == "implementer:owner") {
+				t.Fatalf("after the retry the owner's merge forward is open: %t, with the pull request's %+v: this case proves nothing", owns, reopened.MergeForward)
+			}
+			messages := mergeForwardMessages(t, pool)
+			added := messages[len(before):]
+			if len(added) != tc.asked {
+				t.Fatalf("the retry queued the merge-forward messages %+v over %+v, want %d", added, before, tc.asked)
+			}
+			for _, message := range added {
+				if message != want {
+					t.Fatalf("the retry queued the merge-forward message %+v, want the owner's ask %+v", message, want)
+				}
+			}
+		})
+	}
+}

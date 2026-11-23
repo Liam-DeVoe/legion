@@ -22,6 +22,10 @@ import (
 //   - the issue's (writeIssueOn): a hold, a stopped task's among them, and the issue's leave of the
 //     workflow.
 //
+// The same issue writer opens the ask again where its write releases a hold while the pull request
+// still holds the ask (issueReopensOwnersMergeForward): the owner is asked again, and that ask's
+// delivery writes the slot for the implement App before it tells the owner, as the first ask's did.
+//
 // A newer ask that replaces the one the record holds (mergeForward) is no end: the head moved, or
 // the move out of implementing asks again, and it is asked of the same implementer's claim, so the
 // slot stays on the implement App until the new ask ends. A tree whose root lingers has every role
@@ -84,6 +88,55 @@ func (e *Engine) issueEndsOwnersMergeForward(ctx context.Context, tx pgx.Tx, aft
 		return nil
 	}
 	return e.mergeForwardWriteBack(ctx, tx, after)
+}
+
+// issueReopensOwnersMergeForward asks the owner of after again for the merge forward its pull
+// request still holds where after, a write of an issue the record holds held or out of the
+// workflow, puts it back in the workflow held by nothing (a hold's retry, a stopped task's restart):
+// the ask the hold ended (issueEndsOwnersMergeForward, which wrote the slot back to the owner's own
+// App) opens again (record.OwnersMergeForward), so the owner's slot acts as the implementer once
+// more (record.OwnerActsAs), and the owner was told of the ask before the hold. Nothing else writes
+// the slot then: the ask is asked once for each head (mergeForward), and the slot's next refresh or
+// launch comes after the owner was told to merge. The ask told again is that write: its delivery has
+// the runtime write the owner's slot for the implement App and tells the owner only once the slot's
+// gh files hold it (the daemon's ownerSlotActs). An ask of the owner at that head still queued does
+// both already (record.Store.MergeForwardAskPending), and none is queued behind it. A tree that
+// lingers has every role suspended and is asked nothing, as mergeForward asks it nothing.
+func (e *Engine) issueReopensOwnersMergeForward(ctx context.Context, tx pgx.Tx, after record.Issue) error {
+	if after.Hold != nil || !record.InWorkflow(after) {
+		return nil
+	}
+	before, err := e.store.Issue(ctx, tx, after.Key)
+	if err != nil || before == nil || before.Hold == nil && record.InWorkflow(*before) {
+		return err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, after.Key)
+	if err != nil || pr == nil || !mergeForwardAskOpen(*pr) {
+		return err
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, after.Tree)
+	if err != nil {
+		return err
+	}
+	rows, err := e.store.Phases(ctx, tx, after.Key)
+	if err != nil {
+		return err
+	}
+	if !record.OwnersMergeForward(after, lingers, pr, rows) {
+		return nil
+	}
+	owner, err := record.OwnerClaim(after)
+	if err != nil {
+		return nil
+	}
+	asked := pr.MergeForward
+	if pending, err := e.store.MergeForwardAskPending(ctx, tx, after.Key, owner, asked.Head); err != nil || pending {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a merge forward asked of the owner opens again, and the owner is asked again", "issue", after.Key,
+		"tree", after.Tree, "owner", owner, "head", asked.Head, "base", asked.Base)
+	return e.enqueue(ctx, tx, after.Key, record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: owner, Step: record.MergeForwardAsk,
+		Head: asked.Head, Base: asked.Base, Phase: asked.Phase, PullRequest: pr.Number, Why: asked.Why})
 }
 
 // mergeForwardWriteBack queues the supervise slot_credential that writes the slot of issue's owner
