@@ -94,13 +94,14 @@ func TestARolesOrphanIsReapedByRoleInitInsideItsOwnProcessGroup(t *testing.T) {
 // The role's process group never reads as orphaned while role-init lives, read through the signal
 // the kernel sends a group that becomes orphaned with a stopped member: a member of the shim's
 // group stops itself, an orphan of the group is reaped by role-init, and the stopped member must
-// still be stopped, with no SIGHUP to it or to the stand-in. On Linux this held with the shim in a
-// group of its own as well, since Linux counts the parents members have now, so this row guards
-// the group's state rather than reproducing the gVisor fault, which only gVisor shows. The
-// positive control in the same role shows the probe sees a hangup where one comes: a group whose
-// leader's exit really orphans it with a member stopped (a leader in a session of its own, whose
-// member then has role-init, in another session, for its parent), whose member must be ended by
-// the kernel's SIGHUP.
+// still be stopped, with no SIGHUP to it or to the stand-in. With the shim in a group of its own
+// (Setpgid in runRoleShim) this row fails on the cluster's gVisor, which is the fault itself: in a
+// builds Job on gVisor the member ended by hangup and the stand-in got SIGHUP. On Linux it passes
+// either way, since Linux counts the parents the members have now, so there it guards the group's
+// state. The positive control in the same role shows the probe sees a hangup where one comes: a
+// group whose leader's exit really orphans it with a member stopped (a leader in a session of its
+// own, whose member then has role-init, in another session, for its parent), whose member must be
+// ended by the kernel's SIGHUP.
 func TestARolesProcessGroupIsNotHungUpWhileRoleInitLives(t *testing.T) {
 	requireRoleNamespaces(t)
 	report, output := roleGroupReport(t, roleGroupPlan{Dir: stageMountPoint(t), Case: "hup"})
