@@ -177,7 +177,7 @@ function PriorityShown({
   // The one priority this page shows, whose conflicts it settles with the reader
   // (`usePriorityWrites`).
   const shown = useMemo(() => [id], [id]);
-  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(shown);
+  const { canWrite, describe, keep, kept, keptMadeOn, patch, rename } = usePriorityWrites(shown);
   const keptDescription = kept(id, "description", description);
 
   return (
@@ -188,15 +188,20 @@ function PriorityShown({
           {/* The title's notice of the reader's kept texts stands under the heading, outside it:
               drawn in it, it would be read as part of the heading's name. Each field's write
               names the server's text the field last took in (`from`), never the page's read,
-              which may hold another person's text the field has not taken in yet. */}
+              which may hold another person's text the field has not taken in yet, and hands on
+              the text the field held as the edit began (`builtOn`); the page says what each
+              kept text's own write was made on (`keptMadeOn`). */}
           {canWrite ? (
             <InPlaceField
               closed="heading"
               kept={kept(id, "title", title)}
+              keptMadeOn={(text) => keptMadeOn(id, "title", text)}
               label="Title"
               maxLength={ISSUE_TITLE_MAX}
               onKeptChange={(texts) => keep(id, "title", texts)}
-              onSave={(next, from) => rename(id, next, from, textWriteLabel("title", title, next))}
+              onSave={(next, from, builtOn) =>
+                rename(id, next, from, builtOn, textWriteLabel("title", title, next))
+              }
               required
               value={title}
             />
@@ -252,10 +257,11 @@ function PriorityShown({
                 descriptionTree={descriptionTree}
                 descriptionTreeExact={descriptionTreeExact}
                 kept={keptDescription}
+                keptMadeOn={(text) => keptMadeOn(id, "description", text)}
                 label="Description"
                 onKeptChange={(texts) => keep(id, "description", texts)}
-                onSave={(next, from) =>
-                  describe(id, next, from, textWriteLabel("description", title, next))
+                onSave={(next, from, builtOn) =>
+                  describe(id, next, from, builtOn, textWriteLabel("description", title, next))
                 }
               />
             </div>

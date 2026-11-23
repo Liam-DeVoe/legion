@@ -8,7 +8,7 @@ import {
 } from "../../components/DataTable";
 import { textMutedOnSurfaceMuted } from "../../theme/classes";
 import { useTableLayout } from "../project/issues-table-layout";
-import { NOTHING_KEPT } from "./field-arrival";
+import { NOTHING_KEPT, usedOn } from "./field-arrival";
 import { ChangedMeanwhile } from "./InPlaceField";
 import { NewPriority } from "./NewPriority";
 import { PRIORITY_COLUMN_DEFS, PriorityRowActionsContext } from "./priorities-columns";
@@ -126,7 +126,10 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     .map(({ row }) => row.original.priority.id)
     .join("\n");
   const drawn = useMemo(() => (drawnKey === "" ? NONE_DRAWN : drawnKey.split("\n")), [drawnKey]);
-  const { canWrite, describe, keep, keeping, kept, patch } = usePriorityWrites(drawn, ROW_TEXTS);
+  const { canWrite, describe, keep, keeping, kept, keptMadeOn, patch } = usePriorityWrites(
+    drawn,
+    ROW_TEXTS
+  );
 
   const move = useCallback(
     (item: PriorityItem, onto: string) => {
@@ -141,11 +144,12 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     [order, patch.mutate]
   );
   const onDescribe = useCallback(
-    (item: PriorityItem, description: string, from: string) =>
+    (item: PriorityItem, description: string, from: string, builtOn: string) =>
       describe(
         item.priority.id,
         description,
         from,
+        builtOn,
         textWriteLabel("description", item.priority.title, description)
       ),
     [describe]
@@ -165,6 +169,10 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     (id: string, texts: readonly string[]) => keep(id, "description", texts),
     [keep]
   );
+  const descriptionMadeOn = useCallback(
+    (id: string, text: string) => keptMadeOn(id, "description", text),
+    [keptMadeOn]
+  );
   // One object while nothing a row can do changes: every cell reads it
   // (`PriorityRowActionsContext`), and is drawn again when it changes.
   const actions = useMemo(
@@ -174,6 +182,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
       compact,
       dragging,
       kept: keptDescription,
+      keptMadeOn: descriptionMadeOn,
       onDragEnd,
       onDragStart: setDragging,
       onDescribe,
@@ -186,6 +195,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
       canReorder,
       canWrite,
       compact,
+      descriptionMadeOn,
       dragging,
       keepDescription,
       keptDescription,
@@ -199,7 +209,9 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   // The reader's descriptions kept beside a priority the table no longer draws - one the other
   // person's change took out of the search, or onto another page - which no row shows, so they
   // are shown above the table, each as its editor would show it. One the reader uses there is
-  // written over the description the page reads, which no editor stands over: they chose it.
+  // written over the description the page reads, which no editor stands over: they chose it. It
+  // is made on what its own write was made on, as the page holds it, through each kept text the
+  // click lets go (`usedOn`), and else on the description it goes over.
   const undrawn = keeping.flatMap(({ id }) => {
     const item = drawn.includes(id) ? undefined : items.find((one) => one.priority.id === id);
     if (item === undefined) return [];
@@ -240,8 +252,10 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
             mine={mine}
             onKeepTheirs={() => keepDescription(item.priority.id, NOTHING_KEPT)}
             onUse={(text) => {
-              keepDescription(item.priority.id, NOTHING_KEPT);
-              onDescribe(item, text, item.priority.description);
+              const { description, id } = item.priority;
+              const known = usedOn(text, mine, (one) => descriptionMadeOn(id, one));
+              keepDescription(id, NOTHING_KEPT);
+              onDescribe(item, text, description, known ?? description);
             }}
           />
         ))}

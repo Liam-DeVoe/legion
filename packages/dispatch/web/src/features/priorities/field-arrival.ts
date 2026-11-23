@@ -95,3 +95,31 @@ export function answered(
   if (!landed) return [...sent.slice(0, at), ...sent.slice(at + 1)];
   return sent.map((one, place) => (place === at ? { ...one, landed } : one));
 }
+
+/** The text the reader's next edit is made on once `next` arrived over `held`, the reader's text
+ *  as the field compares it, where it was made on `made` until then: the text the field takes in,
+ *  or the one it compares with where the reader holds that very text. Typing she has not written
+ *  that survives the arrival began on `made`, which stays. */
+export function madeAfter(next: Arrival, held: string, made: string): string {
+  return next.take || held === next.base ? next.base : made;
+}
+
+/** The text Use my text of `text`, one of the reader's kept texts `kept`, is made on, where the
+ *  click lets every one of `kept` go: what `text`'s own write was made on (`madeOn`), or, where
+ *  that is itself one of `kept`, which goes with the click, what that one's write was made on, and
+ *  so on down the run. Undefined where no write of `text` is known. */
+export function usedOn(
+  text: string,
+  kept: readonly string[],
+  madeOn: (text: string) => string | undefined
+): string | undefined {
+  const passed = new Set([text]);
+  let on = madeOn(text);
+  while (on !== undefined && kept.includes(on) && !passed.has(on)) {
+    passed.add(on);
+    const below = madeOn(on);
+    if (below === undefined) break;
+    on = below;
+  }
+  return on;
+}

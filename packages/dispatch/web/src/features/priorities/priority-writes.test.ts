@@ -10,11 +10,12 @@ import { prioritiesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Priorities, Priority } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
-import { writesOf } from "../writes/write-store";
+import { ofKind, type Write, writesOf } from "../writes/write-store";
 import {
   aheadOf,
   expectedText,
   pressedText,
+  priorityTextWrite,
   settledText,
   type TextChain,
   usePriorityWrites,
@@ -146,20 +147,25 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
     answers.push(answer);
     return answer.promise;
   });
-  const client = new Client({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  client.setQueryData(["whoami"], whoami);
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(QueryClientProvider, { client }, children);
-  /** Draws a page showing `ids`, beside its read of the priorities. */
-  const draw = (ids: readonly string[]) =>
+  const newClient = () => {
+    const made = new Client({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    made.setQueryData(["whoami"], whoami);
+    return made;
+  };
+  const client = newClient();
+  /** Draws a page showing `ids`, beside its read of the priorities, on the app of `on`. */
+  const draw = (ids: readonly string[], on: QueryClient = client) =>
     renderHook(
       () => {
         useQuery(prioritiesQuery());
         return usePriorityWrites(ids);
       },
-      { wrapper }
+      {
+        wrapper: ({ children }: { children: ReactNode }) =>
+          createElement(QueryClientProvider, { client: on }, children),
+      }
     );
   const hook = draw(shown);
   const others: { unmount: () => void }[] = [];
@@ -181,6 +187,21 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
       await settle();
     });
   };
+  /** Draws another page, which shows `ids`, on the app of `on`: the same app, unless given. */
+  const drawAnother = (ids: readonly string[], on: QueryClient = client) => {
+    const other = draw(ids, on);
+    others.push(other);
+    return other;
+  };
+  /** A new app over the tab's storage, which takes up the writes it kept (`Writes.resume`), as
+   *  the app does once signed in. */
+  const reloaded = () => {
+    const after = newClient();
+    restores.push(() => after.clear());
+    const store = writesOf(after);
+    act(() => store.resume("alice"));
+    return { after, store };
+  };
   return {
     answer,
     client,
@@ -188,12 +209,7 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
     kept: (held: string) => hook.result.current.kept("p1", "title", held),
     /** The field keeps `texts`, newest first, beside `p1`'s title. */
     keep: (texts: readonly string[]) => act(() => hook.result.current.keep("p1", "title", texts)),
-    /** Draws another page, which shows `ids`, on the same app. */
-    drawAnother: (ids: readonly string[]) => {
-      const other = draw(ids);
-      others.push(other);
-      return other;
-    },
+    drawAnother,
     /** How many times the page has read the priorities. */
     readCount: () => reads.length,
     /** Takes the page away. */
@@ -207,13 +223,13 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
     stopLate: async (index: number) => {
       const writes = writesOf(client);
       await tick(SEND_DEADLINE_MS + 1_000);
-      const [late] = writes.rows();
+      const late = writes.rows().find((row) => row.status === "late");
       expect(late?.status).toBe("late");
       act(() => {
         writes.stop(late?.id ?? 0);
       });
       await answer(index, UNAVAILABLE);
-      const [stopped] = writes.rows();
+      const stopped = writes.rows().find((row) => row.id === late?.id);
       expect(stopped?.status).toBe("refused");
       return stopped;
     },
@@ -228,21 +244,19 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
     },
     /** The tab reloads: a new app, over the tab's storage, takes up the writes it kept
      *  (`Writes.resume`), as the app does once signed in. Answers the new app's store. */
-    reload: () => {
-      const after = new Client({
-        defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-      });
-      after.setQueryData(["whoami"], whoami);
-      restores.push(() => after.clear());
-      const store = writesOf(after);
-      act(() => store.resume("alice"));
-      return store;
+    reload: () => reloaded().store,
+    /** The tab reloads (`reload`), and the new app draws a page that shows `ids`. Answers the new
+     *  app's store, and that page. */
+    reloadShowing: (ids: readonly string[]) => {
+      const { after, store } = reloaded();
+      return { page: drawAnother(ids, after), store };
     },
     /** The reader writes `title` as priority `id`'s, where its field last took `from` in from the
-     *  server: the text it was drawn with, or the last a read brought it. */
-    rename: (title: string, from: string, id = "p1") =>
+     *  server - the text it was drawn with, or the last a read brought it - and held `builtOn` as
+     *  the edit began: `from`, unless given, as a field drawn over `from` holds it. */
+    rename: (title: string, from: string, builtOn = from, id = "p1") =>
       act(() => {
-        void hook.result.current.rename(id, title, from, "Rename the priority");
+        void hook.result.current.rename(id, title, from, builtOn, "Rename the priority");
       }),
     /** What the `index`th write to go out changed, once it went. */
     sentAt: async (index: number) => {
@@ -497,43 +511,59 @@ test("A over Old, B over A, A landed and B refused: C, pressed once the read sho
   expect(await sentAt(2)).toEqual({ expected: { title: "A" }, title: "C" });
 });
 
-// The same, where "A" was stopped late: "B" is refused for its body, and the shell's Retry makes
-// "A" again under its key, which lands. No press awaits that landing: the store reads the
-// priorities again, and that read brings "A" to the field, which takes it in (`arrival`) as no
-// change where it still holds "A", and else as another person's.
-test("A over Old, B over A, A stopped late and B refused, the shell's Retry lands A: C, pressed once the read shows A, names A", async () => {
-  const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
+// The same, where "A" was stopped late: "B", pressed over it while it was out, names "A", a text
+// the server never took, and Dispatch refuses it 409, as it refuses a write over another person's
+// text, though nobody else wrote - the limit rule 3 accepts. Nothing is lost: the page keeps "B"
+// beside the field, and Use my text lands it. The shell's Retry makes "A" again under its key,
+// which lands; no press awaits that landing: the store reads the priorities again, and that read
+// brings "A" to the field, which takes it in (`arrival`). Use my text, pressed then, names "A".
+test("A over Old, B over A, A stopped late: B is refused 409 and kept beside the field, the shell's Retry lands A, and Use my text, pressed once the read shows A, names A and lands B", async () => {
+  const { answer, client, keep, kept, read, readCount, rename, sentAt, stopLate } =
+    pageWrites(SHOWS_P1);
   await read(0, "Old");
   const writes = writesOf(client);
   await onFakeClock(async () => {
     rename("A", "Old");
-    rename("B", "Old");
+    rename("B", "Old", "A");
     expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
     const stopped = await stopLate(0);
     expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "B" });
-    await answer(1, inputRefused());
+    await answer(1, true);
     act(() => writes.retry(stopped?.id ?? 0));
     await answer(2, false);
-    expect(writes.rows()).toMatchObject([{ status: "refused" }]);
   });
-  await read(1, "A");
-  await read(2, "A");
-  rename("C", "A");
-  expect(await sentAt(3)).toEqual({ expected: { title: "A" }, title: "C" });
+  for (let at = 1; at < readCount(); at += 1) await read(at, "A");
+  await waitFor(() => expect(kept("A")).toEqual(["B"]));
+  expect(writes.rows()).toMatchObject([
+    { claimed: true, detail: { text: "B" }, refusal: { status: 409 }, status: "refused" },
+  ]);
+  keep([]);
+  rename("B", "A");
+  expect(await sentAt(3)).toEqual({ expected: { title: "A" }, title: "B" });
+  await answer(3, false);
+  expect(writes.rows()).toEqual([]);
 });
 
-// "A" was stopped with no verdict and stays on the shell's line; "B", pressed after it, lands.
-// The server holds the reader's newer text, so "A" is let go: its Retry sends nothing, where a
-// write naming the text "A" went over would be refused and offer the older text back as another
-// person's.
-test("a stopped write that a newer landed write of the same text supersedes is let go: its Retry sends nothing", async () => {
+// "A" over "Old" was stopped with no verdict and stays on the shell's line. The field still holds
+// "A" as the reader edits on, so "B" is made on "A", and it lands. "B" carries "A", so "A" is let
+// go: its Retry sends nothing, where a write naming the text "A" went over would be refused and
+// offer the older text back as another person's.
+test("a stopped write that a newer landed write made on its text carries is let go: its Retry sends nothing", async () => {
   const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
   const writes = writesOf(client);
   await onFakeClock(async () => {
     rename("A", "Old");
     const stopped = await stopLate(0);
-    rename("B", "Old");
+    expect(stopped?.detail).toEqual({
+      attribute: "title",
+      builtOn: "Old",
+      expected: "Old",
+      id: "p1",
+      madeAt: expect.any(Number),
+      text: "A",
+    });
+    rename("B", "Old", "A");
     expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
     await answer(1, false);
     expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);
@@ -544,17 +574,19 @@ test("a stopped write that a newer landed write of the same text supersedes is l
   expect(sentCount()).toBe(2);
 });
 
-// The same through a reload: the tab keeps "A" no longer once "B" lands, so the page after the
-// reload neither offers it nor sends it.
-test("a stopped write that a newer landed write of the same text supersedes is kept no longer: a reload neither offers it nor sends it", async () => {
+// The same through a reload: the tab keeps "A", with the text it was made on, until "B" lands,
+// and no longer then, so the page after the reload neither offers it nor sends it.
+test("a stopped write that a newer landed write made on its text carries is kept no longer: a reload neither offers it nor sends it", async () => {
   const { answer, read, reload, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
   let key = "";
   await onFakeClock(async () => {
     rename("A", "Old");
     key = (await stopLate(0))?.key ?? "";
-    expect(sessionStorage.getItem(`dispatch.write:${key}`)).not.toBeNull();
-    rename("B", "Old");
+    expect(JSON.parse(sessionStorage.getItem(`dispatch.write:${key}`) ?? "null")).toMatchObject({
+      detail: { builtOn: "Old", expected: "Old", text: "A" },
+    });
+    rename("B", "Old", "A");
     await sentAt(1);
     await answer(1, false);
   });
@@ -565,11 +597,205 @@ test("a stopped write that a newer landed write of the same text supersedes is k
   expect(sentCount()).toBe(2);
 });
 
+// A run of stopped writes, each made on the one before: "A" over "Old", and "B", which the field
+// made on "A", both stopped; then "C", made on "B", lands. "C" carries "B", which carries "A": both
+// are let go, from the line and from the tab, and their Retries send nothing.
+test("stopped writes each made on the one before are let go together once a write made on the last of them lands", async () => {
+  const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  const stopped: (Write | undefined)[] = [];
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    stopped.push(await stopLate(0));
+    rename("B", "Old", "A");
+    stopped.push(await stopLate(1));
+    expect(stopped.map((write) => write?.detail)).toMatchObject([
+      { builtOn: "Old", text: "A" },
+      { builtOn: "A", text: "B" },
+    ]);
+    rename("C", "Old", "B");
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "C" });
+    await answer(2, false);
+    expect(writes.rows().map((write): number | undefined => write.id)).toEqual(
+      stopped.map((write) => write?.id)
+    );
+    for (const write of stopped) act(() => writes.retry(write?.id ?? 0));
+    await turns();
+  });
+  expect(writes.rows()).toEqual([]);
+  expect(sentCount()).toBe(3);
+  for (const write of stopped) {
+    expect(sessionStorage.getItem(`dispatch.write:${write?.key}`)).toBeNull();
+  }
+});
+
+// The order the reader made her edits in is the writes' own (`madeAt`), not the store's: a Retry
+// puts a write at the back of its line, and a reload hands the writes out in the order they were
+// last pressed. "OldY", made on "Old", is out when she takes the "Y" back, and "Old", made on
+// "OldY", waits behind it. Both are stopped; she retries "OldY", and the tab reloads while it is
+// out. The app after it holds "Old" ahead of "OldY", which lands there. "OldY" was made before
+// "Old", so it carries none of it: her last edit stays on the line and in the tab, and its Retry
+// lands it.
+test("a stopped write made after one the reader retried, ahead of it after a reload, is not let go when that one lands", async () => {
+  const { answer, client, read, reload, rename, sentAt, stopLate, undraw } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("OldY", "Old");
+    rename("Old", "Old", "OldY");
+    expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "OldY" });
+    const first = await stopLate(0);
+    expect(await sentAt(1)).toEqual({ expected: { title: "OldY" }, title: "Old" });
+    const last = await stopLate(1);
+    act(() => writes.retry(first?.id ?? 0));
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "OldY" });
+    undraw();
+    const after = reload();
+    expect(after.rows()).toMatchObject([
+      { detail: { text: "Old" }, key: last?.key, status: "refused" },
+      { detail: { text: "OldY" }, key: first?.key },
+    ]);
+    expect(await sentAt(3)).toEqual({ expected: { title: "Old" }, title: "OldY" });
+    await answer(3, false);
+    const [line] = after.rows();
+    expect(after.rows()).toMatchObject([
+      { detail: { text: "Old" }, key: last?.key, status: "refused" },
+    ]);
+    expect(sessionStorage.getItem(`dispatch.write:${last?.key}`)).not.toBeNull();
+    act(() => after.retry(line?.id ?? 0));
+    expect(await sentAt(4)).toEqual({ expected: { title: "OldY" }, title: "Old" });
+    await answer(4, false);
+    expect(after.rows()).toEqual([]);
+  });
+});
+
+// The other way round: "B", made on "A", is stopped after "A"; she retries "A", which is stopped
+// again, and the tab reloads. The app after it holds "B" ahead of "A". "B"'s Retry lands: it was
+// made on "A", and after it, so it carries "A", which is let go though the store holds it behind.
+test("a stopped write retried after a newer one made on it, behind it after a reload, is let go when that one lands", async () => {
+  const { answer, client, read, reload, rename, sentAt, sentCount, stopLate, undraw } =
+    pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    const older = await stopLate(0);
+    rename("B", "Old", "A");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
+    const newer = await stopLate(1);
+    act(() => writes.retry(older?.id ?? 0));
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "A" });
+    await stopLate(2);
+    undraw();
+    const after = reload();
+    const [first, second] = after.rows();
+    expect(after.rows()).toMatchObject([
+      { detail: { text: "B" }, key: newer?.key, status: "refused" },
+      { detail: { text: "A" }, key: older?.key, status: "refused" },
+    ]);
+    act(() => after.retry(first?.id ?? 0));
+    expect(await sentAt(3)).toEqual({ expected: { title: "Old" }, title: "B" });
+    await answer(3, false);
+    expect(sessionStorage.getItem(`dispatch.write:${older?.key}`)).toBeNull();
+    act(() => after.retry(second?.id ?? 0));
+    await turns();
+    expect(after.rows()).toEqual([]);
+  });
+  expect(sentCount()).toBe(4);
+});
+
+// A run goes through a write Dispatch refused with a verdict. "A" over "Old" is stopped; "AB",
+// made on "A", is refused - as another person's text refuses it, or for its body - and stays on
+// the line; "ABC", made on "AB", lands. "ABC" carries "AB", which carries "A": "AB" is no write to
+// let go, since a verdict refused it, but "A" goes, from the line and from the tab.
+test.each([
+  ["another person's text", true],
+  ["its body", inputRefused],
+] as const)("a stopped write is let go through a write made on it that Dispatch refused for %s, once a write made on that one lands", async (_why, refusal) => {
+  const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites();
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    const stopped = await stopLate(0);
+    rename("AB", "Old", "A");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "AB" });
+    await answer(1, refusal === true ? true : refusal());
+    rename("ABC", "Old", "AB");
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "ABC" });
+    await answer(2, false);
+    expect(writes.rows()).toMatchObject([
+      { detail: { text: "A" }, status: "refused" },
+      { detail: { text: "AB" }, status: "refused" },
+    ]);
+    expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull();
+    act(() => writes.retry(stopped?.id ?? 0));
+    await turns();
+  });
+  expect(writes.rows()).toMatchObject([{ detail: { text: "AB" }, status: "refused" }]);
+  expect(sentCount()).toBe(3);
+});
+
+// "L" over "Old", made on "Old", is stopped, and another person's "Bob" arrives, which the field
+// takes in, keeping "L" beside it. The reader uses it: "L" again, over "Bob", made on what "L" was
+// made on. It lands, and the server holds the very text of the stopped write, which is let go:
+// its Retry sends nothing.
+test("a stopped write is let go once a newer write of its very text lands", async () => {
+  const { answer, client, read, rename, sentAt, sentCount, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("L", "Old");
+    const stopped = await stopLate(0);
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["priorities"] });
+    });
+    await read(1, "Bob");
+    rename("L", "Bob", "Old");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "L" });
+    await answer(1, false);
+    expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull();
+    act(() => writes.retry(stopped?.id ?? 0));
+    await turns();
+  });
+  expect(writes.rows()).toEqual([]);
+  expect(sentCount()).toBe(2);
+});
+
+// A reload starts a new app, whose writes must still be newer than every write it took up, though
+// the clock that stamped those ran ahead of this one.
+test("a write made after a reload is made after every write the reload took up, whatever the clock says", async () => {
+  const { read, reloadShowing, rename, sentAt, stopLate, undraw } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  let key = "";
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    key = (await stopLate(0))?.key ?? "";
+  });
+  const name = `dispatch.write:${key}`;
+  const kept = JSON.parse(sessionStorage.getItem(name) ?? "null");
+  const ahead = Date.now() + 3_600_000;
+  sessionStorage.setItem(
+    name,
+    JSON.stringify({ ...kept, detail: { ...kept.detail, madeAt: ahead } })
+  );
+  undraw();
+  const { page, store } = reloadShowing(SHOWS_P1);
+  act(() => {
+    void page.result.current.rename("p1", "B", "Old", "Old", "Rename the priority");
+  });
+  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
+  const made = store.rows().map((write) => ofKind(write, priorityTextWrite)?.detail);
+  expect(made).toMatchObject([{ madeAt: ahead, text: "A" }, { text: "B" }]);
+  expect(made[1]?.madeAt).toBeGreaterThan(ahead);
+});
+
 // "A" over "Old" was stopped with no verdict and stays on the shell's line. Another person's "Bob"
 // arrives, the field takes it in, and the reader edits his text: "Bob, mine" over "Bob" lands. It
-// was made on another text than the one "A" names, so it carries none of "A": "A" stays on the
-// line, and its Retry sends it over "Old", which another person's text refuses into the page's
-// keeping, where her text is offered once.
+// was made on his text, not on "A", so it carries none of "A": "A" stays on the line, and its
+// Retry sends it over "Old", which another person's text refuses into the page's keeping, where
+// her text is offered once.
 test("a stopped write that a newer landed write over another person's text does not supersede stays: its Retry is refused into the page's keeping", async () => {
   const { answer, client, kept, read, readCount, rename, sentAt, stopLate } = pageWrites(SHOWS_P1);
   await read(0, "Old");
@@ -633,6 +859,116 @@ test("a stopped write that a newer landed write over another person's text does 
   ]);
 });
 
+// "A" over "Old" was stopped with no verdict and stays on the shell's line. The reader leaves the
+// page and comes back: the field drawn again starts from the server's text, "Old", and her next
+// edit, "B", is made on it, naming "Old" as "A" does. It lands, and carries none of "A": "A" stays
+// on the line and in the tab's storage, and its Retry sends it over "Old", which "B" now refuses
+// into the page's keeping, where her text is offered once.
+test("a stopped write that a newer landed write made in the field drawn again does not carry stays: its Retry is refused into the page's keeping", async () => {
+  const { answer, client, drawAnother, read, readCount, rename, sentAt, stopLate, undraw } =
+    pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  let stopped: Write | undefined;
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    stopped = await stopLate(0);
+  });
+  undraw();
+  const again = drawAnother(SHOWS_P1);
+  act(() => {
+    void again.result.current.rename("p1", "B", "Old", "Old", "Rename the priority");
+  });
+  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
+  await answer(1, false);
+  expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);
+  expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).not.toBeNull();
+  act(() => writes.retry(stopped?.id ?? 0));
+  expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(2, true);
+  for (let at = 1; at < readCount(); at += 1) await read(at, "B");
+  await waitFor(() => expect(again.result.current.kept("p1", "title", "B")).toEqual(["A"]));
+  expect(writes.rows()).toMatchObject([
+    { claimed: true, detail: { expected: "Old", text: "A" }, status: "refused" },
+  ]);
+});
+
+// The same through a reload, which draws the field again: the app after it takes "A" up from the
+// tab, with the text it was made on, and the reader's next edit, made on the server's "Old",
+// lands. "A" stays on the line and in the tab, and its Retry sends it, refused into the keeping of
+// the page the reload drew.
+test("a stopped write a reload takes up stays once a newer write made on the server's text lands: its Retry is refused into the page's keeping", async () => {
+  const { answer, read, readCount, reloadShowing, rename, sentAt, stopLate, undraw } =
+    pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  let key = "";
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    key = (await stopLate(0))?.key ?? "";
+  });
+  undraw();
+  const { page, store } = reloadShowing(SHOWS_P1);
+  const [line] = store.rows();
+  expect(store.rows()).toMatchObject([
+    { detail: { builtOn: "Old", expected: "Old", text: "A" }, status: "refused" },
+  ]);
+  await read(1, "Old");
+  act(() => {
+    void page.result.current.rename("p1", "B", "Old", "Old", "Rename the priority");
+  });
+  expect(await sentAt(1)).toEqual({ expected: { title: "Old" }, title: "B" });
+  await answer(1, false);
+  expect(store.rows()).toMatchObject([{ id: line?.id, status: "refused" }]);
+  expect(sessionStorage.getItem(`dispatch.write:${key}`)).not.toBeNull();
+  act(() => store.retry(line?.id ?? 0));
+  expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(2, true);
+  for (let at = 2; at < readCount(); at += 1) await read(at, "B");
+  await waitFor(() => expect(page.result.current.kept("p1", "title", "B")).toEqual(["A"]));
+  expect(store.rows()).toMatchObject([
+    { claimed: true, detail: { expected: "Old", text: "A" }, status: "refused" },
+  ]);
+});
+
+// A build before this one kept neither the text a write was made on nor when it was made. Here
+// "A" and "B", which the field made on "A", are both stopped, and the tab keeps one of them
+// without one of those records, as that build would; a reload takes both up, and the Retry of
+// "B" lands. Without either record, "A" is carried by nothing, and "B" carries nothing: "A" stays
+// on the line and in the tab.
+test.each([
+  ["the text it was made on", "builtOn", "the stopped write", 0],
+  ["the text it was made on", "builtOn", "the write that lands", 1],
+  ["when it was made", "madeAt", "the stopped write", 0],
+  ["when it was made", "madeAt", "the write that lands", 1],
+] as const)("a write kept with no record of %s (`%s`), %s, neither lets a stopped write go nor is let go", async (_what, field, _which, old) => {
+  const { answer, read, reload, rename, sentAt, stopLate, undraw } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const keys: string[] = [];
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    keys.push((await stopLate(0))?.key ?? "");
+    rename("B", "Old", "A");
+    keys.push((await stopLate(1))?.key ?? "");
+  });
+  const name = `dispatch.write:${keys[old]}`;
+  const kept = JSON.parse(sessionStorage.getItem(name) ?? "null");
+  const { [field]: _dropped, ...before } = kept.detail;
+  sessionStorage.setItem(name, JSON.stringify({ ...kept, detail: before }));
+  undraw();
+  const after = reload();
+  await turns();
+  const [first, second] = after.rows();
+  expect(after.rows()).toMatchObject([{ detail: { text: "A" } }, { detail: { text: "B" } }]);
+  expect(
+    after.rows().map((write) => ofKind(write, priorityTextWrite)?.detail[field] !== undefined)
+  ).toEqual([old !== 0, old !== 1]);
+  act(() => after.retry(second?.id ?? 0));
+  expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "B" });
+  await answer(2, false);
+  expect(after.rows()).toMatchObject([{ detail: { text: "A" }, id: first?.id, status: "refused" }]);
+  expect(sessionStorage.getItem(`dispatch.write:${keys[0]}`)).not.toBeNull();
+});
+
 // A chain's start is a text the server took: an edit started from it after a read showed it -
 // another person set it back - names it, whatever became of the chain's own writes.
 test("a write from the text another person set back, once the read shows it, names that text", async () => {
@@ -662,7 +998,7 @@ test("a page drawn again while a write is out goes after it: an edit before a re
   const again = drawAnother(SHOWS_P1);
   await answer(0, false);
   act(() => {
-    void again.result.current.rename("p1", "AB", "Old", "Rename the priority");
+    void again.result.current.rename("p1", "AB", "Old", "Old", "Rename the priority");
   });
   expect(await sentAt(1)).toEqual({ expected: { title: "A" }, title: "AB" });
 });
@@ -778,7 +1114,7 @@ test("a page not drawn takes no refusal, and one drawn later takes them from the
   const elsewhere = drawAnother(["p3"]);
   await read(0);
   rename("Mine", "Old");
-  rename("Yours", "Old", "p2");
+  rename("Yours", "Old", "Old", "p2");
   await sentAt(1);
   undraw();
   await answer(0, true);

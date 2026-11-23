@@ -25,7 +25,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { answered, arrival, NOTHING_KEPT, type SentText } from "./field-arrival";
+import { answered, arrival, madeAfter, NOTHING_KEPT, type SentText, usedOn } from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
@@ -171,7 +171,15 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * with whether it landed: one that did is no write of the reader's still out when another person's
  * text arrives, and one that did not is no write whose answer the field waits for (`sent`), and no
  * text the field writes again on its own once the write before it comes back: the reader discarded
- * it, or the shell's line holds it, with its Retry.
+ * it, or the shell's line holds it, with its Retry. Each write hands on too the text the field
+ * held as its edit began (`onSave`'s `builtOn`, `made`): Use my text's as well, since it puts the
+ * kept text in place of what the field holds - but for Use my text of a text a write of the
+ * reader's carried, which is that same edit, and hands on what that write was made on: the
+ * field's own record of it, or, in a field drawn again, the page's (`keptMadeOn`). That is not
+ * always the text the field compares with (`base`): a read that answers an earlier write while
+ * the reader's typing waits moves `base` to that write, but the typing began on what the field
+ * held. A field drawn again holds the server's text, so its first edit is made on that, whatever
+ * a field before it wrote.
  *
  * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
  * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
@@ -185,6 +193,7 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
 export function InPlaceField({
   closed,
   kept: keptByPage,
+  keptMadeOn,
   label,
   maxLength,
   noticeAt,
@@ -202,6 +211,9 @@ export function InPlaceField({
    *  a priority's title, in the write store (`usePriorityWrites`): `onKeptChange` hears each
    *  change of them. */
   kept?: readonly string[];
+  /** What the write of `text`, one of the kept texts the page holds, was made on, where the page
+   *  holds that write and it recorded that: a field drawn again wrote none of them itself. */
+  keptMadeOn?: (text: string) => string | undefined;
   label: string;
   /** The most characters the field holds, where Dispatch bounds the text, as it bounds a title
    *  (`ISSUE_TITLE_MAX`): a longer text is never typed into the field, so never sent. */
@@ -214,9 +226,12 @@ export function InPlaceField({
   onKeptChange?: (kept: readonly string[]) => void;
   /** Writes `next`, the reader's text, over `from`, the server's text the field last took in,
    *  which a title's write names as the text it goes over (`expected`); the owner's names none.
-   *  Answers, where the page tells, whether the write landed. */
+   *  `builtOn` is the text the field held as the edit began: the last it wrote, though that write
+   *  did not land, or the last it took in, whichever came last, so a write made on a stopped one's
+   *  text is known to carry it (`PriorityTextWrite.builtOn`). Answers, where the page tells,
+   *  whether the write landed. */
   // biome-ignore lint/suspicious/noConfusingVoidType: a page that does not say whether its write landed - the owner's - hands any callback, as a void callback takes one
-  onSave: (next: string, from: string) => Promise<boolean> | void;
+  onSave: (next: string, from: string, builtOn: string) => Promise<boolean> | void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -242,19 +257,30 @@ export function InPlaceField({
   // compared with, and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
   const sent = useRef<readonly SentText[]>([]);
+  // The text the reader's edit is made on (`onSave`'s `builtOn`): the last text the field wrote,
+  // or the last of the server's it came to hold - another person's it took in, or one a read
+  // brought while the reader held it. A read that moves `base` under typing she has not written
+  // leaves it: that typing began on it.
+  const made = useRef(value);
+  // What each text the field wrote was made on, by the text: Use my text of one of them writes
+  // that same edit again, and is made on what it was made on (`putBack`).
+  const [madeOn] = useState(() => new Map<string, string>());
   // The server's text the field last took in: the text it was drawn with, and then each that
   // arrived (`arrival`). A read is all that moves it; each write hands it on (`onSave`'s `from`).
   const seen = useRef(value);
   const latest = useRef({ draft, kept, onSave, required, setKept });
   latest.current = { draft, kept, onSave, required, setKept };
 
-  // Writes `text`. The page's answer is that write's own (`answered`): one that landed is no write
-  // still out, and one that did not never comes back, so the field waits for no answer with it.
-  const write = (text: string) => {
+  // Writes `text`, made on `builtOn`: `made`, unless Use my text says otherwise. The page's answer
+  // is that write's own (`answered`): one that landed is no write still out, and one that did not
+  // never comes back, so the field waits for no answer with it.
+  const write = (text: string, builtOn = made.current) => {
     base.current = text;
+    made.current = text;
+    madeOn.set(text, builtOn);
     const entry = { landed: false, text };
     sent.current = [...sent.current, entry];
-    void latest.current.onSave(text, seen.current)?.then((landed) => {
+    void latest.current.onSave(text, seen.current, builtOn)?.then((landed) => {
       sent.current = answered(sent.current, entry, landed);
     });
   };
@@ -270,13 +296,15 @@ export function InPlaceField({
     if (value === seen.current) return;
     seen.current = value;
     const { draft: current, kept: mine, required: needed, setKept: keep } = latest.current;
-    const next = arrival(value, heldText(current, base.current, needed), {
+    const held = heldText(current, base.current, needed);
+    const next = arrival(value, held, {
       base: base.current,
       kept: mine,
       sent: sent.current,
     });
     base.current = next.base;
     sent.current = next.sent;
+    made.current = madeAfter(next, held, made.current);
     if (next.kept !== mine) keep(next.kept);
     if (!next.take) return;
     stopTimer(timer);
@@ -320,12 +348,18 @@ export function InPlaceField({
   // Not where the field's newest write is that very text and still out: it is on its way, and a
   // second write of it would leave an entry in `sent` that no answer clears where the page answers
   // none (the owner's), since a read of that text answers the first of them alone (`arrival`).
+  // A text whose own write is known - the field's, or one the page holds - is that same edit
+  // written again, made on what that write was made on, and through each kept text the click lets
+  // go (`usedOn`); any other is a new edit, made on `made`.
   const putBack = (text: string) => {
     stopTimer(timer);
     setKept(NOTHING_KEPT);
     setDraft(text);
     const newest = sent.current.at(-1);
-    if (newest?.text !== text || newest.landed) write(text);
+    if (newest?.text === text && !newest.landed) return;
+    const builtOn =
+      usedOn(text, kept, (one) => madeOn.get(one) ?? keptMadeOn?.(one)) ?? made.current;
+    write(text, builtOn);
   };
   // The notice of the reader's kept texts: in the place the page gives it once that place is
   // drawn, else beside the field, and named by the field as what describes it wherever it is.

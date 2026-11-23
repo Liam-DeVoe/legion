@@ -21,7 +21,8 @@ import {
   PRIORITY_DESCRIPTION_CHANGED,
   PRIORITY_TITLE_CHANGED,
 } from "../../__tests__/send-answers";
-import { api, priorityPatchRequest } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
@@ -1048,6 +1049,69 @@ test("the reader's description kept beside a row outlives the row leaving the ta
     "linkage-closure",
     { description: "Mine.\n", expected: { description: "Written elsewhere." } },
   ]);
+});
+
+// A row's description written on, each write made on the one before: "A", then "AB" and "ABC".
+// Dispatch answers no attempt of "A", and the reader stops it; the others waited behind it and
+// name a text it never took, so each is refused 409 and kept beside the row. A search then takes
+// the row off the table, so its texts stand above it, where no editor knows the writes they came
+// from. Using the newest is made on what its write was made on, and so on through the texts the
+// click lets go, down to "A", which the page holds for them: its landing lets "A" go, and the
+// Retry of "A" sends nothing.
+test("Use my text of a row's description above the table, the row not drawn, is made on the stopped write its texts were made on, which its landing lets go", async () => {
+  const user = userEvent.setup();
+  const { client, editors, patch, priorities } = page(FIFTEEN);
+  let stored = "";
+  patch.mockImplementation(async (id, input) => {
+    if (input.description === "A\n") {
+      throw new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+    }
+    if (input.expected?.description !== stored) throw PRIORITY_DESCRIPTION_CHANGED;
+    stored = input.description ?? stored;
+    return { ...saved(id), description: stored };
+  });
+  priorities.mockImplementation(async () => ({
+    ...FIFTEEN,
+    priorities: (FIFTEEN.priorities ?? []).map((row) =>
+      row.id === "linkage-closure" ? { ...row, description: stored } : row
+    ),
+  }));
+  await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  await user.click(screen.getByRole("button", { name: "Open #2 Linkage closure eval" }));
+  const { handle } = await editors.named("Description of #2");
+  await onFakeClock(async () => {
+    for (const end of ["A", "B", "C"]) {
+      handle.view.focus();
+      writeAtEnd(handle, end);
+      act(() => handle.view.dom.blur());
+    }
+    await stopTheLateWrite(client);
+  });
+  const writes = writesOf(client);
+  const [stopped] = writes.rows();
+  expect(stopped).toMatchObject({ detail: { text: "A\n" }, status: "refused" });
+  const named = "Description of #2, changed by another person";
+  await screen.findByRole("alert", { name: named });
+  await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "OSS");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "#2 Linkage closure eval" })).toBeNull()
+  );
+  const notice = screen.getByRole("alert", { name: named });
+  const [newest, older] = within(notice).getAllByRole("button", { name: "Use this text" });
+  expect(older).toBeDefined();
+  if (newest === undefined) throw new Error("no Use this text above the table");
+  await user.click(newest);
+  await waitFor(() =>
+    expect(patch.mock.calls.at(-1)?.slice(0, 2)).toEqual([
+      "linkage-closure",
+      { description: "ABC\n", expected: { description: "" } },
+    ])
+  );
+  await waitFor(() => expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull());
+  const sent = patch.mock.calls.length;
+  act(() => writes.retry(stopped?.id ?? 0));
+  await waitFor(() => expect(writes.rows()).toEqual([]));
+  expect(patch).toHaveBeenCalledTimes(sent);
 });
 
 // The page reads another person's description of a row open in the table while the reader's

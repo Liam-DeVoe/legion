@@ -7,7 +7,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-effects";
 import { displayTree } from "../../__tests__/display-trees";
-import { onFakeClock, settle } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import {
@@ -15,9 +15,16 @@ import {
   PRIORITY_DESCRIPTION_CHANGED,
   PRIORITY_TITLE_CHANGED,
 } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import type {
+  IssueSummary,
+  PatchPriorityInput,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -1042,6 +1049,123 @@ test("Use my text writes the description the editor holds already, over the desc
     },
   ]);
   await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
+/** An answer that is no verdict: the attempt failed, and the write would try again later. */
+const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+
+/** Dispatch as the rows below meet it, for `attribute` of the page's priority: its answer to a
+ *  write (`write`), which answers no attempt of `lost` - the network loses each - refuses one
+ *  naming a text it does not hold, as another person's text refuses it, and takes any other; and
+ *  a read of the priorities (`read`), which shows what it holds. */
+function dispatchLosing(
+  attribute: "description" | "title",
+  lost: string
+): {
+  read: () => Promise<Priorities>;
+  write: (id: string, input: PatchPriorityInput) => Promise<Priority>;
+} {
+  let stored = ROWS[1]?.[attribute] ?? "";
+  const holding = () => (attribute === "title" ? { title: stored } : { description: stored });
+  return {
+    read: async () => writtenOver("rocq-lean", holding()),
+    write: async (id, input) => {
+      if (input[attribute] === lost) throw UNAVAILABLE;
+      if (input.expected?.[attribute] !== stored) {
+        throw attribute === "title" ? PRIORITY_TITLE_CHANGED : PRIORITY_DESCRIPTION_CHANGED;
+      }
+      stored = input[attribute] ?? stored;
+      return { ...saved(id), ...holding() };
+    },
+  };
+}
+
+/** How many of the reader's writes the rows below make, one after another, each made on the one
+ *  before, and whether the page is drawn again - left, and come back to - before she uses one. */
+const RUNS = [
+  ["her last write, the write it was made on stopped", 2, false],
+  ["the newest of her refused writes, the write the first was made on stopped", 3, false],
+  [
+    "the newest of her refused writes, the write the first was made on stopped, on the page drawn again",
+    3,
+    true,
+  ],
+] as const;
+
+// The reader writes the title or the description on, each write made on the one before: "A",
+// then "AB" and "ABC". Dispatch answers no attempt of "A", and she stops it; the others waited
+// behind it and name a text it never took, so each is refused 409 - the limit rule 3 accepts -
+// and kept beside the field, newest first. She uses the newest: the same edit as its write, made
+// on the text the write before it was made on, and so on through the texts the click lets go,
+// down to "A". Its landing lets "A" go, from the line and from the tab, and its Retry sends
+// nothing. A field drawn again knows none of its writes, and reads what each was made on from the
+// page, which holds them.
+test.each(
+  (["title", "description"] as const).flatMap((attribute) =>
+    RUNS.map(([run, count, again]) => [attribute, run, count, again] as const)
+  )
+)("Use my text in the %s, of %s, is made on the stopped write, which its landing lets go", async (attribute, _run, count, again) => {
+  const user = userEvent.setup({ delay: null });
+  const { client, editors, patch, priorities } = page();
+  const start = ROWS[1]?.[attribute] ?? "";
+  const ends = (attribute === "title" ? [", A", "B", "C"] : [" A", " B", " C"]).slice(0, count);
+  const texts = ends.map((_end, at) => {
+    const typed = `${start}${ends.slice(0, at + 1).join("")}`;
+    return attribute === "title" ? typed : `${typed}\n`;
+  });
+  const dispatch = dispatchLosing(attribute, texts[0] ?? "");
+  patch.mockImplementation(dispatch.write);
+  priorities.mockImplementation(dispatch.read);
+  if (attribute === "title") {
+    const title = await openTitle(user);
+    await onFakeClock(async () => {
+      for (const end of ends) {
+        await user.type(title, end);
+        await jump(SAVE_AFTER_MS);
+      }
+      await stopTheLateWrite(client);
+    });
+  } else {
+    const { handle } = await editors.named("Description");
+    await onFakeClock(async () => {
+      for (const end of ends) {
+        handle.view.focus();
+        writeAtEnd(handle, end);
+        act(() => handle.view.dom.blur());
+      }
+      await stopTheLateWrite(client);
+    });
+  }
+  const writes = writesOf(client);
+  const [stopped] = writes.rows();
+  expect(stopped).toMatchObject({ detail: { text: texts[0] }, status: "refused" });
+  const named = `${attribute === "title" ? "Title" : "Description"}, changed by another person`;
+  let notice = await screen.findByRole("alert", { name: named });
+  if (again) {
+    await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+    await user.click(await screen.findByRole("link", { name: "Back to the priority" }));
+    notice = await screen.findByRole("alert", { name: named });
+  }
+  const [newest, ...older] = within(notice).getAllByRole("button", {
+    name: /^Use (my|this) text$/,
+  });
+  expect(older).toHaveLength(count - 2);
+  if (newest === undefined) throw new Error("no Use my text beside the field");
+  await user.click(newest);
+  const used = texts.at(-1);
+  await waitFor(() =>
+    expect(patch.mock.calls.at(-1)?.[1]).toEqual(
+      attribute === "title"
+        ? { expected: { title: start }, title: used }
+        : { description: used, expected: { description: start } }
+    )
+  );
+  await waitFor(() => expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull());
+  const sent = patch.mock.calls.length;
+  act(() => writes.retry(stopped?.id ?? 0));
+  await waitFor(() => expect(writes.rows()).toEqual([]));
+  expect(patch).toHaveBeenCalledTimes(sent);
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
 });
 

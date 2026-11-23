@@ -176,15 +176,18 @@ export interface WriteKind<D, K = D> {
    *  up, and else once `unsent` is handed back to the line (`Writes.unclaim`). Left out, no write
    *  takes another's place. */
   readonly supersedes?: (refused: Write<D>, unsent: Write<D>) => boolean;
-  /** Whether `landed`, a write of this kind that landed, makes `earlier` needless: a write of this
-   *  kind pressed before it that ended with no verdict of Dispatch's (`endedWithoutVerdict`) -
-   *  stopped, its key spent, or refused after an attempt that went unanswered - and stands refused
-   *  for a Retry. Only a newer write made on the same text does: it went over what the older one
-   *  went over, so it carries the older one's change, and a Retry of the older would only go back
-   *  over it; one made on another text - another person's - carries none of it. The store then
-   *  keeps `earlier` no longer, so a reload does not take it up, and its Retry lets it go and
-   *  sends nothing (`Writes.retry`). Left out, no landing makes another write needless. */
-  readonly outdates?: (landed: Write<D>, earlier: Write<D>) => boolean;
+  /** Whether `carrier`, a write of this kind that landed or that such a landing carries, carries
+   *  `earlier`, another write of this kind that stands refused: the newer write was made on the
+   *  older one's change, so a Retry of the older would only go back over it. Which of the two is
+   *  the newer is the kind's to say: the store's own order (`id`) follows the line, which a Retry
+   *  and a reload reorder. The store makes `earlier` needless where it ended with no verdict of
+   *  Dispatch's (`endedWithoutVerdict`) - stopped, its key spent, or refused after an attempt
+   *  that went unanswered: it keeps it no longer, so a reload does not take it up, and its Retry
+   *  lets it go and sends nothing (`Writes.retry`). Either way it asks the same of `earlier`, as
+   *  `carrier`, so a run of writes, each made on the one before, goes with the landing that
+   *  carries the last of them, through any a verdict refused. Left out, no landing makes another
+   *  write needless. */
+  readonly outdates?: (carrier: Write<D>, earlier: Write<D>) => boolean;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. The writes
    *  that change drops are undone first (`undone`), from what the kind still remembers. */
@@ -359,7 +362,7 @@ interface Entry {
    *  drops with nothing shown and nothing sent, where no record at all leaves the upload to
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
-  /** Whether a newer write that landed made it needless while it stood refused
+  /** Whether a newer write that landed carries it, made needless while it stood refused
    *  (`WriteKind.outdates`): it is kept nowhere since, and its Retry lets it go and sends nothing.
    *  It stays for the reader to press Retry or Discard, and loses nothing of theirs: the newer
    *  write landed. */
@@ -396,7 +399,7 @@ let watcher: ((store: Writes) => void) | undefined;
  * settles it there (`settle`) or the surface goes (`unclaim`); so does a text of the reader's a
  * surface claims though no write of it was sent (`claimUnsent`), until a refused write that went
  * out carries it too (`WriteKind.supersedes`). A refused write that ended with no verdict, and
- * that a newer write made on the same text makes needless as it lands (`WriteKind.outdates`), is
+ * that a newer write made on its change carries as that one lands (`WriteKind.outdates`), is
  * kept no longer, and its Retry sends nothing. A conflict (`isConflict`) refuses the same body
  * every time, so no Retry makes it again. A write belongs to the person who pressed it: a session
  * that lapses (whoami answers 401, or the write itself is answered 401) stops every write's trying
@@ -1267,11 +1270,11 @@ export class Writes {
   }
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, its kind refreshes what it wrote, and each refused write it makes
-   *  needless is kept no longer (`#outdate`). The landing is told before the store reads anything
-   *  again for it, so every read it starts was sent after it: a listener that orders Dispatch's
-   *  answers by when each read went out (`issue-field-writes.ts`) counts those reads as newer
-   *  than the landing. */
+   *  made for its kind to show, its kind refreshes what it wrote, and each refused write it
+   *  carries is made needless and kept no longer (`#outdate`). The landing is told before the
+   *  store reads anything again for it, so every read it starts was sent after it: a listener
+   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
+   *  those reads as newer than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
@@ -1360,21 +1363,31 @@ export class Writes {
     }
   }
 
-  /** Marks each write the landed `landed` makes needless (`WriteKind.outdates`), as a newer write
-   *  made on the same text, and keeps it no longer: one of its kind pressed before it that stands
-   *  refused with no verdict of Dispatch's (`endedWithoutVerdict`), for a Retry - no conflict,
-   *  which no Retry makes again. Its Retry then lets it go (`retry`), and a reload does not take
-   *  it up. */
+  /** Makes needless each write the landed `landed` carries (`WriteKind.outdates`), and keeps it no
+   *  longer: one of its kind that stands refused with no verdict of Dispatch's
+   *  (`endedWithoutVerdict`), for a Retry - no conflict, which no Retry makes again. The run goes
+   *  on through every refused write of the kind that a write it reached carries, whatever refused
+   *  it, each once: a write Dispatch refused with a verdict, a conflict among them, is no write to
+   *  let go, but what it was made on is carried all the same. A write the store no longer holds -
+   *  one discarded - is no link, so the run stops there. A Retry of a write made needless lets it
+   *  go (`retry`), and a reload does not take it up. */
   #outdate(landed: Write): void {
     const outdates = kinds.get(landed.kind)?.outdates;
     if (outdates === undefined) return;
-    for (const entry of this.#entries.values()) {
-      const { write } = entry;
-      if (entry.outdated || write.kind !== landed.kind || write.id >= landed.id) continue;
-      if (write.status !== "refused" || isConflict(write.refusal)) continue;
-      if (!endedWithoutVerdict(write.refusal) || !outdates(landed, write)) continue;
-      entry.outdated = true;
-      this.#forget(entry);
+    const reached = new Set<number>();
+    const carriers = [landed];
+    for (let carrier = carriers.pop(); carrier !== undefined; carrier = carriers.pop()) {
+      for (const entry of this.#entries.values()) {
+        const { write } = entry;
+        if (reached.has(write.id) || write.kind !== carrier.kind) continue;
+        if (write.status !== "refused" || !outdates(carrier, write)) continue;
+        reached.add(write.id);
+        carriers.push(write);
+        if (entry.outdated || isConflict(write.refusal)) continue;
+        if (!endedWithoutVerdict(write.refusal)) continue;
+        entry.outdated = true;
+        this.#forget(entry);
+      }
     }
   }
 

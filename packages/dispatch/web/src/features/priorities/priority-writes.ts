@@ -115,14 +115,31 @@ export interface PriorityTextWrite {
   readonly attribute: EditedText;
   readonly text: string;
   readonly expected: string;
+  /** The text the field held as the edit this write carries began (`onSave`'s `builtOn`): the
+   *  last it wrote, though that write did not land, or the last of the server's it took in,
+   *  whichever came last; a field drawn again starts from the server's. A newer write made on
+   *  this one's text carries it (`priorityTextWrite.outdates`). Absent from a text a field kept on
+   *  its own, which is never sent, and from a write the tab kept before writes recorded it. */
+  readonly builtOn?: string;
+  /** When the edit was made, in the order this tab made its edits in (`writeText`): what says
+   *  which of two writes is the newer, since the store's own order follows the line, which a
+   *  Retry and a reload reorder. Absent wherever `builtOn` is absent. */
+  readonly madeAt?: number;
 }
 
 const keptTextWrite = shape.record({
   attribute: shape.oneOf(...EDITED_TEXTS),
+  builtOn: shape.optional(shape.string),
   expected: shape.string,
   id: shape.string,
+  madeAt: shape.optional(shape.number),
   text: shape.string,
 }) satisfies Shape<PriorityTextWrite>;
+
+/** When the newest edit of this tab was made (`PriorityTextWrite.madeAt`), raised past each write
+ *  a reload takes up (`priorityTextWrite.restore`), so an edit made after a reload is newer than
+ *  every one before it, whatever the clock that stamped those. */
+let lastMadeAt = 0;
 
 /** The request a write of a priority's text makes: the text, and the text it goes over as
  *  `expected`. */
@@ -184,15 +201,27 @@ const mountedPages = new Set<MountedPage>();
  * at once where its refusal lands later, whether a page shows the priority or not, and else once
  * the held text is handed back to the shell's line, so the line names that text once. Where no
  * page shows the priority, the shell's line offers the text to copy (`draft`). A write of a text
- * that lands makes needless every earlier write of that text of that priority that ended with no
- * verdict and stands on the shell's line, where the landed one is a newer write made on the same
- * text - both name the same `expected` (`outdates`): it went over the server's text the older one
- * went over, so it carries the reader's stopped edit, and a Retry of the older one would name a
- * text the server no longer holds, be refused, and offer the older text back as another person's.
- * The store keeps it no longer, so a reload does not bring it back, and its Retry sends nothing. A
- * newer write made on another text - another person's - carries nothing of the older one, which
- * stays on the line and in the tab's storage: its Retry is sent, and refused as a write over
- * another person's text is, which keeps the reader's text.
+ * that lands makes needless each write of that text of that priority made before it that ended
+ * with no verdict and stands on the shell's line, where the landed one was made on its text: the
+ * field held that text as the newer edit began (`builtOn`), so the newer write carries the
+ * reader's stopped edit. So does a newer write of that very text - Use my text writing it again -
+ * since nothing of it is lost: where that write landed, the server holds the text, and where a
+ * verdict refused it, it still carries the text. The run goes on through each refused write a
+ * write it reached was made on, one a verdict of Dispatch's refused included, which stays, since
+ * no Retry undoes a verdict: a stopped write that one was made on goes all the same (`outdates`).
+ * A write discarded is gone from the store, so a run through it stops there. Which was made first
+ * is the writes' own record (`madeAt`), never the store's order, which a Retry and a reload
+ * change: a Retry puts a write at the back of its line, and a reload hands the writes out in the
+ * order they were last pressed. A Retry of a write made needless would name a text the server no
+ * longer holds, be refused, and offer the older text back as another person's: the store keeps it
+ * no longer, so a reload does not bring it back, and its Retry sends nothing. Naming the same
+ * `expected` says nothing of that: a field drawn again - a row opened again, the page come back
+ * to, a reload - starts from the server's text, and so does one that took another person's text
+ * in, though he wrote back the very text the older write went over. A newer write made on the
+ * server's text carries nothing of the older one, which stays on the line and in the tab's
+ * storage: its Retry is sent, and refused as a write over another person's text is, which keeps
+ * the reader's text. A write the tab kept before writes recorded the text they were made on and
+ * when carries none, and none carries it.
  */
 export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   claims: (client, write) =>
@@ -200,10 +229,19 @@ export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   draft: (write) => write.detail.text,
   kept: keptTextWrite,
   name: "priority-text",
-  outdates: (landed, earlier) =>
-    landed.detail.id === earlier.detail.id &&
-    landed.detail.attribute === earlier.detail.attribute &&
-    landed.detail.expected === earlier.detail.expected,
+  outdates: ({ detail: carrier }, { detail: earlier }) =>
+    carrier.builtOn !== undefined &&
+    earlier.builtOn !== undefined &&
+    carrier.madeAt !== undefined &&
+    earlier.madeAt !== undefined &&
+    earlier.madeAt < carrier.madeAt &&
+    carrier.id === earlier.id &&
+    carrier.attribute === earlier.attribute &&
+    (carrier.builtOn === earlier.text || carrier.text === earlier.text),
+  restore: (kept) => {
+    if (kept.madeAt !== undefined) lastMadeAt = Math.max(lastMadeAt, kept.madeAt);
+    return kept;
+  },
   supersedes: (refused, unsent) =>
     refused.detail.id === unsent.detail.id &&
     refused.detail.attribute === unsent.detail.attribute &&
@@ -350,7 +388,9 @@ const NO_PRIORITIES: readonly string[] = [];
  * the reader's own still out - the one the field's blur made as they pressed it - is theirs to
  * replace, and it goes after that. A write that would change nothing is not sent. Each write is
  * answered with whether it landed, once its chain has heard: one that did not never comes back
- * to the field.
+ * to the field. Each records too the text the field held as its edit began (`builtOn`, as the
+ * field hands it) and when it was made (`madeAt`), by which one that lands lets go a stopped
+ * write made before it whose text it was made on (`priorityTextWrite.outdates`).
  *
  * The reader's own texts a title or a description keeps beside itself while it shows another
  * person's (`ChangedMeanwhile`) are writes of the store, by priority and attribute (`kept`,
@@ -632,34 +672,38 @@ export function usePriorityWrites(
   }, [claimMarks, conflicts, letGo, stored]);
   const { mutateAsync } = text;
   /** Writes `written` as priority `id`'s `attribute`, where the field last took `from` in from the
-   *  server: over the newest write of its chain it goes after (`aheadOf`), or over `from`.
-   *  Answers whether the write landed, once its chain has heard (`text`'s `onSettled`, which
-   *  TanStack runs before it settles the press): one not sent did not. */
+   *  server and held `builtOn` as the edit began (`PriorityTextWrite.builtOn`): over the newest
+   *  write of its chain it goes after (`aheadOf`), or over `from`. Answers whether the write
+   *  landed, once its chain has heard (`text`'s `onSettled`, which TanStack runs before it settles
+   *  the press): one not sent did not. */
   const writeText = useCallback(
     (
       id: string,
       attribute: EditedText,
       written: string,
       from: string,
+      builtOn: string,
       label: string
     ): Promise<boolean> => {
       const key = textKey(attribute, id);
       const chain = aheadOf(own.chains.get(key), from, drawn.current.reads);
       const expected = expectedText(chain, from);
       if (written === expected) return NOT_LANDED;
+      // The record the store holds of the write (`priorityTextWrite`), stamped after every edit
+      // this tab made before it, whatever the clock does (`madeAt`).
+      lastMadeAt = Math.max(Date.now(), lastMadeAt + 1);
+      const detail = { attribute, builtOn, expected, id, madeAt: lastMadeAt, text: written };
       const holding = heldAt(conflicts, claimMarks, { attribute, id });
       if (holding.some((write) => claimMarks.get(write.id) !== null)) {
         // A conflict brought a text of this back, and the page has not read the other person's
         // yet: a write now names a text Dispatch no longer holds, and would be refused the same
         // way. It is held instead, to be offered once a read started now has answered.
-        holdText({ attribute, expected, id, text: written }, label, holding, refresh());
+        holdText(detail, label, holding, refresh());
         return NOT_LANDED;
       }
       own.made += 1;
       const press = own.made;
-      // The record the store holds of the write (`priorityTextWrite`), by which its refusal is
-      // known as this press (`chosenAgain`).
-      const detail = { attribute, expected, id, text: written };
+      // Its refusal is known as this press by its record (`chosenAgain`).
       own.presses.set(detail, press);
       own.chains.set(key, pressedText(chain, press, written, expected));
       return mutateAsync({ label, press, write: detail }).then(
@@ -670,18 +714,19 @@ export function usePriorityWrites(
     [claimMarks, conflicts, holdText, mutateAsync, own, refresh]
   );
   /** Writes `title` as priority `id`'s title, where its field last took `from` in from the server
-   *  (`writeText`), and answers whether it landed. A title with nothing in it is refused by the
-   *  server, so none is sent. */
+   *  and held `builtOn` as the edit began (`writeText`), and answers whether it landed. A title
+   *  with nothing in it is refused by the server, so none is sent. */
   const rename = useCallback(
-    (id: string, title: string, from: string, label: string) =>
-      title === "" ? NOT_LANDED : writeText(id, "title", title, from, label),
+    (id: string, title: string, from: string, builtOn: string, label: string) =>
+      title === "" ? NOT_LANDED : writeText(id, "title", title, from, builtOn, label),
     [writeText]
   );
   /** Writes `description` as priority `id`'s description, where its editor last took `from` in
-   *  from the server (`writeText`), and answers whether it landed. */
+   *  from the server and held `builtOn` as the edit began (`writeText`), and answers whether it
+   *  landed. */
   const describe = useCallback(
-    (id: string, description: string, from: string, label: string) =>
-      writeText(id, "description", description, from, label),
+    (id: string, description: string, from: string, builtOn: string, label: string) =>
+      writeText(id, "description", description, from, builtOn, label),
     [writeText]
   );
   /** The reader's texts kept beside priority `id`'s `attribute`, newest first, where the page
@@ -697,6 +742,17 @@ export function usePriorityWrites(
       );
       return texts.length === 0 ? NOTHING_KEPT : texts;
     },
+    [claimMarks, conflicts]
+  );
+  /** What the newest write of the store this page holds for priority `id`'s `attribute` that
+   *  carries `text` - one of the texts kept beside it (`kept`) - was made on
+   *  (`PriorityTextWrite.builtOn`): where the reader uses that text, hers is that same edit
+   *  written again. Undefined where none is held, or none recorded it: a text a field kept on its
+   *  own, or a write the tab kept before writes recorded it. */
+  const keptMadeOn = useCallback(
+    (id: string, attribute: EditedText, text: string): string | undefined =>
+      heldAt(conflicts, claimMarks, { attribute, id }).find((write) => write.detail.text === text)
+        ?.detail.builtOn,
     [claimMarks, conflicts]
   );
   /** Every text of a priority this page keeps the reader's texts beside, offered or waiting: one a
@@ -749,5 +805,5 @@ export function usePriorityWrites(
     },
     [claimMarks, conflicts, holdText, letGo, stored]
   );
-  return { add, canWrite, describe, keep, keeping, kept, patch, rename };
+  return { add, canWrite, describe, keep, keeping, kept, keptMadeOn, patch, rename };
 }

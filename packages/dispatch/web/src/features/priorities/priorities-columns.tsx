@@ -37,13 +37,22 @@ export interface PriorityRowActions {
   readonly onOpen: (item: PriorityItem) => void;
   /** Writes `description` as the priority's description, over `from`, the server's text the
    *  description's editor last took in, which the write names as the text it goes over unless a
-   *  write of the page's own goes before it (`describe`). Answers whether it landed. */
-  readonly onDescribe: (item: PriorityItem, description: string, from: string) => Promise<boolean>;
+   *  write of the page's own goes before it (`describe`), made on `builtOn`, the text the editor
+   *  held as the edit began. Answers whether it landed. */
+  readonly onDescribe: (
+    item: PriorityItem,
+    description: string,
+    from: string,
+    builtOn: string
+  ) => Promise<boolean>;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the editor, which a row scrolling away takes with it.
    *  A row holds no title's texts: the title is written on the priority's own page. */
   readonly kept: (id: string, held: string) => readonly string[];
+  /** What the write of `text`, one of those kept texts of priority `id`, was made on, where the
+   *  page holds that write (`usePriorityWrites`'s `keptMadeOn`). */
+  readonly keptMadeOn: (id: string, text: string) => string | undefined;
   readonly onKeep: (id: string, texts: readonly string[]) => void;
   /** The row the reader is dragging, and the two ends of that drag. */
   readonly dragging: string | undefined;
@@ -201,9 +210,10 @@ function TitleCell({ item }: { item: PriorityItem }) {
           descriptionTree={descriptionTree}
           descriptionTreeExact={descriptionTreeExact}
           kept={keptDescription}
+          keptMadeOn={(text) => actions.keptMadeOn(id, text)}
           label={`Description of ${item.order}`}
           onKeptChange={(texts) => actions.onKeep(id, texts)}
-          onSave={(next, from) => actions.onDescribe(item, next, from)}
+          onSave={(next, from, builtOn) => actions.onDescribe(item, next, from, builtOn)}
         />
       ) : excerpt === undefined || excerpt.text === "" ? null : (
         // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt is its
