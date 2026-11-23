@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -136,36 +137,47 @@ func TestEachResumePathReachesEachRunningStep(t *testing.T) {
 		}
 	})
 
-	// The outbox keeps one pending start of an issue's phase workers (record.Store.EnqueueStart),
-	// so each ready is read on its own: the start the implementer's ready queues, then the one the
-	// reviewer's takes its place with, each naming the phase its step runs as, and the tester's
-	// ready leaves the reviewer's in place.
+	// Each running step's start names the claim of its step's agent, and the outbox takes out a
+	// pending start only for a start that names the same claim (record.Store.EnqueueStart), so one
+	// ready's start takes out no other step's: the implementer's ready queues its start, the
+	// reviewer's queues its own beside it, each naming its claim and the phase its step runs as and
+	// carrying the work that claim is owed, and the tester's ready queues nothing.
 	t.Run("the ready of each claim", func(t *testing.T) {
 		pool := migratedPool(t)
 		stand(t, pool)
 		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester} {
 			owedEntry(t, pool, key, role)
 		}
+		// started is each start of role's in the outbox, oldest first: the claim it names, the
+		// phase it runs as and the work it carries.
+		started := func(role claim.Role) []string {
+			var starts []string
+			for _, start := range roleStartsOf(t, pool, key, role) {
+				starts = append(starts, fmt.Sprintf("naming %s at %s carrying %q", start.Claim, start.Phase, start.Task))
+			}
+			return starts
+		}
+		owed := func(role claim.Role, at phase.Phase) []string {
+			return []string{fmt.Sprintf("naming %s at %s carrying %q", treeRoleToken(t, key, role), at, "the work of entry 2 of the "+string(role))}
+		}
+		implementer, reviewer := owed(claim.RoleImplementer, phase.Implementing), owed(claim.RoleReviewer, phase.Reviewing)
 		for _, ready := range []struct {
-			role, starts claim.Role
-			phase        phase.Phase
+			role   claim.Role
+			starts map[claim.Role][]string
 		}{
-			{claim.RoleImplementer, claim.RoleImplementer, phase.Implementing},
-			{claim.RoleReviewer, claim.RoleReviewer, phase.Reviewing},
-			{claim.RoleTester, claim.RoleReviewer, phase.Reviewing},
+			{claim.RoleImplementer, map[claim.Role][]string{claim.RoleImplementer: implementer}},
+			{claim.RoleReviewer, map[claim.Role][]string{claim.RoleImplementer: implementer, claim.RoleReviewer: reviewer}},
+			{claim.RoleTester, map[claim.Role][]string{claim.RoleImplementer: implementer, claim.RoleReviewer: reviewer}},
 		} {
 			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:ready:"+string(ready.role), intake.ClaimReady{Issue: key, Role: ready.role, Launch: 2},
 				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 				t.Fatalf("apply the ready of the %s: %v", ready.role, err)
 			}
-			var role, at, task string
-			if err := pool.QueryRow(t.Context(), `select payload->>'role', payload->>'phase', payload->>'task' from outbox
-				where kind = 'supervise' and payload->>'op' = 'start' and issue = $1`, key).Scan(&role, &at, &task); err != nil {
-				t.Fatalf("read the start of %s after the ready of the %s: %v", key, ready.role, err)
-			}
-			if claim.Role(role) != ready.starts || phase.Phase(at) != ready.phase || task != "the work of entry 2 of the "+string(ready.starts) {
-				t.Fatalf("after the ready of the %s the start of %s is the %s's at %s carrying %q, want the %s's at %s carrying its owed work",
-					ready.role, key, role, at, task, ready.starts, ready.phase)
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester} {
+				if got := started(role); !slices.Equal(got, ready.starts[role]) {
+					t.Fatalf("after the ready of the %s the %s's starts of %s are %q, want %q: each running step's owed work on its own claim, and no held step's",
+						ready.role, role, key, got, ready.starts[role])
+				}
 			}
 		}
 	})
