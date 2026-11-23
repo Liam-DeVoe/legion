@@ -155,11 +155,12 @@ function described(writes: readonly Request[]): string {
     .join("\n");
 }
 
-/** The answer to the page's POST to `path`, once it lands. */
-function answerTo(page: Page, path: string) {
+/** The answer to the page's `method` request to `path`, once it lands. Every caller names the
+ *  method, so a send to a session's messages reads as the send it is beside its path. */
+function answerTo(page: Page, method: "POST", path: string) {
   return page.waitForResponse(
     (response) =>
-      response.request().method() === "POST" && new URL(response.url()).pathname === path
+      response.request().method() === method && new URL(response.url()).pathname === path
   );
 }
 
@@ -281,11 +282,12 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     await closeRecipients(page);
     await dialog.getByRole("textbox", { name: "Comment" }).fill(single);
     const writes = watchAgentWrites(page);
-    const singleAnswer = answerTo(page, `/api/v1/agents/${builder.session_id}/messages`);
+    const singleAnswer = answerTo(page, "POST", `/api/v1/agents/${builder.session_id}/messages`);
     await dialog.getByRole("button", { name: "Send" }).click();
     await singleAnswer;
     await expect(dialog.getByRole("region", { name: "Where your message went" })).toBeVisible();
     expect(writes.length, `the writes the dialog sent:\n${described(writes)}`).toBe(1);
+    // `watchAgentWrites` keeps POSTs alone: the one write is the send to that session.
     expect(new URL(writes[0]?.url() ?? "").pathname).toBe(
       `/api/v1/agents/${builder.session_id}/messages`
     );
@@ -471,7 +473,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
       await readHeld;
       await route.continue();
     });
-    const answer = answerTo(page, "/api/v1/broadcasts");
+    const answer = answerTo(page, "POST", "/api/v1/broadcasts");
     await dialog.getByRole("button", { name: "Send to 3" }).click();
     const created = (await (await answer).json()) as BroadcastCreated;
     await expect(dialog).toBeVisible();
@@ -520,7 +522,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     // To the unknown session alone: the server records the publish on its subject (the test
     // hooks' recorder, as a bus would take it), so the attempt is queued and never left out.
     await pickUnknownAlone();
-    const queuedAnswer = answerTo(page, `/api/v1/agents/${unknown.session_id}/messages`);
+    const queuedAnswer = answerTo(page, "POST", `/api/v1/agents/${unknown.session_id}/messages`);
     const queuedReadAnswer = nextMessageRead(page);
     await dialog.getByRole("button", { name: "Send" }).click();
     const queuedMessage = (await (await queuedAnswer).json()) as Message;
@@ -599,6 +601,8 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     await expect(crowdSend).toHaveAttribute("aria-disabled", "true");
     const crowdWrites = watchAgentWrites(page);
     await crowdSend.click({ force: true });
+    // A refused Send makes no request, so there is nothing to wait on. The margin is the window
+    // a POST made in the click's own task would show in.
     await sleep(ABSENCE_MARGIN_MS);
     expect(crowdWrites, `the writes a refused Send made:\n${described(crowdWrites)}`).toEqual([]);
   } finally {
@@ -653,10 +657,12 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     await page.route(`**/api/v1/agents/${builder.session_id}/messages`, async (route) => {
       if (route.request().method() !== "POST") return route.continue();
       const response = await route.fetch();
+      // The answer is held two seconds. The reads of the held Send and its focus below take a
+      // frame and a task, far less than that.
       await sleep(2_000);
       await route.fulfill({ response });
     });
-    const answer = answerTo(page, `/api/v1/agents/${builder.session_id}/messages`);
+    const answer = answerTo(page, "POST", `/api/v1/agents/${builder.session_id}/messages`);
     await writeAndSend();
     await expect(send).toHaveAttribute("aria-disabled", "true");
     // A frame and a task on, while the answer is still held: the browser moves the focus off a
@@ -680,6 +686,7 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
       await holdsFocus(done),
       `once the answer landed the focus is on ${await describeFocus(page)}`
     ).toBe(true);
+    // The send's POST is no longer held from here on.
     await page.unroute(`**/api/v1/agents/${builder.session_id}/messages`);
 
     // Done: closed, the focus on the row in hand, and the page not scrolled.
@@ -705,10 +712,12 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     await page.route("**/api/v1/broadcasts", async (route) => {
       if (route.request().method() !== "POST") return route.continue();
       const response = await route.fetch();
+      // The answer is held two seconds. The click, the key and the reads of the held list below
+      // take a frame and a task, far less than that.
       await sleep(2_000);
       await route.fulfill({ response });
     });
-    const broadcastAnswer = answerTo(page, "/api/v1/broadcasts");
+    const broadcastAnswer = answerTo(page, "POST", "/api/v1/broadcasts");
     await dialog.getByRole("button", { name: "Send to 2" }).click();
     // While it is held, the Delivery mode list is held with Send: a click and ArrowDown open
     // nothing, and the mode stays the one that went out.
@@ -778,7 +787,7 @@ test("a message to one agent with an issue picked is the comment that mentions i
     await box.press("End");
     await box.pressSequentially(` ${body}`);
     const writes = watchAgentWrites(page);
-    const commentAnswer = answerTo(page, `/api/v1/issues/${issue.key}/comments`);
+    const commentAnswer = answerTo(page, "POST", `/api/v1/issues/${issue.key}/comments`);
     // The dialog reads the comment back as soon as the answer lands, so the wait for that read is
     // set before Send.
     const commentRead = page.waitForResponse(
@@ -822,7 +831,7 @@ test("the drawer opens the same dialog with n", async ({ browser }) => {
     await expect(dialog).toBeVisible();
     await pickRecipients(page, [builder.title]);
     await dialog.getByRole("textbox", { name: "Comment" }).fill("Status of the mirror?");
-    const answer = answerTo(page, `/api/v1/agents/${builder.session_id}/messages`);
+    const answer = answerTo(page, "POST", `/api/v1/agents/${builder.session_id}/messages`);
     await dialog.getByRole("button", { name: "Send" }).click();
     await answer;
     await dialog.getByRole("button", { name: "Done" }).click();
