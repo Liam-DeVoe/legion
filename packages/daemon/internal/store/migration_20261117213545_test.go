@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -47,16 +48,18 @@ func seedPlanSteps(t *testing.T, store *Store, issue string, generation int, ste
 }
 
 // 20261117213545 adds the name of each step's agent (record.PlanStep.Agent) and names every row
-// it finds as record.NameAgents names a version's steps. A step with no key is named for its role,
-// which named its agent in the release before. A step of the key owner has no name, since its agent
-// is the tree's architect. A step of any other key takes the role of the key's first row of its
-// issue, by generation, task and place: the name that row's version gave the key, which each later
-// generation kept, since NameAgents gives a key the name of its newest earlier row. So the key's
-// steps share one name in every generation, the name the next version gives it too. A
-// row the migration finds keyed is a row this release wrote before a rollback, whose name the way
-// back dropped. A key is an issue's own: the same key on another issue names another agent.
-// A name written after the migration reads back as it was written, through a store reopened as a
-// daemon restart reopens it, and the column refuses null, which the plan read cannot scan.
+// it finds with the name record.NameAgents gave it. A step with no key is named for its role, which
+// named its agent in the release before. A step of the key owner has no name, since its agent is
+// the tree's architect. A step of any other key takes the role of the key's first row of its
+// issue, by generation, task and place. That is the name NameAgents gave the key, though it keeps a
+// key's newest earlier name: each generation's version took the name the generation before it
+// held, so every generation holds the first one's. Key k's first step is the implementer's in
+// generation 1 and the tester's in generation 2, and the names are held to what NameAgents gives
+// the two versions in turn, the implementer in both. A row the migration finds keyed is a row this
+// release wrote before a rollback, whose name the way back dropped. A key is an issue's own: the
+// same key on another issue names another agent. A name written after the migration reads back as
+// it was written, through a store reopened as a daemon restart reopens it, and the column refuses
+// null, which the plan read cannot scan.
 func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -72,11 +75,19 @@ func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the step's agent: %v", err)
 	}
-	want := []string{
-		"LEGION-208 1/a/1 implementer", "LEGION-208 1/a/2 implementer", "LEGION-208 1/a/3 reviewer", "LEGION-208 1/a/4 ",
-		"LEGION-208 2/a/1 implementer", "LEGION-208 2/a/2 reviewer",
-		"LEGION-209 1/a/1 reviewer", "LEGION-209 1/a/2 implementer",
+	first := record.NameAgents(nil, []record.PlanStep{
+		{Generation: 1, Task: "a", Position: 1, Role: "implementer", AgentKey: "k"}, {Generation: 1, Task: "a", Position: 2, Role: "tester", AgentKey: "k"},
+		{Generation: 1, Task: "a", Position: 3, Role: "reviewer"}, {Generation: 1, Task: "a", Position: 4, Role: "acceptance", AgentKey: "owner"}})
+	second := record.NameAgents(first, []record.PlanStep{
+		{Generation: 2, Task: "a", Position: 1, Role: "tester", AgentKey: "k"}, {Generation: 2, Task: "a", Position: 2, Role: "reviewer"}})
+	if second[0].Agent != "implementer" {
+		t.Fatalf("NameAgents named key k %q in generation 2, want implementer, its generation 1 name: the case is not the one this test holds", second[0].Agent)
 	}
+	var want []string
+	for _, step := range append(first, second...) {
+		want = append(want, fmt.Sprintf("LEGION-208 %d/%s/%d %s", step.Generation, step.Task, step.Position, step.Agent))
+	}
+	want = append(want, "LEGION-209 1/a/1 reviewer", "LEGION-209 1/a/2 implementer")
 	if got := planStepAgents(t, store); !slices.Equal(got, want) {
 		t.Fatalf("the steps after the migration = %q, want %q: each key named for the role of its first row of the issue, each step with no key for its role, and the owner's step unnamed", got, want)
 	}

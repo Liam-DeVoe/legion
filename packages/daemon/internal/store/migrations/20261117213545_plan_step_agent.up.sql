@@ -7,16 +7,19 @@
 -- are written, from the issue's earlier rows, and nothing else writes it. A step of the key owner
 -- holds none: its agent is the tree's architect.
 --
--- Every row the table already holds is named by the update below, as record.NameAgents names a
--- version's steps. A step with no key is named for its role: the release before this one ran each
--- role at most once in a task and refused every key but the owner's, so the role of each of its
--- steps named that step's agent, and every agent keeps the claim it had. A step of the key owner
--- keeps the empty string. A step of any other key is a row this release wrote before a rollback,
--- whose name the way back below dropped, and it takes the role of the key's first row of its issue
--- by generation, task and place: the name that row's version gave the key, which each later
--- generation of the issue kept, since NameAgents gives a key the name of its newest earlier row. So
--- the key's steps share one name in every task and generation, the name the next version gives
--- the key too.
+-- Every row the table already holds is named by the update below with the name record.NameAgents
+-- gave it, where the rows it holds still show that name. A step with no key is named for its role:
+-- the release before this one ran each role at most once in a task and refused every key but the
+-- owner's, so the role of each of its steps named that step's agent, and every agent keeps the
+-- claim it had. A step of the key owner keeps the empty string. A step of any other key is a row
+-- this release wrote before a rollback, whose name the way back below dropped, and it takes the
+-- role of the key's first row of its issue by generation, task and place. NameAgents gives a key
+-- the name of its newest earlier row, and the version that wrote that row gave it the name the
+-- generation before held, so every generation's rows of the key hold the name of its first
+-- generation: the role of its first step there. The first row is that step while the first
+-- generation's rows stand as its first version wrote them, and the role of the key's first step in
+-- a later generation is not its name. So the key's steps share one name in every task and
+-- generation, the name the next version gives the key too.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with every daemon on that database stopped, before the earlier image is pinned:
@@ -37,9 +40,11 @@
 -- and every row that release inserts would take the default. The drop and the delete are owed to
 -- the roll forward: with the column dropped and the row deleted, store.apply finds no row of this
 -- version and runs this file again, which adds the column again and names every row again, as
--- above. What the drop costs is the name of a key that came from a row no longer stored: a key that
--- a later version gave a step of another role first, whose write deleted the rows the name came
--- from, is named for the role of its first row that stands, and so can take another name.
+-- above. What the drop costs is the name of a key that came from a row no longer stored: a key whose
+-- first generation's later version gave its first place to a step of another role, whose write
+-- deleted the rows the name came from, is named for the role of its first row that stands, and so
+-- can take another name. The fill reads tasks in the order of their ids, where NameAgents reads a
+-- version's tasks in the plan's order; this release's plans hold one task (plan.Supported).
 -- A rollback past 20261117034837_issue_plans, which drops plan_steps whole, runs this way back
 -- first: its row would otherwise stand after that table is gone, and the roll forward would create
 -- plan_steps again with no agent column, which every plan read names.
