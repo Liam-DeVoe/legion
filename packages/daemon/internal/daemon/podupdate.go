@@ -166,7 +166,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // podHolds is what a project's pause did to one issue's pod as a sweep reads it
 // (store.Store.PausePodHoldsSince): each hold that stands on the pod, each that ended, or whose
 // pause let out a launch of the pod, since the oldest round of the sweep opened, and each whose
-// pause still owes a role of the pod a launch, with each role it owes one
+// pause still owes a claim of the pod a launch, with each claim it owes one
 // (store.PausePodHold.Owed, decision 12 of dispatch://INFRA-3759).
 type podHolds []store.PausePodHold
 
@@ -223,40 +223,43 @@ func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 // pod of a round with no process in it (roundPodEnds), for every claim of the issue, the claim of
 // a launch into the pod included (roundPodEndsAtLaunch). Three things must all be true:
 //
-//   - A hold that no deletion ended owes c's role a launch (owedLaunch): the store reads, role by
-//     role, that the role has not run in the pod since the pause stopped it
+//   - A hold that no deletion ended owes c a launch (owedLaunch): the store reads, claim by
+//     claim, that the claim has not run in the pod since the pause stopped it
 //     (store.PausePodHold.Owed). A hold a deletion ended keeps nothing: the pod is gone.
 //   - c has not answered the round (answered). A claim that answered pushed its work first, so the
 //     pod keeps nothing for it.
 //   - c is still the pause's now. It is suspended released, since its held start has not run
 //     (supervise.Claim.Released). Or it records no process and it is not suspended, failed or
-//     retired (supervise.Claim.Gone). That is the launch the pause still owes the role, in each
+//     retired (supervise.Claim.Gone). That is the launch the pause still owes the claim, in each
 //     state the launch can be in. The wake pacing or the pause's gate parks it, or its launch
 //     decision runs (supervise's waitOnMachine). A daemon restart restored it launch_uncertain,
 //     and the release of that launch made it queued (supervisor.restore,
 //     supervise.Claim.ReleasedLaunch). Or the launch forgot the role's lost session, so the claim
 //     records no session until its new agent registers (supervise's startFresh).
 //
-// All three are read from the claim, the round and the store's list of owed roles, and nothing
+// All three are read from the claim, the round and the store's list of owed claims, and nothing
 // else. The decision that parks a launch writes the claim launching in that same decision
 // (waitOnMachine). So no reading waits for a write that comes later, such as the let-out that the
-// daemon writes on a goroutine of its own after the park (pause.go). A role that came up in the pod
-// is owed nothing. A claim suspended by any other source than a release (the daemon's own rule, a
-// root's exit, an unknown source or an operator) is gone and not released, and so is a failed or a
-// retired claim. None of them is the pause's, whatever another role of the pod still waits for. A
-// hold that stands needs no case here: a round waits over a pod a hold stands on, and no round
-// opens over it (held).
+// daemon writes on a goroutine of its own after the park (pause.go). A claim that came up in the
+// pod is owed nothing. A claim suspended by any other source than a release (the daemon's own
+// rule, a root's exit, an unknown source or an operator) is gone and not released, and so is a
+// failed or a retired claim. None of them is the pause's, whatever another claim of the pod still
+// waits for. A hold that stands needs no case here: a round waits over a pod a hold stands on, and
+// no round opens over it (held).
 func (h podHolds) owes(c supervise.Claim, round string) bool {
-	return h.owedLaunch(c.Role) && !answered(c, round) && (c.Released() || c.Locator == nil && !c.Gone())
+	return h.owedLaunch(c.Token) && !answered(c, round) && (c.Released() || c.Locator == nil && !c.Gone())
 }
 
-// owedLaunch is whether a hold of the pod that no deletion ended owes role a launch
-// (store.PausePodHold.Owed). One pause can hold the pod twice: a hold ends at a role's ready while
-// the pause stands, and a later stop of the same pause opens a second hold. The store reads the
-// resumes of a hold by its pause and its issue, so both holds name the role, and either answers.
-func (h podHolds) owedLaunch(role claim.Role) bool {
+// owedLaunch is whether a hold of the pod that no deletion ended owes the claim token a launch
+// (store.PausePodHold.Owed). The pause owes its launch to the claim it stopped, and two claims can
+// hold one role (the agent of a key on a step of another role, beside that role's own claim), so
+// the launch one claim is owed is no launch of another claim of its role. One pause can hold the
+// pod twice: a hold ends at a role's ready while the pause stands, and a later stop of the same
+// pause opens a second hold. The store reads the resumes of a hold by its pause and its issue, so
+// both holds name the claim, and either answers.
+func (h podHolds) owedLaunch(token claim.Token) bool {
 	for _, hold := range h {
-		if hold.End != store.PausePodHoldDeleted && slices.Contains(hold.Owed, role) {
+		if hold.End != store.PausePodHoldDeleted && slices.Contains(hold.Owed, token) {
 			return true
 		}
 	}
@@ -266,9 +269,9 @@ func (h podHolds) owedLaunch(role claim.Role) bool {
 // podPauseHolds is the holds a project's pause has or had on the project's pods, by issue, read
 // once for the sweep, and again under a pod's launch turn (clockUnderTurn): every hold that
 // stands, every hold that ended, or whose pause let out a launch of its pod, since the oldest
-// round any of claims records opened, and every hold whose pause still owes a role of its pod a
-// launch, with each role it owes one. These are the holds a round's bound can move by
-// (podHolds.since) and the holds that can still keep a pod for a role (podHolds.owes).
+// round any of claims records opened, and every hold whose pause still owes a claim of its pod a
+// launch, with each claim it owes one. These are the holds a round's bound can move by
+// (podHolds.since) and the holds that can still keep a pod for a claim (podHolds.owes).
 func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Claim, now time.Time) (map[string]podHolds, error) {
 	since := now
 	for _, c := range claims {

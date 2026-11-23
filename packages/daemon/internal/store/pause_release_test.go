@@ -653,22 +653,22 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 }
 
 // Decision 12 of dispatch://INFRA-3759, as review rounds 3 and 4 of dispatch://INFRA-4109 set it:
-// the sweep's read names, for each hold, every role of the pod that the hold's own pause still
-// owes a launch (PausePodHold.Owed). A round keeps the pod for a role only while the pause still
-// owes that role a launch, so the daemon reads it role by role and never from the latest let-out
-// of all the roles.
+// the sweep's read names, for each hold, every claim of the pod that the hold's own pause still
+// owes a launch (PausePodHold.Owed). A round keeps the pod for a claim only while the pause still
+// owes that claim a launch, so the daemon reads it claim by claim and never from the latest
+// let-out of all the claims.
 //
 // Both pods were held by the pause and their holds ended at the resume. On the first pod, the
-// pause still owes the implementer and the tester a launch: each has a resume of that pause that
-// no first turn stamped, nothing closed and no ready stamped, and each is named, in order. The
-// architect became ready (MarkPodResumeReady) and its resume stays open, as a role the daemon
-// suspended before its first turn leaves it. The reviewer took its first turn, and the merger's
-// resume was closed. None of those three is owed, and neither is the planner, whose open resume is
-// of a later pause. The second pod has the same four resumes and no other: its hold is read where
-// it ended or its pause let a launch out after since, and is missing from a read past both,
-// whatever its open, ready resume. The latest let-out still counts every resume of the pause
-// (PausePodHold.LetOut).
-func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing.T) {
+// pause still owes the own claims of the implementer and the tester a launch: each has a resume of
+// that pause that no first turn stamped, nothing closed and no ready stamped, and each is named,
+// in token order. The architect became ready (MarkPodResumeReady) and its resume stays open, as a
+// role the daemon suspended before its first turn leaves it. The reviewer took its first turn, and
+// the merger's resume was closed. None of those three is owed, and neither is the planner, whose
+// open resume is of a later pause. The second pod has the same four resumes and no other: its hold
+// is read where it ended or its pause let a launch out after since, and is missing from a read
+// past both, whatever its open, ready resume. The latest let-out still counts every resume of the
+// pause (PausePodHold.LetOut).
+func TestTheSweepsReadOfTheHoldsNamesEachClaimItsPauseStillOwesALaunch(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
@@ -727,13 +727,13 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 	resume(rootIssue, claim.RoleImplementer, pause, 3*time.Minute)
 	resume(rootIssue, claim.RoleTester, pause, 0)
 
-	owed := fmt.Sprint([]claim.Role{claim.RoleImplementer, claim.RoleTester})
+	owed := fmt.Sprint([]claim.Token{own(rootIssue, claim.RoleImplementer), own(rootIssue, claim.RoleTester)})
 	for _, tc := range []struct {
 		since time.Duration
-		// want is each hold the read returns, by issue, with the roles its pause owes a launch.
+		// want is each hold the read returns, by issue, with the claims its pause owes a launch.
 		want map[string]string
 	}{
-		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Role(nil))}},
+		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Token(nil))}},
 		{since: 10 * time.Minute, want: map[string]string{rootIssue: owed}},
 	} {
 		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
@@ -749,7 +749,7 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 			got[hold.Issue] = fmt.Sprint(hold.Owed)
 		}
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
-			t.Fatalf("the roles the holds owe a launch, read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+			t.Fatalf("the claims the holds owe a launch, read since the resume %+v = %v, want %v", tc.since, got, tc.want)
 		}
 	}
 }
