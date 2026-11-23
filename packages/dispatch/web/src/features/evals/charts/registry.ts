@@ -9,6 +9,9 @@ import type { ChartKind } from "./kind";
 import { lanesKind } from "./lanes";
 import { networkKind } from "./network";
 import { numberKind } from "./number";
+import { pendingKind } from "./pending";
+import { proseKind } from "./prose";
+import { runsKind } from "./runs";
 import { textKind } from "./text";
 import { xyKind } from "./xy";
 
@@ -19,6 +22,9 @@ export const chartKinds: Readonly<Record<string, ChartKind>> = {
   lanes: lanesKind,
   network: networkKind,
   number: numberKind,
+  pending: pendingKind,
+  prose: proseKind,
+  runs: runsKind,
   text: textKind,
   xy: xyKind,
 };

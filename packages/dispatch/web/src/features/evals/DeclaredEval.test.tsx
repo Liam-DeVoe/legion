@@ -125,19 +125,19 @@ const test = (name: string, body: () => Promise<void>): void =>
   });
 
 /** The Logged section's evals, read through their evals view as the tab reads them. */
-function Logged() {
-  const views = useEvalsViews(SCOPE, ["experiment"], keepLogged);
-  return <LoggedEvals scope={SCOPE} views={views} />;
+function Logged({ scope }: { scope: EvalsScope }) {
+  const views = useEvalsViews(scope, ["experiment"], keepLogged);
+  return <LoggedEvals scope={scope} views={views} />;
 }
 
-/** The Logged section, and its live socket, open. */
-async function renderLogged(): Promise<FakeLiveSocket> {
+/** The Logged section under `scope`, the header's, and its live socket, open. */
+async function renderLogged(scope: EvalsScope = SCOPE): Promise<FakeLiveSocket> {
   render(
     <MemoryRouter>
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <Logged />
+        <Logged scope={scope} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -281,4 +281,31 @@ test("a new definition.version in the evals view's delta reads the detail again,
   // The one evals view it had: nothing was subscribed again but the new series.
   expect(socket.subscribes().filter((frame) => frame.view.kind === "evals")).toHaveLength(1);
   expect(itemsViews(socket, "latency")).toHaveLength(1);
+});
+
+test("the readings views name no repository, though the header names one", async () => {
+  const socket = await renderLogged({ ...SCOPE, repos: ["acme/widgets"] });
+  const view = await waitFor(() => socket.subscribed("evals"));
+  // The header's repository narrows the evals view.
+  expect(
+    new URLSearchParams(view.view.kind === "evals" ? view.view.query : "").getAll("repo")
+  ).toEqual(["acme/widgets"]);
+  act(() =>
+    socket.receive(
+      snapshotFrame(view.sub, evalsAnswer([convergence(1, "Arm A converges in fewer tokens.")]))
+    )
+  );
+  await waitFor(() => expect(reads).toHaveLength(1));
+  act(() => reads[0]?.(detailOf(1, [TOKENS], "Arm A converges in fewer tokens.")));
+
+  // A logged eval's readings belong to no repository, and the items route keeps only the
+  // readings a `repo` names: the view names none, so its readings stay in the chart.
+  const frame = await serveItems(socket, "tokens", itemsOf(xyFixture.items, "tokens"));
+  expect(
+    new URLSearchParams(frame.view.kind === "items" ? frame.view.query : "").getAll("repo")
+  ).toEqual([]);
+  const chart = await waitFor(() =>
+    within(declared()).getByRole("figure", { name: "Tokens to converge" })
+  );
+  expect(chart.querySelectorAll('[data-statistic="y"][data-range="window"]').length).toBe(4);
 });
