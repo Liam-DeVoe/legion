@@ -211,6 +211,7 @@ var idPrefixKindPrefixes = map[string]struct{ one, two, none string }{
 // own 404; and a whole uuid nothing carries gets that same 404, which is the control proving
 // the prefix is answered as an unknown whole id is and not by a 404 this test merely asserts.
 func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	for _, route := range idPrefixRoutes() {
 		prefixes := idPrefixKindPrefixes[route.kind]
@@ -284,6 +285,7 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 // TestAnAskIsAnsweredByAnIDPrefix: a write route resolves its prefix and writes the item it
 // named, so the ask the prefix shortens is the ask that ends up answered.
 func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	answered := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/a0000001/answer",
 		map[string]any{"text": "This way."}, "alice")
@@ -311,6 +313,7 @@ func TestAnAskIsAnsweredByAnIDPrefix(t *testing.T) {
 // document's blocks carry is 409 ID_AMBIGUOUS, the same prefix under another document names
 // nothing, and a block id that is no id written short is matched exactly, as it always was.
 func TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	document := chosenID("f0000001", 1)
 	for _, block := range []struct{ document, id string }{
@@ -363,6 +366,7 @@ func TestABlockIDPrefixIsMatchedWithinTheDocumentItsRouteNames(t *testing.T) {
 // of a prefix two of its blocks carry and the route's own 404 for the one block the live
 // document does not hold - and never the 500 of a value Postgres refuses as a uuid.
 func TestABlockPrefixUnderAUUIDSpellingTheRouteReadsIsResolvedToo(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	document := chosenID("f0000001", 1)
 	for _, blockID := range []string{"ab12cd34ef", "ab12cd34ff"} {
@@ -392,6 +396,7 @@ func TestABlockPrefixUnderAUUIDSpellingTheRouteReadsIsResolvedToo(t *testing.T) 
 // its id out of the path and parses none of it, so the whole id the layer left there is the
 // comment it resolves.
 func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	resolved := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/comments/c0000001/resolve",
 		map[string]any{}, "alice")
@@ -416,6 +421,7 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 // resolves one ask of another project by its whole id and another by its prefix, and each
 // request reaches the handler, which answers 200 with the ask the path named, resolved.
 func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -446,6 +452,7 @@ func TestAProjectScopedTokenResolvesAnotherProjectsAskByAPrefix(t *testing.T) {
 // session not in the conversation is refused by the prefix exactly as by the whole id, and a
 // refusal listing such a message carries no line of its text for that caller.
 func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for nth, id := range []string{chosenID("e0000001", 1), chosenID("e0000002", 1), chosenID("e0000002", 2)} {
 		seedExec(t, database, "a direct message", `
@@ -498,6 +505,7 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 // the owner the reference names, and the same prefix under another owner names nothing — while a
 // whole id is read whatever owner the reference names, as this route has always read one.
 func TestAReferenceResolvesAPrefixWithinTheOwnerItNames(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	first := createInteractionIssue(t, handler, "REF", "Short ids in references", "# Spec\n\nA passage.")
 	second := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -546,6 +554,7 @@ func TestAReferenceResolvesAPrefixWithinTheOwnerItNames(t *testing.T) {
 // of that document carrying it. The same prefix on another document of the project, and under
 // the project's issue, names that owner's item or nothing at all.
 func TestAReferenceResolvesAPrefixWithinTheProjectDocumentItNames(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PDR", "Short ids on a document", "# Spec\n\nA passage.")
 	handbook := createProjectDocument(t, handler, "PDR", "Handbook", "# Handbook\n")
@@ -624,6 +633,7 @@ func TestAReferenceResolvesAPrefixWithinTheProjectDocumentItNames(t *testing.T) 
 // source of each of the four kinds, by whole id and by prefix; a source whose text belongs to no
 // document is 404.
 func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "QMP", "A spec with a question", "# Spec\n\nA passage.")
 	// The create path seeds the spec through the document service and queues that document's
@@ -718,6 +728,7 @@ func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
 // under a name in braces rather than the id every other read of it carries. Every spelling of
 // one id answers what the canonical id answers, and one nothing carries this route's own 404.
 func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "QMU", "A spec with a question", "# Spec\n\nA passage.")
 	// Wait for the settlement the create path queues for this spec, as the seed below writes a
@@ -785,6 +796,7 @@ func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T)
 // the value to a uuid column, and a reference naming no node gets the 404 this route answers
 // for one. The canonical id, which the graph does hold, answers its node.
 func TestAReferenceWritingAnIDAnotherWayIsNoFiveHundred(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "URN", "An ask a reference names", "# Spec\n\nA passage.")
 	id := chosenID("cb000001", 1)
@@ -883,6 +895,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 // own name. The one route that answers no 404 for an id it does not hold (notFoundNone) is held
 // to that: its answer is anything but a 404.
 func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
+	t.Parallel()
 	// Every route the table mounts, the test hooks' one that takes a document id included.
 	handler, _ := newTestHandlerWithTestHooks(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unknown ids", "# Spec\n\nA passage.")

@@ -905,16 +905,16 @@ func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
 // request Verify already admitted with its proof (the listener's relay socket), so it introspects
 // with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
 // stranger who empties the bucket of an address, which every client behind one load balancer
-// shares, cannot close the sockets opened from it. Control: Live, with the same bucket spent, is
-// refused ErrRateLimited and reaches no broker.
+// shares, cannot close the sockets opened from it. The bucket is spent by a token the broker does
+// not know, since a live answer gives its request back to the bucket. Control: Live, with the same
+// bucket spent, is refused ErrRateLimited and reaches no broker.
 func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
 	rig := newRig(t, func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
 	})
 	caller := newSigner(t)
-	rig.broker.Says("the-token-that-spends-the-bucket", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); !errors.Is(err, ciphertoken.ErrNotActive) {
+		t.Fatalf("the request that spends the bucket = %v, want ErrNotActive", err)
 	}
 	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
 	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {

@@ -35,6 +35,7 @@ type dependencyEdge struct{ issue, target string }
 // links a target of another project as a caller whose credential names none does (INFRA-4799),
 // and a link to an issue that does not exist is refused it as it is refused every caller.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
 	beta := createListedIssues(t, handler, "BETA", 8)
@@ -408,6 +409,7 @@ type foreignChildOpenAnswer struct {
 // done and icebox. A write without the field, a person's, and a write over an open child of the
 // issue's own project, which the parent's own daemon judges, are taken as before.
 func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 4)
 	side := createListedIssues(t, handler, "SIDE", 1)
@@ -506,6 +508,7 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 // TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus: refuse_open_foreign_children asks for the
 // check of an acceptance write, so it is refused beside any other status or none.
 func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 1)
 	for _, body := range []map[string]any{
@@ -523,6 +526,7 @@ func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
 // deployment dependency lock that every parent write takes, so no child is filed between the two.
 // A status write without the field takes no dependency lock, as before.
 func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	core := createListedIssues(t, handler, "CORE", 2)
 	gate, err := database.Pool.Begin(context.Background())

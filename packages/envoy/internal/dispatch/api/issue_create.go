@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -385,7 +386,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, specVersion.Number, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -517,6 +518,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// comes before the event.
 	event, err := s.queueStampedEvent(ledger, issueOwner(key).event("issue.created", actor, payload), "artifact", artifactID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated waits for the issue's own event, queued right after it:
+	// that event is the cause every node and tuple of the pass carries (graphstore.QueueCaused).
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
