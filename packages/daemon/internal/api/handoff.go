@@ -245,9 +245,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// whose retro report lands after the issue moved on is not asked for a step's verdict. What a
 	// report of a step carries is one rule, which the owner's complete_step takes too
 	// (stepReportRefusal); a reviewer's verdict turns on whether the issue has a pull request
-	// record, read with the issue.
+	// record, read with the issue. Whether the role works the phase the issue stands in is read
+	// once, here, for the phase this completion is of and for the entry fence's row below.
+	works := issue.RoleAt(issue.Phase) == grant.Role
 	of := record.PhaseLeftBy(grant.Role, issue.Phase, position.task, position.steps)
-	if issue.RoleAt(issue.Phase) == grant.Role {
+	if works {
 		of = issue.Phase
 	}
 	if refusal := stepReportRefusal(grant.Role, of == phase.Retro, false, position.pullRequest != nil, req.Verdict, req.Commit, grant.Issue); refusal != nil {
@@ -334,10 +336,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
-	// Whether the role works the phase the issue stands in is read once (record.Issue.RoleAt: at
-	// step, the role of the running step, so a role the deployment defines works only its own step),
-	// for the entry fence's row and for the phase this completion is of below.
-	works := issue.RoleAt(issue.Phase) == grant.Role
+	// Whether the role works the phase the issue stands in was read once above (works: at step, the
+	// role of the running step, so a role the deployment defines works only its own step).
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads. The row is the run

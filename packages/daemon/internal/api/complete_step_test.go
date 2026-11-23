@@ -21,7 +21,9 @@ import (
 // seedOwnerPlan writes the plan of key, at the generation its record is on, as its one task a whose
 // steps are words (`role` or `role:key`, each one of Legion's roles of a step, with that role's
 // type), with the task running at place: the store reads key's running role as the claim that
-// works that place, the architect where the owner does it.
+// works that place, the architect where the owner does it. Each step's agent is named as the
+// daemon names it when it stores a plan (record.NameAgents), since a stored step's name is read
+// from that column alone.
 func seedOwnerPlan(t *testing.T, h *harness, key, words string, place record.TaskPlace) {
 	t.Helper()
 	named, err := plan.ParseSteps(words)
@@ -41,7 +43,7 @@ func seedOwnerPlan(t *testing.T, h *harness, key, words string, place record.Tas
 		v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 			return err
 		}
 		return records.MoveTask(ctx, tx, key, generation, "a", place, record.TaskRunning)
