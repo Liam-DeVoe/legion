@@ -3849,7 +3849,7 @@ first PING after 2 s plus up to 20% (nats-server's server/client.go `setFirstPin
 while the client's CONNECT still waits for the callout, and a Go client (nats.go) reads anything
 but PONG there as an error, `nats: expected 'PONG', got 'PING'`, so it fails at about 2 s whatever
 the timeout. No nats-server 2.15.1 setting delays that first PING past 2 s (a `ping_interval`
-below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, nats.go v1.53.1):
+below 2 s moves it earlier). Measured on the hub's image of that time (nats-server 2.15.1, nats.go v1.53.1):
 under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
 TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
@@ -4290,7 +4290,12 @@ and its stream message get, stream info and key write aimed the same way take no
 `TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
 status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
 stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
-on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
+on its inbox as controls. Those five rows run on both hubs' servers. Every reach into the API they
+pin is the VM hub's nats-server 2.15.1 (`testnats.VMHubImage`), which keeps it until the VM hub is
+removed, and that image and those rows go with it. The clustered hub's 2.15.3
+(`testnats.HubImage`) refuses each one: a publish whose reply is under `$JS.` at the publish, a
+push consumer delivering under `$JS.API.` at its create, and a republish there by suppressing it,
+each row with a control that the same route works to a plain subject.
 `cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
 reached by a role message through a shared listener, takes a role another session holds and is
 relayed a role message of a role another session holds, with no refusal, and its start ends,

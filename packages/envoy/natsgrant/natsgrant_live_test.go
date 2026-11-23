@@ -67,6 +67,46 @@ func present(t *testing.T, admin natsgo.JetStreamContext, name string) bool {
 	return err == nil
 }
 
+// apiReachServers are the two hubs' servers the rows below that aim a JetStream answer at
+// $JS.API. run on. The VM hub's nats-server 2.15.1 (testnats.VMHubImage) delivers a republish, a
+// push consumer's heartbeat, a request's answer and an ack's reply there, which each row pins as a
+// reach. The clustered hub's 2.15.3 (testnats.HubImage) refuses every one of them: a $JS. reply at
+// the publish (client.go:4599, isReservedReply), a push consumer delivering on one at its create
+// (consumer.go:825, isReservedDestination), and a republish into one by suppressing it
+// (stream.go:7421-7425), each at v2.15.3. The VM hub's row and VMHubImage go when the VM hub is
+// removed.
+var apiReachServers = []struct {
+	name, image string
+	// reaches is whether the server delivers a JetStream answer aimed at $JS.API.
+	reaches bool
+}{
+	{"the VM hub's nats-server 2.15.1", testnats.VMHubImage, true},
+	{"the clustered hub's nats-server 2.15.3", testnats.HubImage, false},
+}
+
+// replyRefused is the text of nats-server 2.15.3's refusal of a publish whose reply is under $JS.
+// (client.go:6108-6109, replySubjectViolation), for refusedNaming.
+func replyRefused(reply string) string { return fmt.Sprintf("Publish with Reply of %q", reply) }
+
+// logged waits up to 10 s for a line of ctr's log holding what, and fails the test without one.
+func logged(t *testing.T, ctr interface {
+	Logs(context.Context) (io.ReadCloser, error)
+}, what string) {
+	t.Helper()
+	var text string
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		logs, err := ctr.Logs(context.Background())
+		require.NoError(t, err, "read the server's log")
+		read, err := io.ReadAll(logs)
+		_ = logs.Close()
+		require.NoError(t, err, "read the server's log")
+		if text = string(read); strings.Contains(text, what) {
+			return
+		}
+	}
+	t.Fatalf("the server logged no line holding %q within 10s; its log:\n%s", what, text)
+}
+
 // The edge's consumer calls reach past its publish list, and this row pins how far, on the hub's
 // image: a narrowing of that reach fails it, and so does a widening of the publish list it reads
 // against. On a stream with the production subjects, which a shared listener's user owns:
@@ -229,7 +269,8 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 
 // The update of a bucket's stream can change its subjects and set a republish, and a republish to
 // a $JS.API. subject is a JetStream API request in the stream's account, with the stored value as
-// its body. So the edge holds no bucket stream's create or update. On the hub's image:
+// its body. So the edge holds no bucket stream's create or update. On each hub's server
+// (apiReachServers):
 //   - the edge's update of the interest bucket's stream with a republish to
 //     $JS.API.STREAM.DELETE.SCRATCH_VICTIM is refused naming the update, and leaves the stream
 //     with no republish, so the edge's write of an empty value to the key the republish would copy
@@ -237,14 +278,23 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 //   - in the same run, the account's administrator sets such a republish on two other buckets'
 //     streams, to $JS.API.STREAM.DELETE.SCRATCH_VICTIM_ADMIN and, carrying headers only, to
 //     $JS.API.STREAM.DELETE.SCRATCH_VICTIM_HEADERS, and writes the key: an empty value to the
-//     first, a non-empty one to the second, whose copy carries no body. A client subscribed to
-//     each subject receives the copy, and both streams are deleted, so the route the edge is
-//     refused is live. (A non-empty body is refused by the API as a delete request's.)
+//     first, a non-empty one to the second, whose copy carries no body. On the VM hub's 2.15.1 a
+//     client subscribed to each subject receives the copy, and both streams are deleted, so the
+//     route the edge is refused is live there. (A non-empty body is refused by the API as a delete
+//     request's.) The clustered hub's 2.15.3 logs each republish as suppressed and both streams
+//     stay; its control is the same republish to scratch.republished, which a subscriber
+//     receives.
 func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
+	for _, server := range apiReachServers {
+		t.Run(server.name, func(t *testing.T) { edgeCannotSetABucketToRepublish(t, server.image, server.reaches) })
+	}
+}
+
+func edgeCannotSetABucketToRepublish(t *testing.T, image string, reaches bool) {
 	edgeSeed, edgeKey := testnats.User(t)
 	adminSeed, adminKey := testnats.User(t)
 	edge := edge(t, "m", "PRIV")
-	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+	ctr, uri := testnats.StartImageConfig(t, image, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
@@ -259,15 +309,18 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
 		require.NoError(t, err)
 	}
-	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool) error {
+	republishTo := func(js natsgo.JetStreamContext, bucket, destination string, headersOnly bool) error {
 		info, err := js.StreamInfo("KV_" + bucket)
 		if err != nil {
 			return err
 		}
 		config := info.Config
-		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: "$JS.API.STREAM.DELETE." + victim, HeadersOnly: headersOnly}
+		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: destination, HeadersOnly: headersOnly}
 		_, err = js.UpdateStream(&config)
 		return err
+	}
+	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool) error {
+		return republishTo(js, bucket, "$JS.API.STREAM.DELETE."+victim, headersOnly)
 	}
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
 	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
@@ -300,10 +353,30 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		require.NoError(t, err)
 		_, err = bucket.Put("rp", control.value)
 		require.NoError(t, err)
+		if !reaches {
+			logged(t, ctr, fmt.Sprintf("suppressing republish with invalid subject %q", target))
+			require.True(t, present(t, admin, control.victim), "%s, whose delete the server suppressed the republish to", control.victim)
+			continue
+		}
 		copied, err := republished.NextMsg(10 * time.Second)
 		require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", target)
 		require.Empty(t, copied.Data, "the republished copy on %s carries a body", target)
 		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, control.victim) }), "%s is still there 10s after the administrator's republish of an empty body to its delete", control.victim)
+	}
+	if !reaches {
+		// Control: the same republish, to a subject no stream or API takes, reaches its subscriber.
+		const plain = "scratch.republished"
+		republished, err := adminConn.SubscribeSync(plain)
+		require.NoError(t, err)
+		require.NoError(t, adminConn.Flush())
+		require.NoError(t, republishTo(admin, bus.LegionAgentBucket, plain, false), "the administrator sets a republish to %s on KV_%s", plain, bus.LegionAgentBucket)
+		bucket, err := admin.KeyValue(bus.LegionAgentBucket)
+		require.NoError(t, err)
+		_, err = bucket.Put("rp", []byte("to a subscriber"))
+		require.NoError(t, err)
+		copied, err := republished.NextMsg(10 * time.Second)
+		require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s", plain)
+		require.Equal(t, "to a subscriber", string(copied.Data), "the republished copy on %s", plain)
 	}
 	require.True(t, present(t, admin, "SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
 }
@@ -313,7 +386,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 // JetStream client, publishing the stored value as the body on that reply subject. Aimed at
 // $JS.API., the JetStream API takes that value as a request of the account's. So the edge holds no
 // direct get, and reads its buckets with stream message gets (bus.WithStreamMessageReads). This
-// row pins both halves on the hub's image (nats-server 2.15.1):
+// row pins both halves on each hub's server (apiReachServers). On the VM hub's 2.15.1:
 //   - the route is live: a user holding Listener's grant, which keeps the direct get, writes a
 //     stream update of SCRATCH_DG_CONTROL (max_msgs 7) and an empty value to the interest bucket,
 //     and its direct gets of them, answered on that stream's update and on SCRATCH_DG_GONE's
@@ -325,14 +398,25 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 //     SCRATCH_DG_INFO's purge, and the acknowledgement of a key it writes, answered on
 //     SCRATCH_DG_PUBACK's purge, each reach a subscriber of that subject and leave the stream.
 //
+// On the clustered hub's 2.15.3 the edge's direct gets are refused the same way, and every other
+// request above, the edge's and Listener's, is refused at its publish naming its $JS.API. reply,
+// so all seven streams stay as they were. Its control is Listener's direct get of dg-control
+// answered on scratch.dg.answer, which reaches a subscriber there with the stored update.
+//
 // The edge's probes are made before the control's, and the streams they aimed at are read after
 // the control's changes are seen.
 func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) {
+	for _, server := range apiReachServers {
+		t.Run(server.name, func(t *testing.T) { edgeHoldsNoDirectGet(t, server.image, server.reaches) })
+	}
+}
+
+func edgeHoldsNoDirectGet(t *testing.T, image string, reaches bool) {
 	edgeSeed, edgeKey := testnats.User(t)
 	listenerSeed, listenerKey := testnats.User(t)
 	adminSeed, adminKey := testnats.User(t)
 	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
-	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+	_, uri := testnats.StartImageConfig(t, image, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
@@ -371,8 +455,16 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	const untouched = "present, max_msgs -1, 1 messages"
 	// answered publishes request with reply as its reply subject from conn, and requires a
 	// subscriber of reply to receive the answer, so the answer was published there.
-	answered := func(conn *natsgo.Conn, request, reply string, body []byte) {
+	// On a server that refuses a $JS. reply (reaches false), it requires the publish refused
+	// naming the reply instead.
+	answered := func(conn *natsgo.Conn, errs <-chan error, request, reply string, body []byte) {
 		t.Helper()
+		if !reaches {
+			require.NoError(t, conn.PublishRequest(request, reply, body))
+			require.NoError(t, conn.Flush())
+			refusedNaming(t, errs, replyRefused(reply))
+			return
+		}
 		answers, err := adminConn.SubscribeSync(reply)
 		require.NoError(t, err)
 		require.NoError(t, adminConn.Flush())
@@ -384,7 +476,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	}
 	directGet := "$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".$KV." + bus.InterestBucket + "."
 
-	listenerConn, _ := grantedConnection(t, uri, listenerSeed)
+	listenerConn, listenerErrs := grantedConnection(t, uri, listenerSeed)
 	listenerJS, err := listenerConn.JetStream(natsgo.MaxWait(3 * time.Second))
 	require.NoError(t, err)
 	interests, err := listenerJS.KeyValue(bus.InterestBucket)
@@ -402,19 +494,34 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	}
 	messageGet, err := json.Marshal(map[string]string{"last_by_subj": "$KV." + bus.InterestBucket + ".dg-empty"})
 	require.NoError(t, err)
-	answered(edgeConn, "$JS.API.STREAM.MSG.GET.KV_"+bus.InterestBucket, "$JS.API.STREAM.DELETE.SCRATCH_DG_MSG_GET", messageGet)
-	answered(edgeConn, "$JS.API.STREAM.INFO.KV_"+bus.InterestBucket, "$JS.API.STREAM.PURGE.SCRATCH_DG_INFO", nil)
-	answered(edgeConn, "$KV."+bus.InterestBucket+".dg-puback", "$JS.API.STREAM.PURGE.SCRATCH_DG_PUBACK", nil)
+	answered(edgeConn, edgeErrs, "$JS.API.STREAM.MSG.GET.KV_"+bus.InterestBucket, "$JS.API.STREAM.DELETE.SCRATCH_DG_MSG_GET", messageGet)
+	answered(edgeConn, edgeErrs, "$JS.API.STREAM.INFO.KV_"+bus.InterestBucket, "$JS.API.STREAM.PURGE.SCRATCH_DG_INFO", nil)
+	answered(edgeConn, edgeErrs, "$KV."+bus.InterestBucket+".dg-puback", "$JS.API.STREAM.PURGE.SCRATCH_DG_PUBACK", nil)
 
-	answered(listenerConn, directGet+"dg-control", "$JS.API.STREAM.UPDATE.SCRATCH_DG_CONTROL", nil)
-	answered(listenerConn, directGet+"dg-empty", "$JS.API.STREAM.DELETE.SCRATCH_DG_GONE", nil)
+	answered(listenerConn, listenerErrs, directGet+"dg-control", "$JS.API.STREAM.UPDATE.SCRATCH_DG_CONTROL", nil)
+	answered(listenerConn, listenerErrs, directGet+"dg-empty", "$JS.API.STREAM.DELETE.SCRATCH_DG_GONE", nil)
 	control := func() string { return state("SCRATCH_DG_CONTROL") + "; " + state("SCRATCH_DG_GONE") }
-	const changed = "present, max_msgs 7, 1 messages; gone"
-	seen := control()
-	for deadline := time.Now().Add(10 * time.Second); seen != changed && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		seen = control()
+	if !reaches {
+		// Control: Listener's direct get answered on a subject no API takes reaches its subscriber
+		// with the stored value, so the direct get the refusals above stopped is live.
+		const plain = "scratch.dg.answer"
+		answers, err := adminConn.SubscribeSync(plain)
+		require.NoError(t, err)
+		require.NoError(t, adminConn.Flush())
+		require.NoError(t, listenerConn.PublishRequest(directGet+"dg-control", plain, nil))
+		require.NoError(t, listenerConn.Flush())
+		answer, err := answers.NextMsg(10 * time.Second)
+		require.NoError(t, err, "Listener's direct get answered on %s reached no subscriber within 10s", plain)
+		require.Equal(t, string(update("SCRATCH_DG_CONTROL")), string(answer.Data), "the direct get's answer on %s", plain)
+		require.Equal(t, untouched+"; "+untouched, control(), "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE after Listener's direct gets refused at the publish")
+	} else {
+		const changed = "present, max_msgs 7, 1 messages; gone"
+		seen := control()
+		for deadline := time.Now().Add(10 * time.Second); seen != changed && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			seen = control()
+		}
+		require.Equal(t, changed, seen, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE after Listener's direct gets answered on the update of the one and the delete of the other")
 	}
-	require.Equal(t, changed, seen, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE after Listener's direct gets answered on the update of the one and the delete of the other")
 
 	var states []string
 	want := make([]string, len(streams))
@@ -454,9 +561,9 @@ func twoAccountsConfig(a, b []testnats.StaticUser) string {
 
 // A push consumer's deliver subject is checked against no permission, and the stream delivers
 // through its account's own JetStream client, so the edge can aim a push consumer at a subject
-// under $JS.API. or $KV. or at another stream's subjects. This row pins, on the hub's image
-// (nats-server 2.15.1), what such a consumer of the edge's does to a scratch stream or bucket of
-// its account, over a message the edge stored on its own agent subject:
+// under $JS.API. or $KV. or at another stream's subjects. This row pins, on each hub's server
+// (apiReachServers), what such a consumer of the edge's does to a scratch stream or bucket of its
+// account, over a message the edge stored on its own agent subject. On the VM hub's 2.15.1:
 //   - a deliver subject no client subscribes gives the consumer no interest: it is not push bound
 //     and delivers nothing, the JetStream API's import and a stream's capture being no interest;
 //   - with a client also subscribed to it, the consumer delivers, and the client receives the
@@ -467,18 +574,28 @@ func twoAccountsConfig(a, b []testnats.StaticUser) string {
 //     own: another scratch stream, and a bucket's stream, whose key the delivery leaves unwritten
 //     while the stream counts one message more. That is the one write this route has.
 //
+// The clustered hub's 2.15.3 refuses the create of each consumer delivering under $JS.API.
+// ("invalid push consumer deliver subject"), and the stream it aims at stays; the other deliver
+// subjects, the $KV. key and the scratch subjects, behave as on 2.15.1.
+//
 // Controls in the same run: a subscribed subject receives the delivery; the edge's direct request
 // of a stream delete is refused and the stream stays; the account's administrator deleting a
 // stream is seen as deleted; and a stream of the same name in another account stays. A key the
 // row cannot read reads as unread, never as absent (keyState).
 func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
+	for _, server := range apiReachServers {
+		t.Run(server.name, func(t *testing.T) { edgeGrantsPushConsumerReaches(t, server.image, server.reaches) })
+	}
+}
+
+func edgeGrantsPushConsumerReaches(t *testing.T, image string, reaches bool) {
 	edgeSeed, edgeKey := testnats.User(t)
 	sharedSeed, sharedKey := testnats.User(t)
 	adminSeed, adminKey := testnats.User(t)
 	otherSeed, otherKey := testnats.User(t)
 	edge, shared := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
 	everything := []string{">"}
-	_, uri := testnats.StartImageConfig(t, testnats.HubImage, twoAccountsConfig(
+	_, uri := testnats.StartImageConfig(t, image, twoAccountsConfig(
 		[]testnats.StaticUser{
 			{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 			{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
@@ -594,6 +711,11 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 			require.NoError(t, err, "the edge stores the message on its own agent subject")
 			name := fmt.Sprintf("edge-api-%d", i)
 			_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: own, DeliverSubject: delivery.target, AckPolicy: natsgo.AckNonePolicy})
+			if !reaches && strings.HasPrefix(delivery.target, "$JS.API.") {
+				require.ErrorContains(t, err, "invalid push consumer deliver subject", "the edge's push consumer delivering on %s", delivery.target)
+				require.Equal(t, delivery.want, delivery.state(), "%s after the refused create", delivery.target)
+				return
+			}
 			require.NoError(t, err, "the edge creates a push consumer delivering on %s", delivery.target)
 			if !delivery.subscribed {
 				info, err := admin.ConsumerInfo(bus.Stream, name)
@@ -641,20 +763,28 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 
 // A push consumer with an idle heartbeat sends the heartbeat, an empty status message with no
 // stored subject, to its deliver subject through the stream's own client, which is how a direct
-// get's answer travels and not how a delivery does. On the hub's image, with a client subscribed
-// to $JS.API.STREAM.DELETE.SCRATCH_HB, so the consumer has interest, a consumer the edge creates
-// over a subject that holds no message, delivering there with a heartbeat, sends heartbeats the
-// client receives under the deliver subject itself with an empty body, and SCRATCH_HB is deleted.
-// The control in the same run is a consumer the edge creates the same way on
+// get's answer travels and not how a delivery does. On the VM hub's 2.15.1 (apiReachServers), with
+// a client subscribed to $JS.API.STREAM.DELETE.SCRATCH_HB, so the consumer has interest, a consumer
+// the edge creates over a subject that holds no message, delivering there with a heartbeat, sends
+// heartbeats the client receives under the deliver subject itself with an empty body, and
+// SCRATCH_HB is deleted. The control in the same run is a consumer the edge creates the same way on
 // SCRATCH_HB_UNSUBSCRIBED's delete, which no client subscribes: it is not push bound and that
 // stream stays. The edge's grant subscribes no $JS.API. subject, and no Envoy client subscribes
-// one, so the route needs a subscriber outside them.
+// one, so the route needs a subscriber outside them. The clustered hub's 2.15.3 refuses both
+// creates ("invalid push consumer deliver subject") and both streams stay; its control is the same
+// consumer delivering on scratch.hb, whose subscriber receives its heartbeat.
 func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t *testing.T) {
+	for _, server := range apiReachServers {
+		t.Run(server.name, func(t *testing.T) { pushConsumersHeartbeatOnTheAPI(t, server.image, server.reaches) })
+	}
+}
+
+func pushConsumersHeartbeatOnTheAPI(t *testing.T, image string, reaches bool) {
 	edgeSeed, edgeKey := testnats.User(t)
 	sharedSeed, sharedKey := testnats.User(t)
 	adminSeed, adminKey := testnats.User(t)
 	edge, shared := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
-	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+	_, uri := testnats.StartImageConfig(t, image, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
@@ -684,9 +814,28 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.NoError(t, err)
 	for name, deliver := range map[string]string{"edge-hb": target, "edge-hb-unsubscribed": "$JS.API.STREAM.DELETE.SCRATCH_HB_UNSUBSCRIBED"} {
 		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: time.Second})
+		if !reaches {
+			require.ErrorContains(t, err, "invalid push consumer deliver subject", "the edge's push consumer with a heartbeat delivering on %s", deliver)
+			continue
+		}
 		require.NoError(t, err, "the edge creates a push consumer with a heartbeat delivering on %s", deliver)
 	}
-
+	if !reaches {
+		// Control: the same consumer delivering on a subject no API takes sends its heartbeat to
+		// that subject's subscriber.
+		const plain = "scratch.hb"
+		plainBeats, err := adminConn.SubscribeSync(plain)
+		require.NoError(t, err)
+		require.NoError(t, adminConn.Flush())
+		_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "edge-hb-plain", FilterSubject: "notifications.agent.ses_edge_hb_edge-hb-plain", DeliverSubject: plain, AckPolicy: natsgo.AckNonePolicy, Heartbeat: time.Second})
+		require.NoError(t, err, "the edge creates a push consumer with a heartbeat delivering on %s", plain)
+		beat, err := plainBeats.NextMsg(10 * time.Second)
+		require.NoError(t, err, "no heartbeat reached the client subscribed to %s within 10s", plain)
+		require.Equal(t, "100", beat.Header.Get("Status"), "the heartbeat's status")
+		require.True(t, present(t, admin, "SCRATCH_HB"), "SCRATCH_HB, whose delete the server refused a consumer to deliver on")
+		require.True(t, present(t, admin, "SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete the server refused a consumer to deliver on")
+		return
+	}
 	beat, err := heartbeats.NextMsg(10 * time.Second)
 	require.NoError(t, err, "no heartbeat reached the client subscribed to %s within 10s", target)
 	require.Equal(t, target, beat.Subject, "the heartbeat came under %s", beat.Subject)
@@ -704,17 +853,24 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 // requester names, each needing no subscriber: a no_wait pull on a consumer with nothing to deliver
 // (CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.*) is answered a "404 No Messages" status, and a
 // synchronous ack ($JS.ACK.ENVOY_NOTIFICATIONS.*.>) an empty reply. So either aimed at
-// $JS.API.STREAM.DELETE.<s> deletes stream <s>. This row pins both routes on the hub's image
-// (nats-server 2.15.1), each with its controls: the edge's own direct stream delete is refused and
-// its stream stays; and the same pull and the same ack answered on the edge's own inbox reach it
-// with the empty body the API-aimed ones carry, and leave their streams. It is expected to flip -
-// the delete refused - once the hub runs nats-server 2.15.3, which refuses a reply into $JS.API.
+// $JS.API.STREAM.DELETE.<s> deletes stream <s> on the VM hub's 2.15.1 (apiReachServers). This row
+// pins both routes on each hub's server, each with its controls: the edge's own direct stream
+// delete is refused and its stream stays; and the same pull and the same ack answered on the edge's
+// own inbox reach it with the empty body the API-aimed ones carry, and leave their streams. The
+// clustered hub's 2.15.3 refuses each API-aimed publish naming its $JS.API. reply, and both streams
+// stay.
 func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
+	for _, server := range apiReachServers {
+		t.Run(server.name, func(t *testing.T) { pullStatusAndAckAnswerOnTheAPI(t, server.image, server.reaches) })
+	}
+}
+
+func pullStatusAndAckAnswerOnTheAPI(t *testing.T, image string, reaches bool) {
 	edgeSeed, edgeKey := testnats.User(t)
 	sharedSeed, sharedKey := testnats.User(t)
 	adminSeed, adminKey := testnats.User(t)
 	edge, shared := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
-	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+	_, uri := testnats.StartImageConfig(t, image, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
@@ -764,10 +920,16 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.Equal(t, "404", status.Header.Get("Status"), "the no_wait pull's status")
 	require.Empty(t, status.Data, "the no_wait pull's status body")
 	require.True(t, present(t, admin, "SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
-	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no subscriber.
+	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no
+	// subscriber, or is refused at its publish naming that reply.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, "$JS.API.STREAM.DELETE.SCRATCH_PULL", pull))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_PULL") }), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+	if reaches {
+		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_PULL") }), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+	} else {
+		refusedNaming(t, edgeErrs, replyRefused("$JS.API.STREAM.DELETE.SCRATCH_PULL"))
+		require.True(t, present(t, admin, "SCRATCH_PULL"), "SCRATCH_PULL after the server refused the pull aimed at its delete")
+	}
 
 	// The ack route: two stored messages, pulled to the edge's inbox for their ack subjects.
 	for range 2 {
@@ -796,10 +958,16 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, err, "the synchronous ack's reply reached no subscriber of the edge's inbox within 10s")
 	require.Empty(t, confirm.Data, "the synchronous ack's reply body")
 	require.True(t, present(t, admin, "SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
-	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no subscriber.
+	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no
+	// subscriber, or is refused at its publish naming that reply.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[1], "$JS.API.STREAM.DELETE.SCRATCH_ACK", []byte("+ACK")))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_ACK") }), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+	if reaches {
+		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_ACK") }), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+	} else {
+		refusedNaming(t, edgeErrs, replyRefused("$JS.API.STREAM.DELETE.SCRATCH_ACK"))
+		require.True(t, present(t, admin, "SCRATCH_ACK"), "SCRATCH_ACK after the server refused the ack aimed at its delete")
+	}
 }
 
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the

@@ -102,7 +102,8 @@ jobs:
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
-      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
+      # Envoy on, testnats.VMHubImage, which only natsgrant's rows of the VM hub's $JS.API. reaches
+      # start, testnats.Image (nats:2.10), which only the tests of that server itself and of the
       # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
       # gives.
       - name: Pull test container images
@@ -111,6 +112,7 @@ jobs:
           consts: |
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/testnats/nats.go VMHubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
@@ -256,7 +258,7 @@ jobs:
       # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
       # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
       # field, the cap and the first server taking the change - and the hub's own reconcile on the
-      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
+      # nats:2.15.3-alpine image the clustered hub runs. The others are a session
       # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
       # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
       # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
@@ -265,7 +267,9 @@ jobs:
       # runs. natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
       # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
       # role message through a shared listener under its rendered grant, with no violation, and
-      # ends its start, naming its inbox prefix, under a grant without it; a role message of the
+      # ends its start, naming its inbox prefix, under a grant without it; natsgrant's rows of the
+      # $JS.API. reaches run on both hubs' servers, the VM hub's 2.15.1 (testnats.VMHubImage),
+      # which has them, and the clustered hub's 2.15.3, which refuses them; a role message of the
       # edge reaches no holder of another project's role; and the relay socket's rows, most of the
       # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
       # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,

@@ -5,8 +5,8 @@ name: envoy-single-node
 
 services:
   nats:
-    # nats:2.15.1-alpine by digest: the image the hub runs, which CI's registry copy of the same
-    # digest, packages/envoy/internal/testnats/nats.go's HubImage, also runs
+    # nats:2.15.1-alpine by digest: the image the VM hub runs. The clustered hub runs 2.15.3, the
+    # version CI's packages/envoy/internal/testnats/nats.go HubImage runs
     # (.github/ci-images.yaml). The version decides what the ENVOY_NOTIFICATIONS stream's
     # consumer cap does. From nats-server 2.15 a stream that sets no cap is capped by the server
     # at its own default of 1000, which is the limit the listener's 24000 replaces; on every

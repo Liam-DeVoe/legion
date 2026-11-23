@@ -854,7 +854,7 @@ checkout of this repository; the images are public. The two services listen on `
 move it in `.env` (`NATS_PORT`, `NATS_MONITOR_PORT`, `ENVOY_LISTENER_PORT`) and use that port
 wherever a command or the `envoy.json` below names the default.
 
-The file pins NATS 2.15.1 by digest, the image the hub runs, because the consumer cap the
+The file pins NATS 2.15.1 by digest, the image the VM hub runs, because the consumer cap the
 listener sets replaces a limit only that version applies: from 2.15 a stream that sets no cap is
 capped by the server at its own default of 1000, where an older server leaves such a stream with
 no limit at all and the listener leaves it as it is. What an older server does refuse is a change
