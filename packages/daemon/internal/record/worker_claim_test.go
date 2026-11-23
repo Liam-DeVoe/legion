@@ -83,11 +83,12 @@ func TestARolesRowNowIsTheRowWhoseEntryWasRaisedLast(t *testing.T) {
 }
 
 // The row of a role where a task stands: the row of its step there where that step is the role's;
-// else the row of the role's latest step before it, the retro and the merge standing after every
-// step; else the row of its first step after it, so a read or a write before the role's first step
-// reaches that step's row, as the one row of a role did. A role the task gives no place has its row
-// at place 0. A row that does not stand yet is the zero row stamped with the role, the task and the
-// place it stands at. An issue with no plan rows has one row for each role (PhaseRowOf).
+// else the row of the role's latest step before it, the retro and the merge (which a task reaches
+// only where its issue has a pull request) standing after every step; else the row of its first
+// step after it, so a read or a write before the role's first step reaches that step's row, as the
+// one row of a role did. A role the task gives no place has its row at place 0. A row that does not
+// stand yet is the zero row stamped with the role, the task and the place it stands at. An issue
+// with no plan rows has one row for each role (PhaseRowOf).
 func TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands(t *testing.T) {
 	steps := []PlanStep{{Task: "t", Position: 1, Role: "implementer"}, {Task: "t", Position: 2, Role: "reviewer"}, {Task: "t", Position: 3, Role: "implementer"}}
 	rows := []PhaseRow{
