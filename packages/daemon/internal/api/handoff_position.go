@@ -98,7 +98,9 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 			standing.Phase, standing.Hold = phase.Held, &record.Hold{From: step.Phase, Reason: task.HoldReason}
 		}
 		position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
-		position.base, _ = stored.BaseOf(*issue, task.Task)
+		if position.base, _, err = stored.BaseOf(*issue, task.Task); err != nil {
+			return completionPosition{}, err
+		}
 		counts = task.Counts
 		if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, task.Task); err != nil {
 			return completionPosition{}, err
