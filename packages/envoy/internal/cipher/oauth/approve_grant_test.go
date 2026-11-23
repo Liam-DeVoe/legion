@@ -24,8 +24,8 @@ import (
 // host its dpop block binds, and the digest every grant is made under.
 func approveSettings() *oauth.ApproveSettings {
 	return &oauth.ApproveSettings{
-		Name: "DISPATCH_APPROVE_TOKEN", Word: "approve", EntryDigest: strings.Repeat("ab", 32),
-		ProxyURL: "http://proxy.test:3128", CACertificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n", Host: "dispatch.test",
+		EntryDigest: strings.Repeat("ab", 32),
+		ProxyURL:    "http://proxy.test:3128", CACertificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n", Host: "dispatch.test",
 	}
 }
 

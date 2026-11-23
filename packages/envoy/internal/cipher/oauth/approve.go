@@ -27,13 +27,21 @@ const ApproveGrantMaxLifetime = 15 * time.Minute
 // ApproveScope is the one OAuth scope of an approve grant and of the token the broker mints for it.
 const ApproveScope = oauthwire.ScopeApprove
 
-// ApproveSettings is the approve capability (requests.MintedKind DISPATCH_APPROVE_TOKEN) as the
-// token exchange grants it: the capability's name and word, the digest of the dpop block and
-// private destination every grant is made under (config.MintedEntryDigest), and what the session
-// is handed beside its placeholder - where Cipher's proxy is, the certificate authority to trust
-// it by, and the one host the capability's dpop block binds.
+// ApproveName and ApproveWord are the approve capability's name and word: the profile whose dpop
+// block declares it and binds Dispatch's host, which is also the variable a session finds the
+// placeholder in, and the word its placeholders open with (placeholder.MintedPrefix) and its grant
+// ids carry before a colon on the wire.
+const (
+	ApproveName = "DISPATCH_APPROVE_TOKEN"
+	ApproveWord = "approve"
+)
+
+// ApproveSettings is the approve capability (requests.MintedKind ApproveName) as the token exchange
+// grants it: the digest of the dpop block and private destination every grant is made under
+// (config.MintedEntryDigest), and what the session is handed beside its placeholder - where
+// Cipher's proxy is, the certificate authority to trust it by, and the one host the capability's
+// dpop block binds.
 type ApproveSettings struct {
-	Name, Word    string
 	EntryDigest   string
 	ProxyURL      string
 	CACertificate string
@@ -66,7 +74,7 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it."))
 		return
 	}
-	held, err := placeholder.Mint(placeholder.MintedPrefix(p.approve.Word))
+	held, err := placeholder.Mint(placeholder.MintedPrefix(ApproveWord))
 	if err != nil {
 		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
 		return
@@ -101,10 +109,10 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 		"issued_token_type":    oauthwire.TokenTypeProxyPlaceholder,
 		"token_type":           "N_A",
 		"expires_in":           int64(lifetime / time.Second),
-		oauthwire.ExtraGrantID: p.approve.Word + ":" + grant.ID,
+		oauthwire.ExtraGrantID: ApproveWord + ":" + grant.ID,
 		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
 			ProxyURL: p.approve.ProxyURL, CACertificate: p.approve.CACertificate, ProxyPassword: held,
-			Names: map[string]oauthwire.AirlockName{p.approve.Name: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{p.approve.Host}}},
+			Names: map[string]oauthwire.AirlockName{ApproveName: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{p.approve.Host}}},
 		},
 	}
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
