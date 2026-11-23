@@ -174,7 +174,10 @@ test("every Not filed reply the controller writes that names an owner is one the
   // Both sides are read by one map, so they are parsed alike. Each side is its reference and the
   // steps file its detail moved to under the skill budget.
   const [controller = new Set<string>(), finder = new Set<string>()] = [
-    ["legion-controller/references/finding-asks.md", "legion-controller/references/finding-asks-steps.md"],
+    [
+      "legion-controller/references/finding-asks.md",
+      "legion-controller/references/finding-asks-steps.md",
+    ],
     ["legion-worker/references/findings.md", "legion-worker/references/findings-steps.md"],
   ].map(
     (files) =>
