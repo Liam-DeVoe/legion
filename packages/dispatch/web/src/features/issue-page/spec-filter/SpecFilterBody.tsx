@@ -46,7 +46,7 @@ import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
 import {
   focusedNodeOf,
-  holdOnScreen,
+  holdInPlaceOf,
   landOnRow,
   type OutlineRequest,
   useReleaseFocus,
@@ -505,14 +505,13 @@ export function SpecFilterBody({
   // press on what is no item leaves the focus where it was, so it holds nothing rather than pull
   // the page back to a row the reader did not press. A wheel, a swipe, which sends no click, and
   // Tab start no hold, since each keeps the reader's place. The hold takes the landing's place
-  // in `landingHold`, so one item is held at a time.
+  // in `landingHold`, so one item is held at a time (`holdInPlaceOf`).
   const keyInTree = useRef<string | undefined>(undefined);
   const holdFocusedItem = useCallback((pressed?: EventTarget) => {
     const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]');
     if (item == null || tree.current?.contains(item) !== true) return;
     if (pressed instanceof Node && !item.contains(pressed)) return;
-    landingHold.current?.abort();
-    landingHold.current = holdOnScreen(item);
+    holdInPlaceOf(item, landingHold);
   }, []);
 
   useTreeKeymap({

@@ -1362,7 +1362,8 @@ test("the Spec view opened at its address with its statements' reads refused put
 // landing then does nothing, since the reader has acted, and the row the key left the reader on
 // stays on screen once the statements are drawn above it. A view that holds nothing after a key
 // leaves the row where the statements pushed it, below the screen, since at the page's top the
-// browser's scroll anchoring holds nothing still, and fails this case's check of the viewport.
+// browser's scroll anchoring holds the header still and not the row, and fails this case's check
+// of the viewport.
 //
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
