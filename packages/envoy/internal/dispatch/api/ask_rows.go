@@ -259,11 +259,11 @@ func scanAskRow(row pgx.Row, extra ...any) (model.Ask, error) {
 // readers always set it, including zero. An ask's own clarification replies are inbound edges
 // too (`graph_edges`' `replies_to` arm), and the card renders that thread inline directly
 // below the count, so they are not what "referenced by" counts.
-func attachAskBacklinkCounts(ctx context.Context, q queryer, asks []*model.Ask) error {
+func attachAskBacklinkCounts(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if len(asks) == 0 {
 		return nil
 	}
-	counts, err := refs.BacklinkCounts(ctx, q, "ask", distinctAskIDs(asks), refs.AskBacklinkExclusions)
+	counts, err := refs.BacklinkCounts(ctx, q, who, "ask", distinctAskIDs(asks), refs.AskBacklinkExclusions)
 	if err != nil {
 		return err
 	}
@@ -290,13 +290,13 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // (queueAskReadDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
 // answers nothing itself, so the apply reports that refusal.
-func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
+func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
 	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
-	countsErr := refs.QueueBacklinkCounts(b, "ask", askIDs, refs.AskBacklinkExclusions, counts)
+	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {
 		if countsErr != nil {
@@ -314,8 +314,8 @@ func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
 // queueAskReadDetails is queueAskDetails for a read of asks a person is shown - the Inbox's rows,
 // an owner's asks, the issue read's open asks - which carries each ask's rewrite too
 // (text_rewrites.go). An event payload's asks carry no rewrite, so their read queues none.
-func queueAskReadDetails(b *pgx.Batch, asks []*model.Ask) func() error {
-	apply := queueAskDetails(b, asks)
+func queueAskReadDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
+	apply := queueAskDetails(b, who, asks)
 	rewrites := map[string]model.TextRewrite{}
 	queueAskRewrites(b, distinctAskIDs(asks), rewrites)
 	return func() error {
@@ -330,20 +330,21 @@ func queueAskReadDetails(b *pgx.Batch, asks []*model.Ask) func() error {
 // loadAskDetails sends queueAskDetails's statements as a batch of their own on q, for an ask read
 // that queues nothing else: an event payload's asks. The batch holds q's connection until its
 // results close, so nothing else reads the database in between.
-func loadAskDetails(ctx context.Context, q queryer, asks []*model.Ask) error {
-	return sendAskDetails(ctx, q, asks, queueAskDetails)
+func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	return sendAskDetails(ctx, q, who, asks, queueAskDetails)
 }
 
 // loadAskReadDetails is loadAskDetails for a read a person is shown (queueAskReadDetails): an
 // owner's asks and the Inbox's rows.
-func loadAskReadDetails(ctx context.Context, q queryer, asks []*model.Ask) error {
-	return sendAskDetails(ctx, q, asks, queueAskReadDetails)
+func loadAskReadDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	return sendAskDetails(ctx, q, who, asks, queueAskReadDetails)
 }
 
-// sendAskDetails sends what queue queues for asks as a batch of its own on q, and applies it.
-func sendAskDetails(ctx context.Context, q queryer, asks []*model.Ask, queue func(*pgx.Batch, []*model.Ask) func() error) error {
+// sendAskDetails sends what queue queues for asks, read for who, as a batch of its own on q, and
+// applies it.
+func sendAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask, queue func(*pgx.Batch, model.Actor, []*model.Ask) func() error) error {
 	batch := &pgx.Batch{}
-	apply := queue(batch, asks)
+	apply := queue(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -396,8 +397,8 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 // its part revision (attachAskPartIDs), and its rewrite (attachAskRewrites). A write attaches
 // none. A list of asks reads the same fields, with their identity events, in one batch instead
 // (queueAskDetails, loadAskDetails).
-func attachAskReadFields(ctx context.Context, q queryer, asks []*model.Ask) error {
-	if err := attachAskBacklinkCounts(ctx, q, asks); err != nil {
+func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
 	if err := attachAskPartIDs(ctx, q, asks); err != nil {

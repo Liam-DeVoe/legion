@@ -689,12 +689,13 @@ func heldSpecAnchor(create issueCreate, input *model.AnchorInput, kind docs.Mark
 // a held text among waited, which no index reaches before it posts, the block as that text's post
 // will index it, read off the text its record holds (refs.NewItemBlock: a comment's or a
 // message's body, an ask's question and options), with no node id, which only that index makes;
-// for a posted one, the block its index holds now, read in tx. A block the text does not hold is
-// refused now, as its post would refuse it: 400 with code, naming field.
-func (s *server) heldNamedBlock(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field, code string, waited heldChain) (*namedBlock, error) {
+// for a posted one, the block its index holds now, read in tx for who, the reply's writer. A block
+// the text does not hold, or who may not see, is refused now, as its post would refuse it: 400 with
+// code, naming field.
+func (s *server) heldNamedBlock(ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string, waited heldChain) (*namedBlock, error) {
 	link, held := waited.link(itemID)
 	if !held {
-		_, block, err := s.planReplyBlock(ctx, tx, kind, itemID, blockID, field, code)
+		_, block, err := s.planReplyBlock(ctx, tx, who, kind, itemID, blockID, field, code)
 		return block, err
 	}
 	if link.decodeErr != nil {

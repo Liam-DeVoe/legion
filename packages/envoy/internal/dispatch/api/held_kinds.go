@@ -482,7 +482,7 @@ func (c commentCreate) beside(s *server, ctx context.Context, hold besideHold) (
 		return nil, err
 	}
 	if c.Input.AskID != nil {
-		if err := s.askIDInputError(ctx, hold.tx, c.Owner, *c.Input.AskID); err != nil {
+		if err := s.askIDInputError(ctx, hold.tx, hold.actor, c.Owner, *c.Input.AskID); err != nil {
 			return nil, err
 		}
 	}
@@ -496,7 +496,7 @@ func (c commentCreate) beside(s *server, ctx context.Context, hold besideHold) (
 		if item == nil {
 			kind, item = refs.ItemAsk, c.Input.AskID
 		}
-		block, err := s.heldNamedBlock(ctx, hold.tx, kind, *item, *c.Input.ReplyToBlock, "reply_to_block", "INVALID_COMMENT", hold.waited)
+		block, err := s.heldNamedBlock(ctx, hold.tx, hold.actor, kind, *item, *c.Input.ReplyToBlock, "reply_to_block", "INVALID_COMMENT", hold.waited)
 		if err != nil {
 			return nil, err
 		}
@@ -600,7 +600,7 @@ func (c messageCreate) beside(s *server, ctx context.Context, hold besideHold) (
 	}
 	dry := &heldDryRun{}
 	if c.Input.InReplyToBlock != nil {
-		block, err := s.heldNamedBlock(ctx, hold.tx, refs.ItemMessage, deref(c.Input.InReplyTo), *c.Input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", hold.waited)
+		block, err := s.heldNamedBlock(ctx, hold.tx, hold.actor, refs.ItemMessage, deref(c.Input.InReplyTo), *c.Input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE", hold.waited)
 		if err != nil {
 			return nil, err
 		}

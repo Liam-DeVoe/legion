@@ -27,7 +27,7 @@ import (
 // signed in; each of configure sets what a test needs beyond that on its DepsInput.
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API, configure ...func(*DepsInput)) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs, configure...)
+	handler, database, _, _ := newInteractionServer(t, makeDocs, configure...)
 	return handler, database
 }
 

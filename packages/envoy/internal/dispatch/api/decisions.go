@@ -79,7 +79,8 @@ type decisionSection struct {
 }
 
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	key := r.PathValue("key")
@@ -94,7 +95,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
+		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), who, key, spec.ID, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -115,7 +116,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
+	if answer.Decisions, err = s.readDecisions(r.Context(), who, document, reference, specID, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -186,7 +187,7 @@ func artifactMissing(err error) bool {
 // registers a pointer into the row, and an append that moved the backing array would leave the
 // reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
-	ctx context.Context, key, specID string, reader *displayTreeReader,
+	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
@@ -216,7 +217,7 @@ func (s *server) specOpenQuestions(
 	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
 		return nil, err
 	}
 	for index := range questions {
@@ -236,7 +237,7 @@ func (s *server) specOpenQuestions(
 // filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
 // sum and answers none of them, so it passes no reader and no tree is read for it.
 func (s *server) readDecisions(
-	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader,
+	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
 ) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
@@ -248,7 +249,7 @@ func (s *server) readDecisions(
 	}
 	var links []model.BlockLink
 	if specID != "" {
-		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, document.ID, specID); err != nil {
+		if links, err = refs.BlockLinks(ctx, s.deps.Store.Pool, who, document.ID, specID); err != nil {
 			return nil, err
 		}
 	}
@@ -775,7 +776,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, err := s.keptDecision(r.Context(), document, blockID)
+	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -826,7 +827,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 // decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
 // Keep and the view never disagree about which document holds the decisions - and that block is
 // the heading of a decision outside `## Replaced`.
-func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
+func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
@@ -838,7 +839,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "", nil)
+	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "", nil)
 	if err != nil {
 		return model.Decision{}, err
 	}
