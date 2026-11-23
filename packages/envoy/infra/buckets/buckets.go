@@ -72,6 +72,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -338,7 +339,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 		return 2
 	}
 	if action == "create" {
-		return createCommand(stdout, stderr, natsURL, inbox, breakGlass, operator, buckets, replicas)
+		return createCommand(ctx, stdout, stderr, natsURL, inbox, breakGlass, operator, buckets, replicas)
 	}
 	if len(f.kubeContexts) == 0 && len(f.hosts) == 0 && !f.thisMachine {
 		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster, --host for each machine and --this-machine for the one the command runs on; --first-deployment proves no writer absent and needs them too")
@@ -474,19 +475,24 @@ func inboxOption(prefix string) ([]bus.ConnectOption, bool) {
 
 // createCommand is create: it connects to natsURL as the user the environment names
 // (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED), its replies under the prefix inbox sets
-// (--inbox-prefix), and makes each of buckets that is absent (createBuckets). The default is the
-// buckets user's prefix, InboxPrefix; a listener's user, which subscribes _INBOX.> alone, runs it
-// with _INBOX., as a Job running as the clustered hub's gke user does. A break-glass run is a
-// listener user's until the auth service's cutover, on _INBOX., and logs one line on standard
-// error before each create, naming the operator, the hub, the bucket and that the run is
-// break-glass.
-func createCommand(stdout, stderr io.Writer, natsURL string, inbox []bus.ConnectOption, breakGlass bool, operator string, buckets []string, replicas int) int {
+// (--inbox-prefix), and makes each of buckets that is absent (createBuckets) until ctx ends, which
+// main makes an interrupt or SIGTERM do. The default is the buckets user's prefix, InboxPrefix; a
+// listener's user, which subscribes _INBOX.> alone, runs it with _INBOX., as a Job running as the
+// clustered hub's gke user does. A break-glass run is a listener user's until the auth service's
+// cutover, on _INBOX., and logs one line on standard error before each create, naming the
+// operator, the hub, the bucket and that the run is break-glass.
+//
+// The connection logs no line for the server's refusal of a publish
+// (bus.WithPublishRefusalsUnlogged): each refused request answers that refusal, and the run sends
+// it again for up to refusalWait and says so once (untilGranted), where a line at ERROR for each
+// refused send would fill that wait.
+func createCommand(ctx context.Context, stdout, stderr io.Writer, natsURL string, inbox []bus.ConnectOption, breakGlass bool, operator string, buckets []string, replicas int) int {
 	name := "envoy-infra-buckets"
 	if breakGlass {
 		name = "envoy-infra-buckets-break-glass"
 	}
 	hub := bus.NATSURLWithoutUserinfo(natsURL)
-	nc, err := bus.Connect([]string{natsURL}, append([]bus.ConnectOption{bus.WithName(name), bus.WithEnvironment(operatorEnvironment)}, inbox...)...)
+	nc, err := bus.Connect([]string{natsURL}, append([]bus.ConnectOption{bus.WithName(name), bus.WithEnvironment(operatorEnvironment), bus.WithPublishRefusalsUnlogged()}, inbox...)...)
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra buckets: connect to %s: %v\n", hub, err)
 		return 1
@@ -498,11 +504,11 @@ func createCommand(stdout, stderr io.Writer, natsURL string, inbox []bus.Connect
 			fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user and with no writer proof\n", operator, bucket, hub)
 		}
 	}
-	return createBuckets(stdout, stderr, nc.Conn, nc.JS(), buckets, replicas, announce)
+	return createBuckets(ctx, stdout, stderr, nc.Conn, nc.JS(), buckets, replicas, announce)
 }
 
 // createBuckets reads each of buckets' streams (STREAM.INFO KV_<bucket>) and judges each against its
-// own configuration at replicas copies (judgeBucket):
+// own stream at replicas copies (judgeBucket):
 //
 //   - a bucket the server reports missing is absent, and is made below;
 //   - one that matches is present: it is left as it is, and the run says so;
@@ -513,8 +519,10 @@ func createCommand(stdout, stderr io.Writer, natsURL string, inbox []bus.Connect
 //
 // It then makes each absent bucket with no writer proof, through bus.CreateMissingCopiedBucket,
 // which creates only a bucket the server does not hold, sends a lookup or create the server left
-// unanswered again, and opens, raises and updates no bucket it finds there: it sends no
-// STREAM.UPDATE. announce is called before each create. A create that loses a race to another
+// unanswered again, and opens, raises and updates no bucket it finds there: a create the server
+// answers "stream name already in use" is answered so, with no read or update of that stream
+// after it, whatever the server reports for the stream, so the run sends no STREAM.UPDATE on any
+// server version. announce is called before each create. A create that loses a race to another
 // client - the bucket found by the create's own lookup, or made between that lookup and the create
 // with another configuration, which the server answers "stream name already in use"
 // (bus.ErrBucketExists) - reads the stream again and applies the same rule: present when it matches,
@@ -523,13 +531,18 @@ func createCommand(stdout, stderr io.Writer, natsURL string, inbox []bus.Connect
 // JetStream answers as made.
 //
 // A read or a create the server refuses under the connection's grant is sent again until
-// refusalWait has passed since the run began (untilGranted).
-func createBuckets(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int, announce func(bucket string)) int {
+// refusalWait has passed since the run began (untilGranted). Once ctx has ended the run stops where
+// it is, creates nothing more and fails naming ctx's cause (stopped): every read and wait ends with
+// ctx, the check before each create reads it, and the create sends no request once it has ended.
+func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int, announce func(bucket string)) int {
 	deadline := time.Now().Add(refusalWait)
+	version := conn.ConnectedServerVersion()
 	var absent, differ []string
 	for _, bucket := range buckets {
-		missing, differences, err := judgeBucket(stderr, deadline, js, bucket, replicas)
+		missing, differences, err := judgeBucket(ctx, stderr, deadline, js, version, bucket, replicas)
 		switch {
+		case ctx.Err() != nil:
+			return stopped(ctx, stderr)
 		case err != nil:
 			fmt.Fprintf(stderr, "envoy-infra buckets: %v\n", err)
 			return 1
@@ -552,22 +565,28 @@ func createBuckets(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamC
 		}
 	}
 	for _, bucket := range absent {
+		if ctx.Err() != nil {
+			return stopped(ctx, stderr)
+		}
 		announce(bucket)
-		// An operator's command, run by hand until it ends: the create's waits end at the start's
-		// hang guard (bus.EnsureKeyValue), under no context of its own.
-		_, err := untilGranted(stderr, deadline, "create KV_"+bucket, func() (bus.KeyValue, error) {
-			return bus.CreateMissingCopiedBucket(context.Background(), conn, js, bucket, replicas)
+		_, err := untilGranted(ctx, stderr, deadline, "create KV_"+bucket, func() (bus.KeyValue, error) {
+			return bus.CreateMissingCopiedBucket(ctx, conn, js, bucket, replicas)
 		})
 		if err == nil {
 			fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
 			continue
 		}
+		if ctx.Err() != nil {
+			return stopped(ctx, stderr)
+		}
 		if !errors.Is(err, bus.ErrBucketExists) {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
 		}
-		missing, differences, readErr := judgeBucket(stderr, deadline, js, bucket, replicas)
+		missing, differences, readErr := judgeBucket(ctx, stderr, deadline, js, version, bucket, replicas)
 		switch {
+		case ctx.Err() != nil:
+			return stopped(ctx, stderr)
 		case readErr != nil:
 			fmt.Fprintf(stderr, "envoy-infra buckets create: KV_%s was made by another client after the read (%v), and the read again failed: %v\n", bucket, err, readErr)
 			return 1
@@ -584,6 +603,14 @@ func createBuckets(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamC
 	return 0
 }
 
+// stopped fails a create whose ctx has ended, naming ctx's cause: main ends ctx on an interrupt or
+// SIGTERM, whose cause names the signal. The run creates nothing after it; a bucket a line above
+// says was created stays.
+func stopped(ctx context.Context, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; nothing more is created\n", context.Cause(ctx))
+	return 1
+}
+
 // refusalWait and refusalRetry bound create's requests the server refuses under the connection's
 // grant (bus.ErrPublishDenied, which the bus names as soon as the server reports the refusal). A
 // grant just applied reaches a hub only when the hub's configuration reloader has reloaded its
@@ -597,87 +624,121 @@ var (
 )
 
 // untilGranted is send's answer, sent again every refusalRetry while the server refuses it under the
-// connection's grant and another send fits before deadline. Its first refusal is logged on stderr,
-// naming what and the refusal.
-func untilGranted[T any](stderr io.Writer, deadline time.Time, what string, send func() (T, error)) (T, error) {
+// connection's grant, another send fits before deadline and ctx has not ended. Its first refusal is
+// logged on stderr, naming what and the refusal, and no later one is: the connection logs none of
+// them either (createCommand). A wait between two sends ends when ctx does, and the answer is then
+// ctx's error, with no send after it.
+func untilGranted[T any](ctx context.Context, stderr io.Writer, deadline time.Time, what string, send func() (T, error)) (T, error) {
 	for logged := false; ; logged = true {
 		value, err := send()
-		if !errors.Is(err, bus.ErrPublishDenied) || !time.Now().Add(refusalRetry).Before(deadline) {
+		if ctx.Err() != nil || !errors.Is(err, bus.ErrPublishDenied) || !time.Now().Add(refusalRetry).Before(deadline) {
 			return value, err
 		}
 		if !logged {
 			fmt.Fprintf(stderr, "envoy-infra buckets: %s: refused under this user's grant, sent again every %s for up to %s from the start, since a grant just applied reaches the hub at its next reload: %v\n", what, refusalRetry, refusalWait, err)
 		}
-		time.Sleep(refusalRetry)
+		select {
+		case <-ctx.Done():
+			return value, ctx.Err()
+		case <-time.After(refusalRetry):
+		}
 	}
 }
 
 // judgeBucket reads bucket's stream and reports whether the server holds it, and when it does, each
-// way it differs from the bucket's own configuration at replicas copies: bus.CopiedBucketConfig, the
-// configuration the listeners' bus declares for the bucket (bucketDifferences). A read the server
-// refuses under the connection's grant is sent again until deadline (untilGranted). A read answering
-// anything else but "not found" is an error naming the bucket.
-func judgeBucket(stderr io.Writer, deadline time.Time, js nats.JetStreamContext, bucket string, replicas int) (missing bool, differences []string, err error) {
-	info, err := untilGranted(stderr, deadline, "read KV_"+bucket, func() (*nats.StreamInfo, error) { return js.StreamInfo("KV_" + bucket) })
+// way it differs from the stream the bucket's create makes at replicas copies on a server reporting
+// version: bus.CopiedBucketStreamConfig, the configuration the listeners' bus declares for the
+// bucket made into its stream as nats.go makes it (bucketDifferences). A read the server refuses
+// under the connection's grant is sent again until deadline (untilGranted). A read answering
+// anything else but "not found" is an error naming the bucket. Each read ends with ctx, and at
+// the bus's request bound (bus.RequestTimeout) within it.
+func judgeBucket(ctx context.Context, stderr io.Writer, deadline time.Time, js nats.JetStreamContext, version, bucket string, replicas int) (missing bool, differences []string, err error) {
+	info, err := untilGranted(ctx, stderr, deadline, "read KV_"+bucket, func() (*nats.StreamInfo, error) {
+		read, cancel := context.WithTimeout(ctx, bus.RequestTimeout)
+		defer cancel()
+		return js.StreamInfo("KV_"+bucket, nats.Context(read))
+	})
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		return true, nil, nil
 	}
 	if err != nil {
 		return false, nil, fmt.Errorf("read %s: %w", bucket, err)
 	}
-	want, _ := bus.CopiedBucketConfig(bucket, replicas)
-	return false, bucketDifferences(info.Config, want), nil
+	want, ok := bus.CopiedBucketStreamConfig(bucket, replicas, version)
+	if !ok {
+		return false, nil, fmt.Errorf("read %s: no copied bucket's stream", bucket)
+	}
+	return false, bucketDifferences(bucket, info.Config, want), nil
 }
 
-// bucketDifferences names each way have, the stream of a bucket the server holds, differs from the
-// stream nats.go makes of want (nats.go@v1.55.0 kv.go:437-523, CreateKeyValue, which the create sends
-// one request at a time): its copies, its history (a key's values kept), its maximum age, storage,
-// byte and value-size limits and compression, which want sets or leaves at nats.go's default, and
-// the discard policy and direct get every KeyValue bucket nats.go makes on nats-server 2.9 or later
-// carries. The session bucket's maximum age is left out: the listeners set it on the running bucket
-// from ENVOY_SESSION_MAX_AGE (bus.SetKeyValueMaxAge, internal/session), so a deployment that sets
-// that variable holds the bucket at another age than the one it was made with, which is its own.
-func bucketDifferences(have nats.StreamConfig, want nats.KeyValueConfig) []string {
-	history := int64(want.History)
-	if history == 0 {
-		history = 1
-	}
-	maxBytes := want.MaxBytes
-	if maxBytes == 0 {
-		maxBytes = -1
-	}
-	maxValueSize := want.MaxValueSize
-	if maxValueSize == 0 {
-		maxValueSize = -1
-	}
-	compression := nats.NoCompression
-	if want.Compression {
-		compression = nats.S2Compression
-	}
+// bucketDifferences names each way have, the stream of bucket the server holds, differs from want,
+// the stream its create makes (bus.CopiedBucketStreamConfig, a copy of nats.go@v1.55.0 kv.go:437-523,
+// CreateKeyValue): its copies, its history (a key's values kept), its maximum age, storage, byte and
+// value-size limits and compression, its discard policy and direct get, the subjects it takes, and
+// the streams it mirrors or sources and the subjects it republishes to, each of which a copied
+// bucket's own stream has none of. The session bucket's maximum age is left out: the listeners
+// set it on the running bucket from ENVOY_SESSION_MAX_AGE (bus.SetKeyValueMaxAge,
+// internal/session), so a deployment that sets that variable holds the bucket at another age than
+// the one it was made with, which is its own.
+func bucketDifferences(bucket string, have, want nats.StreamConfig) []string {
 	fields := []struct {
 		name       string
+		same       bool
 		have, want any
 	}{
-		{"replicas", have.Replicas, want.Replicas},
-		{"history", have.MaxMsgsPerSubject, history},
-		{"max age", have.MaxAge, want.TTL},
-		{"storage", have.Storage, want.Storage},
-		{"max bytes", have.MaxBytes, maxBytes},
-		{"max value size", have.MaxMsgSize, maxValueSize},
-		{"compression", have.Compression, compression},
-		{"discard policy", have.Discard, nats.DiscardNew},
-		{"direct get", have.AllowDirect, true},
+		{"replicas", have.Replicas == want.Replicas, have.Replicas, want.Replicas},
+		{"history", have.MaxMsgsPerSubject == want.MaxMsgsPerSubject, have.MaxMsgsPerSubject, want.MaxMsgsPerSubject},
+		{"max age", have.MaxAge == want.MaxAge || bucket == bus.SessionBucket, have.MaxAge, want.MaxAge},
+		{"storage", have.Storage == want.Storage, have.Storage, want.Storage},
+		{"max bytes", have.MaxBytes == want.MaxBytes, have.MaxBytes, want.MaxBytes},
+		{"max value size", have.MaxMsgSize == want.MaxMsgSize, have.MaxMsgSize, want.MaxMsgSize},
+		{"compression", have.Compression == want.Compression, have.Compression, want.Compression},
+		{"discard policy", have.Discard == want.Discard, have.Discard, want.Discard},
+		{"direct get", have.AllowDirect == want.AllowDirect, have.AllowDirect, want.AllowDirect},
+		{"subjects", slices.Equal(have.Subjects, want.Subjects), listed(have.Subjects), listed(want.Subjects)},
+		{"mirror", reflect.DeepEqual(have.Mirror, want.Mirror), sourcesNamed(have.Mirror), sourcesNamed(want.Mirror)},
+		{"sources", len(have.Sources)+len(want.Sources) == 0 || reflect.DeepEqual(have.Sources, want.Sources), sourcesNamed(have.Sources...), sourcesNamed(want.Sources...)},
+		{"republish", reflect.DeepEqual(have.RePublish, want.RePublish), republished(have.RePublish), republished(want.RePublish)},
 	}
 	var differences []string
 	for _, field := range fields {
-		if field.name == "max age" && want.Bucket == bus.SessionBucket {
-			continue
-		}
-		if field.have != field.want {
+		if !field.same {
 			differences = append(differences, fmt.Sprintf("%s %v, want %v", field.name, field.have, field.want))
 		}
 	}
 	return differences
+}
+
+// listed is subjects as a difference names them: joined by commas, or "none".
+func listed(subjects []string) string {
+	if len(subjects) == 0 {
+		return "none"
+	}
+	return strings.Join(subjects, ",")
+}
+
+// sourcesNamed is the streams a mirror or sources name, as a difference names them: each stream's
+// name, joined by commas, or "none".
+func sourcesNamed(sources ...*nats.StreamSource) string {
+	var names []string
+	for _, source := range sources {
+		if source != nil {
+			names = append(names, source.Name)
+		}
+	}
+	return listed(names)
+}
+
+// republished is a stream's republish as a difference names it: the subjects it republishes and
+// where to, or "none".
+func republished(republish *nats.RePublish) string {
+	if republish == nil {
+		return "none"
+	}
+	if republish.HeadersOnly {
+		return republish.Source + " to " + republish.Destination + " (headers only)"
+	}
+	return republish.Source + " to " + republish.Destination
 }
 
 // fence is the proof that no writer of the buckets runs.

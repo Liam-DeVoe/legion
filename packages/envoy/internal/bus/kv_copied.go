@@ -48,10 +48,11 @@ func CreateCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamC
 // CreateMissingCopiedBucket creates bucket, one a listener copies, with its configuration at
 // replicas copies (CopiedBucketConfig), only when the server does not hold it: a bucket its lookup
 // finds, or one another client makes between that lookup and its create, is ErrBucketExists, and is
-// neither opened, raised nor updated (createOnly). As CreateCopiedBucket does, it sends a lookup or
-// a create the server leaves unanswered again (sentAgain), looks the bucket up until the member
-// answering has applied the create, and opens the handle it answers with (awaitBucketApplied,
-// wrapKeyValue). `envoy-infra buckets create` calls it.
+// neither opened, raised nor updated, and it sends no STREAM.UPDATE on any server (createOnly). As
+// CreateCopiedBucket does, it sends a lookup or a create the server leaves unanswered again
+// (sentAgain), looks the bucket up until the member answering has applied the create, and opens the
+// handle it answers with (awaitBucketApplied, wrapKeyValue). Its waits end with ctx, and it sends
+// no request once ctx has ended (addBucketStream). `envoy-infra buckets create` calls it.
 func CreateMissingCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
 	return openCopiedBucket(ctx, conn, js, bucket, replicas, createOnly)
 }
@@ -64,4 +65,23 @@ func openCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamCon
 		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
 	}
 	return openKeyValue(ctx, startHangGuard, conn, js, &config, mode)
+}
+
+// CopiedBucketStreamConfig is the stream a create of bucket, one a listener copies, at replicas
+// copies makes on a server reporting serverVersion: CopiedBucketConfig made into a stream as
+// nats.go's CreateKeyValue makes it (bucketStreamConfig), so its subjects, discard policy and
+// direct get among the rest. `envoy-infra buckets create` compares a bucket the server holds against
+// it. It is false when bucket is no copied bucket.
+func CopiedBucketStreamConfig(bucket string, replicas int, serverVersion string) (nats.StreamConfig, bool) {
+	config, ok := CopiedBucketConfig(bucket, replicas)
+	if !ok {
+		return nats.StreamConfig{}, false
+	}
+	// bucketStreamConfig refuses only a history above nats.KeyValueMaxHistory, which no copied
+	// bucket's configuration holds (TestEveryCopiedBucketHasAStreamConfig).
+	stream, err := bucketStreamConfig(&config, serverVersion)
+	if err != nil {
+		return nats.StreamConfig{}, false
+	}
+	return *stream, true
 }

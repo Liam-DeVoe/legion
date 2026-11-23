@@ -472,11 +472,12 @@ func distinctSends(t *testing.T, requests []string, logs *logtest.Recorder) []st
 //     the run reads it again, and is refused naming the copies, having sent the bucket's stream its
 //     three reads alone.
 //   - Between the create's lookup and its create - at the account info the create asks for first,
-//     as nats.go does (bus, createBucketStream) - the racer makes the role-claim bucket with the
+//     as nats.go does (bus, addBucketStream) - the racer makes the role-claim bucket with the
 //     discard policy and direct get of a KV made before nats-server 2.7.2 and 2.9. The hub answers
-//     the create "stream name already in use"; the create reads the stream, as nats.go does, and
-//     sends no update, since the hub's metadata keeps the two configurations apart (bus,
-//     createOnly); the run reads it again and is refused naming both.
+//     the create "stream name already in use"; the create neither reads nor updates the stream
+//     after that answer (bus, createOnly), so no metadata of the hub's keeps an update unsent
+//     (bus, TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse); the run reads it
+//     again and is refused naming both.
 //   - At the run's read of the known-session bucket, the racer makes it at the three copies the run
 //     asks for, with its own configuration. The create's own lookup finds it, the run reads it again
 //     and says it is present, exit 0. At b20f45e30a (#4296's head) that run was refused, exit 1.
@@ -542,7 +543,9 @@ func TestCreateLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 			code: 1,
 			says: []string{"refused: KV_" + bus.RoleClaimBucket + " was made by another client after the read", "KV_" + bus.RoleClaimBucket + " create", "stream name already in use",
 				"discard policy DiscardOld, want DiscardNew", "direct get false, want true"},
-			sent: []string{"INFO", "INFO", "CREATE", "INFO", "INFO"},
+			// The run's read, the create's lookup, the create, and the run's read again: no read of
+			// the stream after the create's "already in use", and no update.
+			sent: []string{"INFO", "INFO", "CREATE", "INFO"},
 		},
 		{
 			name:    "at the copies asked for with its own configuration when the run's read arrives",
