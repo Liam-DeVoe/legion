@@ -462,6 +462,13 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
+	// A step's start beside a fix, and an implementation step's start while checks of a CI job
+	// fail at the head, say so in the daemon's lines (fixLines).
+	beside, err := e.fixLines(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	at.lines += beside
 	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err

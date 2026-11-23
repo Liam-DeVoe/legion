@@ -371,8 +371,85 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 		return "", err
 	}
 	copyLine := WorkingCopy(fixing, dir).lines
-	standing.lines = copyLine + fixSentence(issue.Key, fix, held.States[fix.Check].CICase) + strings.TrimPrefix(standing.lines, copyLine)
+	sentences := fixSentence(issue.Key, fix, held.States[fix.Check].CICase)
+	for _, state := range failedChecks(held) {
+		if state.Check == fix.Check {
+			continue
+		}
+		row, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, fix.Task, state.Check, fix.Head)
+		if err != nil {
+			return "", err
+		}
+		if row != nil && row.Fix == fix.Fix {
+			sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", state.Check, fix.Head, state.CICase)
+		}
+	}
+	sentences += fixPushSentence
+	standing.lines = copyLine + sentences + strings.TrimPrefix(standing.lines, copyLine)
 	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
+}
+
+// fixPushSentence is how a fix pushes, which its task says after the failures it holds: from its
+// own working copy, onto the head of the task's branch, taking each commit a step beside it names
+// as it stands.
+const fixPushSentence = " Push only from this working copy, to the branch of the task; before you push, fetch the branch and rebase your commits onto its head where it moved. " +
+	"The other steps keep the task's working copy; a commit a step beside you names in its report is in this clone by its id: " +
+	"copy it onto your head with jj duplicate <commit> --onto @-, and never rebase or rewrite it, since another working copy stands on it."
+
+// fixLines is what the task of a start of a step of issue's task, standing in issue.Phase on w,
+// says of a fix and of the task's CI: beside a fix that reads its job or runs, that the failure is
+// the fix's and that the step pushes nothing until the fix ended; and, for an implementation step
+// of a task that takes a fix, each check that a CI job runs and that fails at the task's head,
+// each of which goes to that step, so the fix rule tells its implementer of it no second time.
+// Every other start says nothing more.
+func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+	place, ok := w.PlaceOf(issue.Phase)
+	if !w.Stored || !ok || place.Kind != record.PlaceStep || place.Position > len(w.Steps) {
+		return "", nil
+	}
+	open, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil {
+		return "", err
+	}
+	if open != nil {
+		if open.Place == place.Position {
+			return "", nil
+		}
+		return fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix. "+
+			"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push.", open.Check, open.Head), nil
+	}
+	if w.Steps[place.Position-1].Type != plan.TypeImplementation {
+		return "", nil
+	}
+	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || !fixesCI {
+		return "", err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	repo, head := taskHead(pr)
+	if head == "" {
+		return "", nil
+	}
+	held, err := e.store.HeadStates(ctx, tx, issue.Key, repo, head)
+	if err != nil {
+		return "", err
+	}
+	var checks []string
+	for _, state := range failedChecks(held) {
+		failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: state.Check, Head: head,
+			WentTo: record.CIFailureToImplementer, At: e.now()}
+		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
+			return "", err
+		}
+		checks = append(checks, state.Check)
+	}
+	if len(checks) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf(" Failed CI checks at %s: %s.", head, strings.Join(checks, ", ")), nil
 }
 
 // prRepo is the repository of issue's pull request on record, or the issue's own where it has none.
