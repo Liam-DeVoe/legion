@@ -5,7 +5,7 @@ Where it says to ask a person, a child's own architect sends the question to the
 
 ## Accepting
 
-A step `acceptance:owner` enters `accepting` as yours, and `acceptance` with no key as a fresh agent's, which ends it by its own verdict.
+A step `acceptance:owner` enters `accepting` as yours, and `acceptance` with no key as a fresh agent's, which ends it by its verdict.
 Read, against the goal, every check and every requirement:
 
 1. where the task has a tester step before yours, the handoff of each: `dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one;
@@ -29,7 +29,7 @@ Read, against the goal, every check and every requirement:
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
 
-- No `after_merge` result is asked here; the production check records it after a merge.
+- No `after_merge` result is asked here: the production check records it after a merged issue's close.
 
 ## The last round
 
@@ -41,7 +41,8 @@ A criterion proven on a deployed system is proven after that child's deploy, as 
 A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
 Nothing builds on the parent's close, which comes last.
 Until those children close, leave the issue in `accepting`; that wait is no reason to park a child.
-Before you park a child, move its criterion to the parent's own pull request or a released, open child; never downgrade it.
+Before you park a child, move its criterion to the parent's pull request or a released, open child.
+Never downgrade it.
 Then, in one turn:
 
 1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
