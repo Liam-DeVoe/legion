@@ -28,7 +28,7 @@ child's own architect asks the architect above it.
 | `child-release-stalled` | Read the parent's record (`read_record`); release the parent first when the reason says so, then the child again. A parent that never records is a finding. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) and release it again. A missing named App is a `dispatch ask` on the root; release the child once it is installed. |
 | `worker-died` | A phase worker: the issue is held; `retry_or_escalate` with `retry` for an agent or transient failure (its `reason` says what changed), `escalate` for an environmental one or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send questions to you. A finished role: nothing is held; read its handoff. |
-| `worker-stalled` | The daemon relaunched or queued the turn. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
+| `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the agent, ask its holder to resume it (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`). |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Check its account of the work against the record, then send it with `envoy_publish` each decision it can no longer read. Your own lost session: read your record and your tree's issues first. |
 | `provider-errors` | `skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action` |
@@ -43,8 +43,8 @@ child's own architect asks the architect above it.
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by
-`<n>`. It counts tester fails and requests for changes. Read what every counted round found,
-choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
+`<n>`. Requests for changes are what it counts. Read what every counted round found, choose one, act
+on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it. Tell the implementer and the
   reviewer which checks the next round answers, dropping no requirement. A correctness finding or

@@ -41,7 +41,7 @@ A park ask's answer goes to `skill://legion-controller/references/park-asks.md` 
 
 An ask that re-files an escalated child also takes the steps of `skill://legion-controller/references/escalation.md#a-child-that-looks-independent`.
 
-Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind resolved`, naming why.
+Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind retracted`, naming why.
 
 ## Catch up at every start
 
