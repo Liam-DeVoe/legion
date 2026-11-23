@@ -7,11 +7,8 @@ import (
 	"slices"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -251,41 +248,6 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 	t.Cleanup(func() {
 		cancel()
 		testwait.Receive(t, "the reconciliation to return once its context ended", done)
-	})
-}
-
-// leasedPassStatements counts every statement a leased loop's pools start, as
-// storetest.StatementCounter does, and the leases those statements free. duty frees a leased pass's
-// lease with the pass's last statement (freeLeaseOn, deferred until the pass has returned), and the
-// loop starts no statement after it until its next pass, so a pass has ended once its free is
-// counted: a fact, where a span with no statement in it is a guess that a stall inside a pass on a
-// loaded machine makes wrong.
-type leasedPassStatements struct {
-	storetest.StatementCounter
-	freed atomic.Int64
-}
-
-// freeLeaseStatement is the statement duty gives a lease back with (duty's freeLease): the unlock
-// of two keys, duty's lease namespace and the lease name's hashtext. A document room's lock is
-// given back with an unlock of one key, which this does not count.
-const freeLeaseStatement = `select pg_advisory_unlock($1, hashtext($2))`
-
-// TraceQueryStart counts the statement before it counts a free, so a reader that sees a free
-// counted also sees its statement counted.
-func (s *leasedPassStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	ctx = s.StatementCounter.TraceQueryStart(ctx, conn, data)
-	if data.SQL == freeLeaseStatement {
-		s.freed.Add(1)
-	}
-	return ctx
-}
-
-// awaitPasses waits until passes of the loop's passes have ended and freed their lease. It sets no
-// span of its own (waitUntil).
-func (s *leasedPassStatements) awaitPasses(t *testing.T, passes int64) {
-	t.Helper()
-	waitUntil(t, fmt.Sprintf("%d of the loop's passes to end and free their lease", passes), func() bool {
-		return s.freed.Load() >= passes
 	})
 }
 
