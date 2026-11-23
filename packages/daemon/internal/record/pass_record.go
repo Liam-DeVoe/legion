@@ -51,9 +51,6 @@ const (
 	// TakenTreeLingers is the release of an issue whose tree's root lingers after its close
 	// (NeedsSlot, admit's releaseSlots).
 	TakenTreeLingers SlotTakenReason = "tree_lingers"
-	// TakenUnslotted is the release of a root left in the workflow that nothing would ever start
-	// (admit's releaseUnslotted).
-	TakenUnslotted SlotTakenReason = "unslotted"
 )
 
 // SlotPassedReason is why the promotion passed over a candidate, the word SlotPassed carries.

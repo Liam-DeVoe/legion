@@ -109,9 +109,9 @@ func HolderStateOf(f HolderFacts) (HolderState, *time.Time) {
 	case f.WaitsOnIssue:
 		return HolderIssue, f.WaitSince
 	}
-	since := knownTime(f.AdmittedAt)
+	since := KnownTime(f.AdmittedAt)
 	if f.LastTurnEnd != nil && (since == nil || f.LastTurnEnd.After(*since)) {
-		since = knownTime(*f.LastTurnEnd)
+		since = KnownTime(*f.LastTurnEnd)
 	}
 	return HolderIdle, since
 }
@@ -125,15 +125,15 @@ func oldestTime(times []time.Time) *time.Time {
 			continue
 		}
 		if oldest == nil || at.Before(*oldest) {
-			oldest = knownTime(at)
+			oldest = KnownTime(at)
 		}
 	}
 	return oldest
 }
 
-// knownTime is at in UTC, as every time of the slots reading is written, or nil for the zero
+// KnownTime is at in UTC, as every time of the slots reading is written, or nil for the zero
 // time, which is a time the record does not hold.
-func knownTime(at time.Time) *time.Time {
+func KnownTime(at time.Time) *time.Time {
 	if at.IsZero() {
 		return nil
 	}
@@ -211,7 +211,8 @@ var readyStates = []supervise.ClaimState{supervise.StateReady, supervise.StateId
 // HolderClaimFacts sets on facts what the claims of its holder say: the claims in a turn, the
 // starts under way, the tasks no turn has taken, the newest turn's end, and, where stranded names
 // a claim of the holder, that it is stranded and the oldest time one of those claims stopped.
-// claims are every claim the caller read, of any issue; the holder's own are those on its issue.
+// claims are claims the caller read, of any issue (the slots reading hands in the holder's own
+// alone); the holder's own are those on its issue.
 func HolderClaimFacts(facts *HolderFacts, claims []HolderClaim, stranded map[claim.Token]bool) {
 	var stops []time.Time
 	for _, c := range claims {
@@ -227,7 +228,7 @@ func HolderClaimFacts(facts *HolderFacts, claims []HolderClaim, stranded map[cla
 			facts.PendingTasks = append(facts.PendingTasks, c.QueuedAt)
 		}
 		if !c.LastTurnEnd.IsZero() && (facts.LastTurnEnd == nil || c.LastTurnEnd.After(*facts.LastTurnEnd)) {
-			facts.LastTurnEnd = knownTime(c.LastTurnEnd)
+			facts.LastTurnEnd = KnownTime(c.LastTurnEnd)
 		}
 		if stranded[c.Token] {
 			facts.Stranded = true

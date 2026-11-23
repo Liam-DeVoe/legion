@@ -1205,8 +1205,8 @@ type SuperviseRequest struct {
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
-	// that waits for its issue's admission slot. The cap counts the issues the daemon has
+	// NeedsSlot marks a start whose phase holds one of the cap's slots (SlotRule.PhaseKeepsSlot)
+	// as one that waits for its issue's admission slot. The cap counts the issues the daemon has
 	// started whose change is still to write, so what it must bound is the start of a phase that
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's

@@ -1,13 +1,9 @@
 package admit
 
 import (
-	"context"
-	"io"
-	"log/slog"
 	"slices"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -39,7 +35,7 @@ func slotKeys(slots []record.Slot) []string {
 // second root alone, and the view names the move each way. A pass whose fact rolls back is never
 // seen, and an admission with no observer gathers nothing.
 func TestThePassObserverSeesEachPassThatCommits(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := silent()
 
 	t.Run("a pass that commits", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -88,10 +84,7 @@ func TestThePassObserverSeesEachPassThatCommits(t *testing.T) {
 		var views []PassView
 		admission.UsePassObserver(func(view PassView) { views = append(views, view) })
 		acmeQueuedRoot(t, pool, "ACME-4", "a")
-		chain := append(Handlers(record.NewStore(), acmeProject, admission.engine, admission), failingHandler{})
-		if _, err := intake.ApplyFact(context.Background(), pool, "controller", "the pass", intake.ControllerTick{}, chain...); err == nil {
-			t.Fatalf("the fact applied, want it to fail and roll back after the pass")
-		}
+		tickRolledBack(t, pool, admission)
 		if len(views) != 0 {
 			t.Fatalf("the observer saw %d views of a pass whose fact rolled back, want none: nothing it read or moved was kept", len(views))
 		}
@@ -102,9 +95,6 @@ func TestThePassObserverSeesEachPassThatCommits(t *testing.T) {
 		admission := ruledAdmission(t, 1, record.MainRule, log)
 		acmeQueuedRoot(t, pool, "ACME-5", "a")
 		tickThrough(t, pool, admission, "the pass")
-		if admission.observer != nil {
-			t.Fatalf("an admission nobody gave an observer holds one")
-		}
 		assertSlots(t, pool, []record.Slot{{Issue: "ACME-5", Index: 0, AdmittedAt: fixedNow}})
 	})
 }

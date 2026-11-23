@@ -337,7 +337,6 @@ func (d *driver) newChain(at time.Time) {
 		Linger: time.Duration(w.Linger), Clock: d.clock.Now, Repositories: replayRepositories{branches: d.trace.Branches},
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
 	d.admission = admit.New(d.records, d.engine, capAt(w, at), w.Project, d.log)
-	d.admission.UseSlotRule(d.rule)
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)

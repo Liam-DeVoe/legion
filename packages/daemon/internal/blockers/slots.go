@@ -52,7 +52,7 @@ func KeptWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) 
 
 // SlotsInputs is everything one project's slots reading is read from, every part of it a read
 // or a judgement the caller has already made for its line, so the reading costs no query of its
-// own: the admission pass's tick (admit's tickRows) and the state's projection (projection.Project)
+// own: the admission pass's tick (admit's tickRead) and the state's projection (projection.Project)
 // each hand in what they hold.
 type SlotsInputs struct {
 	// Cap is the project's admission cap.
@@ -98,6 +98,12 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 	for _, stopped := range in.Stranded {
 		stranded[stopped.Token] = true
 	}
+	// Each holder's claims are its issue's, gathered once here rather than walked for every
+	// holder; the order within an issue is the order the claims were read in.
+	claimsOf := make(map[string][]record.HolderClaim)
+	for _, c := range in.Claims {
+		claimsOf[c.Issue] = append(claimsOf[c.Issue], c)
+	}
 
 	holders := make([]record.SlotHolder, 0, len(in.Slots))
 	byHolder := make(map[string]record.SlotHolder, len(in.Slots))
@@ -107,7 +113,7 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 			continue
 		}
 		facts := record.HolderFacts{Issue: issue, AdmittedAt: slot.AdmittedAt, WaitSince: slot.WaitsSince}
-		record.HolderClaimFacts(&facts, in.Claims, stranded)
+		record.HolderClaimFacts(&facts, claimsOf[issue.Key], stranded)
 		if owed, owes := in.Facts.Owed[issue.Key]; owes {
 			facts.Starting = append(facts.Starting, owed.CreatedAt)
 		}
@@ -116,10 +122,7 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 		}
 		if issue.AwaitingPerson() && !issue.Answered() && claim.IsTreeRoot(issue.Key, issue.Tree) {
 			facts.Person = true
-			if at := issue.Awaiting.Since.At; !at.IsZero() {
-				utc := at.UTC()
-				facts.PersonSince = &utc
-			}
+			facts.PersonSince = record.KnownTime(issue.Awaiting.Since.At)
 		}
 		facts.WaitsOnIssue = len(KeptWaits(in.Rows, issue, in.Facts)) > 0
 		state, since := record.HolderStateOf(facts)

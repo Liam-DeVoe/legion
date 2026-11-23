@@ -203,6 +203,17 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 
+// SlotRule is the slot rule this engine runs (Config.SlotRule, the daemon's own where its caller
+// named none): the rule the admission pass that shares the engine judges by too, so the slot mark
+// of each start, the transition table and the pass's judgement all read one rule.
+func (e *Engine) SlotRule() record.SlotRule { return e.cfg.SlotRule }
+
+// PhaseHeldLine is the line the engine writes once its fact commits at each move into held
+// (claimFailed) and at each escalation of a hold (retryOrEscalate), naming the issue, its tree,
+// the phase it was held from, the role and the reason. A replay of a recorded window starts a
+// hold at this line (internal/replay's PhaseHeld).
+const PhaseHeldLine = "workflow: a phase is held"
+
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
 func (e *Engine) byReviewApp(login string) bool {
@@ -1180,7 +1191,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// log read later says when the phase stopped and why: the cause the failed claim names, or
 	// unrecorded for a fact that names none (noticeFailure). A replay of the window starts the
 	// hold at this line, which a phase changed line does not carry.
-	e.logOnCommit(ctx, "workflow: a phase is held", "issue", issue.Key, "tree", issue.Tree, "from", from,
+	e.logOnCommit(ctx, PhaseHeldLine, "issue", issue.Key, "tree", issue.Tree, "from", from,
 		"role", fact.Role, "reason", cmp.Or(string(fact.Cause), string(supervise.CauseUnrecorded)))
 	if err := e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Role: fact.Role, Phase: from,
 		Failure: failure}); err != nil {
@@ -2028,7 +2039,7 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		// (claimFailed): it is the moment the hold became the controller's to act on. The role is
 		// the held phase's, as the held notice names it (HeldNotice).
 		held := HeldNotice(*issue)
-		e.logOnCommit(ctx, "workflow: a phase is held", "issue", issue.Key, "tree", issue.Tree, "from", held.Phase,
+		e.logOnCommit(ctx, PhaseHeldLine, "issue", issue.Key, "tree", issue.Tree, "from", held.Phase,
 			"role", held.Role, "reason", held.Reason)
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it

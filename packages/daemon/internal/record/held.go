@@ -52,7 +52,7 @@ const (
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is asked of the rule the ladder's facts carry
 	// (LineFacts.KeepsSlot): under the daemon's own it is InWorkflow and a phase up to the review
-	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
+	// (SlotRule.PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
 	// issues that read this word are the ones past their review — in accepting, retro or merging
 	// — whose sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word

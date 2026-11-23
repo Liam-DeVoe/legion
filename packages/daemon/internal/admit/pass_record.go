@@ -64,9 +64,13 @@ func (a *Admission) logPassMoves(ctx context.Context, moves *passMoves) {
 	}
 	slots, given, taken, passed := moves.slots, moves.given, moves.taken, moves.passed
 	store.OnCommit(ctx, func() {
-		a.log.Info("admission: a pass moved slots", "slots", slots, "cap", a.cap, "given", given, "taken", taken, "passed", passed)
+		a.log.Info(PassMovedSlotsLine, "slots", slots, "cap", a.cap, "given", given, "taken", taken, "passed", passed)
 	})
 }
+
+// PassMovedSlotsLine is the record line of a pass that moved a slot (logPassMoves), which a
+// replay of a recorded window reads the pass's moves from (internal/replay's PassMovedSlots).
+const PassMovedSlotsLine = "admission: a pass moved slots"
 
 // releaseReason is the path of releaseSlots that took issue's slot back, by the term of
 // record.LineFacts.NeedsSlot it failed: its tree's root lingers after its close; its tree no
@@ -96,11 +100,16 @@ func waitReason(issue string, waits []string, facts record.LineFacts) record.Slo
 	case !rule.LinkWaitGivesBack:
 		return record.TakenChildrenWait
 	}
-	open := facts.ChildWaits[issue].Open
 	for _, key := range waits {
-		if !slices.ContainsFunc(open, func(child record.OpenChild) bool { return child.Key == key }) {
+		if !openChildOf(facts, issue, key) {
 			return record.TakenLinkWait
 		}
 	}
 	return record.TakenChildrenWait
+}
+
+// openChildOf says whether key is one of the open children issue's first phase waits for
+// (record.LineFacts.ChildWaits).
+func openChildOf(facts record.LineFacts, issue, key string) bool {
+	return slices.ContainsFunc(facts.ChildWaits[issue].Open, func(child record.OpenChild) bool { return child.Key == key })
 }

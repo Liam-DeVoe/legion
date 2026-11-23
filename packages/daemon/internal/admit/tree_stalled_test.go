@@ -201,9 +201,17 @@ func claimStore(t *testing.T, pool *pgxpool.Pool) *store.Store {
 // alone.
 func seedClaim(t *testing.T, records *store.Store, tree, issue string, role claim.Role, state supervise.ClaimState) {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	seedClaimForProject(t, records, testProject, tree, issue, role, state)
+}
+
+// seedClaimForProject is seedClaim under a Dispatch project key of its own.
+func seedClaimForProject(t *testing.T, records *store.Store, dispatchProject, tree, issue string, role claim.Role,
+	state supervise.ClaimState,
+) {
+	t.Helper()
+	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
-		t.Fatalf("project token of %s: %v", testProject, err)
+		t.Fatalf("project token of %s: %v", dispatchProject, err)
 	}
 	token, err := claim.NewToken(project, issue, role)
 	if err != nil {

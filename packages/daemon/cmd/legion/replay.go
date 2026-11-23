@@ -292,9 +292,9 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
 		}
-		rule, ok := record.SlotRuleNamed(*ruleName)
-		if !ok {
-			return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+		rule, code := namedSlotRule(cmd, *ruleName)
+		if code != 0 {
+			return code
 		}
 		branch, err := replay.BranchNamed(*branchName)
 		if err != nil {
@@ -393,12 +393,7 @@ func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
 			return 1
 		}
 		if *asJSON {
-			encoder := json.NewEncoder(stdout)
-			encoder.SetIndent("", "  ")
-			if err := encoder.Encode(card); err != nil {
-				return 1
-			}
-			return 0
+			return printReplayJSON(stdout, card)
 		}
 		fmt.Fprintf(stdout, "the record of %s from %s to %s\n", window.Project, card.From.Format(time.RFC3339), card.To.Format(time.RFC3339))
 		for _, measured := range replay.MeasuresOf(card) {
@@ -490,12 +485,12 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 				return refuse(cmd, "--%s is required", missing)
 			}
-			rule, ok := record.SlotRuleNamed(*ruleName)
-			if !ok {
-				return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+			rule, code := namedSlotRule(cmd, *ruleName)
+			if code != 0 {
+				return code
 			}
 			if *parallel < 1 {
-				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+				return refuseParallel(cmd, *parallel)
 			}
 			var err error
 			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
@@ -585,12 +580,12 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 			if missing := missingFlag(cmd, "rule", "pg-dsn", "out"); missing != "" {
 				return refuse(cmd, "--%s is required", missing)
 			}
-			rule, ok := record.SlotRuleNamed(*ruleName)
-			if !ok {
-				return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+			rule, code := namedSlotRule(cmd, *ruleName)
+			if code != 0 {
+				return code
 			}
 			if *parallel < 1 {
-				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+				return refuseParallel(cmd, *parallel)
 			}
 			var err error
 			forecast, err = replay.RunForecast(ctx, replay.ForecastConfig{Before: *before, After: *after, Rule: rule, PGDSN: *dsn,
@@ -683,13 +678,13 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 			case !part && !cmd.Flags().Changed("out"):
 				return refuse(cmd, "--out is required")
 			case *parallel < 1:
-				return refuse(cmd, "--parallel %d: at least one run runs at a time", *parallel)
+				return refuseParallel(cmd, *parallel)
 			}
 			rules := make([]record.SlotRule, 0, len(*ruleNames))
 			for _, name := range *ruleNames {
-				rule, ok := record.SlotRuleNamed(name)
-				if !ok {
-					return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", name)
+				rule, code := namedSlotRule(cmd, name)
+				if code != 0 {
+					return code
 				}
 				rules = append(rules, rule)
 			}
@@ -778,12 +773,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			for _, rule := range rules {
 				views = append(views, slotRuleViewOf(rule))
 			}
-			encoder := json.NewEncoder(stdout)
-			encoder.SetIndent("", "  ")
-			if err := encoder.Encode(views); err != nil {
-				return 1
-			}
-			return 0
+			return printReplayJSON(stdout, views)
 		}
 		for i, rule := range rules {
 			if i > 0 {
@@ -843,6 +833,21 @@ func missingFlag(cmd *cobra.Command, names ...string) string {
 	return ""
 }
 
+// namedSlotRule is the rule record.SlotRules keeps under name, refusing a name it keeps none
+// under as a usage error, in replaySpan's value-and-exit-code way.
+func namedSlotRule(cmd *cobra.Command, name string) (record.SlotRule, int) {
+	rule, ok := record.SlotRuleNamed(name)
+	if !ok {
+		return rule, refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", name)
+	}
+	return rule, 0
+}
+
+// refuseParallel refuses a --parallel of parallel, below one, as a usage error.
+func refuseParallel(cmd *cobra.Command, parallel int) int {
+	return refuse(cmd, "--parallel %d: at least one run runs at a time", parallel)
+}
+
 // replaySpan reads --from and --to as RFC 3339 times, refusing either that is not one, and a
 // span that is empty, as a usage error.
 func replaySpan(cmd *cobra.Command, from, to string) ([2]time.Time, int) {
@@ -865,11 +870,7 @@ func designSteps(steps []record.DesignStep) string {
 	if len(steps) == 0 {
 		return "off"
 	}
-	words := make([]string, 0, len(steps))
-	for _, step := range steps {
-		words = append(words, string(step))
-	}
-	return strings.Join(words, ",")
+	return strings.Join(record.StepNames(steps), ",")
 }
 
 // parseDesignSteps reads --gate-steps as gates.design reads its value: off for no step,
@@ -884,10 +885,8 @@ func parseDesignSteps(text string) ([]record.DesignStep, error) {
 		if !step.Valid() {
 			return nil, fmt.Errorf("%q is no design step (%s), and the value is not off or root-issues", step, record.StepWords())
 		}
-		for _, seen := range steps {
-			if seen == step {
-				return nil, fmt.Errorf("%q is named twice", step)
-			}
+		if slices.Contains(steps, step) {
+			return nil, fmt.Errorf("%q is named twice", step)
 		}
 		steps = append(steps, step)
 	}

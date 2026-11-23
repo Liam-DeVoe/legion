@@ -174,10 +174,7 @@ func countSaid(count record.StateCount) string {
 
 // countsEqual says whether two counts of a reading are the same number with the same oldest time.
 func countsEqual(a, b record.StateCount) bool {
-	if a.Count != b.Count || (a.Oldest == nil) != (b.Oldest == nil) {
-		return false
-	}
-	return a.Oldest == nil || a.Oldest.Equal(*b.Oldest)
+	return a.Count == b.Count && sameInstant(a.Oldest, b.Oldest)
 }
 
 // sinceSaid is a holder's time as a failure message reads it.
@@ -188,8 +185,7 @@ func sinceSaid(at *time.Time) string {
 	return at.Format(time.RFC3339)
 }
 
-// stateCounts is the five holder-state counts of a reading, by state, in record.HolderStates'
-// order.
+// stateCounts is the five holder-state counts of a reading, by state.
 func stateCounts(reading record.SlotsReading) map[record.HolderState]record.StateCount {
 	return map[record.HolderState]record.StateCount{
 		record.HolderWorking: reading.Working,
@@ -273,8 +269,9 @@ func TestTheFiveStatesAddUpToTheSlotsInUse(t *testing.T) {
 					reading.InUse, reading.Cap, len(state.Admission.Active), tc.cap)
 			}
 			sum := 0
+			counts := stateCounts(reading)
 			for _, holderState := range record.HolderStates {
-				count := stateCounts(reading)[holderState]
+				count := counts[holderState]
 				sum += count.Count
 				if count.Count != tc.want[holderState] {
 					t.Errorf("%s = %s, want %d", holderState, countSaid(count), tc.want[holderState])
@@ -287,7 +284,7 @@ func TestTheFiveStatesAddUpToTheSlotsInUse(t *testing.T) {
 	}
 }
 
-// Readings (a) and (b) of started work that waits without a slot (D4 and spec R4), each with its
+// Readings (a) and (b) of started work that waits without a slot (spec R4), each with its
 // number and its oldest time. Reading (a) is the members of the line's returned part that hold no
 // slot and stand in no row of admission.blocked: here an owed start, and a root released for a
 // wait whose wait has ended, which keeps the kind waiting_on_issue until its promotion, so the
@@ -492,7 +489,7 @@ func TestHoldersBelowTheFirstWaitingIssue(t *testing.T) {
 	}
 }
 
-// Each holder's state and time, one holder for each row of the plan's state table (spec R6),
+// Each holder's state and time, one holder for each way spec R6 dates a holder's state,
 // read from the projected state as a reader of it reads them: on each holder's `slot` as `state`
 // and `since`, and counted in `admission.slots` with each state's oldest time. Two rows' times
 // are times the record does not hold yet — when a hold began, and when a holder's wait on another
@@ -604,8 +601,7 @@ func TestHolderStatesInTheState(t *testing.T) {
 		if slot == nil {
 			t.Fatalf("fixture: %s carries no slot", want.key)
 		}
-		if slot.State != string(want.state) || (slot.Since == nil) != (want.since == nil) ||
-			(slot.Since != nil && !slot.Since.Equal(*want.since)) {
+		if slot.State != string(want.state) || !sameInstant(slot.Since, want.since) {
 			t.Errorf("%s's slot = state %q since %s, want state %q since %s", want.key, slot.State, sinceSaid(slot.Since),
 				want.state, sinceSaid(want.since))
 		}
@@ -622,8 +618,9 @@ func TestHolderStatesInTheState(t *testing.T) {
 		record.HolderIssue:   {Count: 1},
 		record.HolderIdle:    {Count: 2, Oldest: &admitted},
 	}
+	counts := stateCounts(reading)
 	for _, holderState := range record.HolderStates {
-		if got := stateCounts(reading)[holderState]; !countsEqual(got, wants[holderState]) {
+		if got := counts[holderState]; !countsEqual(got, wants[holderState]) {
 			t.Errorf("%s = %s, want %s", holderState, countSaid(got), countSaid(wants[holderState]))
 		}
 	}

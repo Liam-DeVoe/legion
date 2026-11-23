@@ -91,7 +91,7 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // The phases past an issue's review run on no row of the cap's at all. The cap counts the issues
 // whose change is still to write, and the sign-off, the retro and the merge write no more of it
 // (record.KeepsSlot), so the start of each of those phases waits for no row (workflow.StartOrOwe
-// reads record.PhaseKeepsSlot) and is claimable the moment it is written.
+// reads record.SlotRule.PhaseKeepsSlot) and is claimable the moment it is written.
 //
 // The cap is full throughout, which is what tells the two kinds of start apart: in the same
 // reading, the start of an issue at work that holds no row stays unclaimable, and so does the

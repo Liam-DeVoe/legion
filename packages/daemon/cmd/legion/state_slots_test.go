@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -147,7 +146,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 		}
 		if gateOpen {
 			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: issue.Key, ArtifactID: "spec-" + issue.Key, LatestVersion: 1,
-				ApprovedVersion: &approved, EverOpened: true}); err != nil {
+				ApprovedVersion: &approved}); err != nil {
 				return err
 			}
 		}
@@ -255,21 +254,21 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	}).Handler)
 	t.Cleanup(server.Close)
 	port := strconv.Itoa(server.Listener.Addr().(*net.TCPAddr).Port)
-	legionState := func(args ...string) string {
+	stateOutput := func(args ...string) string {
 		t.Helper()
-		var out, errb bytes.Buffer
-		if code := run(ctx, append(append([]string{"legion", "state"}, args...), "--port", port), &out, &errb); code != 0 || errb.Len() != 0 {
-			t.Fatalf("legion state %v = %d, stderr %q", args, code, errb.String())
+		code, out, errb := legionRun(t, append(append([]string{"state"}, args...), "--port", port)...)
+		if code != 0 || errb != "" {
+			t.Fatalf("legion state %v = %d, stderr %q", args, code, errb)
 		}
-		return out.String()
+		return out
 	}
-	text := legionState()
+	text := stateOutput()
 	var served struct {
 		Admission struct {
 			Slots *record.SlotsReading `json:"slots"`
 		} `json:"admission"`
 	}
-	if err := json.Unmarshal([]byte(legionState("--json")), &served); err != nil {
+	if err := json.Unmarshal([]byte(stateOutput("--json")), &served); err != nil {
 		t.Fatalf("read legion state --json: %v", err)
 	}
 
@@ -337,24 +336,23 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 		count, n    int
 		oldest      *time.Time
 		printedTime string
-		timed       bool
 	}{
 		{what: "in use", count: r.InUse, n: number(1)},
 		{what: "the cap", count: r.Cap, n: number(2)},
-		{what: "working", count: r.Working.Count, n: number(3), oldest: r.Working.Oldest, printedTime: parts[4], timed: true},
-		{what: "stopped", count: r.Stopped.Count, n: number(5), oldest: r.Stopped.Oldest, printedTime: parts[6], timed: true},
-		{what: "person", count: r.Person.Count, n: number(7), oldest: r.Person.Oldest, printedTime: parts[8], timed: true},
-		{what: "issue", count: r.Issue.Count, n: number(9), oldest: r.Issue.Oldest, printedTime: parts[10], timed: true},
-		{what: "idle", count: r.Idle.Count, n: number(11), oldest: r.Idle.Oldest, printedTime: parts[12], timed: true},
-		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(13), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[14], timed: true},
+		{what: "working", count: r.Working.Count, n: number(3), oldest: r.Working.Oldest, printedTime: parts[4]},
+		{what: "stopped", count: r.Stopped.Count, n: number(5), oldest: r.Stopped.Oldest, printedTime: parts[6]},
+		{what: "person", count: r.Person.Count, n: number(7), oldest: r.Person.Oldest, printedTime: parts[8]},
+		{what: "issue", count: r.Issue.Count, n: number(9), oldest: r.Issue.Oldest, printedTime: parts[10]},
+		{what: "idle", count: r.Idle.Count, n: number(11), oldest: r.Idle.Oldest, printedTime: parts[12]},
+		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(13), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[14]},
 		{what: "started without a slot in all", count: r.StartedWithoutSlot.Count, n: number(15), oldest: r.StartedWithoutSlot.Oldest,
-			printedTime: parts[16], timed: true},
+			printedTime: parts[16]},
 		{what: "holders below the first waiting issue", count: r.BelowFirstWaiting.Count, n: number(17)},
 	} {
 		if check.n != check.count {
 			t.Errorf("the slots line gives %s as %d and the JSON as %d: %q", check.what, check.n, check.count, line)
 		}
-		if check.timed && check.printedTime != slotsLineMinute(check.oldest) {
+		if check.printedTime != slotsLineMinute(check.oldest) {
 			t.Errorf("the slots line gives the oldest of %s as %q and the JSON as %q: %q", check.what, check.printedTime,
 				slotsLineMinute(check.oldest), line)
 		}

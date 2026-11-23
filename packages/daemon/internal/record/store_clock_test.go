@@ -4,9 +4,7 @@ import (
 	"cmp"
 	"context"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -100,44 +98,22 @@ func nowStatements(t *testing.T, module string, dirs ...string) []nowStatement {
 	t.Helper()
 	var statements []nowStatement
 	for _, dir := range dirs {
-		files := 0
-		if err := filepath.WalkDir(filepath.Join(module, filepath.FromSlash(dir)), func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return err
-			}
-			files++
-			parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(module, path)
-			if err != nil {
-				return err
-			}
-			for _, decl := range parsed.Decls {
-				function := "a package-level declaration"
-				if fn, ok := decl.(*ast.FuncDecl); ok {
-					function = functionName(fn)
-				}
-				ast.Inspect(decl, func(node ast.Node) bool {
-					literal, ok := node.(*ast.BasicLit)
-					if !ok || literal.Kind != token.STRING {
-						return true
-					}
-					text, err := strconv.Unquote(literal.Value)
-					if err != nil {
-						t.Fatalf("unquote a string literal of %s: %v", rel, err)
-					}
-					if strings.Contains(strings.ToLower(text), "now()") {
-						statements = append(statements, nowStatement{file: filepath.ToSlash(rel), function: function})
-					}
+		files := eachDeclaration(t, module, dir, func(file, function string, decl ast.Decl) {
+			ast.Inspect(decl, func(node ast.Node) bool {
+				literal, ok := node.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
 					return true
-				})
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("read the Go source under %s: %v", dir, err)
-		}
+				}
+				text, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("unquote a string literal of %s: %v", file, err)
+				}
+				if strings.Contains(strings.ToLower(text), "now()") {
+					statements = append(statements, nowStatement{file: file, function: function})
+				}
+				return true
+			})
+		})
 		if files == 0 {
 			t.Fatalf("read no non-test Go file under %s of %s", dir, module)
 		}
@@ -153,12 +129,16 @@ func clockRows() []clockRow {
 	return []clockRow{
 		{statement: nowStatement{"internal/record/dispatch_issues.go", "(*Postgres).TakeDispatchRefill"}, check: checkRefillMark},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).EnqueueStart"}, check: checkOwedStartCreated},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).MarkProcessed"}, check: checkProcessedAt},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).EnqueueGatedSteps"}, check: checkGatedStepsCreated},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).EnqueueDesignGates"}, check: checkDesignGatesCreated},
+		{statement: nowStatement{"internal/record/store.go", "(*Postgres).EnqueueID"}, check: checkEnqueuedIDCreated},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).OwedStarts"}, check: checkOwedLease},
 		{statement: nowStatement{"internal/record/store.go", "(*Postgres).RoleRuns"}, check: checkRoleRunAge},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimActivity"}, check: checkClaimActivity},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimStep"}, check: checkClaimStep},
 		{statement: nowStatement{"internal/store/claims.go", "upsertClaim"}, check: checkClaimWrite},
-		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "Open"}, check: checkTreeOpened},
+		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "open"}, check: checkTreeOpened},
 		{statement: nowStatement{"internal/store/idle.go", "(*Store).ReleaseIdleIssue"},
 			never: "the idle release's mark (internal/daemon's idle sweep), made outside every fact; a replay releases no pod"},
 		{statement: nowStatement{"internal/store/idle.go", "insertOutboxRow"}, check: checkPauseRows},
@@ -236,6 +216,56 @@ func checkOwedStartCreated(t *testing.T) {
 	})
 }
 
+// A fact marked processed takes the store's clock as its processed_at.
+func checkProcessedAt(t *testing.T) {
+	ctx := context.Background()
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		marked, err := NewStoreWithClock(clockAt).MarkProcessed(ctx, tx, "dispatch", "clock-event")
+		must(t, err)
+		if !marked {
+			t.Fatal("the fact was not marked processed, though no row stood")
+		}
+		var at time.Time
+		must(t, tx.QueryRow(ctx, `select processed_at from processed_events where source = 'dispatch' and event_id = 'clock-event'`).Scan(&at))
+		wantClock(t, "the processed fact's processed_at", at)
+	})
+}
+
+// outboxCreatedAt is the created_at of the one outbox row of kind for issue.
+func outboxCreatedAt(t *testing.T, tx pgx.Tx, kind OutboxKind, issue string) time.Time {
+	t.Helper()
+	var created time.Time
+	must(t, tx.QueryRow(context.Background(), `select created_at from outbox where kind = $1 and issue = $2`, string(kind), issue).Scan(&created))
+	return created
+}
+
+// The project's gated-steps publish takes the store's clock as its created_at.
+func checkGatedStepsCreated(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		must(t, NewStoreWithClock(clockAt).EnqueueGatedSteps(context.Background(), tx,
+			GatedStepsPublish{Project: "ACME", Steps: []DesignStep{DesignStepSpec}}, clockTime))
+		wantClock(t, "the gated-steps publish's created_at", outboxCreatedAt(t, tx, OutboxKindGatedStepsPublish, "ACME"))
+	})
+}
+
+// An issue's design-gates publish takes the store's clock as its created_at.
+func checkDesignGatesCreated(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		must(t, NewStoreWithClock(clockAt).EnqueueDesignGates(context.Background(), tx,
+			DesignGatesPublish{Issue: "ACME-7", Gates: []DesignGateDocument{}}, clockTime))
+		wantClock(t, "the design-gates publish's created_at", outboxCreatedAt(t, tx, OutboxKindDesignGatesPublish, "ACME-7"))
+	})
+}
+
+// A row written for its id takes the store's clock as its created_at.
+func checkEnqueuedIDCreated(t *testing.T) {
+	inTx(t, migratedStore(t), func(tx pgx.Tx) {
+		_, err := NewStoreWithClock(clockAt).EnqueueID(context.Background(), tx, clockStart(t, "ACME-7"))
+		must(t, err)
+		wantClock(t, "the row's created_at", outboxCreatedAt(t, tx, OutboxKindSupervise, "ACME-7"))
+	})
+}
+
 // A lease that runs to an hour after the store's clock is live at that clock, so the start it
 // holds is not owed: its lane has it.
 func checkOwedLease(t *testing.T) {
@@ -287,17 +317,24 @@ func clockClaim() supervise.Claim {
 		SessionFile: "/sessions/implementer.jsonl"}
 }
 
-// claimTimes reads the claim's updated_at and activity_at as the store holds them, after setting
-// updated_at back to 2001-01-01 when old is true, so a write that does not stamp it leaves a value
-// no clock gives.
-func claimTimes(t *testing.T, st *store.Store, token claim.Token, old bool) (updated time.Time, activity *time.Time) {
+// ageClaim sets the claim's updated_at back to 2001-01-01, so a write that does not stamp it
+// leaves a value no clock gives.
+func ageClaim(t *testing.T, st *store.Store, token claim.Token) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if old {
-			_, err := tx.Exec(ctx, `update claims set updated_at = '2001-01-01T00:00:00Z' where token = $1`, string(token))
-			return err
-		}
+		_, err := tx.Exec(ctx, `update claims set updated_at = '2001-01-01T00:00:00Z' where token = $1`, string(token))
+		return err
+	}); err != nil {
+		t.Fatalf("age the claim %s: %v", token, err)
+	}
+}
+
+// claimTimes reads the claim's updated_at and activity_at as the store holds them.
+func claimTimes(t *testing.T, st *store.Store, token claim.Token) (updated time.Time, activity *time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `select updated_at, activity_at from claims where token = $1`, string(token)).Scan(&updated, &activity)
 	}); err != nil {
 		t.Fatalf("read the claim %s: %v", token, err)
@@ -310,7 +347,7 @@ func checkClaimWrite(t *testing.T) {
 	st := migratedStore(t)
 	st.UseClock(clockAt)
 	must(t, st.PutClaim(context.Background(), clockClaim()))
-	updated, _ := claimTimes(t, st, clockClaim().Token, false)
+	updated, _ := claimTimes(t, st, clockClaim().Token)
 	wantClock(t, "the claim's updated_at", updated)
 }
 
@@ -321,13 +358,13 @@ func checkClaimActivity(t *testing.T) {
 	st := migratedStore(t)
 	st.UseClock(clockAt)
 	must(t, st.PutClaim(ctx, clockClaim()))
-	claimTimes(t, st, clockClaim().Token, true)
+	ageClaim(t, st, clockClaim().Token)
 	known, err := st.PutClaimActivity(ctx, clockClaim().Token, 1, claim.SessionActivity{At: clockTime.Add(time.Minute)})
 	must(t, err)
 	if !known {
 		t.Fatal("the store does not know the claim at generation 1, which the check wrote")
 	}
-	updated, activity := claimTimes(t, st, clockClaim().Token, false)
+	updated, activity := claimTimes(t, st, clockClaim().Token)
 	wantClock(t, "the claim's updated_at after the activity report", updated)
 	if activity == nil {
 		t.Fatal("the report wrote no activity_at")
@@ -341,13 +378,13 @@ func checkClaimStep(t *testing.T) {
 	st := migratedStore(t)
 	st.UseClock(clockAt)
 	must(t, st.PutClaim(ctx, clockClaim()))
-	claimTimes(t, st, clockClaim().Token, true)
+	ageClaim(t, st, clockClaim().Token)
 	known, err := st.PutClaimStep(ctx, clockClaim().Token, supervise.StepRecord{At: clockTime.Add(-time.Minute)})
 	must(t, err)
 	if !known {
 		t.Fatal("the store does not know the claim, which the check wrote")
 	}
-	updated, _ := claimTimes(t, st, clockClaim().Token, false)
+	updated, _ := claimTimes(t, st, clockClaim().Token)
 	wantClock(t, "the claim's updated_at after the step", updated)
 }
 

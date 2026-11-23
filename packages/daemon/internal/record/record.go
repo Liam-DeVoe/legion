@@ -1934,6 +1934,11 @@ type Store interface {
 	// record does not hold is absent from the answer, which reads as the zero entry: a role no
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
+	// MergersReady is, of issues, the ones whose merger's phases row records the head it stands
+	// on (PhaseRow.HandoffCommit): the merger's ready mark (LineFacts.Ready), read in one
+	// statement for every issue a pass under a rule that gives the slot back there finds standing
+	// in merging (ReadLineFactsUnder), in no order. An issue with no merger's row is absent.
+	MergersReady(ctx context.Context, tx pgx.Tx, issues []string) ([]string, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
@@ -1989,10 +1994,11 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
-	// HolderClaims is every claim of the project that stands on an issue, as a slot holder's
-	// state reads one (HolderClaim), in no order: what the admission pass reads for the slots
-	// reading of the tick notice, and what the daemon's state source reads for its projection, so
-	// the two read a holder's claims through one statement. project is the claim project token
+	// HolderClaims is every claim of the project that stands on an issue holding a slot, as a
+	// slot holder's state reads one (HolderClaim), in no order and never nil: what the admission
+	// pass reads for the slots reading of the tick notice, and what the daemon's state source
+	// reads for its projection, so the two read a holder's claims through one statement. The
+	// slots are the ones the caller's transaction holds. project is the claim project token
 	// (claim.ProjectToken), as ProjectClaims takes it.
 	HolderClaims(ctx context.Context, tx pgx.Tx, project string) ([]HolderClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next

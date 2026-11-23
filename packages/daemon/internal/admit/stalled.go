@@ -753,8 +753,11 @@ func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, s
 	}
 	// The slots counted waiters offer under a rule whose start may take a cover are read as the
 	// promotion reads them (covers), over this project's own rows; nothing is offered under every
-	// other rule.
-	lending := coversOf(issues, ownSlots(issues, slots), rows, facts)
+	// other rule, so the issues are walked for the rows under that rule alone.
+	var lending covers
+	if facts.Rule.OrMain().Take == record.TakeCover {
+		lending = coversOf(issues, ownSlots(issues, slots), rows, facts)
+	}
 	for _, entry := range holds.line {
 		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending) {
 			// An entry the promotion of this very pass starts: the line moves.

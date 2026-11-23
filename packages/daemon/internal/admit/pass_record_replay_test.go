@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func (everyRepository) ResolveRepository(resolved string) (workflow.Resolution, 
 	return workflow.Resolution{Repo: resolved, DefaultBranch: "main", GitHubRepo: resolved}, nil
 }
 
-// slotFact is what both sources say of a slot moved (departure 3): the issue, the moment, whether
+// slotFact is what both sources say of a slot moved: the issue, the moment, whether
 // it was given out or taken back, and the slots in use under the cap once it moved.
 type slotFact struct {
 	At         time.Time
@@ -65,7 +66,7 @@ func slotFacts(trace replay.Trace) []slotFact {
 }
 
 // The tool reads the record line of each pass that moves a slot where a window holds it, and builds
-// the same slot facts from the per-slot lines where a window holds those alone (spec R9, check k9).
+// the same slot facts from the per-slot lines where a window holds those alone (spec R9).
 // Admission passes run on a test store under one clock, through the daemon's own chain of handlers,
 // and every line they log is captured through the daemon's JSON handler: a pass that gives out two
 // slots and passes over one candidate for the cap and one for a wait, one that takes a slot back and
@@ -73,7 +74,7 @@ func slotFacts(trace replay.Trace) []slotFact {
 // blocker is done. The trace builder is then fed the record lines apart, the per-slot lines apart,
 // and both together: every slot given out or taken back, with its issue, its moment, the slots in
 // use and the cap, is the same from each, and the candidates the passes passed over come from the
-// record line alone, since no other line names them (departure 3).
+// record line alone, since no other line names them.
 func TestRecordLineAndOtherLinesGiveTheSameSlotFacts(t *testing.T) {
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_admit_record_replay")
@@ -150,7 +151,7 @@ func TestRecordLineAndOtherLinesGiveTheSameSlotFacts(t *testing.T) {
 		moved[fact.Issue] = append(moved[fact.Issue], fact.Given)
 	}
 	wantMoved := map[string][]bool{"ACME-1": {true, false}, "ACME-2": {true, false}, "ACME-3": {true, false}, "ACME-4": {true}}
-	if fmt.Sprint(moved) != fmt.Sprint(wantMoved) {
+	if !maps.EqualFunc(moved, wantMoved, slices.Equal[[]bool]) {
 		t.Errorf("the passes moved the slots %v (true given out, false taken back), want %v: the passes did not run as this test says",
 			moved, wantMoved)
 	}
@@ -209,17 +210,8 @@ func capturedLines(t *testing.T, logged *bytes.Buffer) []json.RawMessage {
 // recordTx runs fn in one transaction on pool, committed.
 func recordTx(t *testing.T, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) {
 	t.Helper()
-	ctx := context.Background()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin a transaction: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := fn(tx); err != nil {
+	if err := pgx.BeginFunc(context.Background(), pool, fn); err != nil {
 		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
 	}
 }
 

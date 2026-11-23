@@ -134,9 +134,9 @@ func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 // working (workflow's claimFailed), and the work has reached exactly where it had before.
 //
 // It is the one reading of where an issue stands, and the rules that must never read a held
-// issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
-// KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the record names
-// no phase for answers phase.Held itself, which is all the daemon knows of it.
+// issue differently all take it: the phase half of the slot rule (SlotRule.PhaseKeepsSlot,
+// through KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the
+// record names no phase for answers phase.Held itself, which is all the daemon knows of it.
 func StandsAt(issue Issue) phase.Phase {
 	if issue.Phase == phase.Held && issue.Hold != nil {
 		return issue.Hold.From
@@ -813,14 +813,15 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 // rule set on them (LineFacts.Rule, rule.OrMain()), so every judgement made over them — the
 // release, the line, the waits, the held words — reads the one rule its reader was given rather
 // than one of its own choosing. It is how each reader of the slot rule that reads its own facts
-// sets the rule: the admission pass with its own (admit's Admission.UseSlotRule), and the state
+// sets the rule: the admission pass with its engine's (workflow.Engine.SlotRule), and the state
 // projection with the one it was handed (projection.Inputs.SlotRule), which for the daemon is
 // its own.
 //
 // Under a rule that keeps a slot in merging and gives it back at the merger's ready mark
-// (SlotRule.ReleaseAtReady) it also reads that mark (LineFacts.Ready): the merger's phases row
-// of each issue standing in merging, one read for each, which only a replay under such a rule
-// pays. Every other rule, the daemon's own among them, reads nothing beyond ReadLineFacts.
+// (SlotRule.ReleaseAtReady) it also reads that mark (LineFacts.Ready): the merger's phases rows
+// of the issues standing in merging, in one read (Store.MergersReady), which only a replay under
+// such a rule pays. Every other rule, the daemon's own among them, reads nothing beyond
+// ReadLineFacts.
 func ReadLineFactsUnder(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep,
 	rule SlotRule,
 ) (LineFacts, error) {
@@ -833,17 +834,21 @@ func ReadLineFactsUnder(ctx context.Context, tx pgx.Tx, store Store, project str
 		return facts, nil
 	}
 	facts.Ready = make(map[string]struct{})
+	var merging []string
 	for _, issue := range issues {
-		if StandsAt(issue) != phase.Merging {
-			continue
+		if StandsAt(issue) == phase.Merging {
+			merging = append(merging, issue.Key)
 		}
-		rows, err := store.Phases(ctx, tx, issue.Key)
-		if err != nil {
-			return LineFacts{}, err
-		}
-		if PhaseRowOf(rows, claim.RoleMerger).HandoffCommit != "" {
-			facts.Ready[issue.Key] = struct{}{}
-		}
+	}
+	if len(merging) == 0 {
+		return facts, nil
+	}
+	ready, err := store.MergersReady(ctx, tx, merging)
+	if err != nil {
+		return LineFacts{}, err
+	}
+	for _, key := range ready {
+		facts.Ready[key] = struct{}{}
 	}
 	return facts, nil
 }
@@ -1035,40 +1040,18 @@ func AtWork(issue Issue, gate TreeGate) bool {
 	}
 }
 
-// PhaseKeepsSlot is the daemon's own list of the phases that hold one of the cap's slots
-// (MainRule.KeepsSlotIn, read through SlotRule.PhaseKeepsSlot): admitted, where a root's
-// architect writes its design and a started child waits to be entered again; awaiting_person;
-// the four phases a worker works up to the review — planning, implementing, testing and
-// reviewing; and held, which is reached here only where the record names no earlier phase for
-// the hold (StandsAt). Every other phase holds none: accepting, retro and merging each stand
-// past the issue's review, and done has finished.
-//
-// It is written as one list, in the rule value, so that a later change adds or removes one
-// entry and every reader of the rule moves with it. Two read it, and a phase in one and not the
-// other would be a deadlock: the cap's own half (KeepsSlot) and the mark a start of a phase
-// worker carries for the slot it waits for (workflow.StartOrOwe), whose row the outbox holds
-// unclaimable while the issue holds no slot. SlotRule.PastReview is the complement of the
-// phases a rule refuses, for the repair that must reach an issue holding no row.
-//
-// The readers inside the admission pass, the engine and the projection read the rule they were
-// given (SlotRule.PhaseKeepsSlot and the readers beside it): this function, like the three
-// beside it, is the daemon's own rule under the name its callers outside them have always used.
-func PhaseKeepsSlot(at phase.Phase) bool {
-	return MainRule.PhaseKeepsSlot(at)
-}
-
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
 // the moment the daemon starts it until its work is past its review — accepting, retro and
 // merging hold none — or until it is done or Dispatch takes it out of the workflow
 // (InWorkflow). Every phase up to the review keeps the row — admitted, awaiting_person, the four
-// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
-// for a person or for its review keeps its place against the cap and wins none back from the
-// line when the wait ends. A wait on another issue is the one wait that is not read here: an
-// issue the daemon has started that waits on one gives its row back and stands in the line for
-// one again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), save the
-// roots that rule names as keepers. That rule reads this one first, so an issue past its review
-// waits on nothing there (blockers.waitsOf). The rule whole is "Admission and the `legion` label"
-// in docs/site/src/content/docs/legion/concepts.md.
+// worker phases and a hold the record names no phase for (SlotRule.PhaseKeepsSlot of MainRule) —
+// so an issue waiting for a person or for its review keeps its place against the cap and wins
+// none back from the line when the wait ends. A wait on another issue is the one wait that is not
+// read here: an issue the daemon has started that waits on one gives its row back and stands in
+// the line for one again, by the rule beside this (blockers.waitsOf, admit's
+// releaseSlotsForWaits), save the roots that rule names as keepers. That rule reads this one
+// first, so an issue past its review waits on nothing there (blockers.waitsOf). The rule whole is
+// "Admission and the `legion` label" in docs/site/src/content/docs/legion/concepts.md.
 //
 // The cap bounds the work in progress, and an issue whose review has passed writes no more of
 // the change: its sign-off, its retro and its merge run on no slot at all, so their starts are
@@ -1093,7 +1076,12 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
 // the slot rule either, and NeedsSlot asks the tree's own terms beside this.
 //
-// It is the daemon's own rule's half (MainRule.KeepsSlot), as PhaseKeepsSlot says.
+// It is the daemon's own rule's half (MainRule.KeepsSlot). The readers inside the admission pass,
+// the engine and the projection ask the rule they were given (LineFacts.KeepsSlot,
+// SlotRule.KeepsSlot), and nothing outside the tests calls this; it stays because it is the name
+// the repository's comments and two migration headers state the rule under
+// (20261109060737_drop_awaiting_slot_notice, 20261110233602_past_review_starts_unmarked), so the
+// rule they name is still stated where they point.
 func KeepsSlot(issue Issue) bool {
 	return MainRule.KeepsSlot(issue)
 }
@@ -1148,7 +1136,8 @@ func PastReview(issue Issue) bool {
 // the issue's phase keeps a row (KeepsSlot). The slot is accounting only: taking one away
 // suspends no claim, moves no phase and writes no Dispatch status.
 //
-// It is the daemon's own rule's statement (MainRule.NeedsSlot), as PhaseKeepsSlot says.
+// It is the daemon's own rule's statement (MainRule.NeedsSlot), kept under this name for the
+// reason KeepsSlot is (20261111214351_issue_released_for_wait's header names it).
 func NeedsSlot(issue, root Issue, live bool) bool {
 	return MainRule.NeedsSlot(issue, root, live)
 }

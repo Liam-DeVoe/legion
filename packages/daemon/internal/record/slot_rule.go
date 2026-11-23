@@ -17,9 +17,9 @@ import (
 // into a script.
 //
 // Every reader of the rule takes it from the pass, the engine or the projection it was given to
-// (admit's Admission.UseSlotRule, workflow.Config.SlotRule, LineFacts.Rule): no reader reads a
-// rule of its own choosing, and no rule is held in a package variable a reader could change, so
-// two replays under two rules can run at once in one process.
+// (workflow.Config.SlotRule, which the admission pass reads through its engine, LineFacts.Rule):
+// no reader reads a rule of its own choosing, and no rule is held in a package variable a reader
+// could change, so two replays under two rules can run at once in one process.
 type SlotRule struct {
 	// Name is the rule's name, the word a caller picks it by (SlotRuleNamed). The zero value's
 	// empty name is the daemon's own rule (OrMain).
@@ -28,8 +28,8 @@ type SlotRule struct {
 	// replay's result can read the code that made them.
 	Commit string
 	// KeepsSlotIn is every phase in which an issue the daemon has started keeps its slot
-	// (PhaseKeepsSlot). A phase it leaves out holds none, and the start of that phase's worker
-	// waits for no slot (workflow.StartOrOwe).
+	// (SlotRule.PhaseKeepsSlot). A phase it leaves out holds none, and the start of that phase's
+	// worker waits for no slot (workflow.StartOrOwe).
 	KeepsSlotIn []phase.Phase
 	// LinkWaitGivesBack says whether a started issue that waits on an unfinished Dispatch
 	// blocked_by link gives its slot back for the wait (blockers.waitsOf).
@@ -148,6 +148,19 @@ func (r SlotRule) OrMain() SlotRule {
 }
 
 // PhaseKeepsSlot says whether an issue standing at at keeps its slot under r (KeepsSlotIn).
+// MainRule's list, the daemon's own, is the phases that hold one of the cap's slots: admitted,
+// where a root's architect writes its design and a started child waits to be entered again;
+// awaiting_person; the four phases a worker works up to the review — planning, implementing,
+// testing and reviewing; and held, which is reached here only where the record names no earlier
+// phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
+// stand past the issue's review, and done has finished.
+//
+// It is written as one list, in the rule value, so that a later change adds or removes one entry
+// and every reader of the rule moves with it. Two read it, and a phase in one and not the other
+// would be a deadlock: the cap's own half (KeepsSlot) and the mark a start of a phase worker
+// carries for the slot it waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable
+// while the issue holds no slot. PastReview is the complement of the phases a rule refuses, for
+// the repair that must reach an issue holding no row.
 func (r SlotRule) PhaseKeepsSlot(at phase.Phase) bool {
 	return slices.Contains(r.OrMain().KeepsSlotIn, at)
 }
@@ -195,12 +208,22 @@ func (r SlotRule) PastReview(issue Issue) bool {
 }
 
 // ChildrenFirstCandidates is every issue of issues whose Dispatch children r's children-first
-// rule can hold it for, by key and sorted (the package's ChildrenFirstCandidates says why each
-// term is there): it stands in the workflow, its tree is recorded, not lingering and under an
-// open design gate, and it stands at phase.Admitted, its own first phase still to start. Under a
-// rule whose wait stops the phase under way (WaitStopsPhase) the last term goes: a parent the
-// daemon has started waits on its open children in whatever phase it stands, as one whose first
-// phase never started does, and gives its slot back for that wait (blockers.waitsOf), so its
+// rule can hold it for, by key and sorted: it stands in the workflow, its tree is recorded, not
+// lingering and under an open design gate, and it stands at phase.Admitted, its own first phase
+// still to start. Those are the only issues the children-first rule can hold, so they are the
+// only parents whose Dispatch children are read at all (ChildWaitsOf). The keys come out sorted,
+// so one pass reads the same set in the same order whatever order the records arrived in.
+//
+// The open gate is what puts the start of the wait where the spec puts it: at the gate's opening,
+// before the architect's design-approved turn releases the wave. Before that opening a root's
+// architect is still writing the spec and its own first phase is nothing the line would offer a
+// slot to, so a root there waits for nothing and is told nothing; from the opening the root and
+// every released member of its tree are issues whose first phase the line does offer a slot to,
+// and each of them waits for whatever Dispatch still shows hanging under it.
+//
+// Under a rule whose wait stops the phase under way (WaitStopsPhase) the last term goes: a parent
+// the daemon has started waits on its open children in whatever phase it stands, as one whose
+// first phase never started does, and gives its slot back for that wait (blockers.waitsOf), so its
 // children are read wherever it stands. Under a rule whose start may take a cover (TakeCover) the
 // gate's term is that it has opened at some time (TreeGate.EverOpened): a parent's wait on its
 // children stands from the first opening of its design gate, also while a new spec version has
@@ -208,17 +231,14 @@ func (r SlotRule) PastReview(issue Issue) bool {
 func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
 	anyPhase := r.OrMain().WaitStopsPhase
 	everOpened := r.OrMain().Take == TakeCover
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
+	records := byKey(issues)
 	keys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		// The root must be among the records and must not linger. A root whose tree has left the
 		// workflow is no part of a live read at all — its phase is done and its status is not
 		// todo (Store.LiveIssues) — so an unrecorded root is a tree that has gone, and reading
 		// the zero record's linger would answer false for exactly the case this test is for.
-		root, recorded := byKey[issue.Tree]
+		root, recorded := records[issue.Tree]
 		if (!anyPhase && issue.Phase != phase.Admitted) || !InWorkflow(issue) || !recorded || root.Lingers() {
 			continue
 		}
@@ -238,9 +258,8 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 // and returned-by-first-slot). `legion replay rules` prints them. Each answer is built afresh, so a
 // caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
-	daemon := MainRule
-	daemon.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
-	return []SlotRule{daemon, windowOneRule(), windowTwoRule(), keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
+	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), keepPastReviewRule(),
+		blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule()}
 }
 

@@ -129,7 +129,7 @@ round each.
 
 **Waits on another issue.** ACME-1's children wait, 09:20 to 11:30, ended by its last open child's
 `done`: `child_done`, count 1, 2.1666… hours. ACME-3 is filed while ACME-1 stands in planning, where
-no children wait holds it (`record.ChildrenFirstCandidates` reads an issue at admitted).
+no children wait holds it (`record.SlotRule.ChildrenFirstCandidates` reads an issue at admitted).
 
 **Assumptions.** 1; 2; 3 (three loops keep their count and cause); 4 (ACME-1's children wait); 7
 (the gate holds ACME-2's first start from 09:10 to 09:20); 9; 10 (children); 11 (ACME-1's slot,

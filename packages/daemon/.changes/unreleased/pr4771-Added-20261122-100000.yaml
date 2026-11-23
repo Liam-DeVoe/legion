@@ -31,7 +31,10 @@ body: |-
     The daemon writes one `admission: a pass moved slots` line for each admission pass that gives
     out or takes back a slot. The line gives the slots in use, the cap, each slot given out or taken
     back with its issue and reason, and each issue of the line that the pass went past, with its
-    reason. The daemon's slot rule does not change.
+    reason. It also writes one `admission: slots reading` line at each controller tick, with that
+    tick's slots reading, and one `workflow: a phase is held` line at each move of a phase into held
+    and at each escalation of a hold, with the issue, its tree, the phase, the role and the reason.
+    The daemon's slot rule does not change.
 
     The migration `20261121103000_slots_reading_times` adds the tables `issue_holds` and
     `slot_waits` and the column `claims.stopped_at`. Before a rollback below this release, stop

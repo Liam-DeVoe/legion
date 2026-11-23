@@ -3,8 +3,6 @@ package admit
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -41,24 +39,19 @@ func slotsReadingSaid(t *testing.T, reading record.SlotsReading) string {
 func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 	const slotCap = 4
 	pool := migratedPool(t)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	steps := config.DesignGate("").Steps()
-	admission := newAdmissionForProject(t, acmeProject, slotCap, steps, log)
+	admission := newAdmissionForProject(t, acmeProject, slotCap, steps, silent())
 	registerControllerFor(t, pool, acmeProject)
-	approved := 1
-	gateOpen := func(root string) {
-		seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "spec-" + root, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true})
-	}
 
 	// A holder at implementing that took its slot at fixedNow and has had no turn: idle since
 	// its slot's admittedAt.
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-1", "a", phase.Implementing, nil)
-	gateOpen("ACME-1")
+	approvedGate(t, pool, "ACME-1")
 	// A holder its architect held from implementing: stopped, at a time the record does not hold.
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-2", "c", phase.Held, func(issue *record.Issue) {
 		issue.Hold = &record.Hold{From: phase.Implementing}
 	})
-	gateOpen("ACME-2")
+	approvedGate(t, pool, "ACME-2")
 	// A root waiting on a person's answer to an ask since two hours before fixedNow. Its design
 	// gate is not open, so the pass's reconciliation answers nothing of its wait.
 	personSince := fixedNow.Add(-2 * time.Hour)
@@ -67,7 +60,7 @@ func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 	})
 	// A holder whose implementer has been in a turn for half an hour.
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-5", "e", phase.Implementing, nil)
-	gateOpen("ACME-5")
+	approvedGate(t, pool, "ACME-5")
 	turnStart := fixedNow.Add(-30 * time.Minute)
 	records := claimStore(t, pool)
 	if err := records.PutClaim(context.Background(), supervise.Claim{Token: acmeToken(t, "ACME-5", claim.RoleImplementer),

@@ -39,19 +39,7 @@ func passRecords(t *testing.T, logged *bytes.Buffer) ([]passRecord, []int) {
 	t.Helper()
 	var records []passRecord
 	var sizes []int
-	for _, line := range bytes.Split(logged.Bytes(), []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
-		var head struct {
-			Msg string `json:"msg"`
-		}
-		if err := json.Unmarshal(line, &head); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
-		}
-		if head.Msg != passRecordLine {
-			continue
-		}
+	for _, line := range loggedLines(t, logged, passRecordLine) {
 		var pass passRecord
 		if err := json.Unmarshal(line, &pass); err != nil {
 			t.Fatalf("decode the record line %q: %v", line, err)
@@ -71,9 +59,11 @@ func passRecords(t *testing.T, logged *bytes.Buffer) ([]passRecord, []int) {
 	return records, sizes
 }
 
-// loggedMessage says whether logged holds a line whose message is msg.
-func loggedMessage(t *testing.T, logged *bytes.Buffer, msg string) bool {
+// loggedLines is every line logged holds whose message is msg, in order, each as the handler
+// wrote it, failing t on a line that is no JSON object.
+func loggedLines(t *testing.T, logged *bytes.Buffer, msg string) [][]byte {
 	t.Helper()
+	var lines [][]byte
 	for _, line := range bytes.Split(logged.Bytes(), []byte("\n")) {
 		if len(line) == 0 {
 			continue
@@ -85,10 +75,16 @@ func loggedMessage(t *testing.T, logged *bytes.Buffer, msg string) bool {
 			t.Fatalf("decode the log line %q: %v", line, err)
 		}
 		if head.Msg == msg {
-			return true
+			lines = append(lines, line)
 		}
 	}
-	return false
+	return lines
+}
+
+// loggedMessage says whether logged holds a line whose message is msg.
+func loggedMessage(t *testing.T, logged *bytes.Buffer, msg string) bool {
+	t.Helper()
+	return len(loggedLines(t, logged, msg)) > 0
 }
 
 // failingHandler fails every fact it is handed. Put after admission in a chain, it rolls back the
@@ -97,6 +93,17 @@ type failingHandler struct{}
 
 func (failingHandler) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Result, error) {
 	return intake.Result{}, errors.New("the fact fails after the admission pass ran in its transaction")
+}
+
+// tickRolledBack applies one controller tick through the daemon's own chain of handlers with
+// failingHandler behind admission, so the pass runs and its fact rolls back, and fails t where
+// the fact applied.
+func tickRolledBack(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+	t.Helper()
+	chain := append(Handlers(record.NewStore(), acmeProject, admission.engine, admission), failingHandler{})
+	if _, err := intake.ApplyFact(context.Background(), pool, "controller", "the pass", intake.ControllerTick{}, chain...); err == nil {
+		t.Fatalf("the fact applied, want it to fail and roll back after the pass")
+	}
 }
 
 // An admission pass that gives out or takes back a slot writes one record line once its fact
@@ -188,10 +195,7 @@ func TestAPassThatMovesASlotWritesOneRecordLine(t *testing.T) {
 		var logged bytes.Buffer
 		admission := ruledAdmission(t, 1, record.MainRule, slog.New(slog.NewJSONHandler(&logged, nil)))
 		acmeQueuedRoot(t, pool, "ACME-12", "a")
-		chain := append(Handlers(record.NewStore(), acmeProject, admission.engine, admission), failingHandler{})
-		if _, err := intake.ApplyFact(context.Background(), pool, "controller", "the pass", intake.ControllerTick{}, chain...); err == nil {
-			t.Fatalf("the fact applied, want it to fail and roll back after the pass")
-		}
+		tickRolledBack(t, pool, admission)
 		assertSlots(t, pool, nil)
 		if got, _ := passRecords(t, &logged); got != nil {
 			t.Fatalf("the record lines of a pass that rolled back = %+v, want none: nothing it moved was kept", got)

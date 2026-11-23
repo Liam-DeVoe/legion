@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -133,11 +134,12 @@ const phaseChangedLine = "workflow: phase changed"
 
 // passMovedSlotsLine and phaseHeldLine are the msgs of the two lines a later release writes where
 // an older one wrote none: the record of a pass that moves a slot (PassMovedSlots) and the hold's
-// beginning (PhaseHeld). The trace reads each where the window holds its kind (Window.Lines) and
-// builds the same facts from the older lines where it does not.
+// beginning (PhaseHeld), the constants their writers log them under, so a rename of either moves
+// the replay's reader with it. The trace reads each where the window holds its kind
+// (Window.Lines) and builds the same facts from the older lines where it does not.
 const (
-	passMovedSlotsLine = "admission: a pass moved slots"
-	phaseHeldLine      = "workflow: a phase is held"
+	passMovedSlotsLine = admit.PassMovedSlotsLine
+	phaseHeldLine      = workflow.PhaseHeldLine
 )
 
 // reconcileHoldingLine and consumerCaughtUpLine are the msgs of the two lines of a boot's hold on

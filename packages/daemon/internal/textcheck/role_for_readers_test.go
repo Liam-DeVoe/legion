@@ -77,7 +77,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 4, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"}, // the fourth, a conflicting head's move back, is of TableFor's rows from testing on, never of admitted
+	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 4, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},

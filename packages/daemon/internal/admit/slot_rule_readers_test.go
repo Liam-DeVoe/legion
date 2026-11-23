@@ -23,14 +23,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// acmeProject is the Dispatch project every reading of this file and of pass_record_test.go
-// records its issues under.
+// acmeProject is the Dispatch project the tests of this package that record their issues under a
+// project of their own record them under.
 const acmeProject = "ACME"
 
 // slotRuleReader is one row of TestEveryReaderOfTheSlotRuleTakesTheRule: one reader of the slot
@@ -57,8 +55,8 @@ type slotRuleReader struct {
 // daemon's own in its place. The table holds one row for each reader: each row seeds a store
 // through this package's fixtures, runs one admission pass through intake.ApplyFact with the
 // daemon's own chain of handlers (Handlers) — once under record.MainRule and once under a rule
-// that changes that row's choice alone, given to the admission (UseSlotRule) and to the engine
-// (workflow.Config.SlotRule) — and reads back the outcome the choice decides: a slot held or given
+// that changes that row's choice alone, given to the engine (workflow.Config.SlotRule), whose rule
+// the admission pass reads — and reads back the outcome the choice decides: a slot held or given
 // back, a start written or owed, a place in the line, a start the cap lets through, a phase moved
 // or kept. A reader that read the daemon's rule in place of its pass's would give the main
 // outcome under both rules, and its row fails.
@@ -231,21 +229,20 @@ func slotRuleReaders() []slotRuleReader {
 	var rows []slotRuleReader
 	for _, stands := range phase.All {
 		rule := flippingSlotIn(stands)
+		const key = "ACME-10"
 		keeps := func(rule record.SlotRule) string {
-			const key = "ACME-10"
 			if slices.Contains(rule.KeepsSlotIn, stands) && record.InWorkflow(record.Issue{Phase: stands, Status: statusIn(stands)}) {
 				return key + " holds a slot"
 			}
 			return key + " holds no slot"
 		}
 		rows = append(rows, slotRuleReader{
-			reader:  "record.PhaseKeepsSlot through record.KeepsSlot: " + string(stands),
+			reader:  "record.SlotRule.PhaseKeepsSlot through record.SlotRule.KeepsSlot: " + string(stands),
 			changes: []string{"KeepsSlotIn"},
 			rule:    rule,
 			outcome: func(t *testing.T, rule record.SlotRule) string {
 				t.Helper()
 				pool := migratedPool(t)
-				const key = "ACME-10"
 				acmeRoot(t, pool, key, stands, statusIn(stands), "a", nil, nil)
 				takeSlot(t, pool, key)
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
@@ -344,7 +341,7 @@ func slotRuleReaders() []slotRuleReader {
 				pool := migratedPool(t)
 				const holder, carried = "ACME-50", "ACME-51"
 				seedSlottedInPhase(t, pool, acmeProject, holder, "a", phase.Admitted, nil)
-				acmeCarriedRoot(t, pool, carried, phase.Accepting, "b")
+				carriedRootForProject(t, pool, acmeProject, carried, phase.Accepting, "b")
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
 				return slotWord(t, pool, carried) + "; " + treeWord(t, pool, carried)
 			},
@@ -364,7 +361,8 @@ func slotRuleReaders() []slotRuleReader {
 				acmeRoot(t, pool, accepted, phase.Accepting, "needs_review", "b", nil, nil)
 				approvedGate(t, pool, accepted)
 				applyThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "api", "sign-off", intake.SignOff{Issue: accepted})
-				return phaseWord(t, pool, accepted) + "; " + startsWord(accepted, acmeStarts(t, pool, accepted)) + "; " + owedWord(t, pool, accepted)
+				return phaseWord(t, pool, accepted) + "; " + startsWord(accepted, startsOfForProject(t, pool, acmeProject, accepted)) + "; " +
+					owedWord(t, pool, accepted)
 			},
 			main: "ACME-61 stands in retro; ACME-61 has a start of the implementer carrying a task, which waits for no slot " +
 				"and a lane may run; the project owes ACME-61 no start that waits for a slot",
@@ -547,8 +545,8 @@ func slotRuleReaders() []slotRuleReader {
 				registerControllerFor(t, pool, acmeProject)
 				acmeRoot(t, pool, awaiting, phase.AwaitingPerson, "in_progress", "a", nil, nil)
 				takeSlot(t, pool, awaiting)
-				acmeClaim(t, claimStore(t, pool), awaiting, awaiting, claim.RoleArchitect, supervise.StateIdle)
-				acmeCarriedRoot(t, pool, carried, phase.Accepting, "b")
+				seedClaimForProject(t, claimStore(t, pool), acmeProject, awaiting, awaiting, claim.RoleArchitect, supervise.StateIdle)
+				carriedRootForProject(t, pool, acmeProject, carried, phase.Accepting, "b")
 				settled := settleMovements(t, pool, awaiting)
 				admission := ruledAdmission(t, 1, rule, silent())
 				admission.UseStalledTreeNotice(deploymentBound(t, ""))
@@ -614,8 +612,9 @@ func slotRuleReaders() []slotRuleReader {
 				t.Helper()
 				pool := migratedPool(t)
 				const root, member = "ACME-170", "ACME-171"
-				acmeTreeAndMember(t, pool, root, member, phase.Retro)
-				token := acmeWorkerClaim(t, pool, root, member, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByDaemon)
+				seedTreeAndMemberForProject(t, pool, acmeProject, root, member, phase.Retro, 1, false)
+				token := putWorkerClaimForProject(t, pool, acmeProject, root, member, claim.RoleImplementer, 1, supervise.StateSuspended,
+					supervise.SuspendedByDaemon)
 				inTx(t, pool, func(tx pgx.Tx) {
 					if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: member,
 						Role: claim.RoleImplementer, Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(member),
@@ -624,7 +623,7 @@ func slotRuleReaders() []slotRuleReader {
 					}
 				})
 				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
-				return startsWord(member, acmeStarts(t, pool, member))
+				return startsWord(member, startsOfForProject(t, pool, acmeProject, member))
 			},
 			main:    "ACME-171 has a start of the implementer carrying a task, which waits for no slot and a lane may run",
 			changed: "ACME-171 has no start",
@@ -684,18 +683,17 @@ func silent() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// ruledAdmission is an admission of cap over acmeProject whose pass and whose engine run rule:
-// the pass reads it (UseSlotRule), and so do the engine's table and the slot mark of each start it
-// writes (workflow.Config.SlotRule). It is newAdmissionForProject with the rule given to both, on
-// the same fixed clock, the same repositories and the deployment's single design step. log is
-// where both write.
+// ruledAdmission is an admission of cap over acmeProject whose engine runs rule, which the pass
+// reads through it (workflow.Engine.SlotRule), as do the engine's table and the slot mark of each
+// start it writes (workflow.Config.SlotRule). It is newAdmissionForProject with the rule given to
+// the engine, on the same fixed clock, the same repositories and the deployment's single design
+// step. log is where both write.
 func ruledAdmission(t *testing.T, cap int, rule record.SlotRule, log *slog.Logger) *Admission {
 	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: acmeProject, Repositories: testRepositories,
 		Steps: config.DesignGate("").Steps(), Clock: func() time.Time { return fixedNow }, SlotRule: rule}, log)
 	admission := New(record.NewStore(), engine, cap, acmeProject, log)
 	admission.now = func() time.Time { return fixedNow }
-	admission.UseSlotRule(rule)
 	return admission
 }
 
@@ -746,57 +744,6 @@ func acmeQueuedRoot(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	t.Helper()
 	seedWaitingForProject(t, pool, acmeProject, key, rank)
 	seedMirrorIn(t, pool, acmeProject, key, "todo")
-}
-
-// acmeCarriedRoot is capfull_resume_test.go's carriedRoot under acmeProject: a root another tree
-// handed to Legion carrying the phase it ran there, with a tree of its own still to be opened.
-func acmeCarriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Phase, rank string) {
-	t.Helper()
-	putIssue(t, pool, record.Issue{Key: key, Tree: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: acmeProject, Title: "a carried root", Phase: carries, Generation: 2, Status: "todo", Rank: rank,
-		HandedOver: true, HandedOverFrom: "ACME-700"})
-	seedMirrorIn(t, pool, acmeProject, key, "todo")
-}
-
-// acmeTreeAndMember is slot_repair_test.go's seedTreeAndMember under acmeProject: root waiting in
-// accepting with no row of its own, its tree lifecycle open, and the one member of it, key,
-// standing in stands.
-func acmeTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase) {
-	t.Helper()
-	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: acmeProject, Title: "the root of " + key, Tree: root, Phase: phase.Accepting, Generation: 1,
-		Status: "needs_review", DispatchStatus: "needs_review", Rank: root, HandedOver: true, LastDispatchSeq: 1})
-	seedLifecycleForProject(t, pool, acmeProject, root)
-	parent := root
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: acmeProject, Title: "the member " + key, Tree: root, Parent: &parent, Phase: stands, Generation: 1,
-		Status: "in_progress", DispatchStatus: "in_progress", Rank: key, LastDispatchSeq: 2})
-}
-
-// acmeWorkerClaim is slot_repair_test.go's putWorkerClaim under acmeProject, at generation 1: the
-// claim of key's role on the tree root, in state and suspended by by, and its token.
-func acmeWorkerClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.Role, state supervise.ClaimState,
-	by supervise.SuspendSource,
-) claim.Token {
-	t.Helper()
-	token := acmeToken(t, key, role)
-	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-		serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-		values ($1, $2, $3, $4, $5, 1, 'ses_worker', '/sessions/ses_worker.jsonl', $6, 1, 0, 0, 0, 0, 0, $7)`,
-		string(token), acmeProjectToken(t), root, key, string(role), string(state), string(by)); err != nil {
-		t.Fatalf("record the %s %s claim of %s: %v", state, role, key, err)
-	}
-	return token
-}
-
-// acmeClaim is tree_stalled_test.go's seedClaim under acmeProject: the role claim of issue in
-// state, with no step of its own, written through the daemon's own store.
-func acmeClaim(t *testing.T, records *store.Store, tree, issue string, role claim.Role, state supervise.ClaimState) {
-	t.Helper()
-	if err := records.PutClaim(context.Background(), supervise.Claim{Token: acmeToken(t, issue, role), Project: acmeProjectToken(t),
-		Tree: tree, Issue: issue, Role: role, TreeEpoch: 1, Generation: 1, State: state}); err != nil {
-		t.Fatalf("record the %s claim of %s in state %s: %v", role, issue, state, err)
-	}
 }
 
 // acmeProjectToken is acmeProject as the claim-keyed tables spell it (claim.ProjectToken).
@@ -895,77 +842,17 @@ func lineUnder(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule) ([]record
 	return line, held, facts
 }
 
-// acmeStarts is owed_start_test.go's startsOf under acmeProject: every supervise start row of
-// issue, oldest first, with whether a lane may run it now (record.Store.DueRows, over the outbox's
-// own predicate outboxInOrder).
-func acmeStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
-	t.Helper()
-	var starts []midPhaseStart
-	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		due, err := record.NewStore().DueRows(ctx, tx, acmeProject, issue, []record.OutboxKind{record.OutboxKindSupervise}, fixedNow)
-		if err != nil {
-			t.Fatalf("list what a lane may run for %s: %v", issue, err)
-		}
-		runnable := make(map[int64]bool, len(due))
-		for _, row := range due {
-			runnable[row.ID] = true
-		}
-		rows, err := tx.Query(ctx, `select id, coalesce(payload->>'role', ''), coalesce(payload->>'task', ''),
-			coalesce(payload->>'needsSlot', '') = 'true'
-			from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, issue)
-		if err != nil {
-			t.Fatalf("list the starts of %s: %v", issue, err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			var start midPhaseStart
-			if err := rows.Scan(&id, &start.role, &start.task, &start.needsSlot); err != nil {
-				t.Fatalf("scan a start of %s: %v", issue, err)
-			}
-			start.claimable = runnable[id]
-			starts = append(starts, start)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("read the starts of %s: %v", issue, err)
-		}
-	})
-	return starts
-}
-
-// acmeTreeOpen says whether key's tree lifecycle stands open under the workflow's authority, as
-// capfull_resume_test.go's treeOpen does under testProject.
-func acmeTreeOpen(t *testing.T, pool *pgxpool.Pool, key string) bool {
-	t.Helper()
-	var open bool
-	inTx(t, pool, func(tx pgx.Tx) {
-		lifecycles, err := record.NewStore().TreeLifecycles(context.Background(), tx, acmeProjectToken(t), []string{key})
-		if err != nil {
-			t.Fatalf("read the tree lifecycles: %v", err)
-		}
-		life, found := lifecycles[key]
-		open = found && life.Authority == treelifecycle.AuthorityWorkflow
-	})
-	return open
-}
-
 // phaseMoves is the trigger of each phase move the engine logged, in order, read from the JSON
 // lines it wrote ("workflow: phase changed").
 func phaseMoves(t *testing.T, logged *bytes.Buffer) []string {
 	t.Helper()
 	var moves []string
-	for _, line := range bytes.Split(logged.Bytes(), []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
+	for _, line := range loggedLines(t, logged, "workflow: phase changed") {
 		var entry map[string]any
 		if err := json.Unmarshal(line, &entry); err != nil {
 			t.Fatalf("decode the log line %q: %v", line, err)
 		}
-		if entry["msg"] == "workflow: phase changed" {
-			moves = append(moves, fmt.Sprint(entry["trigger"]))
-		}
+		moves = append(moves, fmt.Sprint(entry["trigger"]))
 	}
 	return moves
 }
@@ -997,7 +884,7 @@ func phaseWord(t *testing.T, pool *pgxpool.Pool, key string) string {
 // treeWord says whether key's tree stands open.
 func treeWord(t *testing.T, pool *pgxpool.Pool, key string) string {
 	t.Helper()
-	if acmeTreeOpen(t, pool, key) {
+	if treeOpenForProject(t, pool, acmeProject, key) {
 		return "the tree of " + key + " is open"
 	}
 	return "the tree of " + key + " is not open"
@@ -1008,7 +895,7 @@ func openedWord(t *testing.T, pool *pgxpool.Pool, keys ...string) string {
 	t.Helper()
 	var open []string
 	for _, key := range keys {
-		if acmeTreeOpen(t, pool, key) {
+		if treeOpenForProject(t, pool, acmeProject, key) {
 			open = append(open, key)
 		}
 	}
@@ -1017,11 +904,7 @@ func openedWord(t *testing.T, pool *pgxpool.Pool, keys ...string) string {
 
 // lineWord is the keys of a waiting line, in its order.
 func lineWord(line []record.LineEntry) string {
-	keys := make([]string, 0, len(line))
-	for _, entry := range line {
-		keys = append(keys, entry.Issue.Key)
-	}
-	return "the line is [" + strings.Join(keys, " ") + "]"
+	return "the line is [" + strings.Join(lineKeys(line), " ") + "]"
 }
 
 // heldWord is the word the rows a judgement left behind give key: the first row of key, as the

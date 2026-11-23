@@ -28,11 +28,6 @@ func (w *workflowRuntime) applyControllerTick(ctx context.Context, at time.Time)
 	}
 }
 
-// blockerReadFanout is how many blocker keys one turn reads one at a time: up to this many are
-// read singly, and above it the whole project is listed once instead (blockers.ReadPlan, the rule
-// a replay of a recorded window reads its ticks by too).
-const blockerReadFanout = blockers.ReadFanout
-
 // observeWaitedOn is what Dispatch says now about the issues this daemon is holding something
 // back for. It is empty on almost every turn — nothing waiting means nothing read from Dispatch
 // at all — and empty is the tick exactly as it has always been.
@@ -68,7 +63,8 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 }
 
 // readObserved is Dispatch's answer for keys: one GetIssue each while they number
-// blockerReadFanout or fewer, and one whole-project listing above that, whose every summary is
+// blockers.ReadFanout or fewer, and one whole-project listing above that (blockers.ReadPlan, the
+// rule a replay of a recorded window reads its ticks by too), whose every summary is
 // taken — it is one request for all of them, and a summary of a key not asked for is a reading of
 // Dispatch like any other, which changes a value only where the copy holds it from an older
 // reading or from none (record.Store.PutDispatchIssue). A key of another project is read one at a
@@ -89,7 +85,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 // out keeps the last thing Dispatch said about it.
 func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []intake.IssueStatus {
 	listProject, single := blockers.ReadPlan(w.dispatchProject, keys)
-	observed := make([]intake.IssueStatus, 0, len(single))
+	var observed []intake.IssueStatus
 	if listProject {
 		summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
 		if err != nil {
@@ -100,6 +96,8 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []int
 		for _, summary := range summaries {
 			observed = append(observed, blockers.Observed(w.dispatchProject, summary))
 		}
+	} else {
+		observed = make([]intake.IssueStatus, 0, len(single))
 	}
 	for _, key := range single {
 		if status, read := w.readBlocker(ctx, key); read {

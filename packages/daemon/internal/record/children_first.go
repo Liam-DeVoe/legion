@@ -10,28 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// ChildrenFirstCandidates is every issue of issues whose own first phase has not started yet and
-// could: it stands at phase.Admitted, Dispatch still shows it in the workflow, its tree is not
-// lingering, and its tree's design gate stands open. Those are the only issues the
-// children-first rule can hold, so they are the only parents whose Dispatch children are read at
-// all (ChildWaitsOf). The keys come out sorted, so one pass reads the same set in the same order
-// whatever order the records arrived in.
-//
-// The open gate is what puts the start of the wait where the spec puts it: at the gate's
-// opening, before the architect's design-approved turn releases the wave. Before that opening a
-// root's architect is still writing the spec and its own first phase is nothing the line would
-// offer a slot to, so a root there waits for nothing and is told nothing; from the opening the
-// root and every released member of its tree are issues whose first phase the line does offer a
-// slot to, and each of them waits for whatever Dispatch still shows hanging under it.
-//
-// It is the daemon's own rule's reading (MainRule, SlotRule.ChildrenFirstCandidates), kept under
-// this name for the callers outside the admission pass: the pass's own judgement reads the rule
-// its facts carry (ChildWaitsOf, LineFacts.Rule), which under a rule whose wait stops the phase
-// reads a started parent's children too.
-func ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
-	return MainRule.ChildrenFirstCandidates(issues, gates)
-}
-
 // ChildOpen says whether one Dispatch child of a parent still holds that parent's own first
 // phase. It is read over two sources and no others: the status Dispatch shows the child in, from
 // the daemon's mirror of the project's issues, and the daemon's own record of the child, nil when
@@ -172,13 +150,14 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 }
 
 // ChildWaitsOf reads the Dispatch children of every issue whose first phase has not started
-// (ChildrenFirstCandidates, under the rule facts carry: LineFacts.Rule, whose wait that stops the
-// phase reads a started parent's children too) and judges them (ChildWaits). It is one query
-// whatever the number of parents, because every judgement the daemon makes about children-first
-// runs inside a transaction that performs no I/O of its own and under the one fact lock every
-// fact takes (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue
-// on every fact of every consumer. facts are the pass's own, which carry the rule, the gates
-// each candidate is read against and the records above the pass that its cycle walk crosses.
+// (SlotRule.ChildrenFirstCandidates, under the rule facts carry: LineFacts.Rule, whose wait that
+// stops the phase reads a started parent's children too) and judges them (ChildWaits). It is one
+// query whatever the number of parents, because every judgement the daemon makes about
+// children-first runs inside a transaction that performs no I/O of its own and under the one fact
+// lock every fact takes (intake.ApplyFact): a read per parent would cost a round trip per
+// unstarted issue on every fact of every consumer. facts are the pass's own, which carry the rule,
+// the gates each candidate is read against and the records above the pass that its cycle walk
+// crosses.
 func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
 	children, err := store.DispatchChildren(ctx, tx, project, facts.Rule.ChildrenFirstCandidates(issues, facts.Gates))
 	if err != nil {

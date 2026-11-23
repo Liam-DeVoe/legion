@@ -50,13 +50,22 @@ func TestEveryRuleNamesItsCommit(t *testing.T) {
 
 	t.Run("in the history of main", func(t *testing.T) {
 		main := mainOfTheClone(t)
+		var commits []string
+		named := map[string][]string{}
 		for _, rule := range SlotRules() {
-			if out, err := exec.Command("git", "cat-file", "-e", rule.Commit+"^{commit}").CombinedOutput(); err != nil {
-				t.Errorf("the rule %q names %s, which the clone holds no commit of: %v %s", rule.Name, rule.Commit, err, out)
+			if _, seen := named[rule.Commit]; !seen {
+				commits = append(commits, rule.Commit)
+			}
+			named[rule.Commit] = append(named[rule.Commit], rule.Name)
+		}
+		for _, commit := range commits {
+			rules := strings.Join(named[commit], ", ")
+			if out, err := exec.Command("git", "cat-file", "-e", commit+"^{commit}").CombinedOutput(); err != nil {
+				t.Errorf("the rules %s name %s, which the clone holds no commit of: %v %s", rules, commit, err, out)
 				continue
 			}
-			if out, err := exec.Command("git", "merge-base", "--is-ancestor", rule.Commit, main).CombinedOutput(); err != nil {
-				t.Errorf("the rule %q names %s, which %s does not reach: %v %s", rule.Name, rule.Commit, main, err, out)
+			if out, err := exec.Command("git", "merge-base", "--is-ancestor", commit, main).CombinedOutput(); err != nil {
+				t.Errorf("the rules %s name %s, which %s does not reach: %v %s", rules, commit, main, err, out)
 			}
 		}
 	})

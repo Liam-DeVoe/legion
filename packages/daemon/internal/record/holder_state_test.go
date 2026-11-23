@@ -53,17 +53,8 @@ func holderTimeSaid(at *time.Time) string {
 	return at.Format(time.RFC3339)
 }
 
-// holderTimesEqual says whether two times HolderStateOf may give are the same: both absent, or
-// both the same instant.
-func holderTimesEqual(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return a.Equal(*b)
-}
-
-// The state of a slot holder and the time it entered it (spec R6), one row for each row of the
-// plan's state table, read in its order of precedence: working, stopped, person, issue, idle.
+// The state of a slot holder and the time it entered it (spec R6), one row for each way a holder
+// enters a state, read in its order of precedence: working, stopped, person, issue, idle.
 // Three rows follow for a state whose start the record holds no time for, which a holder whose
 // state began before the record kept that time is: the state stands and its time is absent.
 //
@@ -152,7 +143,7 @@ func TestHolderState(t *testing.T) {
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
 			state, since := HolderStateOf(tc.facts)
-			if state != tc.state || !holderTimesEqual(since, tc.since) {
+			if state != tc.state || !sameInstant(since, tc.since) {
 				t.Errorf("HolderStateOf = %q at %s, want %q at %s", state, holderTimeSaid(since), tc.state, holderTimeSaid(tc.since))
 			}
 		})
@@ -202,7 +193,7 @@ func TestHolderState(t *testing.T) {
 				makeLater(&facts)
 				since := makeEarlier(&facts)
 				state, got := HolderStateOf(facts)
-				if state != earlier || !holderTimesEqual(got, since) {
+				if state != earlier || !sameInstant(got, since) {
 					t.Errorf("a holder for which %s and %s both hold is %q at %s, want %q at %s: the earlier of the two in record.HolderStates",
 						earlier, later, state, holderTimeSaid(got), earlier, holderTimeSaid(since))
 				}

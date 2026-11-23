@@ -117,9 +117,6 @@ type Admission struct {
 	workerSilence    time.Duration
 	workerBackground time.Duration
 
-	// rule is the slot rule this pass judges by (UseSlotRule): record.MainRule, the daemon's own,
-	// unless a caller that replays a recorded window under another rule set one.
-	rule record.SlotRule
 	// tables is where a pass under a rule the daemon does not run reads and keeps what that rule
 	// records beyond the daemon's own tables (UseRuleTables, RuleTables): nil in the daemon.
 	tables RuleTables
@@ -197,23 +194,6 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerBackground = background
 }
 
-// UseSlotRule sets the slot rule this admission's passes judge by (record.SlotRule): which phases
-// keep a slot, which waits give it back and whether they stop the phase, the order of the line,
-// what a start may take from the cap and where inside merging the slot goes back. New sets the
-// daemon's own, record.MainRule, and a replay of a recorded window sets the rule it replays; the
-// zero rule is the daemon's own (record.SlotRule.OrMain). It is a setter rather than a parameter
-// of New for the reason UseExperiments is: every test that admits anything builds an admission,
-// and the daemon's own rule is what each of them runs.
-//
-// Every reader of the pass reads it from here: the facts the pass reads carry it
-// (record.ReadLineFactsUnder, lineFacts), so the line, the waits, the held words, the release and
-// the grant all answer under it. The engine the pass calls reads its own copy
-// (workflow.Config.SlotRule) for the slot mark of the starts it writes and for its table, so a
-// caller that sets a rule here gives the engine the same one.
-func (a *Admission) UseSlotRule(rule record.SlotRule) {
-	a.rule = rule.OrMain()
-}
-
 // UseClock sets the clock this admission's passes read the time from: the slot a promotion
 // grants (record.Slot.AdmittedAt), the mark of a release for a wait (releaseSlotsForWaits), the
 // movement a promotion marks, the rows it queues and every judgement of the line made at a
@@ -230,14 +210,18 @@ var _ intake.Handler = (*Admission)(nil)
 
 // New creates an admission handler for one Dispatch project. engine is the workflow's own, shared
 // with intake's other handler: reenterStrandedChildren calls its exported ReenterChild rather than
-// keeping a second copy of re-entry and gate-open behavior.
+// keeping a second copy of re-entry and gate-open behavior. The pass judges by the engine's slot
+// rule (workflow.Engine.SlotRule), the one its transitions and the slot mark of each start read,
+// so the two never judge one record by two rules: the facts every pass reads carry it
+// (record.ReadLineFactsUnder, lineFacts), so the line, the waits, the held words, the release and
+// the grant all answer under it.
 func New(store record.Store, engine *workflow.Engine, cap int, project string, log *slog.Logger) *Admission {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
 		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
-		unclassifiedLogged: make(map[string]uint64), rule: record.MainRule}
+		unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -544,7 +528,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
 // (ReportCapabilities), which this adds, and the three lists the tick's own fact built from one
-// read of the project and put on the notice before it reached here (applyFact, tickRows): every
+// read of the project and put on the notice before it reached here (applyFact, tickRead): every
 // issue Legion waits on another issue for, one it has still to start or one it started that gave
 // its slot back, every issue nothing starts at all, and every issue whose phase worker nothing
 // will prompt (silentWorkers). So a tick that wakes nobody has judged them all the same, and
@@ -631,7 +615,16 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
-// tickRows is what the tick controller notice carries beside the open capabilities: every issue
+// tickReading is what the tick controller notice carries beside the open capabilities: the three
+// lists tickRead reads, and the project's slots reading (slotsReading).
+type tickReading struct {
+	held    []record.HeldIssue
+	blocked []record.BlockedIssue
+	silent  []record.SilentIssue
+	slots   record.SlotsReading
+}
+
+// tickRead is what the tick controller notice carries beside the open capabilities: every issue
 // Legion waits on another issue for, one it has still to start or one it started that gave its
 // slot back (`blocked`, blockers.Blocked), every issue the daemon's own record holds in the
 // workflow that stands in neither the active set nor the waiting line, with the one word for why
@@ -657,25 +650,9 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // line facts, before the judgement adds to them, so its tree gates are the gates the blocked
 // list is judged from and nothing is read twice in this one transaction.
 //
-// It is tickRead's three lists, for the readers of the lists alone.
-func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, []record.SilentIssue, error) {
-	read, err := a.tickRead(ctx, tx)
-	return read.held, read.blocked, read.silent, err
-}
-
-// tickReading is what the tick controller notice carries beside the open capabilities: the three
-// lists tickRows answers, and the project's slots reading (slotsReading).
-type tickReading struct {
-	held    []record.HeldIssue
-	blocked []record.BlockedIssue
-	silent  []record.SilentIssue
-	slots   record.SlotsReading
-}
-
-// tickRead is the tick's one read of the project (tickRows says what each list is and why they
-// are built together), and the slots reading beside them: it is assembled from that same
-// judgement of the line and those same two lists (slotsReading), so the reading the controller is
-// told and the lists it is told beside it are one reading of one record.
+// The slots reading beside the three lists is assembled from that same judgement of the line and
+// those same two lists (slotsReading), so the reading the controller is told and the lists it is
+// told beside it are one reading of one record.
 func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx) (tickReading, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -702,12 +679,13 @@ func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx) (tickReading, error
 }
 
 // slotsReading is the project's slots reading over in, the tick's judgement of the line and its
-// two lists, with the claims of the project and the claims among them nothing will wake filled
-// in: one narrow read of the claims (record.Store.HolderClaims, the statement the state's source
-// reads them through) and, where one of them stands stopped, the daemon's own judgement of which
-// nothing will wake (workflow.Stranded), so a holder reads `stopped` for a stranded claim here as
-// it does in `legion state`. The released wakes that judgement reads a released claim by are the
-// daemon's (UseReleasedWakes); an admission given none judges no released claim stranded.
+// two lists, with the claims of the project's slot holders and the claims among them nothing will
+// wake filled in: one narrow read of the claims (record.Store.HolderClaims, the statement the
+// state's source reads them through, over the slots this transaction holds, the ones reread read)
+// and, where one of them stands stopped, the daemon's own judgement of which nothing will wake
+// (workflow.Stranded), so a holder reads `stopped` for a stranded claim here as it does in
+// `legion state`. The released wakes that judgement reads a released claim by are the daemon's
+// (UseReleasedWakes); an admission given none judges no released claim stranded.
 func (a *Admission) slotsReading(ctx context.Context, tx pgx.Tx, in blockers.SlotsInputs) (record.SlotsReading, error) {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
@@ -724,8 +702,10 @@ func (a *Admission) slotsReading(ctx context.Context, tx pgx.Tx, in blockers.Slo
 }
 
 // strandedClaims is, of claims, every one nothing will wake (workflow.Stranded), judged over the
-// fields of a claim that judgement reads, which the narrow read holds. A project none of whose
-// claims stands suspended, failed or retired has none, and costs no read.
+// fields of a claim that judgement reads, which the narrow read holds. The claims are the slot
+// holders' alone (record.Store.HolderClaims), the only ones the slots reading reads, and the
+// judgement reads each claim on its own, so a project none of whose holders has a claim standing
+// suspended, failed or retired has none, and costs no read.
 func (a *Admission) strandedClaims(ctx context.Context, tx pgx.Tx, project string, claims []record.HolderClaim) ([]supervise.Claim, error) {
 	stopped := make([]supervise.Claim, 0, len(claims))
 	for _, held := range claims {
@@ -1893,7 +1873,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	slots []record.Slot, facts record.LineFacts, moves *passMoves,
 ) ([]string, error) {
-	own := ownSlots(issues, slots)
+	own, stops := ownSlots(issues, slots), a.engine.SlotRule().WaitStopsPhase
 	inUse := len(own)
 	var released []string
 	var byKey map[string]record.Issue
@@ -1909,7 +1889,7 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 		released = append(released, slot.Issue)
 		a.logSlot(ctx, "released", slot.Issue, inUse)
 		moves.take(slot.Issue, waitReason(slot.Issue, waits, facts), inUse)
-		if !a.rule.WaitStopsPhase {
+		if !stops {
 			continue
 		}
 		// The records are put by key on the first stop alone: under the daemon's own rule no
@@ -2480,19 +2460,21 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 }
 
 // lineFacts is the facts of this admission's pass for issues (record.ReadLineFacts), read under
-// the pass's own slot rule (record.ReadLineFactsUnder, UseSlotRule): every read of the facts the
-// pass judges comes through here, so the release, the line, the waits, the held words, the grant
-// and the repair all answer under the one rule the admission was given, and none of them reads
-// the daemon's own in its place. Where the admission was given tables of a rule the daemon does
-// not run (UseRuleTables), what that rule records there is read in beside them: the merger's
-// ready marks, the covers that stand and the first slots (RuleTables.ReadRuleFacts).
+// the pass's own slot rule, its engine's (record.ReadLineFactsUnder, workflow.Engine.SlotRule):
+// every read of the facts the pass judges comes through here, so the release, the line, the
+// waits, the held words, the grant and the repair all answer under the one rule the engine runs,
+// and none of them reads the daemon's own in its place. Where the admission was given tables of a
+// rule the daemon does not run (UseRuleTables), what that rule records there is read in beside
+// them: the merger's ready marks, the covers that stand and the first slots
+// (RuleTables.ReadRuleFacts).
 func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
-	facts, err := record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), a.rule)
+	rule := a.engine.SlotRule()
+	facts, err := record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), rule)
 	if err != nil || a.tables == nil {
 		return facts, err
 	}
 	if err := a.tables.ReadRuleFacts(ctx, tx, issues, &facts); err != nil {
-		return record.LineFacts{}, fmt.Errorf("read what the slot rule %s keeps for %s: %w", a.rule.Name, a.project, err)
+		return record.LineFacts{}, fmt.Errorf("read what the slot rule %s keeps for %s: %w", rule.Name, a.project, err)
 	}
 	return facts, nil
 }

@@ -87,9 +87,9 @@ func (e *Engine) ReplayTransition(ctx context.Context, tx pgx.Tx, key string, ge
 		return "", err
 	}
 	if moved == nil || moved.Phase != to {
-		at := phase.Phase("no record")
+		at := "no record"
 		if moved != nil {
-			at = moved.Phase
+			at = string(moved.Phase)
 		}
 		return fmt.Sprintf("the move of %s by %s left it in %s, not %s", key, trigger, at, to), nil
 	}

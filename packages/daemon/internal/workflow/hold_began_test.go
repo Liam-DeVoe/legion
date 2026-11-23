@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -36,30 +34,18 @@ func TestTheMoveIntoHeldKeepsWhenTheHoldBegan(t *testing.T) {
 			t.Fatalf("ApplyFact the implementer's failed claim: %v", err)
 		}
 	}
-	read := func(key string) *record.Issue {
-		t.Helper()
-		var issue *record.Issue
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			var err error
-			issue, err = record.NewStore().Issue(ctx, tx, key)
-			return err
-		}); err != nil {
-			t.Fatalf("read %s: %v", key, err)
-		}
-		return issue
-	}
 
 	hold("implementer-failed")
-	held := read("LEGION-208")
+	held := storedIssue(t, pool, "LEGION-208")
 	if held.Phase != phase.Held || held.Hold == nil || held.Hold.Since == nil || !held.Hold.Since.Equal(began) {
 		t.Fatalf("the held issue reads %s with hold %+v, want held from %s with its hold begun at the engine's %s",
 			held.Phase, held.Hold, phase.Implementing, began.Format(time.RFC3339))
 	}
 	hold("implementer-failed-again")
-	if again := read("LEGION-208"); again.Hold == nil || again.Hold.Since == nil || !again.Hold.Since.Equal(began) {
+	if again := storedIssue(t, pool, "LEGION-208"); again.Hold == nil || again.Hold.Since == nil || !again.Hold.Since.Equal(began) {
 		t.Fatalf("a second report of the dead claim left the hold %+v, want the moment it began kept", again.Hold)
 	}
-	if byHand := read("LEGION-209"); byHand.Hold == nil || byHand.Hold.Since != nil {
+	if byHand := storedIssue(t, pool, "LEGION-209"); byHand.Hold == nil || byHand.Hold.Since != nil {
 		t.Fatalf("the hold written by hand reads %+v, want it with no time", byHand.Hold)
 	}
 }

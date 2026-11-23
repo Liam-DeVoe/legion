@@ -158,7 +158,8 @@ func TestTheSlotsReadingWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 // it into suspended or retired from a state that is neither stamps the store's clock, a move
 // between the two keeps the first stop, and a write in any other state clears it. A failed claim
 // is dated by its failure instead. Each step writes the claim as a machine writes it, at a clock
-// of its own, and reads it back through the slots reading's own read (record.Store.HolderClaims).
+// of its own, and reads it back through the slots reading's own read (record.Store.HolderClaims),
+// which reads the claims of slot holders alone, so the claim's issue holds a slot.
 func TestAClaimsStopIsStampedWhenItStops(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -167,6 +168,15 @@ func TestAClaimsStopIsStampedWhenItStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutIssue(ctx, tx, slotsReadingIssue()); err != nil {
+			return err
+		}
+		return records.PutSlot(ctx, tx, record.Slot{Issue: "ACME-1", AdmittedAt: base})
+	}); err != nil {
+		t.Fatalf("record ACME-1 holding a slot: %v", err)
+	}
 	failedAt := base.Add(9 * time.Minute)
 	stopOf := func(minute int, state supervise.ClaimState) time.Time {
 		t.Helper()

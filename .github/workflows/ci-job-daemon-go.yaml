@@ -125,6 +125,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # internal/record's TestEveryRuleNamesItsCommit reads each kept slot rule's commit in the
+      # history of origin/main (git cat-file and git merge-base --is-ancestor) and skips on a
+      # shallow clone, which is what the checkout above makes. This fetches main's history as
+      # commits alone, no tree and no blob (--filter=tree:0), and leaves the clone whole, so that
+      # check runs here. Measured from a depth-1 clone of a pull request's head on 2026-11-23: 1.6 s
+      # and a 5.3 MB pack (4,369 commits), beside the checkout's 81 MB. The repository is public, so
+      # the fetch needs no credential.
+      - name: Fetch main's commits for the slot rules' commit check
+        run: git fetch --no-tags --filter=tree:0 --unshallow origin +refs/heads/main:refs/remotes/origin/main
+
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

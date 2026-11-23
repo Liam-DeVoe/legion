@@ -2,9 +2,6 @@ package admit
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"slices"
 	"testing"
 	"time"
 
@@ -23,11 +20,8 @@ import (
 // nothing.
 func TestAHolderThatKeepsItsSlotThroughAWaitIsMarkedWhenTheWaitBegan(t *testing.T) {
 	pool := migratedPool(t)
-	rule := record.MainRule
-	rule.Name = "main with a link wait that keeps the slot"
-	rule.KeepsSlotIn = slices.Clone(rule.KeepsSlotIn)
-	rule.LinkWaitGivesBack = false
-	admission := ruledAdmission(t, 2, rule, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	rule := ruleWith("main with a link wait that keeps the slot", func(rule *record.SlotRule) { rule.LinkWaitGivesBack = false })
+	admission := ruledAdmission(t, 2, rule, silent())
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-1", "a", phase.Implementing, nil)
 	seedSlottedInPhase(t, pool, acmeProject, "ACME-2", "b", phase.Implementing, nil)
 	seedMirrorIn(t, pool, acmeProject, "ACME-1", "in_progress", "ACME-9")
@@ -37,15 +31,9 @@ func TestAHolderThatKeepsItsSlotThroughAWaitIsMarkedWhenTheWaitBegan(t *testing.
 	waitsSince := func() map[string]*time.Time {
 		t.Helper()
 		marks := map[string]*time.Time{}
-		inTx(t, pool, func(tx pgx.Tx) {
-			slots, err := record.NewStore().Slots(context.Background(), tx)
-			if err != nil {
-				t.Fatalf("read the slots: %v", err)
-			}
-			for _, slot := range slots {
-				marks[slot.Issue] = slot.WaitsSince
-			}
-		})
+		for _, slot := range slots(t, pool) {
+			marks[slot.Issue] = slot.WaitsSince
+		}
 		return marks
 	}
 	began := fixedNow

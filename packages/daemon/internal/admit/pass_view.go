@@ -101,6 +101,6 @@ func (a *Admission) passView(issues []record.Issue, slots []record.Slot, facts r
 			waiting = append(waiting, entry)
 		}
 	}
-	return PassView{Project: a.project, Cap: a.cap, Rule: a.rule, At: a.now(), Issues: issues, Slots: slices.Clone(slots),
+	return PassView{Project: a.project, Cap: a.cap, Rule: a.engine.SlotRule(), At: a.now(), Issues: issues, Slots: slices.Clone(slots),
 		Facts: facts, Rows: rows, Line: waiting, Dropped: dropped, Given: slices.Clone(moves.given), Taken: slices.Clone(moves.taken)}
 }

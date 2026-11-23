@@ -104,7 +104,7 @@ func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember) Slots
 			continue
 		}
 		if member.Entry.Part == PartReturned {
-			since := knownTime(member.Entry.Since)
+			since := KnownTime(member.Entry.Since)
 			reading.StartedWithoutSlot.add(since)
 			if !member.Blocked {
 				reading.WaitOnlyForSlot.add(since)

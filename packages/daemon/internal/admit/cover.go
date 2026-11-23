@@ -106,9 +106,15 @@ func coversOf(issues []record.Issue, own []record.Slot, rows map[string]blockers
 func standingCovers(stored map[string]string) covers {
 	c := covers{held: make(map[string]string, len(stored)), holding: make(map[string]string, len(stored))}
 	for waiter, holder := range stored {
-		c.held[waiter], c.holding[holder] = holder, waiter
+		c.hold(waiter, holder)
 	}
 	return c
+}
+
+// hold records that holder holds waiter's slot for it, in both maps, which stay in step. The maps
+// are shared by reference, so a copy of c records it too.
+func (c covers) hold(waiter, holder string) {
+	c.held[waiter], c.holding[holder] = holder, waiter
 }
 
 // offers says whether a counted waiter offers its slot to key: one that waits on key and gave its
@@ -128,7 +134,7 @@ func (c *covers) take(key string) (string, bool) {
 	if !found {
 		return "", false
 	}
-	c.held[waiter], c.holding[key] = key, waiter
+	c.hold(waiter, key)
 	return waiter, true
 }
 
@@ -233,7 +239,7 @@ func (w *coverWaits) reach(key string) []string {
 func (a *Admission) settleCovers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	rows map[string]blockers.Row, facts record.LineFacts, moves *passMoves,
 ) (bool, []string, error) {
-	if a.rule.Take != record.TakeCover {
+	if a.engine.SlotRule().Take != record.TakeCover {
 		return false, nil, nil
 	}
 	own := ownSlots(issues, slots)
@@ -251,7 +257,7 @@ func (a *Admission) settleCovers(ctx context.Context, tx pgx.Tx, issues []record
 	for _, waiter := range slices.Sorted(maps.Keys(facts.Covers)) {
 		holder := facts.Covers[waiter]
 		if needsSlot(waiter) && waits.holds[holder] && slices.Contains(waits.reach(waiter), holder) {
-			standing.held[waiter], standing.holding[holder] = holder, waiter
+			standing.hold(waiter, holder)
 			continue
 		}
 		changed = true
@@ -290,7 +296,7 @@ func (a *Admission) settleCovers(ctx context.Context, tx pgx.Tx, issues []record
 			if slots, inUse, err = a.cover(ctx, tx, waiter, key, slots, inUse, facts, moves); err != nil {
 				return changed, freed, err
 			}
-			standing.held[waiter], standing.holding[key] = key, waiter
+			standing.hold(waiter, key)
 			delete(waits.holds, waiter)
 			waits.gave[waiter] = true
 			freed = append(freed, waiter)
@@ -334,7 +340,7 @@ const CoverTakenLine = "admission: an issue holds the slot of a waiter that wait
 // wait on its open children where holder is one of them, and a wait on a blocked_by link
 // otherwise.
 func coverReason(waiter, holder string, facts record.LineFacts) record.SlotTakenReason {
-	if slices.ContainsFunc(facts.ChildWaits[waiter].Open, func(child record.OpenChild) bool { return child.Key == holder }) {
+	if openChildOf(facts, waiter, holder) {
 		return record.TakenChildrenWait
 	}
 	return record.TakenLinkWait

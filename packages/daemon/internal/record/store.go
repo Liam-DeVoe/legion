@@ -69,7 +69,9 @@ func (s *Postgres) stamp() *time.Time {
 // time column whose default is Postgres's now(), and args with that value bound after the rest.
 // The daemon's own store names nothing, so the column takes its default and the statement sends
 // what it always sent; a store built with a clock names the column at the clock's time, since a
-// default reads no clock but the database's.
+// default reads no clock but the database's. PutIssue alone takes it: the daemon's own write of an
+// issue names no moved_at, so it still writes on a schema from before that column
+// (20261111010031_issue_moved_at), which admit's TestTheRecordKeepsWhenAnIssueLastMoved relies on.
 func (s *Postgres) stamped(column string, args []any) (names, values string, bound []any) {
 	if s.clock == nil {
 		return "", "", args
@@ -77,12 +79,11 @@ func (s *Postgres) stamped(column string, args []any) (names, values string, bou
 	return ", " + column, ", $" + strconv.Itoa(len(args)+1), append(args, s.clock())
 }
 
-// MarkProcessed records the fact as applied, at the store's clock: a store built with one names
-// processed_at (stamped), and the daemon's own leaves it to the column's default.
+// MarkProcessed records the fact as applied, at the store's clock (stamp): processed_at is
+// coalesce($3::timestamptz, now()), so the daemon's own store writes the column's default, now().
 func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
-	names, values, args := s.stamped("processed_at", []any{source, eventID})
-	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id`+names+`) values ($1, $2`+values+`)
-		on conflict (source, event_id) do nothing`, args...)
+	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id, processed_at) values ($1, $2, coalesce($3::timestamptz, now()))
+		on conflict (source, event_id) do nothing`, source, eventID, s.stamp())
 	if err != nil {
 		return false, fmt.Errorf("mark %s event %s processed: %w", source, eventID, err)
 	}
@@ -115,8 +116,9 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments. The last
 // column is the time the issue's hold began (Hold.Since), read off issue_holds, which only the
-// engine's move into held writes (MarkHoldBegan); scanIssue keeps it for a held issue alone.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, (select held_at from issue_holds where issue_holds.issue = issues.key)`
+// engine's move into held writes (MarkHoldBegan); scanIssue keeps it for a held issue alone, so
+// the lookup runs for a held issue alone too.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, case when held_from is not null then (select held_at from issue_holds where issue_holds.issue = issues.key) end`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -614,6 +616,21 @@ func scanIssue(row scanner) (*Issue, error) {
 	return &issue, nil
 }
 
+// MergersReady is the interface's: one statement over the merger's phases rows of issues, whose
+// key (issue, role) holds one row per issue.
+func (s *Postgres) MergersReady(ctx context.Context, tx pgx.Tx, issues []string) ([]string, error) {
+	rows, err := tx.Query(ctx, `select issue from phases where role = $1 and handoff_commit <> '' and issue = any($2)`,
+		string(claim.RoleMerger), issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the merger's ready marks of %v: %w", issues, err)
+	}
+	ready, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the merger's ready marks of %v: %w", issues, err)
+	}
+	return ready, nil
+}
+
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head from phases
 		where issue = $1 order by role`, issue)
@@ -1058,13 +1075,18 @@ func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string)
 	return claims, nil
 }
 
-// HolderClaims reads the claims of one project as a slot holder's state reads them, in one
-// statement and no order: for every claim of the project that stands on an issue, its identity,
-// its state and who suspended it, its two turn times, the queued time of the task it holds or
-// else of its handshake's first queue, whether it holds a task, and when it stopped (HolderClaim):
-// failed_at for a failed claim, stopped_at, which the claim store writes on the move into
-// suspended or retired, for the other two. Every time column is nullable and reads back as the
-// zero time, a time the record does not hold.
+// HolderClaims reads the claims of one project's slot holders as a slot holder's state reads
+// them, in one statement and no order: for every claim of the project that stands on an issue
+// holding a slot, its identity, its state and who suspended it, its two turn times, the queued
+// time of the task it holds or else of its handshake's first queue, whether it holds a task, and
+// when it stopped (HolderClaim): failed_at for a failed claim, stopped_at, which the claim store
+// writes on the move into suspended or retired, for the other two. Every time column is nullable
+// and reads back as the zero time, a time the record does not hold. The slots are read in the
+// statement itself, so they are the ones the caller's transaction holds: both callers read their
+// slots in that same transaction, with no write of a slot between (admit's tickRead, and the
+// state route's read-only repeatable-read snapshot). The answer is never nil, a project no slot
+// holder of which has a claim included, so a projection given it never falls back to the claims
+// it holds whole (projection.Inputs.HolderClaims).
 //
 // project is the claim project token, the spelling `claims.project` holds, which the caller
 // converts to (the interface's own doc).
@@ -1073,12 +1095,12 @@ func (s *Postgres) HolderClaims(ctx context.Context, tx pgx.Tx, project string) 
 			c.last_turn_end, coalesce(d.queued_at, c.handshake_queued_at), d.claim_token is not null,
 			case when c.state = 'failed' then c.failed_at else c.stopped_at end
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
-		where c.project = $1 and c.issue <> ''`, project)
+		where c.project = $1 and c.issue in (select issue from slots)`, project)
 	if err != nil {
 		return nil, fmt.Errorf("read the claims of project %s for its slot holders: %w", project, err)
 	}
 	defer rows.Close()
-	var claims []HolderClaim
+	claims := []HolderClaim{}
 	for rows.Next() {
 		var (
 			held                                  HolderClaim
@@ -2508,12 +2530,11 @@ func (s *Postgres) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish Gat
 	if err != nil {
 		return fmt.Errorf("enqueue the gated-steps publish of %s: %w", publish.Project, err)
 	}
-	names, values, args := s.stamped("created_at", []any{string(row.Kind), row.Issue, string(row.Payload), row.NextAt})
-	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error`+names+`)
-		values ($1, $2, $3::jsonb, 0, $4, ''`+values+`)
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at)
+		values ($1, $2, $3::jsonb, 0, $4, '', coalesce($5::timestamptz, now()))
 		on conflict (issue) where kind = 'gated_steps_publish'
 		do update set payload = excluded.payload where outbox.payload is distinct from excluded.payload`,
-		args...); err != nil {
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt, s.stamp()); err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
 	return nil
@@ -2545,14 +2566,13 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	if err != nil {
 		return fmt.Errorf("enqueue the design-gates publish of %s: %w", publish.Issue, err)
 	}
-	names, values, args := s.stamped("created_at", []any{string(row.Kind), row.Issue, string(row.Payload), row.NextAt})
-	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error`+names+`)
-		values ($1, $2, $3::jsonb, 0, $4, ''`+values+`)
+	if _, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at)
+		values ($1, $2, $3::jsonb, 0, $4, '', coalesce($5::timestamptz, now()))
 		on conflict (issue) where kind = 'design_gates_publish'
 		do update set payload = excluded.payload,
 			lease_token = case when outbox.lease_token = '' then '' else gen_random_uuid()::text end
 		where outbox.payload is distinct from excluded.payload`,
-		args...); err != nil {
+		string(row.Kind), row.Issue, string(row.Payload), row.NextAt, s.stamp()); err != nil {
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
 	return nil
@@ -2742,17 +2762,16 @@ func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error 
 	return nil
 }
 
-// EnqueueID writes row and answers its id. Its created_at is the store's clock (stamped), the
-// column's default for the daemon's own store; row.CreatedAt is not read.
+// EnqueueID writes row and answers its id. Its created_at is the store's clock (stamp), the
+// column's default, now(), for the daemon's own store; row.CreatedAt is not read.
 func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error) {
 	if !json.Valid(row.Payload) {
 		return 0, fmt.Errorf("enqueue %s for %s: payload is not JSON", row.Kind, row.Issue)
 	}
-	names, values, args := s.stamped("created_at", []any{string(row.Kind), row.Issue, string(row.Payload), row.Attempts,
-		row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil})
 	var id int64
-	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until`+names+`)
-		values ($1, $2, $3, $4, $5, $6, $7, $8`+values+`) returning id`, args...).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, coalesce($9::timestamptz, now())) returning id`, string(row.Kind), row.Issue,
+		string(row.Payload), row.Attempts, row.NextAt, row.LastError, row.LeaseToken, row.LeaseUntil, s.stamp()).Scan(&id); err != nil {
 		return 0, fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
 	return id, nil
@@ -2762,7 +2781,7 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
 // refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
-// since a start of a phase past its review carries none (PhaseKeepsSlot).
+// since a start of a phase past its review carries none (SlotRule.PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
@@ -2803,9 +2822,9 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // that row, a close's suspend among them (admit's promotion of a re-admitted tree queues its own
 // start behind that suspend, so the worker comes back after the stop rather than before it). Two
 // rows can stand together only where they were written for different phases — the mark is read
-// from the phase (PhaseKeepsSlot) and every caller writes the phase on the record before it
-// calls — so the issue stands in the newer row's phase and the outbox's phase fence finishes the
-// older without acting, as admission's repair does where that row waits in the line.
+// from the phase (SlotRule.PhaseKeepsSlot) and every caller writes the phase on the record before
+// it calls — so the issue stands in the newer row's phase and the outbox's phase fence finishes
+// the older without acting, as admission's repair does where that row waits in the line.
 //
 // The row written carries the replaced row's created_at because the waiting line is ordered on
 // created_at before id (OwedStart): the issue queued when its work first came back, and a second
