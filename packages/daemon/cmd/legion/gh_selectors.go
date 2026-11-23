@@ -57,8 +57,9 @@ type ghNamed struct {
 }
 
 // shown is the named thing as a refusal names it: its slot, and the owner and the name read from
-// the value, which have a login's and a repository name's strict form (checkedOwner,
-// repositoryTarget) before anything is named.
+// the value, which every path that records them (repositoryTarget, ghRemote.repository,
+// checkedOwner) has held to a GitHub login and a repository name's characters (ghconfig.IsOwner,
+// ghrepo.IsName) before anything is named.
 func (n ghNamed) shown() string {
 	if n.name == "" {
 		return n.kind + " naming " + n.owner
@@ -421,7 +422,7 @@ var ghQualifier = regexp.MustCompile(`^(-?)([A-Za-z][A-Za-z-]*):([^\s"'()\\]+)$`
 // that is no plain qualifier is refused, since gh quotes a word holding a space and GitHub reads a
 // quoted or grouped qualifier otherwise. So is a query naming an owner whose scope is not that
 // owner's: one excluding an owner (`-repo:`), or joining its words with OR, NOT or parentheses.
-// Each word it refuses is named by its place: a search word's slot takes no identifier.
+// Each word it refuses is named by its place.
 func (s *selectors) query(words []string) error {
 	var named bool
 	joined := ""
@@ -464,9 +465,8 @@ func (s *selectors) query(words []string) error {
 // the working directory's, fills it), and one in the repository's names the owner alone, since
 // what fills it is read where gh reads it (fromOwnRepository); a repository named by id
 // (repositories/<id>) and another host are errors. gh reads an endpoint holding "://" as a whole
-// URL. An endpoint it refuses is named by its place: its slot takes no identifier, and a token
-// stands in its query (`repositories/1?access_token=<token>`) as readily as in its host's user
-// info.
+// URL. An endpoint it refuses is named by its place: a token stands in its query
+// (`repositories/1?access_token=<token>`) as readily as in its host's user info.
 func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	path := endpoint
 	if strings.Contains(endpoint, "://") {
@@ -696,10 +696,13 @@ func ghParseGitURL(raw string) (*url.URL, error) {
 // names, read as gh reads it (ghParseGitURL), "" for one naming none gh reads: a remote with no
 // host (a local path) or on another host, and a marker line with no value, an empty one or
 // "base", whose remote's own URL is read beside it. The name is carried on as the line spells it,
-// `.git` and all, which the selector that records it normalizes (selectors.repository). why says
-// why a line is one this cannot read: a URL gh's parser refuses, an ssh remote on another host,
-// which gh may read as an alias of github.com from ssh's configuration, and a github.com one
-// naming no OWNER/REPO whose owner is a GitHub login.
+// `.git` and all, which the selector that records it normalizes (selectors.repository), once it
+// has a GitHub repository name's characters (ghrepo.IsName), as a marker's and a -R value's do: a
+// refusal of two owners prints it (ghNamed.shown), and a token written into the URL's path
+// (`https://github.com/acme/x-access-token:<token>@github.com`, `…/acme/<token>%40x`) stands there.
+// why says why a line is one this cannot read: a URL gh's parser refuses, an ssh remote on another
+// host, which gh may read as an alias of github.com from ssh's configuration, and a github.com one
+// naming no OWNER/REPO whose owner is a GitHub login and whose name is a repository name.
 func (r ghRemote) repository() (owner, repo, why string) {
 	if r.marker {
 		if r.resolved == "" || r.resolved == "base" {
@@ -723,8 +726,8 @@ func (r ghRemote) repository() (owner, repo, why string) {
 		return "", "", ""
 	}
 	parts := strings.SplitN(strings.Trim(u.Path, "/"), "/", 3)
-	if owner = strings.ToLower(parts[0]); len(parts) != 2 || parts[1] == "" || !ghconfig.IsOwner(owner) {
-		return "", "", "names no OWNER/REPO whose owner is a GitHub login"
+	if owner = strings.ToLower(parts[0]); len(parts) != 2 || parts[1] == "" || !ghconfig.IsOwner(owner) || !ghrepo.IsName(parts[1]) {
+		return "", "", "names no OWNER/REPO whose owner is a GitHub login and whose name is a repository name"
 	}
 	return owner, parts[1], ""
 }

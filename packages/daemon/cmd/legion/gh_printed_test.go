@@ -27,7 +27,11 @@ func ghPrinted(err error) string {
 // another host with a token in its path; a value with no scheme, which the URL rule cannot read
 // (a user name and password before its host, a token as its user, a token in its query, on another
 // host or on a github.com one), which is refused, not admitted. A marker with no scheme, in scp
-// form, or with a space before its "@" prints through remoteShown.
+// form, or with a space before its "@" prints through remoteShown. A remote whose repository
+// segment holds a token (written into the URL's path, as a user name and password, as a token and
+// an "@", as a token and a %40, or in an scp-like URL), beside an upstream of another served owner,
+// is refused as naming no OWNER/REPO, so the refusal of two owners, which prints the owner and name
+// a remote names, never reaches it.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	at := "@"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -82,6 +86,21 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 			"remote.origin.gh-resolved (a URL that is not printed)"},
 		"a marker with a token in the query": {[]string{"pr", "list"}, with(nil), marker("ghe.example.com/acme/widgets?t=" + madeUpGhToken),
 			"remote.origin.gh-resolved (a URL that is not printed)"},
+	}
+	beside := func(origin string) func() ([]ghRemote, error) {
+		return func() ([]ghRemote, error) {
+			return []ghRemote{{name: "origin", url: origin}, {name: "upstream", url: "https://github.com/other/app"}}, nil
+		}
+	}
+	const remoteWords = "names no OWNER/REPO whose owner is a GitHub login and whose name is a repository name"
+	for shape, origin := range map[string]string{
+		"a user name and a token in the path": "https://github.com/acme/x-access-token:" + madeUpGhToken + at + "github.com",
+		"a token and an @ in the path":        "https://github.com/acme/" + madeUpGhToken + at + "x",
+		"a token and a %40 in the path":       "https://github.com/acme/" + madeUpGhToken + "%40x",
+		"a token in an scp-like path":         "git" + at + "github.com:acme/u:" + madeUpGhToken + at + "github.com",
+	} {
+		rows["pr list, a remote with "+shape] = row{[]string{"pr", "list"}, with(nil), beside(origin), remoteWords}
+		rows["pr view, a remote with "+shape] = row{[]string{"pr", "view", "1"}, with(nil), beside(origin), remoteWords}
 	}
 	for shape, value := range schemeless {
 		rows["-R, "+shape] = row{[]string{"pr", "list", "-R", value}, with(nil), noGitRepository, "a -R value " + kindWords}
