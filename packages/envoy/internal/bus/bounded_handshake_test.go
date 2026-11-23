@@ -451,7 +451,7 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 		t.Fatalf("control: the forward's send answered %v, want it sent", err)
 	}
 	go func() {
-		err := forward.Wait()
+		_, err := forward.Wait()
 		answers <- answer{what: "PendingForward.Wait", err: err, at: time.Now()}
 	}()
 	for range 3 {
@@ -885,7 +885,10 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 	hold.HoldReconnect(t, conn)
 	attempt := hold.Attempts()
 	letGo()
-	go func() { answers <- answer{what: "PendingForward.Wait", err: forward.Wait()} }()
+	go func() {
+		_, err := forward.Wait()
+		answers <- answer{what: "PendingForward.Wait", err: err}
+	}()
 	guard := time.NewTimer(heldBound + heldMargin)
 	defer guard.Stop()
 	got := map[string]answer{}

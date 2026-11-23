@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { delivered } from "../../test/delivered";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import {
   createEnvoyClient,
@@ -138,8 +139,8 @@ describe("the stop gate", () => {
       "POST /v1/messages/send",
       "POST /v1/messages/publish",
     ]);
-    expect(sent.envelope.event_id).toBe(ENVELOPE.event_id);
-    expect(published.envelope.event_id).toBe(ENVELOPE.event_id);
+    expect(delivered(sent).envelope.event_id).toBe(ENVELOPE.event_id);
+    expect(delivered(published).envelope.event_id).toBe(ENVELOPE.event_id);
   });
 
   test("a registration whose fetch started before the stop is answered as before, and a retry after the stop is not sent and ends the call with the sent attempt's answer", async () => {
