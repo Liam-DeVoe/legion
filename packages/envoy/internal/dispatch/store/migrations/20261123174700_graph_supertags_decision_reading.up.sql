@@ -2,9 +2,9 @@
 --
 -- The block schema moves from version 5 to version 6, for the decision and reading block types.
 -- `pmdoc/schema/blocks.json` adds two typed blocks and one attribute of `ask`, each read from
--- version 6. `ask`'s `shaped` is created from version 6 too; `decision` and `reading`, and every
--- attribute of `decision`, are created only from version 7 (`creatable_since` 7), so a build of
--- version 6 reads and validates a stored one and refuses to create one:
+-- version 6. `decision` and `reading`, every attribute of `decision`, and `ask`'s `shaped` are
+-- created only from version 7 (`creatable_since` 7), so a build of version 6 reads and validates
+-- a stored one and refuses to create one:
 --
 -- - `decision`, an agent's decision, holding any blocks (`block+`), with the attributes
 --   `uncertainty` (an enum of low, medium and high with no default), `uncertainty_reason`,
@@ -121,7 +121,7 @@ values
    '{"kind": "string", "server": true, "markdown": false, "since": 6, "creatable_since": 7, "name": "kept_text_sum", "store_name": "kept_text_sum", "position": 7}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0),
   ('attribute', 'ask/shaped', 'attribute', 'project', 'live',
-   '{"kind": "block[]", "since": 6, "creatable_since": 6, "name": "shaped", "store_name": "shaped", "position": 10}',
+   '{"kind": "block[]", "since": 6, "creatable_since": 7, "name": "shaped", "store_name": "shaped", "position": 10}',
    now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0);
 
 -- `ask`'s `invalid` takes `markdown: false` and nothing else changes on it: the rest of the value
@@ -176,7 +176,7 @@ values
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'ask/invalid', 'markdown', 'value', 'false', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
-  ('attribute', 'ask/shaped', 'creatable_since', 'value', '6', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
+  ('attribute', 'ask/shaped', 'creatable_since', 'value', '7', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'kind', 'value', 'block[]', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'name', 'value', 'shaped', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
   ('attribute', 'ask/shaped', 'position', 'value', '10', now(), '{"kind": "system", "id": "block-schema-decision-reading"}', 0, null, true),
