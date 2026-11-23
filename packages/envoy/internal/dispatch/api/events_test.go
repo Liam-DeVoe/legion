@@ -67,7 +67,8 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 }
 
 func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Event response bytes", "A spec")
@@ -429,7 +430,8 @@ func TestUserStateEventSaysWhichFieldsMoved(t *testing.T) {
 // gives an answer, so a client can read the list's length. A live frame is read through the same
 // attachAskEventFields (TestLiveAskEventFrameCarriesTheReadTimeFields).
 func TestAnsweredEventStoredWithNullSelectedServesEmptyLists(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Null selected events", "A spec")

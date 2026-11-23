@@ -147,7 +147,8 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 // With no event written, the sweep makes no statement at all - no pass on a timer, no lease
 // attempt - over a window fifteen times its gap between passes, though a suggestion is pending.
 func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	sweep := startIdleSweep(t, "OIDLE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
@@ -166,7 +167,8 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 // whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
 // the horizon's.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	time.Sleep(10 * time.Millisecond) // the event must postdate the suggestion row
@@ -189,7 +191,8 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // is settle old, by which time the update is written too, so the rules see both and the acted_on
 // rules run before the overridden one: the comment is not judged alone as an override.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	const settle = 1500 * time.Millisecond
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)

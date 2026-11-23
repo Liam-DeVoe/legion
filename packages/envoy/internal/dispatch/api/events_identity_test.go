@@ -44,7 +44,8 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 // heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
 // socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
+	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
