@@ -436,13 +436,21 @@ export function liveAskOf(
 }
 
 /**
- * Whether `markdown`, a stored version, records the answer state of its ask block `blockId` on
- * the block's opening line, as a version written before the answer left the document does (its
- * `state` attribute). Such a version is read as it was written; a later one records none, and its
- * block is read from the server's read of the ask.
+ * Whether `markdown`, a stored version, records on the opening line of its ask block `blockId`
+ * all the card draws of the ask's answer: a `state`, and for an answered ask the options chosen or
+ * the words (`selected`, `answer`). A version the release before wrote holds them, and is read as
+ * it was written. A version this build writes holds the state of an ask that is not open and, for
+ * an answered ask, who answered and when, but never the options or the words (the server's
+ * `keptAskState`); it holds no state for an open ask. The release before wrote an answered block
+ * whose document had no room for the answer without them too. So a version that records no state,
+ * or an answered state without the answer, is read from the server's read of the ask.
  */
 export function recordsAnswerState(markdown: string, blockId: string): boolean {
-  return new RegExp(`${askOpenerSource(blockId)}[^\\n]*\\bstate="`, "m").test(markdown);
+  const openers = markdown.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
+  return openers.some((opener) => {
+    const state = /\bstate="([^"]*)"/.exec(opener)?.[1];
+    return state !== undefined && (state !== "answered" || /\b(?:selected|answer)="/.test(opener));
+  });
 }
 
 /** A mounted decision block: the React card portals into its two slots. A new object is issued

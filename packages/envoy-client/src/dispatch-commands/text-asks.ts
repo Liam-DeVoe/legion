@@ -13,10 +13,11 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
  * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
- * containers' quote and list markers, opens the directive, outside fenced code. A line that quotes
- * an opener in code - a fence, or an inline span, which never starts the line - opens no block, so
- * a document's writer cannot make it read as an answer Dispatch recorded. A document of this
- * release with no ask block opens none, and reads no ask.
+ * containers' quote and list markers, opens the directive, outside fenced code and outside the
+ * front matter a document opens with. A line that quotes an opener in code - a fence, or an inline
+ * span, which never starts the line - opens no block, and nor does a line of front matter, which
+ * is no markdown, so a document's writer cannot make it read as an answer Dispatch recorded. A
+ * document of this release with no ask block opens none, and reads no ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
@@ -29,16 +30,21 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 /** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
 type CodeFence = { readonly char: string; readonly run: number };
 
+/** A line that opens or closes a document's front matter. */
+const FRONT_MATTER_FENCE = /^---[ \t]*$/;
+
 /**
  * Each line of `markdown` that opens an ask block, past its containers' markers, outside fenced
- * code, as CommonMark and pmdoc's parser read the canonical rendering a text route serves, which
- * writes every code block fenced (the server's refs.questionBlocks makes the same scan).
+ * code and front matter, as CommonMark and pmdoc's parser read the canonical rendering a text
+ * route serves, which writes every code block fenced (the server's refs.questionBlocks makes the
+ * same scan, but reads the lines of front matter too).
  */
 function askOpenerLines(markdown: string): string[] {
   const openers: string[] = [];
   let fence: CodeFence | undefined;
-  for (const line of markdown.split("\n")) {
-    const rest = withoutContainerMarkers(line.replace(/\r$/, ""));
+  const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
+  for (const line of lines.slice(frontMatterEnd(lines))) {
+    const rest = withoutContainerMarkers(line);
     if (fence !== undefined) {
       const closer = fenceRun(rest);
       if (
@@ -62,6 +68,19 @@ function askOpenerLines(markdown: string): string[] {
     if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
   }
   return openers;
+}
+
+/**
+ * Where `lines` go on past the front matter a document opens with, as pmdoc's
+ * parseFrontmatterBlock reads it: a first line of `---` and any spaces or tabs opens it, and the
+ * first later line that is the same closes it. pmdoc keeps it word for word, so no line of it opens
+ * a block. 0 where the document opens with none, or with an opener nothing closes, which the
+ * renderer never writes: a rule opening a document is written `***`.
+ */
+function frontMatterEnd(lines: readonly string[]): number {
+  if (!FRONT_MATTER_FENCE.test(lines[0] ?? "")) return 0;
+  const close = lines.findIndex((line, index) => index > 0 && FRONT_MATTER_FENCE.test(line));
+  return close < 0 ? 0 : close + 1;
 }
 
 /** The run of backticks or tildes `text` opens with, if any. */
