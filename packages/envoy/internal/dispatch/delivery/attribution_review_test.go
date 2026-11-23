@@ -182,7 +182,7 @@ func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName
 		{Repo: gadgetsRepo, Number: 242}:    own + " from github_issue_link",
 		{Repo: gadgetsOldRepo, Number: 243}: own + " from github_issue_link",
 	})
-	wantListed(t, renamed, ctx, pool, own, "#242", "#243")
+	wantListed(t, renamed, ctx, pool, own, "#243", "#242")
 	// The control: with no pairs, neither citation names a URL the issue links.
 	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{
 		{Repo: gadgetsRepo, Number: 242}:    "nobody from none",
