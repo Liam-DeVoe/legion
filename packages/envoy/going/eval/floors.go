@@ -369,8 +369,10 @@ type GroupBy string
 
 // The groups. An issue's: its status; its assignee's login, or "none"; its priority as P0 to P3,
 // or "none"; each of its labels, so an issue counts once for each label it holds; its project;
-// the ISO week of its closed_at or its created_at in UTC, written 2026-W45; the session holding
-// its claim, or "none"; its parent. An ask's: its state, its project, or the issue it is on.
+// the ISO week of its closed_at or its created_at in UTC, written 2026-W45; the title on the
+// roster of the session holding its claim, which a claim's actor.origin.session_title gives and
+// the agent names the holder by, or "none"; its parent. An ask's: its state, its project, or the
+// issue it is on.
 const (
 	GroupStatus      GroupBy = "status"
 	GroupAssignee    GroupBy = "assignee"

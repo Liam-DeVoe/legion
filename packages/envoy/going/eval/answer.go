@@ -1,9 +1,11 @@
 package eval
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -72,16 +74,14 @@ func linked(text, ref string) bool {
 }
 
 // MissingChartRows is each row of the chart's table that the answer does not show: no row of a
-// block it drew holds the label and the count, and no line of its prose holds the label with the
-// count beside it.
+// block it drew holds the label and the count, each in its column (inBlocks), and no line of its
+// prose holds the label with the count beside it.
 func MissingChartRows(rows []ChartRow, answer string, blocks []json.RawMessage) []string {
-	var drawn []map[string]any
+	var drawn []drawnBlock
 	for _, block := range blocks {
-		var data struct {
-			Rows []map[string]any `json:"rows"`
-		}
+		var data drawnBlock
 		if json.Unmarshal(block, &data) == nil {
-			drawn = append(drawn, data.Rows...)
+			drawn = append(drawn, data)
 		}
 	}
 	lines := strings.Split(strings.ToLower(answer), "\n")
@@ -94,33 +94,95 @@ func MissingChartRows(rows []ChartRow, answer string, blocks []json.RawMessage) 
 	return missing
 }
 
-// inBlocks reports whether a drawn row holds the label as one of its values (sameLabel) and the
-// count as another. A priority label, P0 to P3, is also held by the row's priority field as the
-// number the issue reads answer it as (priorityLabel), and the count is then one of its other
-// values.
-func inBlocks(drawn []map[string]any, row ChartRow) bool {
-	for _, values := range drawn {
-		labelAt, count := "", false
-		for field, value := range values {
-			switch v := value.(type) {
-			case string:
-				if labelAt == "" && sameLabel(v, row.Label) {
-					labelAt = field
-				}
-			case float64:
-				if labelAt == "" && field == "priority" && strings.EqualFold(priorityLabel(v), row.Label) && row.Label != "" {
-					labelAt = field
-				}
+// drawnBlock is a block an answer drew, as its frame holds it (going.BlockData): the spec the
+// server drew it by, with the columns it draws and its chain's steps, and its rows.
+type drawnBlock struct {
+	Kind string `json:"kind"`
+	Spec struct {
+		X       string   `json:"x"`
+		Y       string   `json:"y"`
+		Columns []string `json:"columns"`
+		Chain   []struct {
+			Op string `json:"op"`
+			As string `json:"as"`
+		} `json:"chain"`
+	} `json:"spec"`
+	Rows []map[string]any `json:"rows"`
+}
+
+// countColumns is the columns of the block that hold a count of items (counts), and every column
+// its chain's count, sum, mean, min and max write (aggregates). A count is in a column a count
+// writes, of a table or of a chart whose y it is, or in a chart's y where its chain writes none,
+// which plots a number the read gave, such as each project's open_asks. A sum, a mean, a least or
+// a greatest counts no items, and a table with no count draws the read's own values, such as each
+// issue's priority: chart-15 of the eval drew a table of seven alerts, and the priority 2 beside
+// an issue whose status is done was read as "done=2". A metric is one number, with no label in its
+// rows.
+func (b drawnBlock) countColumns() (counts, aggregates []string) {
+	for _, step := range b.Spec.Chain {
+		switch step.Op {
+		case "count", "sum", "mean", "min", "max":
+			column := cmp.Or(step.As, step.Op)
+			aggregates = append(aggregates, column)
+			if step.Op == "count" {
+				counts = append(counts, column)
 			}
 		}
-		for field, value := range values {
-			if v, isNumber := value.(float64); isNumber && field != labelAt && v == float64(row.Count) {
-				count = true
+	}
+	switch b.Kind {
+	case "chart":
+		if b.Spec.Y != "" && (len(aggregates) == 0 || slices.Contains(counts, b.Spec.Y)) {
+			return []string{b.Spec.Y}, aggregates
+		}
+	case "table":
+		return slices.DeleteFunc(counts, func(column string) bool { return !slices.Contains(b.Spec.Columns, column) }), aggregates
+	}
+	return nil, aggregates
+}
+
+// labelColumns is the columns of the block that hold a label beside its count: a chart's x, and
+// each of a table's columns that no count, sum, mean, min or max of its chain writes.
+func (b drawnBlock) labelColumns(aggregates []string) []string {
+	if b.Kind == "chart" {
+		return []string{b.Spec.X}
+	}
+	return slices.DeleteFunc(slices.Clone(b.Spec.Columns), func(column string) bool { return slices.Contains(aggregates, column) })
+}
+
+// inBlocks reports whether a row of a drawn block holds the label in one of its label columns
+// (labelCell) and the count in one of its count columns (countColumns), as the block draws them:
+// a number in any other column of the row is no count of the label.
+func inBlocks(drawn []drawnBlock, row ChartRow) bool {
+	for _, block := range drawn {
+		counts, aggregates := block.countColumns()
+		if len(counts) == 0 {
+			continue
+		}
+		labels := block.labelColumns(aggregates)
+		for _, values := range block.Rows {
+			if !slices.ContainsFunc(labels, func(column string) bool { return labelCell(column, values[column], row.Label) }) {
+				continue
+			}
+			if slices.ContainsFunc(counts, func(column string) bool {
+				v, isNumber := values[column].(float64)
+				return isNumber && v == float64(row.Count)
+			}) {
+				return true
 			}
 		}
-		if labelAt != "" && count {
-			return true
-		}
+	}
+	return false
+}
+
+// labelCell reports whether value, a drawn row's in column, is the label of a chart's row: text
+// that is the label (sameLabel), or, in a column named priority, the number the issue reads
+// answer a priority as (priorityLabel).
+func labelCell(column string, value any, label string) bool {
+	switch v := value.(type) {
+	case string:
+		return sameLabel(v, label)
+	case float64:
+		return column == "priority" && label != "" && strings.EqualFold(priorityLabel(v), label)
 	}
 	return false
 }
@@ -160,18 +222,47 @@ func sameLabel(value, label string) bool {
 }
 
 // inLines reports whether a line of the prose holds the label and, once the label is taken out,
-// the count as a number of its own.
+// the count as a number of its own. A status's label is its value or the page's words for it
+// (statusWords, which grade_test.go holds to the status rows of
+// packages/contracts/fixtures/shown-values.json), each whole, on word bounds, and no other: the
+// agent writes a status by the page's words, so chart-15 of the eval wrote "1 in progress" for
+// in_progress and was read as not giving it, while "to do", which is not the page's "Todo", is
+// still not todo.
 func inLines(lines []string, row ChartRow) bool {
-	label := strings.ToLower(row.Label)
+	forms := []string{strings.ToLower(row.Label)}
+	words, isStatus := statusWords[row.Label]
+	if isStatus && !strings.EqualFold(words, row.Label) {
+		forms = append(forms, strings.ToLower(words))
+	}
 	count := regexp.MustCompile(`(^|[^0-9.])` + strconv.Itoa(row.Count) + `($|[^0-9.]|\.[^0-9])`)
 	for _, line := range lines {
-		i := strings.Index(line, label)
-		if i < 0 {
-			continue
-		}
-		if count.MatchString(line[:i] + " " + line[i+len(label):]) {
-			return true
+		for _, form := range forms {
+			var i int
+			if isStatus {
+				i = wholeIndex(line, form)
+			} else {
+				i = strings.Index(line, form)
+			}
+			if i >= 0 && count.MatchString(line[:i]+" "+line[i+len(form):]) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// wholeIndex is the first place of form in line that starts and ends on word bounds
+// (onWordBounds), -1 for none.
+func wholeIndex(line, form string) int {
+	for start := 0; start < len(line); {
+		index := strings.Index(line[start:], form)
+		if index < 0 {
+			return -1
+		}
+		if at := start + index; onWordBounds(line, at, at+len(form)) {
+			return at
+		}
+		start += index + 1
+	}
+	return -1
 }

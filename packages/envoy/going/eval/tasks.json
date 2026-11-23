@@ -1113,11 +1113,11 @@
         "group_by": "claim",
         "rows": [
           { "label": "none", "count": 10 },
-          { "label": "session-impl-01", "count": 1 },
-          { "label": "session-impl-02", "count": 1 },
-          { "label": "session-impl-03", "count": 1 },
-          { "label": "session-impl-04", "count": 1 },
-          { "label": "session-planner-01", "count": 1 }
+          { "label": "Implementer of DEMO-15", "count": 1 },
+          { "label": "Implementer of OPS-4", "count": 1 },
+          { "label": "Implementer of OPS-9", "count": 1 },
+          { "label": "Implementer of DEMO-26", "count": 1 },
+          { "label": "Planner of DEMO-7", "count": 1 }
         ]
       }
     }

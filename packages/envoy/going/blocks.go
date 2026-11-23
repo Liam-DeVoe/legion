@@ -665,7 +665,8 @@ func numberIn(spec map[string]any) (string, json.Number, bool) {
 // those, in the chain's order. Anything else left unnamed is refused, naming the columns the
 // chain's answer holds, so the model can write them in its next call: a chart's spec that named
 // no x or y was refused on the eval's second-to-last call of a run, whose last could write only
-// prose (chart-08).
+// prose (chart-08). So is a column named that a chain which groups or counts does not write
+// (unmadeColumn).
 func (b *RunBlock) fillColumns() error {
 	group, aggregates, made := b.Chain.columns()
 	answer := aggregates
@@ -697,7 +698,42 @@ func (b *RunBlock) fillColumns() error {
 			return fmt.Errorf("going: a table's spec names no columns, and its chain's answer holds %s: name the columns it shows", held)
 		}
 	}
+	if !made {
+		return nil
+	}
+	var named []string
+	switch b.Kind {
+	case BlockChart:
+		named = []string{b.X, b.Y}
+	case BlockTable:
+		named = b.Columns
+	case BlockMetric:
+		named = []string{b.Field, b.Compare}
+	}
+	for _, column := range named {
+		if column != "" && !slices.Contains(answer, column) {
+			return b.unmadeColumn(column, held)
+		}
+	}
 	return nil
+}
+
+// unmadeColumn is the refusal of column, which the block draws and its chain's answer does not
+// hold: a chain that groups or counts answers only the columns it writes. Where column is the
+// field a group reads, or the last part of it, the refusal names the column the group writes its
+// values in. The eval's model drew x closed_at over a group of closed_at per week, whose column
+// is week, and was told the read's rows held no field closed_at: one run asked for closed_at
+// seven times and then charted another field (chart-01), and a table of session_title over a
+// group of claim.actor.origin.session_title was refused the same way (chart-09).
+func (b *RunBlock) unmadeColumn(column, held string) error {
+	refusal := fmt.Sprintf("going: the %s draws %q, and its chain's answer holds no such column: it holds %s", b.Kind, column, held)
+	for _, step := range b.Chain {
+		written := cmp.Or(step.As, step.Per, step.Field)
+		if step.Op == TransformGroup && written != column && (step.Field == column || strings.HasSuffix(step.Field, "."+column)) {
+			refusal += fmt.Sprintf(". The group of %s writes its values in the column %s: draw %s", step.Field, written, written)
+		}
+	}
+	return errors.New(refusal)
 }
 
 // StepNumbers is the number of each step the block reads.

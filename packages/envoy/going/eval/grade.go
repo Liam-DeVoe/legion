@@ -13,6 +13,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // grade.go grades a try of a task by the end state of the store it ran on: what the store holds
@@ -61,12 +64,14 @@ type Actor struct {
 }
 
 // StoredComment is one comment: the issue, document or ask it is on, its author and body, and
-// for a suggestion its quote, the text that replaces it and whether it was accepted or rejected.
+// for a suggestion its quote, the block of its document its anchor names ("" for none), the text
+// that replaces it and whether it was accepted or rejected.
 type StoredComment struct {
 	ID, Issue, Artifact, Ask string
 	Author                   Actor
 	Body                     string
 	Quote                    string
+	Block                    string
 	Suggestion               *Suggested
 	Resolved                 bool
 }
@@ -86,13 +91,20 @@ type StoredMessage struct {
 }
 
 // StoredDocument is one document or file: its owner (an issue's key, or a project's key with no
-// issue), its slug, its name, whether it is an issue's spec, and its latest version's number and
-// text.
+// issue), its slug, its name, whether it is an issue's spec, its latest version's number and
+// text, and the blocks its index holds, by id.
 type StoredDocument struct {
 	ID, Issue, Project, Slug, Name string
 	Primary                        bool
 	Version                        int
 	Text                           string
+	Blocks                         map[string]StoredBlock
+}
+
+// StoredBlock is a block of a document as its index holds it (document_blocks): its type and the
+// sha256 of its text (refs.BlockTextSum), which name its place in the document's text.
+type StoredBlock struct {
+	Type, Sum string
 }
 
 // StoredAsk is one ask: the issue or document it is on, its question, its state and its answer.
@@ -131,7 +143,8 @@ func ReadStore(ctx context.Context, q Querier) (*Store, error) {
 	return store, nil
 }
 
-// readDocuments reads every document and file with its latest version.
+// readDocuments reads every document and file with its latest version, and the blocks its index
+// holds, which place a suggestion on the block it was made on (placeSuggestion).
 func (s *Store) readDocuments(ctx context.Context, q Querier) error {
 	rows, err := q.Query(ctx, `
 		select a.id::text, coalesce(a.issue_key, ''), coalesce(a.project_key, ''), a.slug, a.name, a.is_primary,
@@ -154,6 +167,33 @@ func (s *Store) readDocuments(ctx context.Context, q Querier) error {
 	}
 	for _, d := range documents {
 		s.Documents[d.ID] = d
+	}
+	type indexedBlock struct {
+		artifact, id string
+		block        StoredBlock
+	}
+	rows, err = q.Query(ctx, `select artifact_id::text, block_id, type, text_sha256 from document_blocks`)
+	if err != nil {
+		return fmt.Errorf("eval: read the documents' blocks: %w", err)
+	}
+	blocks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (indexedBlock, error) {
+		var b indexedBlock
+		err := row.Scan(&b.artifact, &b.id, &b.block.Type, &b.block.Sum)
+		return b, err
+	})
+	if err != nil {
+		return fmt.Errorf("eval: read the documents' blocks: %w", err)
+	}
+	for _, b := range blocks {
+		d, held := s.Documents[b.artifact]
+		if !held {
+			continue
+		}
+		if d.Blocks == nil {
+			d.Blocks = map[string]StoredBlock{}
+			s.Documents[b.artifact] = d
+		}
+		d.Blocks[b.id] = b.block
 	}
 	return nil
 }
@@ -200,14 +240,14 @@ func (s *Store) readIssues(ctx context.Context, q Querier) error {
 	return nil
 }
 
-// readComments reads every comment, with its anchor's quote and its suggestion. A comment's
-// document is its artifact_id or, where that is empty, its anchor's: the server stores a comment
-// on an issue's document, such as a suggestion on its spec, as a comment of the issue whose
-// anchor names the document.
+// readComments reads every comment, with its anchor's quote and block and its suggestion. A
+// comment's document is its artifact_id or, where that is empty, its anchor's: the server stores a
+// comment on an issue's document, such as a suggestion on its spec, as a comment of the issue
+// whose anchor names the document.
 func (s *Store) readComments(ctx context.Context, q Querier) error {
 	rows, err := q.Query(ctx, `
 		select id::text, coalesce(issue_key, ''), coalesce(artifact_id::text, anchor->>'artifact_id', ''), coalesce(ask_id::text, ''),
-		  author, body, coalesce(anchor->>'quote', ''), suggestion, resolved
+		  author, body, coalesce(anchor->>'quote', ''), coalesce(anchor->>'block_id', ''), suggestion, resolved
 		from comments
 	`)
 	if err != nil {
@@ -216,7 +256,7 @@ func (s *Store) readComments(ctx context.Context, q Querier) error {
 	comments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (StoredComment, error) {
 		var c StoredComment
 		var author, suggestion []byte
-		if err := row.Scan(&c.ID, &c.Issue, &c.Artifact, &c.Ask, &author, &c.Body, &c.Quote, &suggestion, &c.Resolved); err != nil {
+		if err := row.Scan(&c.ID, &c.Issue, &c.Artifact, &c.Ask, &author, &c.Body, &c.Quote, &c.Block, &suggestion, &c.Resolved); err != nil {
 			return c, err
 		}
 		if err := json.Unmarshal(author, &c.Author); err != nil {
@@ -808,51 +848,33 @@ func valueRow(issue StoredIssue, want Want, what string, assignment map[string]s
 
 // withSuggestions is the text of document d with every open suggestion the try made on it
 // (fresh) applied as if each were accepted on d as it stands, and how many there are. Each
-// suggestion is located in d's text before any is applied. The store keeps a suggestion's quote
-// and no place in d's text: the anchor's block and mark name places in the live document, which
-// the stored markdown does not carry. So a suggestion stands where its quote first stands in d's
-// text, or else where its quote first stands with both read as plain words (plain). The
-// replacements are then written in one pass over d's text, which is applying them from the last
-// place to the first: no replacement moves the place of another, and the order of the comments'
-// ids changes nothing. Of suggestions whose places overlap, the one whose place starts first is
-// applied and the others are skipped, as a suggestion whose quote an earlier one had rewritten
-// was skipped before.
+// suggestion is placed in d's text before any is applied (placeSuggestion). The replacements are
+// then written in one pass over d's text, which is applying them from the last place to the
+// first: no replacement moves the place of another. Of suggestions whose places overlap, the one
+// whose place starts first is applied and the others are skipped, as a suggestion whose quote an
+// earlier one had rewritten was skipped before; of two that start together, the longer, then the
+// one whose replacement sorts first. The comments' ids order nothing: they are random, and
+// document-01 of the eval passed or failed by which of two suggestions' ids sorted first.
 func withSuggestions(store *Store, d StoredDocument, fresh map[string]bool) (string, int) {
 	type place struct {
-		from, to int
-		with     string
+		textSpan
+		with string
 	}
 	var places []place
-	var flat string
-	var spans []plainSpan
-	flattened := false
+	read := documentReading{text: d.Text}
 	open := 0
 	for _, c := range sortedValues(store.Comments) {
 		if c.Artifact != d.ID || c.Suggestion == nil || c.Suggestion.Accepted != nil || c.Resolved || !fresh[c.ID] {
 			continue
 		}
 		open++
-		if c.Quote == "" {
-			continue
-		}
-		if i := strings.Index(d.Text, c.Quote); i >= 0 {
-			places = append(places, place{from: i, to: i + len(c.Quote), with: c.Suggestion.ReplaceWith})
-			continue
-		}
-		quote := plain(c.Quote)
-		if quote == "" {
-			continue
-		}
-		if !flattened {
-			flat, spans = plainSpans(d.Text)
-			flattened = true
-		}
-		if i := strings.Index(flat, quote); i >= 0 {
-			places = append(places, place{from: spans[i].from, to: spans[i+len(quote)-1].to, with: c.Suggestion.ReplaceWith})
+		if at, found := read.placeSuggestion(d, c); found {
+			places = append(places, place{textSpan: at, with: c.Suggestion.ReplaceWith})
 		}
 	}
-	// A stable sort keeps the comments' order between places that start together.
-	slices.SortStableFunc(places, func(a, b place) int { return cmp.Compare(a.from, b.from) })
+	slices.SortFunc(places, func(a, b place) int {
+		return cmp.Or(cmp.Compare(a.from, b.from), cmp.Compare(b.to, a.to), strings.Compare(a.with, b.with))
+	})
 	var text strings.Builder
 	at := 0
 	for _, p := range places {
@@ -865,6 +887,150 @@ func withSuggestions(store *Store, d StoredDocument, fresh map[string]bool) (str
 	}
 	text.WriteString(d.Text[at:])
 	return text.String(), open
+}
+
+// textSpan is the bytes from to to of a document's text.
+type textSpan struct{ from, to int }
+
+// documentReading is what placing suggestions reads of one document's text, each part read
+// once and only when a suggestion needs it: its plain form (plainSpans), and its blocks' places
+// (blockPlaces).
+type documentReading struct {
+	text      string
+	flat      string
+	spans     []plainSpan
+	flattened bool
+	blocks    []pmdoc.BlockOffset
+	parsed    bool
+}
+
+// placeSuggestion is where suggestion c stands in d's text. The bar's Apply replaces the text
+// of the suggestion's own mark, inside the block it was made on (internal/dispatch/docs/marks.go,
+// applySuggestion: pmdoc.FindMark), and the stored comment keeps that block's id in its anchor
+// and its quote, the text of that block it replaces: the quote of a suggestion on the heading
+// "## Back-link" is "Back-link". So where the document's index holds the anchor's block and d's
+// text holds that block, the quote is placed in it; else, or where the quote is not in it, in
+// the whole text. Within either, the quote stands at its first place that starts and ends on word
+// bounds, else at its first place at all (placeQuote). Placed by its first place alone, that
+// heading's quote stood inside the title "Back-links in issue specs", where a suggestion on the
+// title stood too, and document-01 of the eval failed on a right edit.
+func (r *documentReading) placeSuggestion(d StoredDocument, c StoredComment) (textSpan, bool) {
+	if c.Quote == "" {
+		return textSpan{}, false
+	}
+	if block, held := d.Blocks[c.Block]; held && c.Block != "" {
+		for _, within := range r.blockSpans(block) {
+			if at, found := r.placeQuote(within, c.Quote); found {
+				return at, true
+			}
+		}
+	}
+	return r.placeQuote(textSpan{0, len(r.text)}, c.Quote)
+}
+
+// blockSpans is the place of each block of the text of block's type and text, in the text's
+// order: none where the text is not the render of its own parse, so no place of its blocks is
+// known (blockPlaces). The index names a block by its id, type and the sha256 of its text
+// (refs.BlockTextSum), and the stored markdown carries no block ids.
+func (r *documentReading) blockSpans(block StoredBlock) []textSpan {
+	if !r.parsed {
+		r.blocks, r.parsed = blockPlaces(r.text), true
+	}
+	var spans []textSpan
+	for _, offset := range r.blocks {
+		if offset.Type == block.Type && refs.BlockTextSum(r.text[offset.From:offset.To]) == block.Sum {
+			spans = append(spans, textSpan{offset.From, offset.To})
+		}
+	}
+	return spans
+}
+
+// blockPlaces is each block of text with its place, as the server's render records them, or
+// none where text is not the render of its own parse: the places the index read its blocks'
+// text at are those of the render (refs.IndexBlocks).
+func blockPlaces(text string) []pmdoc.BlockOffset {
+	tree, err := pmdoc.Parse(text)
+	if err != nil {
+		return nil
+	}
+	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil || rendered != text {
+		return nil
+	}
+	return offsets
+}
+
+// placeQuote is the place of quote within the span within of the text: its first place there,
+// as written, that starts and ends on word bounds (onWordBounds), else its first place there as
+// written, else the same two with both read as plain words (plain); false where it stands there
+// in neither form.
+func (r *documentReading) placeQuote(within textSpan, quote string) (textSpan, bool) {
+	if at, found := firstPlace(r.text, quote, within, func(from int) textSpan { return textSpan{from, from + len(quote)} }); found {
+		return at, true
+	}
+	words := plain(quote)
+	if words == "" {
+		return textSpan{}, false
+	}
+	if !r.flattened {
+		r.flat, r.spans = plainSpans(r.text)
+		r.flattened = true
+	}
+	return firstPlace(r.flat, words, within, func(from int) textSpan {
+		return textSpan{r.spans[from].from, r.spans[from+len(words)-1].to}
+	})
+}
+
+// firstPlace is the first place of needle in haystack, as where reads it in the document's text,
+// that lies within the span within and starts and ends on word bounds there, else the first that
+// lies within it at all.
+func firstPlace(haystack, needle string, within textSpan, where func(from int) textSpan) (textSpan, bool) {
+	var first textSpan
+	found := false
+	for start := 0; start < len(haystack); {
+		index := strings.Index(haystack[start:], needle)
+		if index < 0 {
+			break
+		}
+		from := start + index
+		start = from + 1
+		at := where(from)
+		if at.from < within.from || at.to > within.to {
+			continue
+		}
+		if onWordBounds(haystack, from, from+len(needle)) {
+			return at, true
+		}
+		if !found {
+			first, found = at, true
+		}
+	}
+	return first, found
+}
+
+// onWordBounds reports whether text[from:to] starts and ends where a word does: no letter or
+// digit on both sides of either of its edges. "Back-link" in "Back-links" ends inside a word.
+func onWordBounds(text string, from, to int) bool {
+	if from > 0 {
+		before, _ := utf8.DecodeLastRuneInString(text[:from])
+		first, _ := utf8.DecodeRuneInString(text[from:to])
+		if isWordRune(before) && isWordRune(first) {
+			return false
+		}
+	}
+	if to < len(text) {
+		last, _ := utf8.DecodeLastRuneInString(text[from:to])
+		after, _ := utf8.DecodeRuneInString(text[to:])
+		if isWordRune(last) && isWordRune(after) {
+			return false
+		}
+	}
+	return true
+}
+
+// isWordRune reports whether r is part of a word: a letter or a digit.
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // markdownEscape is a backslash before a punctuation mark, which the stored markdown writes and

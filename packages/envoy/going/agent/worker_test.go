@@ -1386,11 +1386,25 @@ func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
 // words the server's refusal of a spec of another shape gives them (going.RunBlockArguments), and
 // says to call it at once; it says a filter's value may be a number, and that the chain reads a
 // result as the server answered it, with no _shown field (chart-08 grouped by priority_shown).
+// At 8465df75 a chart was refused seven times for drawing closed_at over a group of it per week
+// (chart-01), open asks were grouped by a project their rows do not hold (chart-10), and fast
+// runs spent their calls on find_tools, so a refused block left none to draw it again. The rule
+// names the column a group writes, with that group as its example, the read that counts open
+// asks by project, and the reads a count of issues needs, all in one reply, with draw_block in the
+// next. Each tool it names is one call_tool runs by its name with no find_tools first, taking the
+// arguments the rule gives, and each chart it describes is one the server takes.
 func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
 	for _, said := range []string{
 		"only through draw_block, called with call_tool at once, never looked up with find_tools: " + going.RunBlockArguments + ".",
 		"write no number in its arguments but those and a filter's values",
 		"with no _shown field: group by priority, not priority_shown",
+		`To count or chart issues, read them with dispatch_issues and {"project": KEY, "all": true}, called with call_tool, one call for each project, all in one reply, never looked up with find_tools`,
+		"call draw_block in the reply after it, so a refused block leaves a call to draw it again",
+		`Open asks by project are dispatch_projects' open_asks, one row for each project: chart them from that read with no chain, x "key" and y "open_asks"`,
+		"An open ask's own row names its issue, not its project",
+		`A group writes its values in one column, named its as, else its per, else its field: {"op":"group","field":"closed_at","per":"week"} writes the column week`,
+		`so draw x "week", not "closed_at"`,
+		"After a group or a count, x, y, columns and a later sort name only the columns the chain writes",
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)
@@ -1398,6 +1412,28 @@ func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
 	}
 	if strings.Contains(systemPrompt, "need draw_block") || strings.Contains(systemPrompt, "(github_read and web_read) and draw_block") {
 		t.Error("the system prompt sends the model to find_tools for draw_block")
+	}
+	for tool, arguments := range map[string][]string{
+		"dispatch_issues":   {"project", "all"},
+		"dispatch_projects": {},
+	} {
+		spec, known := dispatchTool(tool)
+		if !known || len(namedTools(tool)) == 0 {
+			t.Fatalf("call_tool runs no tool named %s, which the system prompt names", tool)
+		}
+		for _, argument := range arguments {
+			if !slices.ContainsFunc(spec.Arguments, func(field contracts.ToolField) bool { return field.Name == argument }) {
+				t.Errorf("the system prompt names %s's argument %s, which its spec does not take", tool, argument)
+			}
+		}
+	}
+	for name, spec := range map[string]string{
+		"closed issues by week": `{"kind":"chart","title":"Closed issues by week","steps":[{"step":2,"call":1}],"chain":[{"op":"group","field":"closed_at","per":"week"},{"op":"count","as":"issues"}],"x":"week","y":"issues"}`,
+		"open asks by project":  `{"kind":"chart","title":"Open asks by project","steps":[{"step":2,"call":1}],"x":"key","y":"open_asks"}`,
+	} {
+		if _, err := going.ParseRunBlock(json.RawMessage(spec)); err != nil {
+			t.Errorf("the chart of %s the system prompt describes was refused: %v", name, err)
+		}
 	}
 }
 
@@ -1448,7 +1484,10 @@ func TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote(t *testing.T) {
 // (the largest cause), an issue's priority and assignee left out, the page's issue and a
 // document's project not named, a section not named, done children left out again, and a holder
 // named by neither title nor id. Each is a clause of the rule it belongs to, the author's and the
-// children's with an example.
+// children's with an example. The chart tries at 8465df75 wrote ask ids and issue keys no result
+// gave beside a refused block (chart-10), and a project and counts of their own (chart-17): an
+// answer lists only the items a result names, by the key or id it gives, and says where a block
+// stayed refused or a result was withheld.
 func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 	for _, said := range []string{
 		`a count of any items - issues, asks, comments, documents, sessions - with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
@@ -1468,6 +1507,8 @@ func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 		"read in this run (dispatch_doc_read for a document or a file), not only from the issue that lists it, and the answer links it",
 		"A quote or a summary of words someone wrote - a comment, a thread, a suggestion, a message, an ask's answer - starts with who wrote them, by the login or session title the read gives, in whole clauses",
 		`"kim@example.com wrote that the deploy raised the latency, and lee@example.com answered that the rollback fixed it"`,
+		"List only the items they name, each by the key or id they give, and never write an ask, an issue, a project, an id, a count or another number they do not give",
+		"Where a block stayed refused or a result was withheld, say so and give what you read",
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)

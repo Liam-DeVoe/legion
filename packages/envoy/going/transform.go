@@ -663,9 +663,16 @@ func readPage(ref StepRef, result Result) (resultPage, error) {
 }
 
 // rowsOf is the list of rows of body: at ref.Rows where ref names it, else the body where it is
-// a list, else the one field of the body that holds a list of objects.
+// a list, else the one field of the body that holds a list of objects. A body that is a list has
+// no field to name, so rows named on one is refused, saying to leave rows out: chart-08 of the
+// eval named rows "issues" on a read of every issue of a project, which answers the list itself,
+// and was told only that the result held no list there. Reading the list whatever rows names
+// could draw a list the model took for another, such as issues it named as asks.
 func rowsOf(body any, ref StepRef) ([]any, error) {
 	if ref.Rows != "" {
+		if _, isList := body.([]any); isList {
+			return nil, fmt.Errorf("going: step %d's result is the list itself, so it has no field %q. Leave rows out to read the list", ref.Step, ref.Rows)
+		}
 		object, _ := body.(map[string]any)
 		value, held := fieldValue(object, ref.Rows)
 		list, isList := value.([]any)

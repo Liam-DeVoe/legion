@@ -16,7 +16,7 @@ import (
 )
 
 // shownRow is one row of packages/contracts/fixtures/shown-values.json: a value of a kind, a
-// priority or a time, and the words the web writes for it at now.
+// priority, a status or a time, and the words the web writes for it at now.
 type shownRow struct {
 	Kind  string          `json:"kind"`
 	Now   time.Time       `json:"now"`
@@ -45,9 +45,14 @@ func TestTheModelIsGivenEachValueInTheWebsWords(t *testing.T) {
 	kinds := map[string]int{}
 	for _, row := range fixture.Rows {
 		kinds[row.Kind]++
+		// The agent gives no words beside a status: the web's board-model.test.ts holds the
+		// fixture's status rows to the page's words, and going/eval reads them.
+		if row.Kind == "status" {
+			continue
+		}
 		field := map[string]string{"priority": "priority", "time": "closed_at"}[row.Kind]
 		if field == "" {
-			t.Fatalf("a row of the fixture is of the kind %q, neither priority nor time", row.Kind)
+			t.Fatalf("a row of the fixture is of the kind %q, neither priority, status nor time", row.Kind)
 		}
 		body := []byte(`{"key":"A-1","` + field + `":` + string(row.Value) + `,"title":"A title"}`)
 		members := shownMembers(body, row.Now)

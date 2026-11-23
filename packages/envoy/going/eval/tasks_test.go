@@ -706,11 +706,12 @@ func chartRows(seed *Seed, chart Chart) ([]ChartRow, error) {
 		if len(where.State) > 0 {
 			return nil, fmt.Errorf("an issue has no ask state to keep it by")
 		}
+		titles := rosterTitles(seed)
 		for _, issue := range seed.Issues {
 			if !issueKept(seed, issue, where) {
 				continue
 			}
-			labels, err := issueGroups(issue, chart.GroupBy)
+			labels, err := issueGroups(issue, chart.GroupBy, titles)
 			if err != nil {
 				return nil, err
 			}
@@ -772,8 +773,9 @@ func issueKept(seed *Seed, issue Issue, where Where) bool {
 	return true
 }
 
-// issueGroups is the labels an issue counts under in a chart grouped by group.
-func issueGroups(issue Issue, group GroupBy) ([]string, error) {
+// issueGroups is the labels an issue counts under in a chart grouped by group; titles is each
+// roster session's title by its id, which names a claim's holder.
+func issueGroups(issue Issue, group GroupBy, titles map[string]string) ([]string, error) {
 	orNone := func(s string) []string {
 		if s == "" {
 			return []string{"none"}
@@ -810,7 +812,11 @@ func issueGroups(issue Issue, group GroupBy) ([]string, error) {
 		if issue.Claim == nil {
 			return []string{"none"}, nil
 		}
-		return []string{issue.Claim.Session}, nil
+		title, ok := titles[issue.Claim.Session]
+		if !ok {
+			return nil, fmt.Errorf("%s is claimed by %s, which has no title on the seed's roster", issue.Key, issue.Claim.Session)
+		}
+		return []string{title}, nil
 	case GroupParent:
 		return orNone(issue.Parent), nil
 	}

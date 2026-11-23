@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -200,7 +203,7 @@ func TestTheCheckerMatchesAWriteToTheRequestThatMadeIt(t *testing.T) {
 
 // TestAChartShowsItsRowsByTheWeeksItDraws: chart-01's rows, written by ISO week, are shown by
 // a drawn chart whose server chain names each week by its first day, as the server draws it; the
-// same chart with one week's count wrong misses that row.
+// same chart with one week's count wrong misses that row, as a number no row the server drew holds.
 func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
 	tasks, err := LoadTasks(Files)
 	if err != nil {
@@ -213,7 +216,8 @@ func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
 		for i, week := range weeks {
 			rows[i] = map[string]any{"week": week, "closed": counts[i]}
 		}
-		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Issues closed each week in DEMO", "rows": rows})
+		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Issues closed each week in DEMO", "rows": rows,
+			"spec": map[string]any{"x": "week", "y": "closed", "chain": []map[string]any{{"op": "group", "field": "closed_at", "per": "week"}, {"op": "count", "as": "closed"}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +246,8 @@ func TestAChartShowsItsPriorityRowsByTheNumberItDraws(t *testing.T) {
 		for i, row := range rows {
 			drawnRows[i] = map[string]any{field: row[0], "bugs": row[1]}
 		}
-		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Open bugs in DEMO by priority", "rows": drawnRows})
+		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Open bugs in DEMO by priority", "rows": drawnRows,
+			"spec": map[string]any{"x": field, "y": "bugs", "chain": []map[string]any{{"op": "group", "field": field}, {"op": "count", "as": "bugs"}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,6 +261,109 @@ func TestAChartShowsItsPriorityRowsByTheNumberItDraws(t *testing.T) {
 	}
 	if missing := MissingChartRows(chart.Rows, "", drawn("estimate", [2]int{1, 6}, [2]int{2, 4}, [2]int{3, 1})); len(missing) != 3 {
 		t.Errorf("the drawn chart by estimate misses %v; want every row, since no field of it is the priority", missing)
+	}
+}
+
+// TestATablesCountIsReadInTheColumnItsChainWrites: chart-15 of the eval drew a table of the seven
+// OPS alerts themselves, each with its status and its priority, and the priority 2 of OPS-28, whose
+// status is done, was read as the count of the done alerts: three of the five rows were shown so.
+// A count is read only in a column the block's chain counts into, beside its label: that table
+// shows none of the rows, the table of the alerts grouped by status and counted shows each, and
+// the same table with one count wrong misses that row, whose count no row the server drew holds.
+func TestATablesCountIsReadInTheColumnItsChainWrites(t *testing.T) {
+	tasks, err := LoadTasks(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart := taskByID(t, tasks, "chart-15").Grade.Chart
+	table := func(columns []string, chain []map[string]any, rows []map[string]any) []json.RawMessage {
+		block, err := json.Marshal(map[string]any{"kind": "table", "title": "OPS alerts by status", "rows": rows,
+			"spec": map[string]any{"kind": "table", "columns": columns, "chain": chain}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []json.RawMessage{block}
+	}
+	alerts := table([]string{"key", "status", "priority", "title"},
+		[]map[string]any{{"op": "filter", "field": "labels", "has": "alert"}, {"op": "sort", "field": "status", "order": "asc"}},
+		[]map[string]any{
+			{"key": "OPS-10", "status": "backlog", "priority": 2}, {"key": "OPS-7", "status": "done", "priority": 1},
+			{"key": "OPS-28", "status": "done", "priority": 2}, {"key": "OPS-2", "status": "in_progress", "priority": 1},
+			{"key": "OPS-6", "status": "todo", "priority": 2}, {"key": "OPS-30", "status": "todo", "priority": 2},
+			{"key": "OPS-21", "status": "triage", "priority": nil},
+		})
+	if missing := MissingChartRows(chart.Rows, "", alerts); len(missing) != len(chart.Rows) {
+		t.Errorf("the table of the alerts themselves misses %v; want every row, since none of its columns counts", missing)
+	}
+	counted := func(counts ...int) []json.RawMessage {
+		statuses := []string{"backlog", "done", "in_progress", "todo", "triage"}
+		rows := make([]map[string]any, len(statuses))
+		for i, status := range statuses {
+			rows[i] = map[string]any{"status": status, "alerts": counts[i], "priority": 2}
+		}
+		return table([]string{"status", "alerts", "priority"},
+			[]map[string]any{{"op": "filter", "field": "labels", "has": "alert"}, {"op": "group", "field": "status"}, {"op": "count", "as": "alerts"}, {"op": "max", "field": "priority", "as": "priority"}}, rows)
+	}
+	if missing := MissingChartRows(chart.Rows, "", counted(1, 2, 1, 2, 1)); len(missing) != 0 {
+		t.Errorf("the table of each status's count of alerts misses %v; want none", missing)
+	}
+	if missing := MissingChartRows(chart.Rows, "", counted(1, 2, 1, 3, 1)); len(missing) != 1 || missing[0] != "todo=2" {
+		t.Errorf("the table with 3 alerts in todo misses %v; want todo=2", missing)
+	}
+}
+
+// TestEachStatusWordIsThePagesWord: packages/contracts/fixtures/shown-values.json holds the words
+// the board and the issue page write for each status, which the web's board-model.test.ts holds
+// to its statusLabels. The eval renders a status's chip and reads a status's count in the prose by
+// the same words (statusWords), so the eval and the page name each status alike.
+func TestEachStatusWordIsThePagesWord(t *testing.T) {
+	raw, err := os.ReadFile("../../../contracts/fixtures/shown-values.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Rows []struct {
+			Kind  string `json:"kind"`
+			Value any    `json:"value"`
+			Shown string `json:"shown"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]string{}
+	for _, row := range fixture.Rows {
+		if row.Kind == "status" {
+			held[fmt.Sprint(row.Value)] = row.Shown
+		}
+	}
+	if !maps.Equal(held, statusWords) {
+		t.Errorf("the fixture's statuses are written %v, and the eval reads them as %v; want one set of words", held, statusWords)
+	}
+}
+
+// TestAStatusCountIsReadByItsValueOrThePagesWord: the agent writes a status by the page's words,
+// and chart-15 of the eval wrote "1 in progress", which was read as no count of in_progress. A
+// status's count in the prose is read beside its value or beside the page's words for it, each
+// whole: "Todo" and "In progress" give todo and in_progress, and "Done", the words of another
+// status, "To do", which are not the page's, and "Todos" give no count of todo.
+func TestAStatusCountIsReadByItsValueOrThePagesWord(t *testing.T) {
+	tasks, err := LoadTasks(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart := taskByID(t, tasks, "chart-15").Grade.Chart
+	const others = "Triage: 1\nBacklog: 1\nDone: 2\n"
+	if missing := MissingChartRows(chart.Rows, others+"Todo: 2\nIn progress: 1", nil); len(missing) != 0 {
+		t.Errorf("the prose of each status's words and count misses %v; want none", missing)
+	}
+	if missing := MissingChartRows(chart.Rows, others+"todo: 2\nin_progress: 1", nil); len(missing) != 0 {
+		t.Errorf("the prose of each status's value and count misses %v; want none", missing)
+	}
+	for _, todo := range []string{"Done: 2", "To do: 2", "Todos: 2"} {
+		if missing := MissingChartRows(chart.Rows, others+todo+"\nIn progress: 1", nil); len(missing) != 1 || missing[0] != "todo=2" {
+			t.Errorf("the prose that writes %q for todo misses %v; want todo=2", todo, missing)
+		}
 	}
 }
 
@@ -361,6 +469,117 @@ func TestSuggestionsAreGradedWhereEachStands(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// document01Suggestions is the three suggestions of DEMO-3's spec that document-01 of the eval
+// made to move its back-link first (at 584ef0d2, try 3), as the server stores them: the title's
+// text "Back-links in issue specs" with the back-link written under it, the heading
+// "## Back-link", whose stored quote is its text "Back-link", cleared to "##", and the line under
+// that heading cleared.
+var document01Suggestions = [3]struct{ quote, with string }{
+	{"Back-link", "##"},
+	{"Back-links in issue specs", "# Back-links in issue specs\n\n## Back-link\n\nPart of DEMO-3. Parent: none."},
+	{"Part of DEMO-3. Parent: none.", ""},
+}
+
+// gradeDocument01 is DEMO-3's spec, doc, with document01Suggestions applied as withSuggestions
+// reads them, each made by the comment of the id ids gives it and anchored to the block blockOf
+// names for its quote ("" for none), and whether it holds the back-link before the summary, as
+// document-01's end state asks.
+func gradeDocument01(t *testing.T, doc StoredDocument, ids [3]string, blockOf func(text string) string) (string, bool) {
+	t.Helper()
+	after := &Store{Comments: map[string]StoredComment{}}
+	fresh := map[string]bool{}
+	for index, s := range document01Suggestions {
+		after.Comments[ids[index]] = StoredComment{ID: ids[index], Artifact: doc.ID, Quote: s.quote, Block: blockOf(s.quote), Suggestion: &Suggested{ReplaceWith: s.with}}
+		fresh[ids[index]] = true
+	}
+	text, open := withSuggestions(after, doc, fresh)
+	if open != 3 {
+		t.Errorf("withSuggestions read %d open suggestions; want 3", open)
+	}
+	return text, textHolds(text, []string{"Part of DEMO-3", "Summary"}, nil, true)
+}
+
+// TestASuggestionInsideAWordOrTiedIsGradedTheSameWhateverItsID: document-01's three suggestions,
+// with no block known. Placed at its quote's first place, the heading's stood inside the title's
+// word "Back-links", where the title's suggestion stood too, and the comments' ids, which are
+// random, chose which of the two was applied: the try failed where the heading's sorted first. A
+// quote stands at its first place on word bounds, so each stands where it was made, and both
+// orders of the ids give the one spec, with the back-link first.
+func TestASuggestionInsideAWordOrTiedIsGradedTheSameWhateverItsID(t *testing.T) {
+	seed, err := LoadSeed(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue, _ := seed.Issue("DEMO-3")
+	doc := StoredDocument{ID: "spec", Text: issue.Spec}
+	noBlock := func(string) string { return "" }
+	headingFirst, passed := gradeDocument01(t, doc, [3]string{"a", "b", "c"}, noBlock)
+	if !passed {
+		t.Errorf("with the heading's id first, the spec reads %q; want the back-link before the summary", headingFirst)
+	}
+	titleFirst, passed := gradeDocument01(t, doc, [3]string{"c", "b", "a"}, noBlock)
+	if !passed || titleFirst != headingFirst {
+		t.Errorf("with the title's id first, the spec reads %q; want %q, as with the heading's first", titleFirst, headingFirst)
+	}
+}
+
+// TestASuggestionStandsOnTheBlockItWasMadeOn: on the seeded store, a suggestion whose anchor names
+// a block of DEMO-3's spec stands in that block, as the bar's Apply replaces the text of its mark
+// there (internal/dispatch/docs/marks.go, applySuggestion). "issue" stands on word bounds in the
+// title and in the summary: anchored to the summary, it replaces the summary's, and with no block,
+// the title's. document-01's three suggestions, each anchored to its block, give one spec with
+// the back-link first whatever order their ids sort in.
+func TestASuggestionStandsOnTheBlockItWasMadeOn(t *testing.T) {
+	_, _, _, before := seededStore(t)
+	var spec StoredDocument
+	for _, d := range before.Documents {
+		if d.Issue == "DEMO-3" && d.Slug == "spec" {
+			spec = d
+		}
+	}
+	// blockOf is the id the index holds for the least block of the spec whose text holds text.
+	blockOf := func(text string) string {
+		t.Helper()
+		least := ""
+		size := len(spec.Text) + 1
+		for _, offset := range blockPlaces(spec.Text) {
+			body := spec.Text[offset.From:offset.To]
+			if !strings.Contains(body, text) || len(body) >= size {
+				continue
+			}
+			for id, block := range spec.Blocks {
+				if block.Type == offset.Type && block.Sum == refs.BlockTextSum(body) {
+					least, size = id, len(body)
+				}
+			}
+		}
+		if least == "" {
+			t.Fatalf("the index of DEMO-3's spec holds no block whose text holds %q; it holds %v", text, spec.Blocks)
+		}
+		return least
+	}
+
+	for _, row := range []struct{ name, block, holds, lacks string }{
+		{"anchored to the summary", blockOf("so a reader who opens a spec"), "a link back to the ticket it belongs to", "Back-links in ticket specs"},
+		{"with no block", "", "Back-links in ticket specs", "a link back to the ticket it belongs to"},
+		{"anchored to a block the index does not hold", "no-such-block", "Back-links in ticket specs", "a link back to the ticket it belongs to"},
+	} {
+		after := &Store{Comments: map[string]StoredComment{"a": {ID: "a", Artifact: spec.ID, Quote: "issue", Block: row.block, Suggestion: &Suggested{ReplaceWith: "ticket"}}}}
+		text, _ := withSuggestions(after, spec, map[string]bool{"a": true})
+		if !strings.Contains(text, row.holds) || strings.Contains(text, row.lacks) {
+			t.Errorf("the suggestion of issue %s reads %q; want it to hold %q and not %q", row.name, text, row.holds, row.lacks)
+		}
+	}
+
+	headingFirst, passed := gradeDocument01(t, spec, [3]string{"a", "b", "c"}, blockOf)
+	if !passed {
+		t.Errorf("with the heading's id first, the spec reads %q; want the back-link before the summary", headingFirst)
+	}
+	if titleFirst, passed := gradeDocument01(t, spec, [3]string{"c", "b", "a"}, blockOf); !passed || titleFirst != headingFirst {
+		t.Errorf("with the title's id first, the spec reads %q; want %q, as with the heading's first", titleFirst, headingFirst)
 	}
 }
 

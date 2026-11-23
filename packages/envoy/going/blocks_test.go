@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -337,5 +338,73 @@ func TestAOnePointChartIsToldWhatToDrawInstead(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the chart holds 1 point, and a chart plots at least 2: draw one number as a metric, "+
 		"or chart a field with more values, such as a filter that keeps several values and then a group") {
 		t.Errorf("the chart of one point was answered %v, want it refused, saying what to draw instead", err)
+	}
+}
+
+// TestRowsNamedOnAListResultIsToldToLeaveRowsOut: chart-08 of the eval named rows "issues" on two
+// reads of every issue of a project, each of which answers the list itself, and was told only
+// that the result held no list there. The refusal says the result is the list and to leave rows
+// out, whatever rows names; the same spec with rows left out draws the list.
+func TestRowsNamedOnAListResultIsToldToLeaveRowsOut(t *testing.T) {
+	const spec = `{"kind":"chart","title":"Open issues by project","steps":[{"step":4,"call":1%s},{"step":5,"call":1%s}],` +
+		`"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"group","field":"project"},{"op":"count","as":"issues"}],"x":"project","y":"issues"}`
+	for _, rows := range []string{"issues", "$"} {
+		named := `,"rows":"` + rows + `"`
+		_, err := draw(t, fmt.Sprintf(spec, named, named), openIssues(t)...)
+		if err == nil || !strings.Contains(err.Error(), `step 4's result is the list itself, so it has no field "`+rows+`". Leave rows out to read the list`) {
+			t.Errorf("rows %q on a result that is a list was answered %v, want it refused, saying to leave rows out", rows, err)
+		}
+	}
+	got, err := draw(t, fmt.Sprintf(spec, "", ""), openIssues(t)...)
+	if want := `[{"issues":14,"project":"DEMO"},{"issues":8,"project":"OPS"}]`; err != nil || got != want {
+		t.Errorf("the spec with rows left out drew %s, %v; want %s", got, err, want)
+	}
+}
+
+// TestAColumnItsChainDoesNotWriteIsToldTheColumnsItDoes: a chain that groups or counts answers only
+// the columns it writes, a group's named as, else per, else field. chart-01 of the eval drew x
+// closed_at over a group of closed_at per week, whose column is week, and chart-09 a table of
+// session_title over a group of claim.actor.origin.session_title; each was told the read's rows
+// held no such field, which they did, and one run asked for closed_at seven times. The spec is
+// refused naming the columns the chain's answer holds and the column the group writes, and the
+// spec that draws that column draws its rows.
+func TestAColumnItsChainDoesNotWriteIsToldTheColumnsItDoes(t *testing.T) {
+	const weekly = `{"kind":"chart","title":"Issues closed each week","steps":[{"step":2,"call":1}],` +
+		`"chain":[{"op":"filter","field":"closed_at","present":true},{"op":"group","field":"closed_at","per":"week"},{"op":"count","as":"closed"}],"x":"%s","y":"closed"}`
+	_, err := going.ParseRunBlock(json.RawMessage(fmt.Sprintf(weekly, "closed_at")))
+	if err == nil || !strings.Contains(err.Error(), `the chart draws "closed_at", and its chain's answer holds no such column: it holds the columns week, closed. `+
+		`The group of closed_at writes its values in the column week: draw week`) {
+		t.Errorf("the chart of x closed_at over a group of it per week was answered %v, want it refused, naming the column week", err)
+	}
+	if got, err := draw(t, fmt.Sprintf(weekly, "week"), issuePage(t, 2, 0, 50)); err != nil || got != `[{"closed":2,"week":"2026-11-02"},{"closed":3,"week":"2026-11-09"}]` {
+		t.Errorf("the chart of x week drew %s, %v; want the two weeks DEMO closed issues in", got, err)
+	}
+
+	holder := func(title string) map[string]any {
+		return map[string]any{"actor": map[string]any{"origin": map[string]any{"session_title": title}}}
+	}
+	claims := issueList(t, 3, "DEMO", []map[string]any{{"key": "DEMO-7", "claim": holder("Planner of DEMO-7")}, {"key": "DEMO-15", "claim": holder("Implementer of DEMO-15")}, {"key": "DEMO-1", "claim": nil}})
+	const byHolder = `{"kind":"table","title":"Issues by claim holder","steps":[{"step":3,"call":1}],` +
+		`"chain":[{"op":"group","field":"claim.actor.origin.session_title"},{"op":"count","as":"issues"}],"columns":["%s","issues"]}`
+	_, err = going.ParseRunBlock(json.RawMessage(fmt.Sprintf(byHolder, "session_title")))
+	if err == nil || !strings.Contains(err.Error(), `the table draws "session_title", and its chain's answer holds no such column: it holds the columns claim.actor.origin.session_title, issues. `+
+		`The group of claim.actor.origin.session_title writes its values in the column claim.actor.origin.session_title: draw claim.actor.origin.session_title`) {
+		t.Errorf("the table of session_title over a group of claim.actor.origin.session_title was answered %v, want it refused, naming the group's column", err)
+	}
+	got, err := draw(t, fmt.Sprintf(byHolder, "claim.actor.origin.session_title"), claims)
+	if want := `[{"claim.actor.origin.session_title":"Planner of DEMO-7","issues":1},{"claim.actor.origin.session_title":"Implementer of DEMO-15","issues":1},` +
+		`{"claim.actor.origin.session_title":"none","issues":1}]`; err != nil || got != want {
+		t.Errorf("the table of the group's column drew %s, %v; want %s", got, err, want)
+	}
+
+	// A metric is held to its chain's columns too; a chain that neither groups nor counts answers
+	// the rows it reads, so a table of their own fields is drawn as before.
+	if _, err := going.ParseRunBlock(json.RawMessage(`{"kind":"metric","title":"Issues","steps":[{"step":2,"call":1}],"chain":[{"op":"count","as":"issues"}],"field":"count"}`)); err == nil ||
+		!strings.Contains(err.Error(), `the metric draws "count", and its chain's answer holds no such column: it holds the columns issues`) {
+		t.Errorf("the metric of count over a count named issues was answered %v, want it refused, naming the column issues", err)
+	}
+	if got, err := draw(t, `{"kind":"table","title":"In progress","steps":[{"step":2,"call":1}],"chain":[{"op":"filter","field":"status","is":"in_progress"}],"columns":["key","estimate"]}`, issuePage(t, 2, 0, 50)); err != nil ||
+		got != `[{"estimate":8,"key":"DEMO-4"}]` {
+		t.Errorf("the table of a filter's rows drew %s, %v; want DEMO-4 with its estimate", got, err)
 	}
 }
