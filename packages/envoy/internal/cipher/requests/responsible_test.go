@@ -255,7 +255,7 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 
 // TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion role claim token and nothing
 // else: the token of one of Legion's six roles or of a role the deployment defines, a name of the
-// role grammar (legionagents.IsRole), a "-" in it included. The controller's token, a claim on
+// role grammar (legionrole.IsRole), a "-" in it included. The controller's token, a claim on
 // the controller's name, a token that ends in no role and a role outside the grammar name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
 	for claim, want := range map[string]string{
