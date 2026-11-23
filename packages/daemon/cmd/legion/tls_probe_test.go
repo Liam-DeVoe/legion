@@ -2030,16 +2030,17 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 // 200 ms from the probe's start can pass before a loaded machine has started the emSign run's shell.
 //
 // Each run's limit here is the production clock (tlsCommandClient.runLimit with no limitClock),
-// counted from before its command starts: its 20 s is past any machine's start of a shell, and it
-// is the one test whose runs end under that clock with a probe context that ends, so a limit made
-// apart from the probe's context (context.WithoutCancel), which the probe's deadline could not end,
-// fails here.
+// counted from before its command starts, and it is an hour, which no load reaches before the
+// probe's deadline does. This is the one test whose runs end under that clock with a probe context
+// that ends, so a limit made apart from the probe's context (context.WithoutCancel), which the
+// probe's deadline could not end, fails here: the AAA run's sleep then exits 0 after 30 s, and is
+// read as accepting the chain, not as a run with no verdict.
 func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 	sites := testTLSSites(t.TempDir())[:2]
 	runs := standInRuns(t)
 	client := loggedStandInTo(tlsCommandClient{
 		clientName: "curl",
-		timeout:    tlsDefaultProbeTimeout,
+		timeout:    time.Hour,
 		command: func(site tlsSite) (string, []string, []string) {
 			if site.name == "emSign" {
 				return "sh", []string{"-c", "echo certificate verify failed >&2; exit 1"}, nil
@@ -3375,12 +3376,13 @@ func TestTheProbesDeadlineIsItsBudgetCountedFromTheCall(t *testing.T) {
 // its run first; its limit is counted from that line (standInLog), and the probe's deadline passes
 // once the AAA control's run has logged it (probeDeadlineOnceLogged), not at a budget of seconds
 // a loaded machine can spend before the emSign control's curl has answered. Its --probe-budget is
-// not shortProbeBudget, the other such tests' value, and is longer than any cap a probe might put
-// on the flag, as long as the 240 s the daemon's probe passes: so a probe that asked for one fixed
-// budget, or for the flag's value cut to a bound, rather than the flag's value fails here. The
-// deadline itself is the stand-in's, so the length costs the test nothing.
+// not shortProbeBudget, the other such tests' value, and is an hour: longer than any budget a
+// caller passes, the 240 s of the daemon's probe the longest, so a probe that asked for one fixed
+// budget, or for the flag's value cut to a bound a caller's budget fits under, rather than the
+// flag's value fails here. The deadline itself is the stand-in's, so the length costs the test
+// nothing.
 func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
-	const budget = "4m0s"
+	const budget = "1h0m0s"
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	curlRuns := standInRuns(t)
