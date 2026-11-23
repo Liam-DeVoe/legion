@@ -533,3 +533,133 @@ func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNo
 		})
 	}
 }
+
+// TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied: R3 keeps a project that goes
+// quiet at most one minute behind while its reads succeed, and a read that verifies a store the
+// cursor dropped (read-rule-cases rows 4.4, 5.2 and 3.5) takes that store's later events. Every
+// message of a project waits on its runner behind a read in flight, so it is judged on the cursor
+// the read leaves (TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied). A message
+// past the cap of stateMaxWaiting (row 8.1) does not wait: it is judged beside the runner while the
+// read is in flight. Where its store is one the read is about to verify, it is no message of a
+// store that is no daemon of the project, and its events, past the read's snapshot, are applied.
+//
+// Each case holds the read that will verify the store, publishes stateMaxWaiting messages of that
+// store, which wait on the runner, and then three more past the cap, the last moving INFRA-1 to
+// reviewing. The read is let go and verifies the store at its snapshot. INFRA then goes quiet; a
+// minute on, on the intake's clock, INFRA-1's phase reaches reviewing within 75 s.
+//   - the same store behind a new URL: a write names a URL that serves INFRA's own store (the
+//     daemon moved), and the write's starting read of it is the read held.
+//   - a marked store whose boot finds it: A, then B, whose reads all fail and whose store is
+//     marked, then C; C's URL comes to serve B's store, B boots there, and the boot's store read
+//     is the read held.
+//
+// At eb6e317a the messages past the cap are judged beside the runner (judgeCrowded) on the cursor
+// as it stands before the read lands, which drops their store (cursor.forgets), so they are
+// acknowledged unapplied and owe nothing. The read verifies the store at its snapshot, the
+// messages that waited are applied, and INFRA stays at the last of them, behind the three past the
+// cap, until its next message.
+func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *testing.T) {
+	const bootRun = "7e1c4a92-3b5d-4f68-9c0a-5d2e8b1f6a47"
+	// heldRead is where a case leaves INFRA: the daemon whose answer to the verifying read is held,
+	// the release of that answer, the store and run of the daemon's messages, the first sequence
+	// past the read's snapshot, and how many of INFRA's messages already wait on its runner.
+	type heldRead struct {
+		daemon     *fakeDaemon
+		release    func()
+		store, run string
+		first      int
+		waiting    int
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, rig *intakeRig) heldRead
+	}{
+		{"the same store behind a new URL", func(t *testing.T, rig *intakeRig) heldRead {
+			relocated := newFakeDaemon(t, daemonState("INFRA", 11, inPhase("implementing")))
+			release := relocated.holds(t)
+			if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", relocated.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+				t.Fatalf("point INFRA at the URL its daemon moved to: %v", err)
+			}
+			rig.wake <- struct{}{}
+			rig.waitFor(20*time.Second, func() bool { return relocated.served() >= 1 }, func() string {
+				return "the write's starting read of the URL the daemon moved to never began"
+			})
+			return heldRead{relocated, release, rigStateID, rigRun, 12, 0}
+		}},
+		{"a marked store whose boot finds it", func(t *testing.T, rig *intakeRig) heldRead {
+			b := newFakeDaemon(t, "")
+			b.refuses(http.StatusServiceUnavailable)
+			rig.pointAt(b, 2)
+			c := newFakeDaemon(t, daemonStateIn("INFRA", 5, inPhase("implementing"), cStore, cRun))
+			rig.pointAt(c, 3)
+			rig.publishIn("INFRA", bRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(20, "INFRA-1", moved("phase", "merging")))
+			rig.settled()
+			rig.waitFor(20*time.Second, func() bool { return slices.Equal(cursorOf(t, rig.database, "INFRA").foreignStateIDs, []string{bStore}) }, func() string {
+				return fmt.Sprintf("control: B's store is not marked: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+			})
+			// B takes C's place behind C's URL and boots there; the boot's store read is held, and
+			// the boot, which makes it, holds a place on the runner.
+			c.serves(daemonStateIn("INFRA", 40, inPhase("implementing"), bStore, bootRun))
+			release := c.holds(t)
+			before := c.served()
+			rig.clock.advance(ReadRetryAfter + time.Second)
+			rig.publishIn("INFRA", bootRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
+			rig.waitFor(20*time.Second, func() bool { return c.served() > before }, func() string {
+				return "control: the boot of B's store made no store read of C's URL"
+			})
+			return heldRead{c, release, bStore, bootRun, 42, 1}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+			h := tc.setup(t, rig)
+
+			// The messages that wait on the runner fill it, and three more arrive past the cap;
+			// every one is past the read's snapshot.
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			seq := h.first
+			for range stateMaxWaiting - h.waiting {
+				rig.publishIn("INFRA", h.run, h.store, at, false, change(seq, "INFRA-1", moved("phase", "testing")))
+				seq++
+			}
+			rig.waitFor(20*time.Second, func() bool {
+				info := rig.consumerInfo()
+				return info.NumPending == 0 && info.NumAckPending >= stateMaxWaiting
+			}, func() string {
+				return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
+			})
+			// Near the end of the read's minute on the intake's clock, as in
+			// TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute, so that a
+			// message past the cap that holds a read goes back for the few seconds left.
+			rig.clock.advance(ReadRetryAfter - 5*time.Second)
+			last := seq + 2
+			for i, phase := range []string{"merging", "accepting", "reviewing"} {
+				rig.publishIn("INFRA", h.run, h.store, at, false, change(seq+i, "INFRA-1", moved("phase", phase)))
+			}
+			rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+				return fmt.Sprintf("control: the messages past the cap were not delivered: %+v", rig.consumerInfo())
+			})
+			time.Sleep(time.Second)
+			// Any read after the one held serves the daemon's newest state.
+			h.daemon.serves(daemonStateIn("INFRA", last, inPhase("reviewing"), h.store, h.run))
+			h.release()
+			rig.waitFor(20*time.Second, func() bool {
+				c := cursorOf(t, rig.database, "INFRA")
+				return c.stateID != nil && *c.stateID == h.store
+			}, func() string {
+				return fmt.Sprintf("control: the held read did not verify the store %s: INFRA's cursor is %s", h.store, cursorOf(t, rig.database, "INFRA"))
+			})
+			rig.clock.advance(6 * time.Second)
+			if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+				return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
+			}) {
+				t.Errorf("75 s after the read that verified the store %s, with INFRA quiet, INFRA-1's phase is %s and INFRA's cursor is %s: the events past the cap, published while that read was in flight, were dropped as a store's that is no daemon of INFRA, and nothing owes the read that would take them",
+					h.store, currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"))
+			}
+		})
+	}
+}
