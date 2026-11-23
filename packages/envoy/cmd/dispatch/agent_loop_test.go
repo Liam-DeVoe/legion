@@ -824,7 +824,7 @@ func requireOnePersonsRuns(t *testing.T) {
 }
 
 // requireTheLevelsBudgets: a Fast run stops at its 6 model calls, at its 90 s of working time and
-// at a call that writes its 4,000 output tokens, each with the bound's name, and offers Continue.
+// at a call that writes its 1,000 output tokens, each with the bound's name, and offers Continue.
 func requireTheLevelsBudgets(t *testing.T) {
 	server := startModelServer(t, nil)
 	server.waitForAgentRenewal(t)
@@ -854,15 +854,15 @@ func requireTheLevelsBudgets(t *testing.T) {
 		run := server.begin(t, agentRun{login: "alice", words: words, level: "fast", workingMS: 89_500})[0]
 		stopped(t, run, agent.ReasonTimeBudget)
 	})
-	t.Run("a Fast run stops at a call that writes its 4,000 output tokens", func(t *testing.T) {
+	t.Run("a Fast run stops at a call that writes its 1,000 output tokens", func(t *testing.T) {
 		const words = "write at length"
 		server.script.set(words, func(int) agenttest.Reply {
-			return agenttest.Reply{Text: "A reply cut at its tokens", Finish: "length", Output: 4000}
+			return agenttest.Reply{Text: "A reply cut at its tokens", Finish: "length", Output: 1000}
 		})
 		run := server.begin(t, agentRun{login: "alice", words: words, level: "fast"})[0]
 		stopped(t, run, agent.ReasonOutputTokens)
-		if tokens := server.fake.Asking(words)[0].Field("max_tokens"); tokens != float64(4000) {
-			t.Errorf("the call asked for max_tokens %v, want 4000", tokens)
+		if tokens := server.fake.Asking(words)[0].Field("max_tokens"); tokens != float64(1000) {
+			t.Errorf("the call asked for max_tokens %v, want 1000", tokens)
 		}
 	})
 }

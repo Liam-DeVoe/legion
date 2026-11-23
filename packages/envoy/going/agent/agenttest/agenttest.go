@@ -42,7 +42,8 @@ type Call struct {
 // its Retry-After header. Otherwise the reply streams Padding bytes of SSE comments, which a
 // reader skips, then Text, in one piece, then Calls, and finishes with Finish ("stop", or
 // "tool_calls" where it calls a tool, by default), having written Output completion tokens, of
-// which it counts Reasoning as reasoning tokens.
+// which it counts Reasoning as reasoning tokens, for a prompt it counts at Prompt tokens, 10
+// where Prompt is 0.
 // Hold, where set, is waited on before anything is sent, until it closes or the client leaves;
 // Endless streams text with no end until the client leaves.
 type Reply struct {
@@ -53,6 +54,7 @@ type Reply struct {
 	Text       string
 	Calls      []Call
 	Finish     string
+	Prompt     int
 	Output     int
 	Reasoning  int
 	Hold       <-chan struct{}
@@ -365,8 +367,11 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 			finish = "tool_calls"
 		}
 	}
-	output := max(reply.Output, 1)
-	usage := map[string]any{"prompt_tokens": 10, "completion_tokens": output, "total_tokens": 10 + output}
+	output, prompt := max(reply.Output, 1), reply.Prompt
+	if prompt == 0 {
+		prompt = 10
+	}
+	usage := map[string]any{"prompt_tokens": prompt, "completion_tokens": output, "total_tokens": prompt + output}
 	if reply.Reasoning > 0 {
 		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": reply.Reasoning}
 	}

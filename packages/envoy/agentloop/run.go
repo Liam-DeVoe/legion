@@ -695,7 +695,10 @@ func reasoningBlock(part aisdk.ReasoningContent, kind Kind) Block {
 
 // priced is one model call's usage and its cost at price, USD per million tokens: input not
 // read from the cache, output with its reasoning counted in it, cache writes and cache reads.
-// A call the provider reported no count at all for is not metered.
+// The SDK reads a Chat Completions reply's output as its completion_tokens, which holds the
+// reasoning on OpenAI's own usage; where the provider counts the reasoning apart from them
+// (reasoningApart), the output adds it. A call the provider reported no count at all for is not
+// metered.
 func priced(usage provider.Usage, price Price) Usage {
 	value := func(n *int) int {
 		if n == nil {
@@ -708,18 +711,46 @@ func priced(usage provider.Usage, price Price) Usage {
 	if usage.InputTokens.NoCache == nil {
 		input = max(value(usage.InputTokens.Total)-read-write, 0)
 	}
+	reasoning := value(usage.OutputTokens.Reasoning)
 	output := value(usage.OutputTokens.Total)
+	if reasoning > 0 {
+		output += reasoningApart(usage.Raw)
+	}
 	counted := []*int{
 		usage.InputTokens.Total, usage.InputTokens.NoCache, usage.InputTokens.CacheRead, usage.InputTokens.CacheWrite,
 		usage.OutputTokens.Total, usage.OutputTokens.Text, usage.OutputTokens.Reasoning,
 	}
 	counts := Usage{
 		Input: input, Output: output, CacheWrite: write, CacheRead: read,
-		Reasoning: value(usage.OutputTokens.Reasoning),
+		Reasoning: reasoning,
 		Metered:   slices.ContainsFunc(counted, func(n *int) bool { return n != nil }),
 	}
 	counts.CostUSD = price.cost(counts)
 	return counts
+}
+
+// reasoningApart is the reasoning tokens a Chat Completions usage, raw as the provider sent it,
+// counts apart from its completion tokens, and 0 where it counts them among those. A usage whose
+// total_tokens is prompt_tokens + completion_tokens + completion_tokens_details.reasoning_tokens,
+// with reasoning above 0, counts them apart, as grok-4.7 does; one whose total is
+// prompt_tokens + completion_tokens counts them among the completion tokens, OpenAI's convention.
+// A usage with no total, or of another protocol's shape, is read as OpenAI's.
+func reasoningApart(raw json.RawMessage) int {
+	var usage struct {
+		Prompt     *int `json:"prompt_tokens"`
+		Completion *int `json:"completion_tokens"`
+		Total      *int `json:"total_tokens"`
+		Details    *struct {
+			Reasoning int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &usage) != nil || usage.Prompt == nil || usage.Completion == nil || usage.Total == nil || usage.Details == nil {
+		return 0
+	}
+	if reasoning := usage.Details.Reasoning; reasoning > 0 && *usage.Total == *usage.Prompt+*usage.Completion+reasoning {
+		return reasoning
+	}
+	return 0
 }
 
 // sum is two usages added, their costs included; the sum is metered where either side is.

@@ -9,21 +9,40 @@ import (
 )
 
 // Level is the budget the person chose for a run (R10): the most model calls it makes, the most
-// time it works, the most output tokens each of its model calls writes, and the reasoning effort
-// each call asks for. Time the run waits for its person counts against none of it.
+// time it works, the most output tokens each of its model calls writes, the reasoning tokens the
+// pacer reserves for each call beside them, and the reasoning effort each call asks for. Time the
+// run waits for its person counts against none of it.
 type Level struct {
 	Calls        int
 	Time         time.Duration
 	OutputTokens int
-	Effort       string
+	// ReasoningTokens is what the pacer reserves for a call's reasoning (estimate): the output
+	// bound, max_tokens, bounds the completion tokens alone, and a call's reasoning is not cut
+	// at it.
+	ReasoningTokens int
+	Effort          string
 }
 
 // Levels is each level by the name going_runs.level holds: Fast, Standard and Deep (the spec's
-// design values, which the eval may change).
+// design values, which the eval may change). The output tokens of each were set on 2026-11-23 from
+// the output and reasoning tokens the real model, grok-4.7, wrote in one call of each level in the
+// preview, p50 / p99 / max: Fast 111 / 433 / 504, Standard 213 / 965 / 1163, Deep 326 / 2217 /
+// 2217. Each bound is about twice its level's max; a call that reaches it ends the run with
+// ReasonOutputTokens and offers Continue (cut). The reasoning tokens of each are the p99 of the
+// reasoning tokens one call of the level wrote in that preview: the model's max_tokens bounds its
+// completion tokens alone, so a call cut at 150 output tokens also wrote 129 reasoning tokens,
+// and calls under a bound of 150 wrote up to 522.
 var Levels = map[string]Level{
-	"fast":     {Calls: 6, Time: 90 * time.Second, OutputTokens: 4000, Effort: "low"},
-	"standard": {Calls: 24, Time: 5 * time.Minute, OutputTokens: 8000, Effort: "medium"},
-	"deep":     {Calls: 80, Time: 20 * time.Minute, OutputTokens: 16000, Effort: "high"},
+	"fast":     {Calls: 6, Time: 90 * time.Second, OutputTokens: 1000, ReasoningTokens: 353, Effort: "low"},
+	"standard": {Calls: 24, Time: 5 * time.Minute, OutputTokens: 2500, ReasoningTokens: 865, Effort: "medium"},
+	"deep":     {Calls: 80, Time: 20 * time.Minute, OutputTokens: 5000, ReasoningTokens: 1967, Effort: "high"},
+}
+
+// estimate is the tokens the pacer reserves for one model call of the level whose request sends
+// prompt characters (going.PromptChars): a token for each charsPerToken of them, the level's
+// output tokens and its reasoning tokens.
+func (l Level) estimate(prompt int) int {
+	return prompt/charsPerToken + l.OutputTokens + l.ReasoningTokens
 }
 
 // modelCallTime is the most one model call of a run may take, its tool calls included, within
@@ -44,16 +63,27 @@ const (
 )
 
 // spent is the stop reason of a run of level that has spent used, and "" where it may make
-// another model call: its calls or its working time are spent.
+// another model call: its calls or its working time are spent. A run stopped at its working time
+// whose pacer held its model calls for more than half of it says so (busyWords): it spent most of
+// its time waiting for the model's quota.
 func (l Level) spent(name string, used agentwire.Budget) string {
 	switch {
 	case used.Calls >= l.Calls:
 		return fmt.Sprintf("%s: this run made the %d model calls a %s run may; Continue starts a follow-up with a new budget", ReasonCallBudget, l.Calls, name)
 	case time.Duration(used.WorkingMS)*time.Millisecond >= l.Time:
-		return fmt.Sprintf("%s: this run worked the %s a %s run may; Continue starts a follow-up with a new budget", ReasonTimeBudget, l.Time, name)
+		busy := ""
+		if 2*used.PaceMS > used.WorkingMS {
+			busy = fmt.Sprintf(busyWords, (time.Duration(used.PaceMS) * time.Millisecond).Round(time.Second))
+		}
+		return fmt.Sprintf("%s: this run worked the %s a %s run may%s; Continue starts a follow-up with a new budget", ReasonTimeBudget, l.Time, name, busy)
 	}
 	return ""
 }
+
+// busyWords is what a time stop adds where the pacer held the run's model calls for more than
+// half its working time, with how long it held them. The web reads it back
+// (features/going/run-states.ts, endWords).
+const busyWords = ", and the model was busy for %s of it"
 
 // cut is the stop reason of a run of level whose model call wrote its level's output tokens and
 // was cut there.

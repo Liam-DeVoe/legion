@@ -263,7 +263,13 @@ type Request struct {
 type Usage struct {
 	// Input, Output, CacheWrite, CacheRead and Reasoning are the token counts the provider
 	// reported: the prompt, the reply, the prompt tokens written to and read from the
-	// provider's cache, and the reasoning tokens.
+	// provider's cache, and the reasoning tokens. Output is every token the provider generated
+	// and bills for the reply, its reasoning among them, and Reasoning the part of Output that
+	// was reasoning, however the provider counts them. On Chat Completions, OpenAI's usage counts
+	// the reasoning among completion_tokens (its total_tokens is prompt_tokens +
+	// completion_tokens), and Output is completion_tokens; a provider whose total_tokens is
+	// prompt_tokens + completion_tokens + reasoning_tokens counts it apart, and Output is
+	// completion_tokens + reasoning_tokens. A usage with no total_tokens is read as OpenAI's.
 	Input, Output, CacheWrite, CacheRead, Reasoning int
 	// CostUSD is those counts priced with Model.Price.
 	CostUSD float64

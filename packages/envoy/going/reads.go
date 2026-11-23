@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
 )
@@ -163,7 +162,7 @@ func (r *answerRun) readTools() []agentloop.Tool {
 			Schema:      tool.schema,
 			Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 				output, isError := r.readCall(ctx, read, call)
-				r.toolChars.Add(int64(utf8.RuneCountInString(output)))
+				r.toolChars.Add(int64(len(output)))
 				return output, isError
 			},
 		})

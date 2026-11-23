@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
@@ -67,7 +68,7 @@ var errStuck = fmt.Errorf("%d goroutines of the agent's runs are stuck past thei
 type agent struct {
 	client   agentwire.Client
 	config   Config
-	pacer    *pacer
+	pacer    *going.Pacer
 	instance string
 
 	mu   sync.Mutex
@@ -87,7 +88,7 @@ type agent struct {
 // goroutines stuck; the process supervisor answers either by starting the agent again.
 func Run(ctx context.Context, client agentwire.Client, config Config) error {
 	a := &agent{
-		client: client, config: config, pacer: newPacer(config.TokensPerMinute), instance: uuid.NewString(),
+		client: client, config: config, pacer: going.NewPacer(config.TokensPerMinute, quotaShare, nil), instance: uuid.NewString(),
 		held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{}),
 	}
 	if a.config.Slots <= 0 {

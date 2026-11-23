@@ -8,6 +8,7 @@ package goingtest
 import (
 	"cmp"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,6 +50,9 @@ type Reply struct {
 	Status int
 	// Message is the error body's message of a Status answer; empty is a generic one.
 	Message string
+	// Usage, where set, is the usage the stream reports in a chunk of its own after the turn's
+	// finish, raw as a provider writes it; a reply that sets none reports no usage.
+	Usage json.RawMessage
 }
 
 // Final is a structured answer: the answer's text and the block drawn beside it, as going's Final
@@ -101,6 +105,8 @@ type ReceivedRequest struct {
 	Authorization string
 	Path          string
 	RawQuery      string
+	// Body is the call's body as it was sent.
+	Body json.RawMessage
 }
 
 // Structured reports whether the call asked for a structured reply.
@@ -157,8 +163,9 @@ func (m *Model) Abandoned() int {
 
 // serve records one call and answers it with the reply that call's turn names.
 func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
 	var body wireRequest
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	_ = json.Unmarshal(raw, &body)
 	received := ReceivedRequest{
 		Model:          body.Model,
 		Messages:       body.messages(),
@@ -168,6 +175,7 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 		Authorization:  r.Header.Get("Authorization"),
 		Path:           r.URL.Path,
 		RawQuery:       r.URL.RawQuery,
+		Body:           raw,
 	}
 	m.mu.Lock()
 	m.requests = append(m.requests, received)
@@ -292,6 +300,13 @@ func stream(r *http.Request, w http.ResponseWriter, reply Reply, content string)
 		finish = "tool_calls"
 	}
 	write(wireChoice{FinishReason: &finish})
+	if len(reply.Usage) > 0 && !gone && r.Context().Err() == nil {
+		frame, _ := json.Marshal(wireFrame{
+			ID: "chatcmpl-goingtest", Object: "chat.completion.chunk", Created: 1, Model: "goingtest",
+			Choices: []wireChoice{}, Usage: reply.Usage,
+		})
+		_, _ = w.Write([]byte("data: " + string(frame) + "\n\n"))
+	}
 	if gone {
 		return false
 	}
@@ -397,11 +412,12 @@ func (r wireRequest) tools() []Tool {
 }
 
 type wireFrame struct {
-	ID      string       `json:"id"`
-	Object  string       `json:"object"`
-	Created int64        `json:"created"`
-	Model   string       `json:"model"`
-	Choices []wireChoice `json:"choices"`
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Choices []wireChoice    `json:"choices"`
+	Usage   json.RawMessage `json:"usage,omitempty"`
 }
 
 type wireChoice struct {

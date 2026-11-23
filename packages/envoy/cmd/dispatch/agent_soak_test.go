@@ -190,7 +190,7 @@ func (r *soakRig) script() *soakRun {
 	case soakBudget:
 		run.level = "fast"
 		r.model.set(run.words, func(int) agenttest.Reply {
-			return agenttest.Reply{Text: "A reply cut at its tokens", Finish: "length", Output: 4000}
+			return agenttest.Reply{Text: "A reply cut at its tokens", Finish: "length", Output: 1000}
 		})
 	case soakLostLease:
 		run.release = make(chan struct{})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
-	"golang.org/x/time/rate"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
@@ -171,7 +171,7 @@ func workRun(t *testing.T, model agentloop.Model, client agentwire.Client, words
 }
 
 // workPacedRun is workRun with the run's model calls paced by pacer, nil for none.
-func workPacedRun(t *testing.T, model agentloop.Model, pacer *pacer, client agentwire.Client, words string) {
+func workPacedRun(t *testing.T, model agentloop.Model, pacer *going.Pacer, client agentwire.Client, words string) {
 	t.Helper()
 	a := &agent{client: client, config: Config{Model: model}, pacer: pacer, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
 	run := &agentwire.ClaimedRun{ID: "run-1", Words: words, Level: "fast", Mode: "ask", LeaseToken: "lease-1"}
@@ -709,8 +709,9 @@ func TestACallsLineShowsAsItStarts(t *testing.T) {
 // TestARunsFramesSayWhereItsTimeWent: each model call's reply frame says how long the call took
 // from its request to its last token, and to its first token of prose, none for a reply of tool
 // calls alone, how long the agent's pacer held it, the tokens of its prompt, of its reply and of
-// the reasoning in that reply, and the tokens the pacer reserved for it, its prompt's and its
-// level's output tokens, which a deployment that names no quota counts too; each tool call's frame
+// the reasoning in that reply, the tokens the pacer reserved for it, its prompt's and its level's
+// output and reasoning tokens, which a deployment that names no quota counts too, and the tokens
+// the pacer charged it in the end, what it drew for a call that spent less; each tool call's frame
 // says how long the call took; and the turn's end adds the model calls' time, the pacer's part of
 // it and the tool calls' time to the run's budget, each summed over its calls, within the turn's
 // working time. A model call's time ends where its tools start: the first call, whose model takes
@@ -719,10 +720,10 @@ func TestARunsFramesSayWhereItsTimeWent(t *testing.T) {
 	const modelWait, readWait, paceWait = 30 * time.Millisecond, 500 * time.Millisecond, 200 * time.Millisecond
 	for _, c := range []struct {
 		name  string
-		pacer func() *pacer
+		pacer func() *going.Pacer
 	}{
-		{name: "a deployment that names no quota", pacer: func() *pacer { return nil }},
-		{name: "a call the pacer holds", pacer: func() *pacer { return spentPacer(paceWait) }},
+		{name: "a deployment that names no quota", pacer: func() *going.Pacer { return nil }},
+		{name: "a call the pacer holds", pacer: func() *going.Pacer { return spentPacer(paceWait) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
@@ -784,6 +785,13 @@ func TestARunsFramesSayWhereItsTimeWent(t *testing.T) {
 				t.Errorf("the reply frames say the pacer reserved %d and %d tokens, want each call's prompt and the level's %d output tokens, the second's prompt the longer",
 					called.ReservedTokens, answer.ReservedTokens, Levels["fast"].OutputTokens)
 			}
+			// Each call spent fewer tokens than the pacer drew for it, all its estimate, which is
+			// what it charged in the end.
+			for i, reply := range replies {
+				if reply.ChargedTokens != reply.ReservedTokens {
+					t.Errorf("model call %d's reply frame says the pacer charged it %d tokens, want the %d it drew", i+1, reply.ChargedTokens, reply.ReservedTokens)
+				}
+			}
 			if held := called.PaceMS > 0; held != (pacer != nil) {
 				t.Errorf("the first model call's reply frame says the pacer held it %d ms, want a hold %t", called.PaceMS, pacer != nil)
 			}
@@ -805,15 +813,138 @@ func TestARunsFramesSayWhereItsTimeWent(t *testing.T) {
 	}
 }
 
-// spentPacer is a pacer whose share is spent: a burst of 1,000 tokens, fewer than any call's
-// estimate, which the level's output tokens alone pass, so each call reserves the whole burst
-// (pacer.delay), earned back in wait. The first call it paces waits up to wait, less the time
-// since the pacer was made, and a call made wait after the one before it waits for nothing.
-func spentPacer(wait time.Duration) *pacer {
-	const burst = 1000
-	p := &pacer{limiter: rate.NewLimiter(rate.Limit(burst/wait.Seconds()), burst), now: time.Now}
-	p.limiter.ReserveN(time.Now(), burst)
+// spentPacer is a pacer of a million tokens a second whose share is spent and owes wait's worth of
+// tokens past it: the first call it paces waits up to wait and the milliseconds its estimate takes
+// to earn back, less the time since the pacer was made, and a call made wait after the one before
+// it waits for nothing.
+func spentPacer(wait time.Duration) *going.Pacer {
+	const share = 60_000_000
+	p := going.NewPacer(share, 1, nil)
+	p.Owe(share + int(wait.Seconds()*share/60))
 	return p
+}
+
+// TestACallThatSpendsPastItsDrawIsChargedTheRest: a model call whose prompt the model counts at
+// more tokens than the pacer drew for it is charged the rest as it ends: its reply frame says the
+// pacer charged it all it spent, and the pacer's share holds what it held less what each call was
+// charged in the end, to the token. A call that spent less than its draw is charged its draw.
+func TestACallThatSpendsPastItsDrawIsChargedTheRest(t *testing.T) {
+	const prompt, share = 50_000, 1_000_000
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if len(request.ToolResults()) > 0 {
+			return agenttest.Reply{Text: "DEMO-15 has no comments.", Output: 7}
+		}
+		return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}}}, Prompt: prompt, Output: 3}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-15"}`)}
+	})
+	// The pacer's clock stands an hour ahead: its share earns nothing back during the run, and a
+	// draw it cannot serve at once would wait past any call's deadline, so it is refused.
+	ahead := time.Now().Add(time.Hour)
+	p := going.NewPacer(share, 1, func() time.Time { return ahead })
+	workPacedRun(t, fake.Model(), p, client, "what is DEMO-15")
+	if end, _ := server.end(t); end.State != agentwire.StateDone {
+		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	}
+	server.mu.Lock()
+	var replies []replyFrame
+	for _, frame := range server.events {
+		if frame.Name != frameReply {
+			continue
+		}
+		var reply replyFrame
+		if err := json.Unmarshal(frame.Data, &reply); err != nil {
+			t.Fatalf("the reply frame %s does not read: %v", frame.Data, err)
+		}
+		replies = append(replies, reply)
+	}
+	server.mu.Unlock()
+	if len(replies) != 2 {
+		t.Fatalf("the run's events hold %d reply frames, want the two model calls'", len(replies))
+	}
+	called, answer := replies[0], replies[1]
+	if spent := prompt + 3; called.ReservedTokens >= spent || called.ChargedTokens != spent {
+		t.Errorf("the first call, which spent %d tokens, says the pacer reserved %d and charged %d, want fewer reserved and all it spent charged", spent, called.ReservedTokens, called.ChargedTokens)
+	}
+	if answer.ChargedTokens != answer.ReservedTokens {
+		t.Errorf("the answer, which spent 17 tokens, says the pacer reserved %d and charged %d, want its draw charged", answer.ReservedTokens, answer.ChargedTokens)
+	}
+	// draw draws tokens from the share as an HTTP attempt does, and answers its refusal.
+	draw := func(tokens int) error {
+		model := p.Paced(agentloop.Model{Endpoint: agentloop.Endpoint{Token: func(context.Context) (string, error) { return "a token", nil }}},
+			func() int { return tokens }, func(going.Charge) {})
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		_, err := model.Endpoint.Token(ctx)
+		return err
+	}
+	left := share - called.ChargedTokens - answer.ChargedTokens
+	if err := draw(left); err != nil {
+		t.Fatalf("a draw of the %d tokens the share holds less the %d and %d the calls were charged answered %v, want it made: the share holds less", left, called.ChargedTokens, answer.ChargedTokens, err)
+	}
+	if err := draw(1); !errors.Is(err, going.ErrQuotaPastDeadline) {
+		t.Errorf("a draw of a token more answered %v, want %v: the share held more than it less what the calls were charged", err, going.ErrQuotaPastDeadline)
+	}
+}
+
+// TestTheReservationCountsTheToolsACallSends: the tokens the pacer reserves for a model call are a
+// quarter of the characters the call sends - its messages, the system prompt among them, and each
+// tool's name, description and argument schema, as the chat model got them - with the level's
+// output and reasoning tokens. The tools alone come to more than a thousand tokens, which the
+// model counts in the call's prompt.
+func TestTheReservationCountsTheToolsACallSends(t *testing.T) {
+	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: "DEMO-15 is open."} })
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{Status: http.StatusOK} })
+	workRun(t, fake.Model(), client, "what is DEMO-15")
+	requests := fake.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("the run made %d model calls, want 1", len(requests))
+	}
+	var body struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(requests[0].Body, &body); err != nil {
+		t.Fatalf("the model call's request does not read: %v", err)
+	}
+	messages, tools := 0, 0
+	for _, message := range body.Messages {
+		var text string
+		if json.Unmarshal(message.Content, &text) == nil {
+			messages += len(text)
+			continue
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(message.Content, &parts); err != nil {
+			t.Fatalf("a message's content %s reads as neither text nor parts: %v", message.Content, err)
+		}
+		for _, part := range parts {
+			messages += len(part.Text)
+		}
+	}
+	for _, tool := range body.Tools {
+		tools += len(tool.Function.Name) + len(tool.Function.Description) + len(tool.Function.Parameters)
+	}
+	if len(body.Tools) != 6 || tools/charsPerToken < 1000 {
+		t.Fatalf("the call sent %d tools of %d characters, want the run's 6, more than a thousand tokens of them", len(body.Tools), tools)
+	}
+	fast := Levels["fast"]
+	want := (messages+tools)/charsPerToken + fast.OutputTokens + fast.ReasoningTokens
+	if reserved := server.lastReply(t).ReservedTokens; reserved != want {
+		t.Errorf("the pacer reserved %d tokens for the call, want %d: a quarter of the %d characters of its messages and the %d of its tools, and the level's %d output and %d reasoning tokens",
+			reserved, want, messages, tools, fast.OutputTokens, fast.ReasoningTokens)
+	}
 }
 
 // TestThePagesIssueIsReadBeforeTheFirstModelCall: a run asked on an issue's page reads that issue

@@ -188,6 +188,24 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
     noModel: false,
     text: "Stopped at Standard's time limit · read 14 items so far",
   });
+  // A time stop whose model calls the agent's pacer held for more than half the time says how
+  // long the model was busy (`busyWords`, `going/agent/levels.go`).
+  expect(
+    endWords(
+      "stopped_bound",
+      "TIME_BUDGET: this run worked the 1m30s a fast run may, and the model was busy for 52s of it; Continue starts a follow-up with a new budget",
+      "fast",
+      "read 3 items"
+    )?.text
+  ).toBe("Stopped at Fast's time limit · the model was busy for 52s of it · read 3 items so far");
+  expect(
+    endWords(
+      "stopped_bound",
+      "TIME_BUDGET: this run worked the 1m30s a fast run may, and the model was busy for 1m5s of it; Continue starts a follow-up with a new budget",
+      "fast",
+      ""
+    )?.text
+  ).toBe("Stopped at Fast's time limit · the model was busy for 1m5s of it");
   expect(endWords("stopped_bound", "CALL_BUDGET: …", "fast", "")?.text).toBe(
     "Stopped at Fast's step limit"
   );

@@ -61,6 +61,52 @@ func TestOpenAIChatSendsTheEndpointsQueryAndTheBearerToken(t *testing.T) {
 	}
 }
 
+// A Chat Completions provider that counts a reply's reasoning apart from its completion tokens,
+// as grok-4.7 does (its total_tokens is prompt + completion + reasoning), has the reasoning
+// counted in the call's output, priced and summed with it: those are tokens it generated and
+// bills. OpenAI's own usage counts the reasoning among the completion tokens (its total is prompt
+// + completion), and the output stays the completion tokens; so does a usage with no total.
+func TestOpenAIChatCountsReasoningTheProviderReportsApart(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name              string
+		usage             string
+		output, reasoning int
+	}{
+		{
+			name:   "reasoning counted apart from the completion tokens",
+			usage:  `{"prompt_tokens":120,"completion_tokens":222,"total_tokens":1326,"completion_tokens_details":{"reasoning_tokens":984}}`,
+			output: 222 + 984, reasoning: 984,
+		},
+		{
+			name:   "reasoning counted among the completion tokens, OpenAI's convention",
+			usage:  `{"prompt_tokens":120,"completion_tokens":222,"total_tokens":342,"completion_tokens_details":{"reasoning_tokens":184}}`,
+			output: 222, reasoning: 184,
+		},
+		{
+			name:   "a usage with no total",
+			usage:  `{"prompt_tokens":120,"completion_tokens":222,"completion_tokens_details":{"reasoning_tokens":984}}`,
+			output: 222, reasoning: 984,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, chatStreamOf("stop", json.RawMessage(c.usage), "The note says plum."))
+			result, err := Run(context.Background(), newFixture(t, s, OpenAIChat, 1).req)
+			if err != nil || result.Fault != "" || len(result.Steps) != 1 {
+				t.Fatalf("result %+v, %v; want one answered call", result, err)
+			}
+			cost := (120*anthropicPrice.Input + float64(c.output)*anthropicPrice.Output) / 1e6
+			for name, got := range map[string]Usage{"the step's": result.Steps[0].Usage, "the run's": result.Usage} {
+				if got.Input != 120 || got.Output != c.output || got.Reasoning != c.reasoning || math.Abs(got.CostUSD-cost) > 1e-12 {
+					t.Errorf("%s usage is %+v, want 120 input, %d output with %d of it reasoning, costing %v",
+						name, got, c.output, c.reasoning, cost)
+				}
+			}
+		})
+	}
+}
+
 // An endpoint with no query parameters of its own sends no query string at all, rather than an
 // empty one.
 func TestOpenAIChatWithNoQuerySendsNoQueryString(t *testing.T) {

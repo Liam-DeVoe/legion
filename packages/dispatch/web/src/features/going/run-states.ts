@@ -145,6 +145,11 @@ const BOUND_WORDS: Readonly<Record<string, string>> = {
   TIME_BUDGET: "time limit",
 };
 
+/** How long the model was busy, "52s" of a time bound's reason that says so ("…, and the model
+ *  was busy for 52s of it; …", `busyWords` in `going/agent/levels.go`): the agent's pacer held
+ *  the run's model calls for more than half its time. */
+const BUSY_FOR = /, and the model was busy for (\S+) of it;/u;
+
 /** Why a run's grant stopped it, by its reason's code (`api/going_grant.go`). */
 const GRANT_WORDS: Readonly<Record<string, string>> = {
   MEMBERSHIP_ENDED: "you may no longer use Dispatch",
@@ -177,10 +182,11 @@ export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answe
  * How the end of a run in `state`, stopped or failed with `reason` (its end frame's, or its
  * record's), reads for its person (design v2, state 9): never a code or the reason's own words,
  * which are written for a developer. A bound is a pause: "Stopped at Standard's time limit", with
- * what the run did so far (`didSoFar`, "read 14 items") and Continue. A Stop keeps what it did: "Stopped
- * · kept what it did", or why its grant ended it. A failure is one sentence and Try again, or the
- * sentence of state 13 for a Dispatch with no answering model. Undefined for a run that has not
- * stopped or failed.
+ * how long the model was busy where the reason says it was busy for more than half the time
+ * ("· the model was busy for 52s of it"), what the run did so far (`didSoFar`, "read 14 items")
+ * and Continue. A Stop keeps what it did: "Stopped · kept what it did", or why its grant ended it.
+ * A failure is one sentence and Try again, or the sentence of state 13 for a Dispatch with no
+ * answering model. Undefined for a run that has not stopped or failed.
  */
 export function endWords(
   state: RunState,
@@ -193,8 +199,10 @@ export function endWords(
     case "stopped_bound": {
       const named = LEVEL_WORDS[level] ?? "its level";
       const bound = BOUND_WORDS[code];
-      const stopped =
+      const busy = code === "TIME_BUDGET" ? BUSY_FOR.exec(reason)?.[1] : undefined;
+      const at =
         bound === undefined ? `Stopped at a limit of ${named}` : `Stopped at ${named}'s ${bound}`;
+      const stopped = busy === undefined ? at : `${at} · the model was busy for ${busy} of it`;
       return {
         action: "continue",
         noModel: false,

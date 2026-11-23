@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
@@ -92,7 +93,6 @@ func (w *worker) review() stepOutcome {
 	var asked []int
 	var text string
 	request := w.level.request(w.agent.config.Model, w.used)
-	request.Model = w.agent.pacer.paced(request.Model, func() int { return (len(reviewPrompt)+len(input))/charsPerToken + w.level.OutputTokens }, w.charge)
 	request.System = reviewPrompt
 	request.Input = []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}}
 	request.Tools = []agentloop.Tool{{
@@ -110,6 +110,8 @@ func (w *worker) review() stepOutcome {
 			return "Noted.", false
 		},
 	}}
+	estimate := w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
+	request.Model = w.agent.pacer.Paced(request.Model, func() int { return estimate }, w.charge)
 	request.OnStep = func(step agentloop.Step) error {
 		for _, block := range step.Blocks {
 			if block.Kind == agentloop.TextBlock {

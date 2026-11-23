@@ -932,6 +932,142 @@ func TestRunEndsWithTheDeadlineWhenTheQuotaCannotPaceTheCall(t *testing.T) {
 	}
 }
 
+// TestARunsEstimateCountsTheToolsItSends: what the quota charges a run's model call before it is
+// made is a quarter of the characters the call sends - its messages, the system prompt among
+// them, and each tool's name, description and argument schema, as the model got them. Of a share
+// of twice that, two runs of the same question each make their call; of a share a token short of
+// it, the second run is refused, as the deadline ends a run, and makes none. The pacer's clock
+// stands an hour ahead, so the share earns nothing back, and a call it cannot pace at once would
+// wait past the run's window.
+func TestARunsEstimateCountsTheToolsItSends(t *testing.T) {
+	const words = "who owns the broadcast order"
+	probe := goingtest.NewModel(t, answer("The probe's answer."))
+	stream := &answerStream{}
+	if err := testAnswerer(t, probe, going.AnswererConfig{}).Run(t.Context(), testReads().request(words, stream), stream.emit); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	stream.ended(t)
+	requests := probe.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("model served %d calls, want 1", len(requests))
+	}
+	var body struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Function struct {
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(requests[0].Body, &body); err != nil {
+		t.Fatalf("the call's body does not read: %v", err)
+	}
+	messages, tools := 0, 0
+	for _, message := range body.Messages {
+		var text string
+		if json.Unmarshal(message.Content, &text) == nil {
+			messages += len(text)
+			continue
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(message.Content, &parts); err != nil {
+			t.Fatalf("a message's content %s reads as neither text nor parts: %v", message.Content, err)
+		}
+		for _, part := range parts {
+			messages += len(part.Text)
+		}
+	}
+	for _, tool := range body.Tools {
+		tools += len(tool.Function.Name) + len(tool.Function.Description) + len(tool.Function.Parameters)
+	}
+	if len(body.Tools) == 0 {
+		t.Fatal("the call sent no tool, want the search")
+	}
+	estimate := (messages + tools) / 4
+	ahead := time.Now().Add(time.Hour)
+	for _, c := range []struct {
+		name         string
+		share, calls int
+	}{
+		{name: "a share of two calls' estimates", share: 2 * estimate, calls: 2},
+		{name: "a share a token short of two calls' estimates", share: 2*estimate - 1, calls: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			model := goingtest.NewModel(t, answer("An answer."))
+			answerer := testAnswerer(t, model, going.AnswererConfig{TokensPerMinute: 4 * c.share, Now: func() time.Time { return ahead }})
+			for range 2 {
+				stream := &answerStream{}
+				if err := answerer.Run(t.Context(), testReads().request(words, stream), stream.emit); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+			}
+			if got := model.Calls(); got != c.calls {
+				t.Errorf("model served %d calls, want %d: each call is charged a quarter of the %d characters of its messages and the %d of its tools, %d tokens, of a share of %d",
+					got, c.calls, messages, tools, estimate, c.share)
+			}
+		})
+	}
+}
+
+// TestEachCallIsChargedWhatItSpentPastItsDraw: a run's model call that spends more tokens than the
+// quota drew for it - its prompt and its reply, with the reasoning a provider counts apart from
+// the completion tokens - is charged the rest as it ends, and the next run waits for it. Of a
+// share of 100,000 tokens a minute, a call that spent 200,000, 139,000 of them reasoning the
+// provider counts apart, leaves the next run a minute's wait, which its window cannot hold, so it
+// is refused as the deadline ends a run and makes no call. A call that spent 61,000, its
+// reasoning among its completion tokens, leaves the next run room, and it makes its call. The
+// pacer's clock stands still, so the share earns nothing back.
+func TestEachCallIsChargedWhatItSpentPastItsDraw(t *testing.T) {
+	for _, c := range []struct {
+		name, usage string
+		calls       int
+	}{
+		{
+			name:  "reasoning counted apart, past the share",
+			usage: `{"prompt_tokens":60000,"completion_tokens":1000,"total_tokens":200000,"completion_tokens_details":{"reasoning_tokens":139000}}`,
+			calls: 1,
+		},
+		{
+			name:  "reasoning among the completion tokens, within the share",
+			usage: `{"prompt_tokens":60000,"completion_tokens":1000,"total_tokens":61000,"completion_tokens_details":{"reasoning_tokens":984}}`,
+			calls: 2,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			frozen := time.Now()
+			reply := answer("An answer.")
+			reply.Usage = json.RawMessage(c.usage)
+			model := goingtest.NewModel(t, reply)
+			answerer := testAnswerer(t, model, going.AnswererConfig{TokensPerMinute: 400_000, Now: func() time.Time { return frozen }})
+			first := &answerStream{}
+			if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", first), first.emit); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			first.ended(t)
+			second := &answerStream{}
+			if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order now", second), second.emit); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if c.calls == 1 {
+				if got := second.code(t); got != contracts.GoingErrorAnswerDidNotArrive {
+					t.Errorf("the second run ended with %s, want %s", got, contracts.GoingErrorAnswerDidNotArrive)
+				}
+			} else {
+				second.ended(t)
+			}
+			if got := model.Calls(); got != c.calls {
+				t.Errorf("model served %d calls, want %d", got, c.calls)
+			}
+		})
+	}
+}
+
 // TestRunFailsWhenTheModelRefusesTheCall: a model service that answers a status other than a
 // 400 ends the run with the failure code, with no fallback, and the reader is told nothing the
 // service said.

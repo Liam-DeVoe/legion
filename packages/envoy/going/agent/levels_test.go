@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 )
@@ -26,9 +27,9 @@ func TestEachLevelSetsItsBudgetsAndEffort(t *testing.T) {
 		tokens int
 		effort string
 	}{
-		"fast":     {6, 90 * time.Second, 4000, "low"},
-		"standard": {24, 5 * time.Minute, 8000, "medium"},
-		"deep":     {80, 20 * time.Minute, 16000, "high"},
+		"fast":     {6, 90 * time.Second, 1000, "low"},
+		"standard": {24, 5 * time.Minute, 2500, "medium"},
+		"deep":     {80, 20 * time.Minute, 5000, "high"},
 	}
 	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: "An answer."} })
 	sent := func(t *testing.T, level Level) *agenttest.Request {
@@ -85,75 +86,49 @@ func TestEachLevelSetsItsBudgetsAndEffort(t *testing.T) {
 
 // TestTheAgentPacesItsShareOfTheQuota: the agent paces its model calls to 75% of the chat
 // deployment's tokens a minute, the server's short answers taking the rest: of a quota of 60,000
-// a minute, 45,000 tokens go at once, and the next 750 wait the second 750 tokens of 45,000 a
-// minute take.
+// a minute, a call of 45,000 tokens goes at once, and the next, of 750, waits the second its share
+// takes to earn them back, which a call with half a second left is refused for. The pacer's clock
+// stands still, so the share earns nothing back between them.
 func TestTheAgentPacesItsShareOfTheQuota(t *testing.T) {
-	pacer := newPacer(60_000)
-	now := time.Unix(1_700_000_000, 0)
-	if _, wait, ok := pacer.delay(now, 45_000); !ok || wait != 0 {
-		t.Fatalf("45,000 tokens of a 60,000 quota wait %v (ok %t), want none", wait, ok)
+	now := time.Now()
+	pacer := going.NewPacer(60_000, quotaShare, func() time.Time { return now })
+	var charges []going.Charge
+	draw := func(ctx context.Context, tokens int) error {
+		model := pacer.Paced(agentloop.Model{Endpoint: agentloop.Endpoint{Token: func(context.Context) (string, error) { return "a token", nil }}},
+			func() int { return tokens }, func(charge going.Charge) { charges = append(charges, charge) })
+		_, err := model.Endpoint.Token(ctx)
+		return err
 	}
-	if _, wait, ok := pacer.delay(now, 750); !ok || wait < 990*time.Millisecond || wait > 1010*time.Millisecond {
-		t.Fatalf("750 tokens past the share wait %v (ok %t), want 1 s", wait, ok)
+	if err := draw(t.Context(), 45_000); err != nil || len(charges) != 1 || charges[0] != (going.Charge{Tokens: 45_000, Drawn: 45_000}) {
+		t.Fatalf("45,000 tokens of a 60,000 quota answered %v and were charged %+v, want them drawn at once", err, charges)
 	}
-	if newPacer(0) != nil {
-		t.Error("a deployment that names no quota is paced")
+	short, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	if err := draw(short, 750); !errors.Is(err, going.ErrQuotaPastDeadline) {
+		t.Errorf("750 tokens past the share with half a second left answered %v, want %v: they wait a second", err, going.ErrQuotaPastDeadline)
 	}
 }
 
-// TestEachAttemptIsToldWhatThePacerChargedAndHeldIt: every HTTP attempt of a paced model call, the
-// retry among them, is charged the call's estimate and told how long the pacer held it. Of a quota
-// of 60,000 a minute, whose share is 45,000, a first attempt of 22,575 tokens is held for nothing
-// and a second waits the 150 its share lacks, 0.2 s; a third, with 10 ms left, is refused at once,
-// charged nothing and not made. A deployment that names no quota holds no attempt and still
-// charges each its estimate, which a call's reply frame then says.
-func TestEachAttemptIsToldWhatThePacerChargedAndHeldIt(t *testing.T) {
-	const estimate = 22_575
-	type charge struct {
-		tokens int
-		held   time.Duration
-	}
+// TestATimeStopSaysWhenTheModelWasBusy: a run stopped at its level's working time whose pacer
+// held its model calls for more than half of it says so, and for how long, after the bound's code
+// the web reads; a run the pacer held for half of it or less says the time alone.
+func TestATimeStopSaysWhenTheModelWasBusy(t *testing.T) {
+	const idle = "TIME_BUDGET: this run worked the 1m30s a fast run may; Continue starts a follow-up with a new budget"
 	for _, c := range []struct {
-		name  string
-		pacer *pacer
+		name string
+		used agentwire.Budget
+		want string
 	}{
-		{name: "a deployment that names no quota"},
-		{name: "a quota of 60,000 a minute", pacer: newPacer(60_000)},
+		{
+			name: "held for 52 s of its 90 s", used: agentwire.Budget{WorkingMS: 90_400, PaceMS: 52_300},
+			want: "TIME_BUDGET: this run worked the 1m30s a fast run may, and the model was busy for 52s of it; Continue starts a follow-up with a new budget",
+		},
+		{name: "held for half of its 90 s", used: agentwire.Budget{WorkingMS: 90_000, PaceMS: 45_000}, want: idle},
+		{name: "never held", used: agentwire.Budget{WorkingMS: 90_000}, want: idle},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			var charges []charge
-			read := 0
-			token := func(context.Context) (string, error) {
-				read++
-				return "a token", nil
-			}
-			model := c.pacer.paced(agentloop.Model{Endpoint: agentloop.Endpoint{Token: token}}, func() int { return estimate },
-				func(tokens int, held time.Duration) { charges = append(charges, charge{tokens, held}) })
-			for attempt := range 2 {
-				if _, err := model.Endpoint.Token(t.Context()); err != nil {
-					t.Fatalf("attempt %d: %v", attempt+1, err)
-				}
-			}
-			short, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
-			defer cancel()
-			_, err := model.Endpoint.Token(short)
-			if len(charges) != 3 {
-				t.Fatalf("three attempts were told %d charges, %v, want one each", len(charges), charges)
-			}
-			if c.pacer == nil {
-				if err != nil || read != 3 || charges[0] != (charge{estimate, 0}) || charges[1] != charges[0] || charges[2] != charges[0] {
-					t.Errorf("with no quota the attempts were told %v and %d were made (%v), want each made, charged %d and held for nothing", charges, read, err, estimate)
-				}
-				return
-			}
-			if charges[0] != (charge{estimate, 0}) {
-				t.Errorf("the first attempt was told %+v, want %d tokens held for nothing", charges[0], estimate)
-			}
-			if second := charges[1]; second.tokens != estimate || second.held < 150*time.Millisecond || second.held > 2*time.Second {
-				t.Errorf("the second attempt was told %+v, want %d tokens held about 0.2 s", second, estimate)
-			}
-			if !errors.Is(err, errQuotaPastDeadline) || read != 2 || charges[2] != (charge{}) {
-				t.Errorf("the attempt with 10 ms left answered %v, was told %+v, and %d attempts were made; want it refused, charged nothing and not made", err, charges[2], read)
+			if got := Levels["fast"].spent("fast", c.used); got != c.want {
+				t.Errorf("the run that spent %+v stopped with %q, want %q", c.used, got, c.want)
 			}
 		})
 	}

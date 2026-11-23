@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"golang.org/x/time/rate"
 )
 
 // charsPerToken is how many characters of a request are counted as one token. It is
@@ -117,11 +116,6 @@ var finalSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// errQuotaPastDeadline is a call the quota cannot pace inside the time the run has left. It wraps
-// context.DeadlineExceeded because that is what it is - the run reaching its deadline - which is
-// the issue's one deadline ending and needs no second code of its own.
-var errQuotaPastDeadline = fmt.Errorf("going: the quota cannot pace this call inside the time left: %w", context.DeadlineExceeded)
-
 // What a run's answer call came to, as Outcome.StructuredOutput says it.
 const (
 	// StructuredOutputAccepted is an answer that came as the Final object.
@@ -161,9 +155,8 @@ type Outcome struct {
 // settings and used by every request, so its quota pacer is the process's one pacer and its
 // account of the structured output is the process's one account.
 type Answerer struct {
-	model   agentloop.Model
-	now     func() time.Time
-	limiter *rate.Limiter
+	model agentloop.Model
+	pacer *Pacer
 
 	// formatRefused is set by the first structured request the service answered 400 for the
 	// structured output itself (structuredOutputRefusal), and makes every later run ask for prose
@@ -198,19 +191,11 @@ func NewAnswerer(cfg AnswererConfig) (*Answerer, error) {
 	case cfg.Model.Endpoint.Token == nil:
 		return nil, errors.New("going: an answerer needs its endpoint's credential")
 	}
-	answerer := &Answerer{model: cfg.Model, now: cfg.Now}
-	if answerer.now == nil {
-		answerer.now = time.Now
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
 	}
-	if cfg.TokensPerMinute > 0 {
-		// One rate.Limiter, as embed.RateLimitedEmbedder paces the embedder, sized at the
-		// server's share of the tokens a minute with a burst of a minute's share, and at least
-		// one token: a quota of a few tokens a minute paces each call to one a minute rather
-		// than refusing every call.
-		share := max(int(float64(cfg.TokensPerMinute)*answerQuotaShare), 1)
-		answerer.limiter = rate.NewLimiter(rate.Limit(float64(share)/60), share)
-	}
-	return answerer, nil
+	return &Answerer{model: cfg.Model, pacer: NewPacer(cfg.TokensPerMinute, answerQuotaShare, now)}, nil
 }
 
 // Blocks reports whether this process's model answers with blocks: blocks once a structured reply
@@ -262,6 +247,7 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 		emit:      emit,
 		citations: make(map[string]Hit),
 		runesLeft: contracts.GoingRequestRuneMax,
+		pacer:     a.pacer,
 	}
 	// The run's window is measured from here, the moment it began: both of its answer calls
 	// share it, so a fallback to prose spends what the structured attempt left.
@@ -431,7 +417,7 @@ func (a *Answerer) faultCode(ctx context.Context, run *answerRun, result agentlo
 	case agentloop.FaultProviderError:
 		if run.paceFailed.Load() {
 			// The quota could not pace a call inside what was left of the window
-			// (errQuotaPastDeadline), which is the run reaching its deadline.
+			// (ErrQuotaPastDeadline), which is the run reaching its deadline.
 			slog.Warn("going: the run ran out of time with no answer", "detail", result.Detail)
 			return contracts.GoingErrorAnswerDidNotArrive
 		}
@@ -450,48 +436,14 @@ func (a *Answerer) faultCode(ctx context.Context, run *answerRun, result agentlo
 
 // paced is the answerer's model with the quota's pacing taken in its endpoint's Token, which
 // agentloop calls before every HTTP attempt, the retry included, so the quota is charged for each
-// attempt the service is sent. Each attempt is charged the estimate of what it sends: the system
-// prompt, the question and its items, and the tool output so far.
+// attempt the service is sent (Pacer.Paced). Each attempt is charged the estimate of what it
+// sends: the system prompt, the question and its items, the tool definitions, and the tool
+// output so far. A deployment that names no quota is not paced.
 func (a *Answerer) paced(run *answerRun) agentloop.Model {
-	model := a.model
-	if a.limiter == nil {
-		return model
+	if a.pacer == nil {
+		return a.model
 	}
-	token := model.Endpoint.Token
-	model.Endpoint.Token = func(ctx context.Context) (string, error) {
-		if err := a.pace(ctx, run.estimate()); err != nil {
-			run.paceFailed.Store(true)
-			return "", err
-		}
-		return token(ctx)
-	}
-	return model
-}
-
-// pace waits out the quota's own pacing for tokens. A call estimated past the limiter's burst, a
-// minute's whole share, reserves the burst, as the agent's pacer does (going/agent): it waits for
-// a minute's share and is made, rather than being refused for a cost no wait could serve. A
-// reservation that cannot be served inside the time the call has left is refused rather than
-// waited on, because waiting it out would spend the whole window to make no call at all.
-func (a *Answerer) pace(ctx context.Context, tokens int) error {
-	reservation := a.limiter.ReserveN(a.now(), min(tokens, a.limiter.Burst()))
-	delay := reservation.DelayFrom(a.now())
-	if delay <= 0 {
-		return nil
-	}
-	if deadline, hasDeadline := ctx.Deadline(); hasDeadline && a.now().Add(delay).After(deadline) {
-		reservation.CancelAt(a.now())
-		return errQuotaPastDeadline
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		reservation.CancelAt(a.now())
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return a.pacer.Paced(a.model, run.estimate, run.charge)
 }
 
 // answerRun is one run's own state: what the model has been given, what is left of the run's
@@ -521,14 +473,20 @@ type answerRun struct {
 	// input is the question with its items, as both calls are asked it; the structured call
 	// is asked it with the blocks it may draw besides (blockText).
 	input string
-	// prompt is how many characters the system prompt and the call's input come to, and
-	// toolChars how many the tool output of the current call has added, which together are
-	// what the next HTTP attempt is charged against the quota.
+	// prompt is how many characters the system prompt, the call's input and its tool
+	// definitions come to (PromptChars), and toolChars how many the tool output of the current
+	// call has added, which together are what the next HTTP attempt is charged against the
+	// quota.
 	prompt    int
 	toolChars atomic.Int64
 	// paceFailed says the quota refused to pace an attempt, which ends the call as a provider
 	// error and the run as its deadline.
 	paceFailed atomic.Bool
+	// pacer is the answerer's pacer, nil where the deployment names no quota, and drawn the
+	// tokens it drew for the HTTP attempts of the model call in flight, which that call is
+	// charged against as it ends (settle).
+	pacer *Pacer
+	drawn atomic.Int64
 
 	// readErr is the first store read that failed, which ends the run: Run sends its code as
 	// the run's one ending, and stop has already kept the run from making another call. The
@@ -546,7 +504,9 @@ type answerRun struct {
 // attempt makes one answer call: structured asks for the Final object, told the blocks it may
 // draw, and streams its answer property's growth, otherwise the call asks for prose and streams
 // the prose, told no block, since prose carries none. It has what is left of the run's window and
-// calls model calls.
+// calls model calls. Each model call is charged what it spent past its draws as it ends (settle):
+// agentloop gives it to OnStep before the next call is paced, and a call it gives none - one
+// whose reply passed its limit, or that came after a callback failed - is charged as Run returns.
 func (r *answerRun) attempt(ctx context.Context, call agentloop.Request, deadline time.Time, calls int,
 	filter *answerFilter, structured bool) (agentloop.Result, error) {
 	left := time.Until(deadline)
@@ -557,9 +517,10 @@ func (r *answerRun) attempt(ctx context.Context, call agentloop.Request, deadlin
 	if structured {
 		input += r.blockText()
 	}
-	r.prompt = utf8.RuneCountInString(answerRules) + utf8.RuneCountInString(input)
 	call.Input = []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}}
+	r.prompt = PromptChars(answerRules, call.Input, call.Tools)
 	r.toolChars.Store(0)
+	r.drawn.Store(0)
 	call.Bounds = agentloop.Bounds{Time: left, Calls: calls, OutputTokens: answerOutputTokens}
 	if structured {
 		call.Final = finalSchema
@@ -575,7 +536,34 @@ func (r *answerRun) attempt(ctx context.Context, call agentloop.Request, deadlin
 	} else {
 		call.OnText = func(delta string) error { return r.write(filter, delta) }
 	}
-	return agentloop.Run(ctx, call)
+	var settled atomic.Int64
+	call.OnStep = func(step agentloop.Step) error {
+		settled.Add(1)
+		r.settle(step.Usage)
+		return nil
+	}
+	result, err := agentloop.Run(ctx, call)
+	for _, step := range result.Steps[min(int(settled.Load()), len(result.Steps)):] {
+		r.settle(step.Usage)
+	}
+	return result, err
+}
+
+// charge keeps what the pacer did with one HTTP attempt of the model call in flight
+// (Pacer.Paced): the tokens it drew for it, or, where it refused it, that the quota failed to
+// pace the call.
+func (r *answerRun) charge(charge Charge) {
+	if charge.Err != nil {
+		r.paceFailed.Store(true)
+		return
+	}
+	r.drawn.Add(int64(charge.Drawn))
+}
+
+// settle charges the pacer, as a model call ends, the tokens the call spent past those drawn for
+// its HTTP attempts (Pacer.Owe), and starts the count of the next call's draws.
+func (r *answerRun) settle(usage agentloop.Usage) {
+	r.pacer.Owe(SpentTokens(usage) - int(r.drawn.Swap(0)))
 }
 
 // grow feeds the filter what answer adds to the answer fed so far. A snapshot is the whole of
@@ -693,7 +681,7 @@ func (r *answerRun) searchTool() agentloop.Tool {
 		Schema: searchToolSchema,
 		Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 			output, isError := r.searchCall(ctx, call)
-			r.toolChars.Add(int64(utf8.RuneCountInString(output)))
+			r.toolChars.Add(int64(len(output)))
 			return output, isError
 		},
 	}
