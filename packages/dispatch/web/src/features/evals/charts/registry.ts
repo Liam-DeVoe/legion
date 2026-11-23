@@ -3,10 +3,12 @@
 // kind.ts). A declared chart of a kind this record lacks draws one line naming it
 // (`DeclaredEval`). `kinds.test.ts` lists the 14 kinds the validator accepts against it.
 import { bandKind } from "./band";
+import { gridKind } from "./grid";
 import type { ChartKind } from "./kind";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
+  grid: gridKind,
   xy: xyKind,
 };
