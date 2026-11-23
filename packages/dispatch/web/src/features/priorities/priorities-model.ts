@@ -96,8 +96,6 @@ const COUNT_WIDTH = { size: 132, min: 132 };
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  // The drag handle and the order's link, each a 44 px touch target below 1280 px, with the
-  // cell's padding: at 88 px the link was cut at the cell's edge.
   { id: "order", header: "Order", size: 112, min: 112, pinned: true, text: (item) => item.order },
   {
     id: "title",

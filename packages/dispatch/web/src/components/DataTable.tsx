@@ -499,8 +499,6 @@ function TableHeaderCell<TData>({
             }
             type="button"
           >
-            {/* The name shortens to an ellipsis inside the button and the sort arrow keeps its
-                width, so a narrow column cuts neither with no sign. */}
             <TruncatedText
               className="min-w-0"
               title={
