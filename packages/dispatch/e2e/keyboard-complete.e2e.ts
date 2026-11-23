@@ -134,7 +134,7 @@ import {
 import { seedReviewRoutes } from "./review-seed";
 import { sessionIds } from "./session-ids";
 import { openIssuesTab } from "./table-controls";
-import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 // ---------------------------------------------------------------------------
@@ -1862,6 +1862,50 @@ test("k-link-click: in the spec the reader edits and in a project document, one 
       step("one plain click on the link inside the selected text moves the page to the other issue")
     ).toHaveURL(new RegExp(`/issues/${seed.other.key}(/|$)`));
     expect(await reloaded(page), step("the plain click loads no new document")).toBe(false);
+  }
+});
+
+// SLOW(>=2s): the spec and a past version each opened once on a phone, and one move in place from
+// each.
+// @phone-only: a tap is a phone's primary click. Chromium sends a tap's click after its mouseup to
+// the anchor the tap landed on, even once the page has moved away from it, and the anchor then
+// follows its own `href`.
+test("k-link-click: on a phone, a tap on a dispatch:// link in the spec the reader edits and in a past version moves the page to the other issue with no new load of the application @phone-only", async ({
+  page,
+}) => {
+  const seed = await seedLinkSpec();
+  for (const [view, path] of [
+    ["the editable spec", `/issues/${seed.issueKey}/spec`],
+    ["the past version", `/issues/${seed.issueKey}/artifacts/spec?v=1`],
+  ] as const) {
+    const step = (text: string) => `k-link-click: on a phone, in ${view}, ${text}`;
+    await page.goto(path);
+    const link = page
+      .getByRole("textbox", { name: "Document editor" })
+      .getByRole("link", { exact: true, name: "the other issue" })
+      .first();
+    await expect(link, step("the document draws the dispatch:// link")).toBeVisible();
+    // Every load of a new document in the page from the tap on: the page's own move to the other
+    // issue loads none.
+    const loads: string[] = [];
+    const onRequest = (request: Request) => {
+      if (request.resourceType() === "document" && request.frame() === page.mainFrame()) {
+        loads.push(new URL(request.url()).pathname);
+      }
+    };
+    page.on("request", onRequest);
+    await markDocument(page);
+    await link.tap();
+    await expect(page, step("a tap on the link moves the page to the other issue")).toHaveURL(
+      new RegExp(`/issues/${seed.other.key}(/|$)`)
+    );
+    await expect(
+      page.getByText(seed.other.title).first(),
+      step("the other issue's page shows its title")
+    ).toBeVisible();
+    page.off("request", onRequest);
+    expect(loads, step("the tap loads no new document")).toEqual([]);
+    expect(await reloaded(page), step("the page keeps the document it had")).toBe(false);
   }
 });
 
