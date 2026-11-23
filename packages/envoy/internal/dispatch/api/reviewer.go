@@ -184,6 +184,10 @@ type reviewedWrite struct {
 	// names are the ids the write names that a held text may hold: the issue it is on or a new
 	// issue's parent, and the comment, ask or message it answers.
 	names []string
+	// waits are the ids beside names that the write's post reads and a held text may hold: a new
+	// issue's blockers. A write that names none of names held is held beside the newest held one
+	// of these, and its post waits for every one of them still held (heldNamedOpenSQL).
+	waits []string
 	// holdable is whether the reviewer may hold the write: every one but an issue imported from
 	// GitHub, whose title is GitHub's.
 	holdable bool
@@ -208,12 +212,15 @@ type postedReview struct {
 // check (writingCheck). A person's typed write posts at once, recorded exempt_person_typed. A
 // session's write that names a held text as its parent or as the text it answers is held beside
 // it whatever the setting says, and posts right after it, through its own review where the
-// setting is hold and no person typed it. A held text that names none waits on its writer's
-// newest held text at its place, if any (heldBeforeOf): it is reviewed at once and posts after
-// that text, so one writer's held texts at one place post in the order written; a write that posts
-// at once (typed by a person, generated, read by no person, or of a kind whose setting is not
-// hold) waits on none. A person signed in at a browser learns nothing of a held text: their write
-// is the route's own, which finds no such text, as awaitHeldTarget answers their other writes.
+// setting is hold and no person typed it. A new issue that names no held parent but a held
+// blocker is held beside the newest such blocker, read as its own reader reads it; and its post
+// waits for every held blocker it names, whichever text it is held beside (heldNamedOpenSQL).
+// A held text that names none waits on its writer's newest held text at its place, if any
+// (heldBeforeOf): it is reviewed at once and posts after that text, so one writer's held texts at
+// one place post in the order written; a write that posts at once (typed by a person, generated,
+// read by no person, or of a kind whose setting is not hold) waits on none. A person signed in at
+// a browser learns nothing of a held text: their write is the route's own, which finds no such
+// text, as awaitHeldTarget answers their other writes.
 // Call it as writingCheck is called: once the input is decoded and the actor resolved, before any
 // transaction.
 func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, write reviewedWrite) (*postedReview, bool) {
@@ -224,9 +231,16 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 	}
 	ctx := r.Context()
 	var parent *heldParent
+	// named is a parent among names, which the write is on or answers, whose reader reads it too.
+	named := false
 	_, human, err := s.optionalActor(unloggedResolution(r))
 	if err == nil && !human {
-		if parent, err = s.heldParentOf(ctx, write.names); err != nil {
+		parent, err = s.heldParentOf(ctx, write.names)
+		named = parent != nil
+		if err == nil && parent == nil {
+			parent, err = s.heldParentOf(ctx, write.waits)
+		}
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return nil, false
 		}
@@ -242,7 +256,7 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 	reader, project := "", write.project
 	reviews := false
 	if writingCheckExemption(actor) == "" && !typed && setting != ReviewOff && !generatedText(r, method+" "+route) {
-		if parent != nil {
+		if named {
 			reader = parent.reader
 		} else if reader, err = s.writingCheckReader(ctx, r, method+" "+route, actor, input); err != nil {
 			slog.Warn("dispatch: decide the reader of a reviewed write", "route", method+" "+route, "error", err)

@@ -145,6 +145,50 @@ func TestADecisionBlockHeldShowsInItsDocumentAndIsOutOfTheInboxUntilReviewed(t *
 	}
 }
 
+// A held decision block whose writer rewords it, which starts its review and its writer's window
+// again, stays out of alice's Inbox, the open asks and the project's open-ask count past the moment
+// its first hold would have run out (its ask's held_until set into the past here), for as long as
+// its held text is open: the hold's own state decides. Once it posts, each of them shows it.
+func TestADecisionBlockHeldPastItsFirstBoundStaysOutUntilItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: time.Minute}, nil)
+	askID := rig.uploadDecisionBlock(false)
+	rig.waitHeld(askID, heldAwaitingWriter)
+	rig.rewordBlock(askID, "Ship the reviewer?", "Ship the reviewer this week?", false)
+	pollUntil(t, 20*time.Second, "the reworded block's second review", func() bool {
+		row := rig.heldRow(askID)
+		return row.revision == 2 && row.state == heldAwaitingWriter
+	})
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		update asks set held_until = now() - interval '1 minute' where id = $1::uuid`, askID); err != nil {
+		t.Fatalf("run the block's first hold out: %v", err)
+	}
+	openAsks := func() []string {
+		t.Helper()
+		var read openAsksRead
+		if err := json.Unmarshal([]byte(rig.aliceReads("/api/v1/asks/open?project=RVW")), &read); err != nil {
+			t.Fatal(err)
+		}
+		return listedOpenAsks(t, read)
+	}
+	if strings.Contains(rig.aliceReads("/api/v1/inbox"), askID) {
+		t.Fatal("alice's Inbox lists the reworded block while its held text is open")
+	}
+	if ids := openAsks(); len(ids) != 0 {
+		t.Fatalf("alice's open asks list %v while the reworded block is held, want none", ids)
+	}
+	if open := rig.projectOpenAsks(); open != 0 {
+		t.Fatalf("the project counts %d open asks while the reworded block is held, want 0", open)
+	}
+	rig.postHeldAsWritten(askID)
+	rig.waitHeld(askID, heldPosted)
+	if !strings.Contains(rig.aliceReads("/api/v1/inbox"), askID) {
+		t.Fatal("alice's Inbox does not list the block once it posted")
+	}
+	if ids := openAsks(); len(ids) != 1 || ids[0] != askID {
+		t.Fatalf("alice's open asks list %v once the block posted, want the block %s", ids, askID)
+	}
+}
+
 // listedOpenAsks is the ids an answer of GET /api/v1/asks/open lists, which its counts must agree
 // with.
 func listedOpenAsks(t *testing.T, read openAsksRead) []string {

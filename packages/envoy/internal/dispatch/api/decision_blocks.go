@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -26,12 +25,13 @@ import (
 // reviewer cannot hold it from the document, only from the people who would be asked to act on it.
 // By DISPATCH_REVIEWER_DECISION_BLOCKS:
 //
-//   - hold: in the settlement's own transaction the ask gets held_until, which every list and
-//     count of what waits on people reads (askNotHeld, below), and a held_texts row of kind
-//     decision_block under the ask's id carries its review, the writer's frame and window, and the
-//     sweep, as for any held text. Its post ends the hold: the ask's held_until goes back to null
-//     and a quiet ask.reviewed event tells an open page to refetch its Inbox and counts; where the
-//     outcome is rewrite_posted, the reviewer's rewrite is applied first (rewriteDecisionBlock).
+//   - hold: in the settlement's own transaction the ask gets held_until, the mark of an ask a hold
+//     was put on, and a held_texts row of kind decision_block under the ask's id carries its
+//     review, the writer's frame and window, and the sweep, as for any held text. Every list and
+//     count of what waits on people leaves the ask out while that row is open (askNotHeld, below).
+//     Its post ends the hold: the ask's held_until goes back to null and a quiet ask.reviewed event
+//     tells an open page to refetch its Inbox and counts; where the outcome is rewrite_posted, the
+//     reviewer's rewrite is applied first (rewriteDecisionBlock).
 //   - after: the block is reviewed after its settlement commits, with the findings sent to the
 //     writer and nothing held.
 //
@@ -45,20 +45,29 @@ import (
 const decisionBlockRoute = "SETTLE decision block"
 
 // askNotHeld is the condition, on the ask aliased a, that no reviewer's hold of a decision block
-// keeps it out (asks.held_until, migration 20261119050005). Every read that lists or counts open
-// asks as what waits on people adds it: the Inbox (listInbox), the open asks of one session or one
-// project (listOpenAsks, which `dispatch open-asks` reads), the issue detail's open asks
-// (listIssueAsksQueryWaiting), the Decisions view's open questions (specOpenQuestions), and the
-// open-ask counts of the project list (projectListQuery), the issue listing (issueSummaryJoins),
-// the priorities (priorityCountsQuery) and the agents list (agentOpenAskCounts). The block's own
-// record and lifecycle do not: the issue's and the document's ask lists and the ask's own read,
-// which show the block as its document does and mark it held_for_review instead (askReadColumns);
-// its writer's advice (your_open_asks); a close, a reopen and their repair; the document's own
-// guards; the approval reads, which never meet a decision block; and the Replies list's exclusion
-// of an open ask the Inbox lists (myRepliesOwner) with the logins a close names (events'
-// issueLoginsQuery), where the condition would put a held block in the Replies half of the Inbox
-// of the person it waits on.
-const askNotHeld = `(a.held_until is null or a.held_until <= now())`
+// keeps it out. The hold's own state decides: the ask is held while its held_texts row of kind
+// decision_block, under the ask's id, is in an open state (heldOpenStatesSQL), so a writer's edit,
+// a new writer's window and a review taken again past staleClaim, each of which moves only that
+// row, keep the block out until it posts, and a hold that failed holds it no more. asks.held_until
+// (migration 20261119050005) marks the asks a hold was put on, from the hold until its post, so a
+// read pays the held text's one-row lookup, by its primary key, only for such an ask. A hold no
+// sweep ends (the reviewer's model group unset) holds the block as it holds every other held text,
+// until a sweep does. Every read that lists or counts open asks as what waits on people adds it:
+// the Inbox (listInbox), the open asks of one session or one project (listOpenAsks, which
+// `dispatch open-asks` reads), the issue detail's open asks (listIssueAsksQueryWaiting), the
+// Decisions view's open questions (specOpenQuestions), and the open-ask counts of the project list
+// (projectListQuery), the issue listing (issueSummaryJoins), the priorities (priorityCountsQuery)
+// and the agents list (agentOpenAskCounts). The block's own record and lifecycle do not: the
+// issue's and the document's ask lists and the ask's own read, which show the block as its
+// document does and mark it held_for_review instead (askReadColumns); its writer's advice
+// (your_open_asks); a close, a reopen and their repair; the document's own guards; the approval
+// reads, which never meet a decision block; and the Replies list's exclusion of an open ask the
+// Inbox lists (myRepliesOwner) with the logins a close names (events' issueLoginsQuery), where the
+// condition would put a held block in the Replies half of the Inbox of the person it waits on.
+const askNotHeld = `(a.held_until is null or not exists (
+	select 1 from held_texts held_block
+	where held_block.id = a.id::text and held_block.kind = 'decision_block'
+		and held_block.state in ` + heldOpenStatesSQL + `))`
 
 // decisionBlockHold is a held decision block's request: the ask whose block is held.
 type decisionBlockHold struct {
@@ -70,12 +79,6 @@ type decisionBlockHold struct {
 type decisionBlockReviewer struct{ s *server }
 
 var _ docs.AskBlockReviewer = decisionBlockReviewer{}
-
-// heldDecisionBlockBound is how long a hold keeps a decision block out of people's Inboxes when
-// nothing ends it: the review's bound and the writer's window, with a minute more.
-func (rv *Reviewer) heldDecisionBlockBound() time.Duration {
-	return rv.config.Timeout + rv.config.WriterWindow + time.Minute
-}
 
 // decisionBlockReview is the reader and the project of the decision block ask, read in q, and
 // whether the reviewer reads it at all: an agent session's block (the Legion daemon's left out)
@@ -171,10 +174,11 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 	if ask.IssueKey != nil {
 		issueKey = *ask.IssueKey
 	}
-	bound := intervalOf(rv.heldDecisionBlockBound())
 	if err := docs.Write(ctx, tx, func(b *store.WriteBatch) error {
 		what := fmt.Sprintf("hold decision block %s", ask.ID)
-		b.Queue(what, `update asks set held_until = now() + $2::interval where id = $1`, ask.ID, bound)
+		// The mark of a held ask (askNotHeld): no time ends the hold, its held text's state does,
+		// and its post sets the mark back to null.
+		b.Queue(what, `update asks set held_until = 'infinity' where id = $1`, ask.ID)
 		b.Queue(what, `
 			insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, issue_key, state, reviewed)
 			values ($1, 'decision_block', $2, $3, $4, $5, nullif($6, ''), $7, nullif($8, ''), nullif($9, ''), 'reviewing', true)`,

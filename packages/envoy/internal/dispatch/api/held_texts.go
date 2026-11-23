@@ -57,6 +57,20 @@ const heldOpenStatesSQL = "('" + heldReviewing + "', '" + heldAwaitingWriter + "
 const heldReviewWaitsSQL = `(h.kind = '` + heldRequestKind + `' or
 	jsonb_path_exists(h.request, '$.** ? (@ == $id)', jsonb_build_object('id', h.depends_on)))`
 
+// heldNamedOpenSQL holds where the held text h names, beside the text it waits on (depends_on), a
+// held text held before it that has neither posted nor failed and that its post reads: a new
+// issue's blocker (issueCreate.Blockers) and an issue a kept write's body names (heldReplay.Names,
+// a PATCH's blocked_by, parent and rank neighbours). Its post waits until each has posted or
+// failed (postReady), as the write it runs refuses a blocker, a parent or a neighbour no row holds;
+// a text held after h, which h could not have named, is none of them. Each is read by its primary
+// key.
+const heldNamedOpenSQL = `exists (
+	select 1 from held_texts n
+	where n.id in (
+			select jsonb_array_elements_text(h.request->'blockers')
+			union all select jsonb_array_elements_text(h.request->'names'))
+		and n.state in ` + heldOpenStatesSQL + ` and n.seq < h.seq)`
+
 // heldNotReviewed is the outcome of a held text the reviewer does not read before it posts: a
 // write that waits on a held text with its own kind's setting not hold.
 const heldNotReviewed = "not_reviewed"
@@ -248,12 +262,13 @@ func (c messageCreate) reviewed() reviewedWrite {
 	}
 }
 
-// reviewed is the new issue as the reviewer reads it: its title and its spec, under its parent.
-// An issue imported from GitHub is not held: its title is GitHub's.
+// reviewed is the new issue as the reviewer reads it: its title and its spec, under its parent,
+// waiting on its blockers where a held text holds one. An issue imported from GitHub is not held:
+// its title is GitHub's.
 func (c issueCreate) reviewed() reviewedWrite {
 	return reviewedWrite{
 		kind: reviewer.KindIssue, request: c, project: c.Project, holdable: c.External == "",
-		subject: reviewer.Subject{IssueKey: c.Parent}, names: []string{c.Parent},
+		subject: reviewer.Subject{IssueKey: c.Parent}, names: []string{c.Parent}, waits: c.Blockers,
 		text: reviewer.Text{Kind: reviewer.KindIssue, Title: c.Title, Body: deref(c.Spec)},
 	}
 }
@@ -729,19 +744,31 @@ func deliveredMessage(ctx context.Context, q queryer, id string) (issueKey, targ
 	return issueKey, target, err
 }
 
-// heldIssueCreateError is the refusal the post of create, a new issue beside a held parent among
-// waited, gives it (writeIssue), made at its hold in that post's order: a blocker outside the
-// project a scoped caller may write (callerForeignTargets), which that post refuses before it
-// reads the parent; a parent of another project; a parent too deep, counting the held issues
-// above it, which no issues row holds yet, and the chain of rows above those
-// (refuseChainTooDeep); and every other check of that post, which no held text decides, by its
-// dry run with no parent and with none of the held issues it waits on among its blockers. A
-// parent posted meanwhile, its dry run reads as its post does. The dry run is the answer: what
-// its seed made of the spec, which does not depend on the parent (heldDryRun.markdown, and the
-// blocks its advice read off it).
+// heldIssueCreateError is the refusal the post of create, a new issue beside a held parent or a
+// held blocker among waited, gives it (writeIssue), made at its hold in that post's order: a
+// blocker outside the project a scoped caller may write, a posted one by its row and a held one by
+// the project its held row names (heldForeignTargets), which that post refuses before it reads
+// the parent; a parent of another project; a parent too deep, counting the held issues above it,
+// which no issues row holds yet, and the chain of rows above those (refuseChainTooDeep); and every
+// other check of that post, which no held text decides, by its dry run with no parent and with
+// none of the held issues it waits on among its blockers: every blocker a held text holds, which
+// its post waits for (heldNamedOpenSQL), whether or not it stands in waited. A parent posted
+// meanwhile, its dry run reads as its post does. The dry run is the answer: what its seed made of
+// the spec, which does not depend on the parent (heldDryRun.markdown, and the blocks its advice
+// read off it).
 func (s *server) heldIssueCreateError(ctx context.Context, q queryer, create issueCreate, actor model.Actor, id string, waited heldChain) (heldDryRun, error) {
-	if _, err := callerForeignTargets(ctx, q, create.Project, create.CallerProject, create.Blockers); err != nil {
+	heldBlockers, err := heldIssuesAmong(ctx, q, create.Blockers)
+	if err != nil {
 		return heldDryRun{}, err
+	}
+	if create.CallerProject != "" {
+		foreign, err := foreignTargets(ctx, q, create.Project, create.Blockers)
+		if err != nil {
+			return heldDryRun{}, err
+		}
+		if err := refuseForeignBlocker(create.CallerProject, append(foreign, heldForeignTargets(heldBlockers, create.Project)...)); err != nil {
+			return heldDryRun{}, err
+		}
 	}
 	check := create
 	if parent, _, held := waited.issue(create.Parent); held {
@@ -755,10 +782,39 @@ func (s *server) heldIssueCreateError(ctx context.Context, q queryer, create iss
 		check.Parent = ""
 	}
 	check.Blockers = slices.DeleteFunc(slices.Clone(create.Blockers), func(key string) bool {
-		_, held := waited.link(key)
-		return held
+		_, isHeld := heldBlockers[key]
+		return isHeld
 	})
 	return s.dryRunHeld(check.reviewed(), actor, id)
+}
+
+// heldIssuesAmong is the project of each held issue among keys that has neither posted nor
+// failed, by its key: a key no issues row holds yet, which a write naming it waits on
+// (heldNamedOpenSQL).
+func heldIssuesAmong(ctx context.Context, q queryer, keys []string) (map[string]string, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select id, coalesce(project, '') from held_texts
+		where id = any($1) and kind = 'issue' and state in `+heldOpenStatesSQL, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the held issues a write names: %w", err)
+	}
+	held := map[string]string{}
+	for rows.Next() {
+		var key, project string
+		if err := rows.Scan(&key, &project); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the held issues a write names: %w", err)
+		}
+		held[key] = project
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the held issues a write names: %w", err)
+	}
+	return held, nil
 }
 
 // heldIssueRow is the row the post of create, a new issue, leaves as a write's advice reads it
@@ -1458,9 +1514,10 @@ func (s *server) decideHeld(ctx context.Context, row heldRow, decision heldDecis
 }
 
 // postReady posts every held text that is decided and whose turn has come: the text it waits on,
-// if any, has posted, and every text that waits on that one and came before it has posted or
-// failed. Each posts in the order the writes came. It runs on the post context (postContext),
-// whatever set it off, so no request's values reach a post.
+// if any, has posted, every text that waits on that one and came before it has posted or failed,
+// and every held text it names beside that one (heldNamedOpenSQL) has posted or failed. Each
+// posts in the order the writes came. It runs on the post context (postContext), whatever set it
+// off, so no request's values reach a post.
 func (s *server) postReady() {
 	if s.deps.Store == nil {
 		return
@@ -1476,6 +1533,7 @@ func (s *server) postReady() {
 				and not exists (
 					select 1 from held_texts e
 					where e.depends_on = h.depends_on and e.seq < h.seq and e.state in `+heldOpenStatesSQL+`)
+				and not `+heldNamedOpenSQL+`
 			order by h.seq limit 50`, intervalOf(s.deps.Reviewer.staleClaim()))
 		if err != nil {
 			if ctx.Err() == nil {
@@ -1560,8 +1618,10 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 // document's queue of conditional edits full for now), DOC_NEWER_CONTENT (a newer build wrote the
 // document while two builds serve one database: the post goes through on that build, and on this
 // one once it is replaced) and DOCUMENT_UNLOADABLE (a history that does not load, the state a
-// rebuild repairs). A rewrite's write (rewriteRefusal) reads such a refusal the same way: no
-// reason the rewrite cannot be written.
+// rebuild repairs). The reviewer's rewrite of a held decision block (rewriteRefusal) reads such a
+// refusal the same way: no reason the rewrite cannot be written, as the sweep posts the block
+// again. A person's Rewrite, which no later write takes up again, fails with such a refusal's own
+// message (askRewriteRefusal).
 func heldPostRetried(refusal handlerRefusal) bool {
 	return refusal.status == http.StatusTooManyRequests || refusal.code == codeDocNewerContent ||
 		refusal.code == codeDocumentUnloadable

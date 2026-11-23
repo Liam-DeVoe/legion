@@ -125,6 +125,45 @@ func TestTheWritersAnswerToAPostedCommentsFindingsIsKept(t *testing.T) {
 	}
 }
 
+// The writer's answer to the findings frame of a held message is kept with the held text, 202,
+// after the message posted as while it was held: the writer got no delivery of its own message, so
+// its reply under that id answers the frame. The recipient's reply to the same posted message is a
+// reply like any other, which the reply route takes.
+func TestTheWritersAnswerToAPostedMessagesFindingsIsKept(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	const recipient = "s-recipient"
+	rig.listener.start(recipient)
+	held := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase, "target": "session:" + recipient, "delivery": "btw",
+	}), "the agent's message to a session")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	rig.postHeldAsWritten(held.ID)
+	rig.waitHeld(held.ID, heldPosted)
+	const answer = "The message is right for its reader as written."
+	kept := rig.asWriter(http.MethodPost, "/api/v1/messages/"+held.ID+"/reply", map[string]any{"attempt": 1, "body": answer})
+	if kept.Code != http.StatusAccepted {
+		t.Fatalf("the writer's answer to the posted message's findings: %d %s, want 202", kept.Code, kept.Body.String())
+	}
+	if got := rig.heldRow(held.ID).answer; got != answer {
+		t.Fatalf("the held message keeps the answer %q, want %q", got, answer)
+	}
+	if count := countRows(t, rig.database, `select count(*) from messages where in_reply_to::text = $1`, held.ID); count != 0 {
+		t.Fatalf("the writer's answer wrote %d replies to the posted message, want none", count)
+	}
+	pollUntil(t, 10*time.Second, "the posted message's delivery to "+recipient, func() bool {
+		return countRows(t, rig.database, `select count(*) from message_deliveries where message_id::text = $1 and session_id = $2`, held.ID, recipient) == 1
+	})
+	reply := rig.asSession(recipient, http.MethodPost, "/api/v1/messages/"+held.ID+"/reply", map[string]any{
+		"attempt": 1, "body": "The node answers on its port now.",
+	})
+	if reply.Code != http.StatusCreated {
+		t.Fatalf("the recipient's reply to the posted message: %d %s, want 201", reply.Code, reply.Body.String())
+	}
+	if got := rig.heldRow(held.ID).answer; got != answer {
+		t.Fatalf("after the recipient's reply the held message keeps the answer %q, want the writer's %q", got, answer)
+	}
+}
+
 // A person signed in at a browser learns nothing of a held text: their write on a held issue's or
 // a held comment's path, and their create of a comment on a held issue or of a child of one, with
 // the kept-write header or without, is the route's own, answered as the same write naming an id
@@ -556,6 +595,129 @@ func TestAHeldTextWaitingOnAHeldParentIsReviewedOnceTheParentPosts(t *testing.T)
 	}
 	if calls := rig.reviewCalls(childTitle); calls != 1 {
 		t.Fatalf("the reviewer read the child %d times, want once", calls)
+	}
+}
+
+// heldIssue holds a new issue of project titled title, which the reviewer flags, as the writer,
+// and waits for it to wait on its writer.
+func (rig *reviewRig) heldIssue(project, title string) heldWriteAnswer {
+	rig.t.Helper()
+	held := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": project, "title": title, "spec": vacuousPhrase,
+	}), "the held issue "+title)
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	return held
+}
+
+// A new issue whose blocked_by names a held issue is held beside it, as a child is beside a held
+// parent, and posts after it with the link, as it posts with the reviewer off. One with a held
+// parent and a held blocker outside that parent's chain is held beside its parent, its dry run
+// leaving the held blocker out, and its post waits for the blocker too (heldNamedOpenSQL): it is
+// decided once its parent posts, and posts only once its blocker has. The blocker is of another
+// project, so neither held issue waits on the other for its turn at its project (heldBeforeOf).
+func TestANewIssueBlockedByAHeldIssuePostsAfterIt(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	createTestProject(t, rig.handler, "OTH")
+	blocker := rig.heldIssue("OTH", "Held blocker")
+	parent := rig.heldIssue("RVW", "Held parent")
+	blocked := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Blocked by a held issue", "blocked_by": []string{blocker.ID},
+	}), "the issue blocked by a held issue")
+	if blocked.Held.WaitsOn != blocker.ID {
+		t.Fatalf("the blocked issue waits on %q, want its held blocker %s", blocked.Held.WaitsOn, blocker.ID)
+	}
+	child := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Child blocked beside its held parent", "parent": parent.ID, "blocked_by": []string{blocker.ID},
+	}), "the child blocked by a held issue outside its parent's chain")
+	if child.Held.WaitsOn != parent.ID {
+		t.Fatalf("the child waits on %q, want its held parent %s", child.Held.WaitsOn, parent.ID)
+	}
+	if count := countRows(t, rig.database, `select count(*) from issues where key = any($1)`, []string{blocked.ID, child.ID}); count != 0 {
+		t.Fatalf("%d of the issues waiting on held ones exist before those post", count)
+	}
+	rig.postHeldAsWritten(parent.ID)
+	rig.waitHeld(child.ID, heldPosting)
+	rig.served.detached.wait()
+	if row := rig.heldRow(child.ID); row.state != heldPosting {
+		t.Fatalf("the child is %s (%s) while its blocker is held, want it waiting to post", row.state, row.detail)
+	}
+	rig.postHeldAsWritten(blocker.ID)
+	blockerPosted := rig.waitHeld(blocker.ID, heldPosted)
+	for _, waiting := range []heldWriteAnswer{blocked, child} {
+		posted := rig.waitHeld(waiting.ID, heldPosted)
+		if posted.postedAt.Before(*blockerPosted.postedAt) {
+			t.Fatalf("%s posted at %v, before its blocker at %v", waiting.ID, posted.postedAt, blockerPosted.postedAt)
+		}
+		if blockers := issueBlockers(t, rig.database, waiting.ID); !slices.Equal(blockers, []string{blocker.ID}) {
+			t.Fatalf("%s is blocked by %v, want %s", waiting.ID, blockers, blocker.ID)
+		}
+	}
+	var childParent string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select parent_key from issues where key = $1`, child.ID).Scan(&childParent); err != nil || childParent != parent.ID {
+		t.Fatalf("the child's parent is %q (%v), want %s", childParent, err, parent.ID)
+	}
+}
+
+// An update whose blocked_by, parent or rank names a held issue is kept beside it, from a client
+// that reads a kept write's answer, and runs once it posts, writing the link, the parent and the
+// rank as it does with the reviewer off. An update of a held issue that names another held issue
+// as a blocker is kept beside the issue its path names, and runs only once its blocker has posted
+// too (heldNamedOpenSQL). The blocker is of another project, so neither held issue waits on the
+// other for its turn at its project (heldBeforeOf).
+func TestAnUpdateAddingAHeldBlockerIsKeptAndPostsAfterIt(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	createTestProject(t, rig.handler, "OTH")
+	blocker := rig.heldIssue("OTH", "Held blocker")
+	updated := rig.heldIssue("RVW", "Held issue updated beside its blocker")
+	reparented := createIssueAs(t, rig.handler, "RVW", "Reparented under a held issue")
+	ranked := createIssueAs(t, rig.handler, "RVW", "Ranked after a held issue")
+	keep := func(issue string, body map[string]any, waitsOn string) heldWriteAnswer {
+		t.Helper()
+		kept := rig.held(rig.asKeptWriter(http.MethodPatch, "/api/v1/issues/"+issue, body), "the update of "+issue)
+		if kept.Held.WaitsOn != waitsOn {
+			t.Fatalf("the update of %s waits on %q, want %s", issue, kept.Held.WaitsOn, waitsOn)
+		}
+		return kept
+	}
+	// The writes kept beside one text post in the order they came, so the update that waits on a
+	// second held text comes last.
+	posted := keep(rig.issue, map[string]any{"blocked_by": []string{blocker.ID}}, blocker.ID)
+	parent := keep(reparented, map[string]any{"parent": updated.ID}, updated.ID)
+	rank := keep(ranked, map[string]any{"rank": map[string]any{"after": updated.ID}}, updated.ID)
+	held := keep(updated.ID, map[string]any{"blocked_by": []string{blocker.ID}}, updated.ID)
+	if blockers := issueBlockers(t, rig.database, rig.issue); len(blockers) != 0 {
+		t.Fatalf("%s is blocked by %v before its blocker posts", rig.issue, blockers)
+	}
+	requirePosted := func(id, issue string) {
+		t.Helper()
+		if row := rig.waitHeld(id, heldPosted); row.outcome != heldNotReviewed {
+			t.Fatalf("the update of %s posted %s (%s)", issue, row.outcome, row.detail)
+		}
+	}
+	rig.postHeldAsWritten(updated.ID)
+	rig.waitHeld(updated.ID, heldPosted)
+	requirePosted(parent.ID, reparented)
+	requirePosted(rank.ID, ranked)
+	rig.served.detached.wait()
+	if row := rig.heldRow(held.ID); row.state != heldPosting {
+		t.Fatalf("the update of %s is %s (%s) while its blocker is held, want it waiting to post", updated.ID, row.state, row.detail)
+	}
+	rig.postHeldAsWritten(blocker.ID)
+	requirePosted(posted.ID, rig.issue)
+	requirePosted(held.ID, updated.ID)
+	for _, issue := range []string{rig.issue, updated.ID} {
+		if blockers := issueBlockers(t, rig.database, issue); !slices.Equal(blockers, []string{blocker.ID}) {
+			t.Fatalf("%s is blocked by %v, want %s", issue, blockers, blocker.ID)
+		}
+	}
+	var parentKey string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select coalesce(parent_key, '') from issues where key = $1`, reparented).Scan(&parentKey); err != nil || parentKey != updated.ID {
+		t.Fatalf("%s's parent is %q (%v), want %s", reparented, parentKey, err, updated.ID)
+	}
+	var after bool
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select r.rank > b.rank from issues r, issues b where r.key = $1 and b.key = $2`, ranked, updated.ID).Scan(&after); err != nil || !after {
+		t.Fatalf("%s ranks after %s: %v (%v), want true", ranked, updated.ID, after, err)
 	}
 }
 
@@ -1085,6 +1247,158 @@ func TestAProjectScopedTokenWritesBesideAHeldTextOfItsOwnProject(t *testing.T) {
 				t.Fatalf("the refusal = %+v, want %s naming OTH", refusal, codeProjectScope)
 			}
 		})
+	}
+}
+
+// postHeldIssueFixture posts the held issue id that holdFixture held, as a clean review decides
+// one: its post files the issue under the number its key names, and each write kept or held
+// beside it posts after it.
+func postHeldIssueFixture(t *testing.T, database *store.Store, served *server, id string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update held_texts set request = request || '{"labels": []}'::jsonb, state = 'posting', outcome = 'passed',
+			deadline = null
+		where id = $1`, id); err != nil {
+		t.Fatalf("decide the held issue %s: %v", id, err)
+	}
+	served.postReady()
+}
+
+// waitHeldDecided waits for the held text id of served to post or fail, and answers it.
+func waitHeldDecided(t *testing.T, database *store.Store, served *server, id string) heldRow {
+	t.Helper()
+	var row heldRow
+	pollUntil(t, 20*time.Second, "held text "+id+" posted or failed", func() bool {
+		var err error
+		if row, err = served.loadHeld(context.Background(), database.Pool, id, false); err != nil {
+			t.Fatalf("read held text %s: %v", id, err)
+		}
+		return row.state == heldPosted || row.state == heldFailed
+	})
+	return row
+}
+
+// issueBlockers is the blocked_by of the issue key, as its links hold them, in key order.
+func issueBlockers(t *testing.T, database *store.Store, key string) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select target_key from issue_links where issue_key = $1 and kind = 'blocked_by' order by target_key`, key)
+	if err != nil {
+		t.Fatalf("read the blockers of %s: %v", key, err)
+	}
+	blockers, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the blockers of %s: %v", key, err)
+	}
+	return blockers
+}
+
+// createIssueAs files an issue of project titled title as alice, at a browser, and answers its key.
+func createIssueAs(t *testing.T, handler http.Handler, project, title string) string {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": project, "title": title, "spec": "# Spec", "force": true,
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Issue](t, response).Key
+}
+
+// A write kept beside a held text runs at its post as the caller its hold stored, held to the one
+// project that caller's credential may write, as it is held to it with the reviewer off: a
+// project-scoped token's update of its own project's held issue naming a posted blocker of another
+// project is kept, since its hold judges only a held blocker (refuseHeldForeignBlockers), and its
+// post refuses it, 403 PROJECT_SCOPE naming both projects, as the same update of a posted issue is
+// refused at once. The kept row fails with that refusal and no link is written. The same token's
+// kept update naming a blocker of its own project posts.
+func TestAKeptWritePostsWithinTheProjectItsCallerMayWrite(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{reviewer: testReviewer(ReviewerConfig{Issues: ReviewHold})})
+	caller := newBrokerCaller(t)
+	const token = "a-token-keeping-updates-beside-a-held-issue"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	createTestProject(t, rig.handler, brokerTestProject, "OTH")
+	own := createIssueAs(t, rig.handler, brokerTestProject, "Its own project's issue")
+	outside := createIssueAs(t, rig.handler, "OTH", "An issue of another project")
+	held := brokerTestProject + "-900"
+	holdFixture(t, rig.database, held, "issue", brokerTestProject)
+	keep := func(blocker string) string {
+		t.Helper()
+		request := caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+held, token, map[string]any{"blocked_by": []string{blocker}})
+		request.Header.Set(contracts.AcceptsKeptWriteHeader, "1")
+		response := rig.serve(request)
+		if response.Code != http.StatusAccepted || decodeBody[heldDeferred](t, response).Held.WaitsOn != held {
+			t.Fatalf("the scoped token's update of its own project's held issue naming %s: %d %s, want 202 waiting on %s",
+				blocker, response.Code, response.Body.String(), held)
+		}
+		return decodeBody[heldDeferred](t, response).ID
+	}
+	// The kept writes post in the order they came; the one its post refuses comes last, so no
+	// write waits behind a refused one for the sweep.
+	within, across := keep(own), keep(outside)
+	postHeldIssueFixture(t, rig.database, rig.served, held)
+	if row := waitHeldDecided(t, rig.database, rig.served, across); row.state != heldFailed ||
+		!strings.Contains(row.detail, codeProjectScope) || !strings.Contains(row.detail, brokerTestProject) || !strings.Contains(row.detail, "OTH") {
+		t.Fatalf("the kept update naming %s is %s (%s), want it failed at its post with %s naming %s and OTH",
+			outside, row.state, row.detail, codeProjectScope, brokerTestProject)
+	}
+	if row := waitHeldDecided(t, rig.database, rig.served, within); row.state != heldPosted {
+		t.Fatalf("the kept update naming %s is %s (%s), want it posted", own, row.state, row.detail)
+	}
+	if blockers := issueBlockers(t, rig.database, held); !slices.Equal(blockers, []string{own}) {
+		t.Fatalf("the posted issue %s is blocked by %v, want only %s of its own project", held, blockers, own)
+	}
+}
+
+// A new issue, or an update, that names a held issue as a blocker waits on it (heldNamedOpenSQL),
+// so a project-scoped token is refused at once, with the refusal its post would give, a held
+// blocker of another project: 403 PROJECT_SCOPE naming that project, and nothing is held or kept.
+// The same writes naming a held issue of its own project are held, and kept, beside it.
+func TestAScopedWriteIsRefusedAHeldBlockerOfAnotherProjectAtItsHold(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{reviewer: testReviewer(ReviewerConfig{Issues: ReviewHold})})
+	caller := newBrokerCaller(t)
+	const token = "a-token-naming-held-blockers"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	createTestProject(t, rig.handler, brokerTestProject, "OTH")
+	own := createIssueAs(t, rig.handler, brokerTestProject, "Its own project's issue")
+	ownHeld, otherHeld := brokerTestProject+"-900", "OTH-900"
+	holdFixture(t, rig.database, ownHeld, "issue", brokerTestProject)
+	holdFixture(t, rig.database, otherHeld, "issue", "OTH")
+	create := func(blocker string) *httptest.ResponseRecorder {
+		t.Helper()
+		return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			"project": brokerTestProject, "title": "Blocked by " + blocker, "blocked_by": []string{blocker},
+		}))
+	}
+	update := func(blocker string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"blocked_by": []string{blocker}})
+		request.Header.Set(contracts.AcceptsKeptWriteHeader, "1")
+		return rig.serve(request)
+	}
+	held := func() int64 { return countRows(t, rig.database, `select count(*) from held_texts`) }
+	before := held()
+	for name, refused := range map[string]*httptest.ResponseRecorder{
+		"a new issue blocked by another project's held issue":   create(otherHeld),
+		"an update adding another project's held issue blocker": update(otherHeld),
+	} {
+		if refused.Code != http.StatusForbidden {
+			t.Fatalf("%s: %d %s, want 403", name, refused.Code, refused.Body.String())
+		}
+		if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != codeProjectScope ||
+			!strings.Contains(refusal.Error, otherHeld) || !strings.Contains(refusal.Error, "project OTH") {
+			t.Fatalf("%s: the refusal = %+v, want %s naming %s of project OTH", name, refusal, codeProjectScope, otherHeld)
+		}
+	}
+	if after := held(); after != before {
+		t.Fatalf("the refused writes left %d held texts, want %d", after, before)
+	}
+	if created := create(ownHeld); created.Code != http.StatusCreated || decodeBody[heldWriteAnswer](t, created).Held == nil ||
+		decodeBody[heldWriteAnswer](t, created).Held.WaitsOn != ownHeld {
+		t.Fatalf("a new issue blocked by its own project's held issue: %d %s, want 201 held waiting on %s", created.Code, created.Body.String(), ownHeld)
+	}
+	if kept := update(ownHeld); kept.Code != http.StatusAccepted || decodeBody[heldDeferred](t, kept).Held.WaitsOn != ownHeld {
+		t.Fatalf("an update adding its own project's held issue as a blocker: %d %s, want 202 waiting on %s", kept.Code, kept.Body.String(), ownHeld)
 	}
 }
 

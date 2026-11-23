@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -53,7 +54,10 @@ type heldCaller struct {
 // reply posts (heldRequest.place), read at its hold from the text it answers (repliedTextOf), so
 // a later held text of its writer finds it there (heldBeforeOf). EarlierReply is the writer's
 // earlier held reply to the same delivery that a held reply waits on (heldReplyPlaceOf), which its
-// record reads once it posts (heldReviewWaitsSQL); "" for none.
+// record reads once it posts (heldReviewWaitsSQL); "" for none. Names are the issues a kept
+// write's body names beside the text its path names (heldBodyNames: a PATCH's blocked_by, parent
+// and rank neighbours), each of which its post waits for while it is held (heldNamedOpenSQL); nil
+// for any other write.
 type heldReplay struct {
 	Replay       bool             `json:"replay"`
 	Method       string           `json:"method"`
@@ -68,6 +72,7 @@ type heldReplay struct {
 	RoleHolder   *roleHolderReply `json:"role_holder,omitempty"`
 	Place        string           `json:"place,omitempty"`
 	EarlierReply string           `json:"earlier_reply,omitempty"`
+	Names        []string         `json:"names,omitempty"`
 }
 
 // isReplay reports whether a held text's request is a write kept whole.
@@ -181,7 +186,10 @@ func (a *replayAnswer) writeTo(w http.ResponseWriter) {
 }
 
 // runReplay runs replay through the server's own routes as its caller, with held, the held text's
-// post or its dry run, on the request's context. It answers the route's answer.
+// post or its dry run, on the request's context. It answers the route's answer. The request
+// carries the caller as the one it resolved (resolvedCallerKey), and as the credential it
+// presented (replayedCallerKey), which the project, session and sign-in checks read as they read a
+// broker-issued token's (brokerCredentialActor).
 func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPost) (*replayAnswer, error) {
 	if s.mux == nil {
 		return nil, errors.New("the server mounts no routes to run a kept write through")
@@ -196,6 +204,7 @@ func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPos
 		caller.Credential = &model.Credential{}
 	}
 	ctx = context.WithValue(ctx, resolvedCallerKey{}, resolvedCaller{actor: caller, human: replay.Caller.Human})
+	ctx = context.WithValue(ctx, replayedCallerKey{}, caller)
 	ctx = withHeldPost(ctx, held)
 	request, err := http.NewRequestWithContext(ctx, replay.Method, target, bytes.NewReader(replay.Body))
 	if err != nil {
@@ -215,6 +224,17 @@ func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPos
 	answer := &replayAnswer{header: http.Header{}}
 	s.serveMounted(answer, request)
 	return answer, nil
+}
+
+// replayedCallerKey carries the caller a request runReplay runs was stored with, which presents no
+// credential of its own: the scope checks read it as the credential the request presented
+// (brokerCredentialActor), where a layer of the request may have resolved resolvedCallerKey again.
+type replayedCallerKey struct{}
+
+// replayedCaller is the caller r, a request runReplay runs, was stored with, and whether r is one.
+func replayedCaller(r *http.Request) (model.Actor, bool) {
+	caller, replayed := r.Context().Value(replayedCallerKey{}).(model.Actor)
+	return caller, replayed
 }
 
 // serveMounted serves request on the routes the server mounts, as it serves one from outside. It
@@ -577,6 +597,13 @@ var heldTargetSelf = map[string]string{
 // held text: their write is the route's own, which finds no such text and answers as it does with
 // the reviewer off, as a person's read is (answerHeldRead).
 //
+// A write whose body names issues its route reads (heldBodyNames: a PATCH's blocked_by, parent and
+// rank neighbours) is kept beside the newest held one of them where its path names no held text,
+// and its post waits for every one of them still held, whichever text it is kept beside
+// (heldNamedOpenSQL), so it finds each as a row, as it does with the reviewer off. A caller whose
+// credential names one project is refused a held blocker of another project now, as the post
+// refuses that blocker once it posted, rather than kept to wait on another project's held text.
+//
 // Only a session's write whose client says it reads that 202 (contracts.AcceptsKeptWriteHeader:
 // 1, which the agents' DispatchClient sends on every write) is kept. The 202 carries none of the
 // route's own shape, and a client built before the header reads it as that shape all the same:
@@ -592,11 +619,22 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 	if !held {
 		return handler
 	}
+	bodyNames := heldBodyNames[name]
 	return func(w http.ResponseWriter, r *http.Request) {
 		parent, err := s.heldTargetOf(r, param)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		var named heldBodyNamed
+		if bodyNames != nil && s.keepsHeldWrites(r) {
+			if named, err = bodyNames(r); err == nil && parent == nil {
+				parent, err = s.heldParentOf(r.Context(), named.names)
+			}
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		if parent == nil {
 			handler(w, r)
@@ -608,6 +646,10 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 			handler(w, r)
 			return
 		}
+		if err := s.refuseHeldForeignBlockers(r, named.blockers); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		if r.Header.Get(contracts.AcceptsKeptWriteHeader) != "1" {
 			WriteJSON(w, http.StatusConflict, heldTextError{
 				Error: "held text " + parent.id + " has not posted, and this client does not read the answer of a write " +
@@ -617,18 +659,86 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 			})
 			return
 		}
-		s.holdRequest(w, r, name, parent)
+		s.holdRequest(w, r, name, parent, named.names)
 	}
+}
+
+// keepsHeldWrites reports whether a write r makes may be kept beside a held text: the reviewer
+// reads some kind, and r is no held text's post running the write it kept.
+func (s *server) keepsHeldWrites(r *http.Request) bool {
+	return s.deps.Reviewer.reviewsAny() && s.deps.Store != nil && heldPostFrom(r.Context()) == nil
 }
 
 // heldTargetOf is the held text, not yet posted, that r's path value param names, which
 // awaitHeldTarget keeps r's write beside: nil where the reviewer reads no kind, where r is a held
 // text's post running the write it kept, and where the path names no such text.
 func (s *server) heldTargetOf(r *http.Request, param string) (*heldParent, error) {
-	if !s.deps.Reviewer.reviewsAny() || s.deps.Store == nil || heldPostFrom(r.Context()) != nil {
+	if !s.keepsHeldWrites(r) {
 		return nil, nil
 	}
 	return s.heldParentOf(r.Context(), []string{r.PathValue(param)})
+}
+
+// heldBodyNamed is what a kept write's body names that a held text may hold (heldBodyNames):
+// every such id, and among them the blockers the write would add.
+type heldBodyNamed struct {
+	names, blockers []string
+}
+
+// heldBodyNames are the writes awaitHeldTarget keeps whose body names, beside the text their path
+// names, issues their route reads and refuses where no row holds one, each with what reads them:
+// a PATCH of an issue names its blockers (blocked_by), its parent and its rank neighbours
+// (issuePatchNamed).
+var heldBodyNames = map[string]func(*http.Request) (heldBodyNamed, error){
+	"PATCH /api/v1/issues/{key}": issuePatchNamed,
+}
+
+// issuePatchNamed reads, out of r's body, a PATCH of an issue, the issues it names in blocked_by,
+// parent and rank's after and before, and puts the body back for the route to read. A body past
+// the route's bound, or one that does not decode, names none: the route answers it.
+func issuePatchNamed(r *http.Request) (heldBodyNamed, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONRequestBytes+1))
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+	if err != nil || int64(len(body)) > maxJSONRequestBytes {
+		return heldBodyNamed{}, err
+	}
+	var input struct {
+		BlockedBy []string        `json:"blocked_by"`
+		Parent    json.RawMessage `json:"parent"`
+		Rank      *rankInput      `json:"rank"`
+	}
+	if json.Unmarshal(body, &input) != nil {
+		return heldBodyNamed{}, nil
+	}
+	named := heldBodyNamed{names: slices.Clone(input.BlockedBy), blockers: input.BlockedBy}
+	if parent, _, err := parseIssueParent(input.Parent); err == nil && parent != nil {
+		named.names = append(named.names, *parent)
+	}
+	if input.Rank != nil {
+		for _, neighbour := range []*string{input.Rank.After, input.Rank.Before} {
+			if neighbour != nil {
+				named.names = append(named.names, strings.TrimSpace(*neighbour))
+			}
+		}
+	}
+	return named, nil
+}
+
+// refuseHeldForeignBlockers refuses a caller whose credential names one project a held issue of
+// another project among blockers, which a write kept beside held texts would wait on, with the
+// refusal its post gives that blocker once it posted (writeBlockedBy). A blocker that has posted,
+// or one nothing holds, is the post's to judge, as every other check of a kept write is. The
+// write's own issue is of the caller's project, which withinProjectScope checked before this.
+func (s *server) refuseHeldForeignBlockers(r *http.Request, blockers []string) error {
+	covers, scoped := s.callerProject(r)
+	if !scoped || len(blockers) == 0 {
+		return nil
+	}
+	held, err := heldIssuesAmong(r.Context(), s.deps.Store.Pool, blockers)
+	if err != nil {
+		return err
+	}
+	return refuseForeignBlocker(covers, heldForeignTargets(held, covers))
 }
 
 // awaitsHeldTarget reports whether awaitHeldTarget holds a write of method and pattern, with the
@@ -661,8 +771,9 @@ type heldDeferred struct {
 // one (routeBody), which the route then enforces again when the write runs.
 const heldRequestBodyMax = 64 << 20
 
-// holdRequest keeps r's write whole beside parent, a held text it names, and answers 202.
-func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route string, parent *heldParent) {
+// holdRequest keeps r's write whole beside parent, a held text it names, with names, the issues its
+// body names (heldBodyNames), and answers 202.
+func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route string, parent *heldParent, names []string) {
 	ctx := r.Context()
 	caller, err := s.captureCaller(r)
 	if err != nil {
@@ -686,6 +797,7 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 	replay := heldReplay{
 		Replay: true, Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
 		ContentType: r.Header.Get("Content-Type"), Body: body, Caller: caller, PersonTyped: personTypedWrite(r),
+		Names: names,
 	}
 	request, err := json.Marshal(replay)
 	if err != nil {

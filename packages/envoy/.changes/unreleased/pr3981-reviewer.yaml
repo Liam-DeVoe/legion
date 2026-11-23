@@ -12,7 +12,8 @@ body: |-
   advice the write gets with the reviewer off, the nearest existing issues and answered questions
   and the near-copy check included, and a near copy the check refuses is refused at once, with
   nothing held. A write beside a held text it names (an ask, a comment or a message on a held
-  issue, a reply to a held comment or ask, a child of a held issue, a follow-up to a held reply)
+  issue, a reply to a held comment or ask, a child of a held issue or a new issue a held issue
+  blocks, a follow-up to a held reply)
   answers what its post will write, read off the held texts it waits on: whom an ask waits on, the
   text an ask's or a comment's anchor covers in a held issue's spec, a comment's thread, turn and
   `ask_waiting_on`, the block a reply names in a held comment, ask or message (its id, reference
@@ -24,6 +25,9 @@ body: |-
   anchor in a held issue's document is left to its post where a write kept beside that issue
   posts first, since that write can make the document. A held text counts in its advice the held
   texts that post before it. A review that finds nothing posts the text.
+  A new issue whose blockers name held issues posts only once each of them has posted, its dry run
+  leaving every held blocker out, and a session whose credential names one project is refused a
+  held blocker of another project at once (`403 PROJECT_SCOPE`).
   Otherwise the findings and the
   reviewer's rewrite go to the writer session as a turn of their own, and the writer edits the text
   or posts it as written.

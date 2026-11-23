@@ -96,7 +96,17 @@ const (
 // request presenting no DPoP-bound token is outside both checks. A credential that does not
 // resolve is outside them too: its refusal is written further in, by the keyed layer for a keyed
 // write and by the handler for any other.
+//
+// A held text's post runs a kept write again through the routes (runReplay) with the caller its
+// hold stored, and presents no token: that caller is the credential the request presented, a
+// broker-issued token where its credential proved a session (model.Credential.Session, which no
+// other credential sets). So every check that reads this - the project and session checks, the
+// sign-in check and a handler's own target check (callerProject) - holds the replay to the
+// project and the session its hold was held to, and no route needs to know it runs a replay.
 func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
+	if caller, replayed := replayedCaller(r); replayed {
+		return caller, caller.Credential != nil && caller.Credential.Session != ""
+	}
 	if _, presented := ciphertoken.Presented(r); !presented {
 		return model.Actor{}, false
 	}

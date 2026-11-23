@@ -6,14 +6,14 @@
 -- DISPATCH_REVIEWER_DECISION_BLOCKS=hold the reviewer keeps it out of every person's Inbox, every
 -- open-ask count and every notice until the review ends (api/decision_blocks.go):
 --
---   asks.held_until  the time until which no person's Inbox or open-ask count shows the ask, null
---                    for an ask nobody holds, which is every row this migration leaves. Each read
---                    INFRA-3552's R5 lists leaves out an open ask whose held_until is still to
---                    come (api/ask_rows.go, askNotHeld); the end of the review sets it back to
---                    null. A review that never ends (its process stopped and no sweep runs) holds
---                    the ask no longer than this bound: the review's time bound and the writer's
---                    window, with a minute more. The hold itself is a held_texts row of kind
---                    decision_block under the ask's id.
+--   asks.held_until  the mark of an ask a hold was put on: 'infinity' from the hold until its
+--                    post, which sets it back to null, and null for an ask nobody holds, which is
+--                    every row this migration leaves. No time ends the hold: the hold itself is a
+--                    held_texts row of kind decision_block under the ask's id, and each read
+--                    INFRA-3552's R5 lists leaves out an open ask so marked whose held text is
+--                    still in an open state (api/decision_blocks.go, askNotHeld), so a writer's
+--                    edit or a review taken again keeps the block out until it posts, and a hold
+--                    that failed keeps it out no more.
 --
 --   doc_ask_block_authors.person_typed  the write that put the block in its document, or that
 --                    left it there, was a command a person typed in a session

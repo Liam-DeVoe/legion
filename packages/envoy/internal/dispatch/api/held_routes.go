@@ -454,16 +454,18 @@ func (s *server) repeatedHeldPost(ctx context.Context, tx queryer, id string, ac
 // reply is the writer's answer, kept with the held text, and writes no message row and no event.
 // It reports whether id is a held text's, having answered the request; a held text's writer alone
 // replies to it. A held message or reply to a message that has posted is a message under the same
-// id, delivered as any other, so a reply to it is its recipient's, which the route takes as it
-// takes any reply; a held text of any other kind, or one that failed, is no message, and its
-// writer's answer to the frame is kept with it whatever its state.
+// id, delivered as any other, so another session's reply to it is its recipient's, which the
+// route takes as it takes any reply; its writer, which no delivery of its own message reached,
+// answers only the frame, and that answer is kept with it as before the post. A held text of any
+// other kind, or one that failed, is no message, and its writer's answer to the frame is kept with
+// it whatever its state.
 func (s *server) answerHeldFrame(w http.ResponseWriter, r *http.Request, actor model.Actor, input messageReplyInput) bool {
 	if s.deps.Reviewer == nil || s.deps.Store == nil {
 		return false
 	}
 	ctx := r.Context()
 	row, err := s.loadHeld(ctx, s.deps.Store.Pool, r.PathValue("id"), false)
-	if err != nil || (row.state == heldPosted && row.kind == string(reviewer.KindMessage)) {
+	if err != nil || (row.state == heldPosted && row.kind == string(reviewer.KindMessage) && !row.isWriter(actor)) {
 		return false
 	}
 	if !row.isWriter(actor) {

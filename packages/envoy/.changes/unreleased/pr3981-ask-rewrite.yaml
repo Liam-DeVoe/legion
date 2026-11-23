@@ -14,6 +14,8 @@ body: |-
   apply one that pastes more than 100 words in a row of the record, words that neither the
   question nor the agent's answer holds. Nor does it apply one when the agent changed, answered or
   closed the question meanwhile.
+  A rewrite the document refuses fails with the refusal's own words as its reason, a full queue of
+  edits (`EDIT_QUEUE_FULL`) or a document a newer build wrote (`DOC_NEWER_CONTENT`) among them.
   A model reply that is not the rewrite the call asks for is asked again, two more times at most,
   inside the call's same time bound.
   An applied rewrite is a quiet `ask.edited` from Dispatch that holds the original wording. Two

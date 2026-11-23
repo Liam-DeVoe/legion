@@ -252,9 +252,7 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 
 // callerForeignTargets is foreignTargets, refused for a caller whose credential names one project,
 // caller ("" for none), where one of them belongs to another project: the first step of a
-// dependency write (lockIssueDependencyWrite), which a new issue beside a held parent takes at its
-// hold first too (heldIssueCreateError), where its dry run would take it after the checks of its
-// held parent.
+// dependency write (lockIssueDependencyWrite).
 func callerForeignTargets(ctx context.Context, q queryer, project, caller string, targets []string) ([]foreignTarget, error) {
 	foreign, err := foreignTargets(ctx, q, project, targets)
 	if err != nil {
@@ -266,10 +264,36 @@ func callerForeignTargets(ctx context.Context, q queryer, project, caller string
 	return foreign, nil
 }
 
+// heldForeignTargets is every held issue of held (heldIssuesAmong: a key no issues row holds yet,
+// by the project its held row names) that belongs to a project other than project, which
+// foreignTargets, reading the issues rows alone, leaves out. A write that names one waits for its
+// post (heldNamedOpenSQL), which then refuses it as a target of that project.
+func heldForeignTargets(held map[string]string, project string) []foreignTarget {
+	var foreign []foreignTarget
+	for key, heldProject := range held {
+		if heldProject != project {
+			foreign = append(foreign, foreignTarget{key: key, project: heldProject})
+		}
+	}
+	return foreign
+}
+
+// refuseForeignBlocker is callerForeignTargets' refusal at the hold of a write that waits on held
+// issues (heldIssueCreateError, refuseHeldForeignBlockers): for caller, the one project its
+// credential may write, the first of foreign in key order, the order writeBlockedBy reads its
+// targets in, so the hold refuses the target its post would; nil where foreign is empty.
+func refuseForeignBlocker(caller string, foreign []foreignTarget) error {
+	if len(foreign) == 0 {
+		return nil
+	}
+	first := slices.MinFunc(foreign, func(a, b foreignTarget) int { return strings.Compare(a.key, b.key) })
+	return refuseBlockedByOutsideCallerProject(caller, first.key, first.project)
+}
+
 // refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
-// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
-// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
-// once and the two cannot drift.
+// answered for a blocked_by target outside it. Each step that refuses it - the lock step before
+// any lock is taken, writeBlockedBy under the locks, and the hold of a write that waits on held
+// issues (refuseForeignBlocker) - words it here, so they cannot drift.
 func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",

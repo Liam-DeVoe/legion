@@ -11,12 +11,18 @@ body: |-
   while it is in review or waits on its writer (`409 HELD_TEXT_DECIDED`).
   A session that reads a held ask, comment, message or issue by its usual route gets
   `409 HELD_TEXT`, with the held id.
-  A session's write that names a held text, such as a reply to it, a child issue or a claim, is
+  A session's write that names a held text, such as a reply to it, a child issue, a claim, or an
+  update whose `blocked_by`, `parent` or `rank` names a held issue, is
   kept when it creates a kind of text the reviewer holds, and otherwise only when its request
   carries `Dispatch-Accepts-Kept-Write: 1`, which the agents' `DispatchClient` sends on every
   write. A kept create answers `201` in its usual shape, and any other kept write `202 {id, held}`.
-  A kept write runs right after the held text posts, in the order the writes came, and a text the
-  reviewer reads among them is reviewed once the held text has posted. A session's other write
+  A kept write runs right after the held text posts, in the order the writes came, and only once
+  every held issue its body names has posted too; a text the
+  reviewer reads among them is reviewed once the held text has posted. A kept write runs as the
+  session that made it, held to the project its credential may write: a project-scoped token's
+  kept update naming a blocker of another project fails at its post (`403 PROJECT_SCOPE`), and one
+  naming a held blocker of another project is refused at once. The writer's reply to the findings
+  of its held text is kept with that text, after the text posted as before. A session's other write
   without the header gets `409 HELD_TEXT` with the held id, and nothing is kept. A repeat of a
   kept write under its `Idempotency-Key`, an upload to a held issue included, is answered the
   same `202` and keeps nothing more. A person's write on a held text's path, or a person's create

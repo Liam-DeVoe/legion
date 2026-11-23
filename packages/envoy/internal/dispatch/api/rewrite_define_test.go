@@ -693,6 +693,65 @@ func TestARewriteRefusalIsDecidedAsItsRouteWouldAnswerIt(t *testing.T) {
 	}
 }
 
+// A person's Rewrite, which no later write takes up again, fails with the words of a refusal a
+// held text's post would leave for the sweep (heldPostRetried): a full queue of conditional edits,
+// a document a newer build wrote and a history that does not load each give the person that
+// refusal's own message as the failed rewrite's reason. Every other error is decided as
+// rewriteRefusal decides it.
+func TestAPersonsRewriteRefusedForNowFailsWithTheRefusalsWords(t *testing.T) {
+	busy := fmt.Errorf("edit the block: %w", docs.ErrPreconditionBusy)
+	newer := fmt.Errorf("edit the block: %w", docs.ErrDocNewerContent)
+	unloadable := fmt.Errorf("edit the block: %w", docs.ErrDocumentUnloadable)
+	tooLarge := fmt.Errorf("set the block's text: %w: this change would make the document's markdown 1048600 bytes", docs.ErrDocumentTooLarge)
+	for name, test := range map[string]struct {
+		err    error
+		code   string
+		reason string
+	}{
+		"a full queue of edits":        {busy, "EDIT_QUEUE_FULL", docs.ErrPreconditionBusy.Error()},
+		"a newer build's document":     {newer, codeDocNewerContent, docs.ErrDocNewerContent.Error()},
+		"a history that does not load": {unloadable, codeDocumentUnloadable, docs.ErrDocumentUnloadable.Error()},
+		"a document too large":         {tooLarge, "CAP_EXCEEDED", tooLarge.Error()},
+		"no error":                     {nil, "", ""},
+		"a server fault":               {errors.New("connection reset by peer"), "", ""},
+	} {
+		if test.code != "" {
+			if refusal := handlerRefusalOf(test.err); refusal.code != test.code {
+				t.Errorf("%s: the edit route answers %s, want %s", name, refusal.code, test.code)
+			}
+		}
+		if got := askRewriteRefusal(test.err); got != test.reason {
+			t.Errorf("%s: the failed rewrite's reason is %q, want %q", name, got, test.reason)
+		}
+	}
+}
+
+// A person's Rewrite of a decision block whose document a newer build wrote an element into fails
+// with the document's own refusal (409 DOC_NEWER_CONTENT), in the words the edit route answers it
+// with, and the block keeps its question: the person is told to try again rather than that
+// Dispatch could not write the rewrite.
+func TestARewriteOfADocumentANewerBuildWroteFailsWithTheDocumentsWords(t *testing.T) {
+	rig := newRewriteRig(t, []string{"steer"})
+	id := rig.uploadBlock(rewriteDocument("Wait."))
+	original := rig.question(id)
+	var document string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select block_artifact_id::text from asks where id = $1::uuid`, id).Scan(&document); err != nil {
+		t.Fatalf("read the decision block's document: %v", err)
+	}
+	if err := rig.served.deps.Docs.(*docs.Service).InjectUnknownElementForTest(context.Background(), document); err != nil {
+		t.Fatalf("write an element this build does not know: %v", err)
+	}
+	rig.rewrite(id)
+	reason := rig.waitRewrite(id, model.RewriteFailed)
+	if !strings.Contains(reason, "Try again in one minute. Do not replace or rebuild the document") || !strings.Contains(reason, docs.UnknownElementForTest) {
+		t.Fatalf("the failed rewrite's reason is %q, want the document's own DOC_NEWER_CONTENT words naming the element", reason)
+	}
+	if got := rig.question(id); got != original {
+		t.Fatalf("the block asks %q after a rewrite that was not applied", got)
+	}
+}
+
 // The asking agent's edit while a rewrite runs is never written over: the rewrite fails and the
 // ask keeps the agent's words.
 func TestARewriteIsNotAppliedOverTheAgentsEdit(t *testing.T) {
