@@ -272,8 +272,9 @@ func (c *launcherCredentials) fail(name string, uid types.UID, at time.Time) {
 func (c *launcherCredentials) forgetSandbox(sandbox string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prefix := sandbox + "-"
 	for name := range c.secrets {
-		rest, ours := strings.CutPrefix(name, sandbox+"-")
+		rest, ours := strings.CutPrefix(name, prefix)
 		slot, secret := strings.CutSuffix(rest, "-boot")
 		if ours && secret && isSlotName(claim.Role(slot)) {
 			delete(c.secrets, name)
