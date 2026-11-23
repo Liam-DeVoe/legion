@@ -20,8 +20,9 @@ one of the codes below writes nothing: release the rest again without the child 
 - `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the
   controller.
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
-- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted. Release again once it has closed,
-  where it is not the tree's root.
+- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted. Release again once it has closed;
+  where it is the tree's root, once the role running the root's phase has moved it back with
+  `request_backward_move`, which the daemon takes until the root's pull request has merged.
 
 ## Creating children
 

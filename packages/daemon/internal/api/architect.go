@@ -225,10 +225,20 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
 // Both routes say one sentence, because they refuse for one reason: a parent is accepted only once
 // no issue beneath it is still in the workflow, so nothing enters the workflow beneath an issue
-// already accepted. operation is what the caller would do again once the ancestor has closed.
-func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, where %s is not the tree's root",
-		child, ancestor, ancestor, operation, ancestor, ancestor)
+// already accepted. operation is what the caller would do again once the refusal is undone. An
+// ancestor below root is undone by its own close. root, the tree's root, is not: its close lingers
+// the tree, which runs nothing more (rerun_child's TREE_LINGERING), so for root the sentence names
+// the step that undoes the refusal while root still stands, the backward move that only the role
+// running its retro or merging makes (workflow's backwardRefusal) and that a merged pull request
+// refuses (workflow's backward).
+func childUnderAcceptedParent(child, ancestor, root, operation string) string {
+	undo := fmt.Sprintf("%s once %s has closed", operation, ancestor)
+	if ancestor == root {
+		undo = fmt.Sprintf("%[2]s is the tree's root, whose close lingers the tree, so first have the role running its phase (the implementer in retro, the merger in merging) move it back with request_backward_move, which the daemon takes until the pull request of %[2]s has merged, then %[1]s",
+			operation, ancestor)
+	}
+	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s",
+		child, ancestor, ancestor, undo)
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue of its tree, and
@@ -970,7 +980,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			// would keep it (storetext.Text).
 			parent := storetext.Text(intake.ObservedIssue(child.view).Parent)
 			if ancestor := record.AcceptedAncestorIn(members, grant.Tree, child.view.Key, parent); ancestor != "" {
-				s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, "release it again"))
+				s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, grant.Tree, "release it again"))
 				return
 			}
 		}
@@ -1558,7 +1568,7 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ancestor := record.AcceptedAncestorIn(members, child.Tree, child.Key, ""); ancestor != "" {
-		s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, "run it again"))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.Key, ancestor, child.Tree, "run it again"))
 		return
 	}
 	if written, ok := s.setDispatchStatus(w, r, child.Key, "todo"); ok && s.applyOwnStatusWrite(w, r, written) {

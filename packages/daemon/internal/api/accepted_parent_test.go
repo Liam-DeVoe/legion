@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -178,5 +179,67 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	}
 	if ancestor != statusRoot {
 		t.Fatalf("the accepted ancestor of the grandchild = %q, want %s", ancestor, statusRoot)
+	}
+}
+
+// R9 of dispatch://INFRA-4849 (a review finding of cybermonklabs/legion#4622): where the accepted
+// ancestor is the tree's root, "once it has closed" names no step, since the root's close lingers
+// the tree and a lingering tree runs nothing more (TREE_LINGERING). Both doors then name the step
+// that undoes the refusal while the root stands: the role running the root's phase moves it back.
+// The test takes that step through the daemon's own route, the merger's request_backward_move of
+// the root in merging, and the refused rerun is then taken. An ancestor below the root still
+// names its own close.
+func TestChildUnderAcceptedParentNamesAStepForARootAncestor(t *testing.T) {
+	rootStep := func(child, operation string) string {
+		return child + " is beneath " + statusRoot + ", whose own reviewed head the daemon has already accepted, and work " +
+			"entering the workflow beneath " + statusRoot + " now would let it merge a head that does not carry that work; " +
+			statusRoot + " is the tree's root, whose close lingers the tree, so first have the role running its phase " +
+			"(the implementer in retro, the merger in merging) move it back with request_backward_move, which the daemon " +
+			"takes until the pull request of " + statusRoot + " has merged, then " + operation
+	}
+	h, handlers, statuses := statusHarness(t)
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	merger := newLiveClaim(t, h, statusRoot, claim.RoleMerger)
+	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
+	acceptPhase(t, h, statusRoot, phase.Merging)
+
+	rerun := func() *httptest.ResponseRecorder {
+		return h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
+	}
+	if sentence, want := refused(t, rerun(), http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"), rootStep(statusChild, "run it again"); sentence != want {
+		t.Fatalf("rerun refusal under the root in merging says\n%q\nwant\n%q", sentence, want)
+	}
+	const unreleased = "LEGION-300"
+	root := statusRoot
+	statuses.issues[unreleased] = dispatch.Issue{Key: unreleased, ResolvedRepo: "acme/widgets", Title: "unreleased child",
+		Status: "backlog", Parent: &root, Rank: "C", LastSeq: 7}
+	release := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{unreleased}}, nil)
+	if sentence, want := refused(t, release, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"), rootStep(unreleased, "release it again"); sentence != want {
+		t.Fatalf("release refusal under the root in merging says\n%q\nwant\n%q", sentence, want)
+	}
+
+	// The step the refusal names, through the route the daemon takes it at: the merger, the role
+	// running the root's merging, moves the root back while its pull request has not merged.
+	if moved := h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{"grantId": merger.grant(t),
+		"to": string(phase.Implementing), "reason": "a child's work must land under this head"}, nil); moved.Code != http.StatusOK {
+		t.Fatalf("the merger's backward move of the root = %d %s, want 200", moved.Code, moved.Body)
+	}
+	if recorder := rerun(); recorder.Code != http.StatusOK {
+		t.Fatalf("rerun once the root moved back = %d %s, want 200", recorder.Code, recorder.Body)
+	}
+
+	// An ancestor below the root closes without lingering the tree, so its refusal names that close.
+	h, _, statuses = statusHarness(t)
+	architect = newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	acceptPhase(t, h, statusChild, phase.Merging)
+	parent := statusChild
+	statuses.issues[unreleased] = dispatch.Issue{Key: unreleased, ResolvedRepo: "acme/widgets", Title: "grandchild",
+		Status: "backlog", Parent: &parent, Rank: "C", LastSeq: 7}
+	release = h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{unreleased}}, nil)
+	want := unreleased + " is beneath " + statusChild + ", whose own reviewed head the daemon has already accepted, and work " +
+		"entering the workflow beneath " + statusChild + " now would let it merge a head that does not carry that work; " +
+		"release it again once " + statusChild + " has closed"
+	if sentence := refused(t, release, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); sentence != want {
+		t.Fatalf("release refusal under a child in merging says\n%q\nwant\n%q", sentence, want)
 	}
 }
