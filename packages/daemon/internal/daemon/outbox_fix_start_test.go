@@ -246,3 +246,29 @@ func TestAFixStartRunsAfterTheIssueIsHeldForTheFix(t *testing.T) {
 		rig.finishedByTheFence(phaseLeftLine, 0)
 	})
 }
+
+// The task a fix's start gives its claim (supervise.RequestDeliver, which the machine builds the
+// delivery from) carries the fix, the head the fix's working copy is made at and the head the
+// task's working copy moves to, as the row names them, beside the row's phase, run, entry and id.
+// The control is the same start of no fix and no move: its task carries none of the three.
+func TestAFixStartGivesItsTaskTheFixItsCopyAndItsMove(t *testing.T) {
+	t.Parallel()
+	token := claim.Token("legion-legion-legion-208-implementer")
+	row := record.OutboxRow{ID: 41, Issue: fixStartIssue, Kind: record.OutboxKindSupervise}
+	task := startTask(token, row, fixStartOf(), startNews{task: fixStartTask}, nil)
+	if task.Claim != token || task.Task != fixStartTask || task.Phase != phase.Implementing || task.Generation != 1 ||
+		task.Entry != fixStartEntry || task.Row != row.ID || task.ID != fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID) {
+		t.Fatalf("the fix's task = %+v, want the row's task of phase %s, run 1, entry %d, row %d", task, phase.Implementing, fixStartEntry, row.ID)
+	}
+	if task.Fix != 1 || task.FixFrom != fixStartHead || task.MoveTo != fixStartMove {
+		t.Fatalf("the fix's task carries fix %d from %q moving to %q, want fix 1 from %s moving to %s",
+			task.Fix, task.FixFrom, task.MoveTo, fixStartHead, fixStartMove)
+	}
+
+	plain := fixStartOf()
+	plain.Fix, plain.FixFrom, plain.MoveTo = 0, "", ""
+	if task := startTask(token, row, plain, startNews{task: fixStartTask}, nil); task.Fix != 0 || task.FixFrom != "" || task.MoveTo != "" {
+		t.Fatalf("control: the task of a start of no fix carries fix %d from %q moving to %q, want none of them",
+			task.Fix, task.FixFrom, task.MoveTo)
+	}
+}
