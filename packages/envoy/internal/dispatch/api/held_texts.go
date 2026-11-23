@@ -278,11 +278,13 @@ type heldParent struct {
 	id, state, reader, project string
 }
 
-// heldParentOf is the held text, not yet posted, among the ids a write names; nil where it names
-// none. Where it names more than one, the latest held is the one it waits on.
-func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent, error) {
-	named := slices.DeleteFunc(slices.Clone(names), func(name string) bool { return strings.TrimSpace(name) == "" })
-	if len(named) == 0 {
+// heldParentOf is the held text, not yet posted, among the ids a write names, nil where it names
+// none held: the newest held one of names, and where none of names is held, the newest held one of
+// waits, the ids beside them its post reads (reviewedWrite.waits, heldBodyNames). One read answers
+// both.
+func (s *server) heldParentOf(ctx context.Context, names, waits []string) (*heldParent, error) {
+	ids := slices.DeleteFunc(slices.Concat(names, waits), func(id string) bool { return strings.TrimSpace(id) == "" })
+	if len(ids) == 0 {
 		return nil, nil
 	}
 	var parent heldParent
@@ -290,7 +292,7 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 		select id, state, coalesce(reader, ''), coalesce(project, '')
 		from held_texts
 		where id = any($1) and state in `+heldOpenStatesSQL+` and kind <> 'decision_block'
-		order by seq desc limit 1`, named).Scan(&parent.id, &parent.state, &parent.reader, &parent.project)
+		order by coalesce(id = any($2), false) desc, seq desc limit 1`, ids, names).Scan(&parent.id, &parent.state, &parent.reader, &parent.project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

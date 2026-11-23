@@ -1275,12 +1275,14 @@ export function Inbox({
   // The lead goes in with the card's other keys, in the help's order.
   useAskCardKeys(cardHand, cardLead, cardScope);
   // Quote reply and Define on words of a thread the list or the column shows
-  // (`threads/quote-reply.ts`), the selection bar's two keys: an ask's card drawn in a thread
-  // row's body is no card in hand (the row's id is the thread's, never the ask's, and a press on
-  // the card's words leaves the focus on the row or the column), so the bar's Define over its
-  // question needs its `d` here. The card in hand quotes and defines its own question's words
-  // with its own `q` and `d`; in the drawer all of them are the dialog's scope, so these stand
-  // down while the card's apply.
+  // (`threads/quote-reply.ts`), the selection bar's two keys. The card in hand quotes and defines
+  // its own question's words with its own `q` and `d`, and these stand down while the card's apply
+  // (in the drawer all of them are the dialog's scope). An ask's card drawn in a thread row's body
+  // is the card in hand while the reading column is hidden (the drawer, a page too narrow for it)
+  // and the row itself holds the focus, where a press on the card's words leaves it. It is none
+  // with the column shown, which finds its card by the selected row's id, the thread's and never
+  // the ask's, and none with the focus off the row (the drawer's Close): there the bar's Define
+  // over its question needs its `d` here.
   useKeymap(
     keymapScope,
     listKeys([

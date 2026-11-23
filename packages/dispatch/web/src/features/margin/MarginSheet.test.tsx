@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
 import type { Artifact, Comment } from "../../api/types";
-import { issueAsk, mockAskReads } from "../inbox/inbox-fixture";
+import { issueAsk, mockAskReads, selectWords, stateCardBox } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -552,17 +552,6 @@ function IssuePageKeys({ children }: { children: ReactNode }): ReactNode {
   return children;
 }
 
-/** Selects every word the element `selector` names under `root`. */
-function selectWords(root: HTMLElement, selector: string): void {
-  const element = root.querySelector(selector);
-  if (element === null) throw new Error(`nothing matches ${selector}`);
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
 // Below `xl` the open review panel is a dialog, and a dialog masks the page's keys (`useDialog`,
 // `keymap.ts`'s `resolve`): the selection bar over words in the panel shows Quote reply `q` and,
 // over an ask's words, Define `d`, so each key does there what the bar's button does.
@@ -723,11 +712,7 @@ test("in the review panel below xl, q and d act on the words selected in it, as 
         throw new Error("the question's words have not rendered");
       }
     });
-    // happy-dom computes no style from a stylesheet, so the card's padding and border would read
-    // as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
-    // states its own, as a browser computes them.
-    askCard.style.padding = "0px";
-    askCard.style.borderWidth = "0px";
+    stateCardBox(askCard);
     act(() => panelToggle.focus());
     selectWords(askCard, "[data-ask-question] .dispatch-markdown");
     await user.keyboard("d");

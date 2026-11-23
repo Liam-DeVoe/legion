@@ -7,7 +7,7 @@ body: |-
   One setting for each kind chooses what happens: `DISPATCH_REVIEWER_ASKS`,
   `DISPATCH_REVIEWER_ISSUES`, `DISPATCH_REVIEWER_COMMENTS` and `DISPATCH_REVIEWER_MESSAGES`, each
   `off` (the default), `after` or `hold`.
-  With `hold`, no person sees the text until the review ends. The write answers at once, in its
+  With `hold`, no person sees the text until it posts. The write answers at once, in its
   usual shape, under an id kept for the text, with an added `held` object. That answer carries the
   advice the write gets with the reviewer off, the nearest existing issues and answered questions
   and the near-copy check included, and a near copy the check refuses is refused at once, with

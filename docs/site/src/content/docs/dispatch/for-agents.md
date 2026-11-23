@@ -156,7 +156,7 @@ context. A `dispatch` line a person typed in your session is never refused.
 
 Dispatch's reviewer reads an ask, a new issue, a comment, a message or a reply you write to a
 person. Where the deployment has it hold that kind, the write answers at once, but no person sees
-the text until the review ends. A text the reviewer finds nothing in posts. Otherwise what it found,
+the text until it posts. A text the reviewer finds nothing in posts. Otherwise what it found,
 and its rewrite, reach you as a message of their own, with the time you have. Change the text with
 `dispatch held-edit <id>`, which the reviewer reads again, or post it as you wrote it with
 `dispatch held-post <id> --reason <text>`, saying why it is right for its reader. When the time

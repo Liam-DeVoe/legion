@@ -18,7 +18,7 @@ import (
 
 // A decision block an agent writes in a document (INFRA-3231's R5, Decisions 3 and 23): with
 // DISPATCH_REVIEWER_DECISION_BLOCKS=hold it shows in its document at once and stays out of its
-// reader's Inbox and the open-ask counts until its review ends; its writer gets the findings; its
+// reader's Inbox and the open-ask counts until it posts; its writer gets the findings; its
 // post shows it, as written or rewritten through the one decision-block rewrite path.
 
 // decisionBlockDocument is a document holding one decision block whose question the stand-in

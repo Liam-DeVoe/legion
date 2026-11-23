@@ -11,7 +11,13 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { replyRow } from "../threads/replies-fixture";
 import { InboxDrawer } from "./InboxDrawer";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import {
+  installInboxApiMocks,
+  issueAsk,
+  mockAskReads,
+  selectWords,
+  stateCardBox,
+} from "./inbox-fixture";
 
 installInboxApiMocks();
 
@@ -426,31 +432,23 @@ test("in the drawer, d defines the selected words of a Reply thread's ask, where
         throw new Error("the question's words have not rendered");
       }
     });
-    // happy-dom computes no style from a stylesheet, so the card's padding and border would read
-    // as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
-    // states its own, as a browser computes them.
-    card.style.padding = "0px";
-    card.style.borderWidth = "0px";
-    const selectQuestion = () => {
-      const range = document.createRange();
-      const words = card.querySelector("[data-ask-question] .dispatch-markdown");
-      if (words === null) throw new Error("the card draws no question");
-      range.selectNodeContents(words);
-      window.getSelection()?.removeAllRanges();
-      window.getSelection()?.addRange(range);
-    };
+    stateCardBox(card);
+    const questionWords = "[data-ask-question] .dispatch-markdown";
 
-    // From the row, as a press on the card's words leaves it: the card's own `d`.
+    // From the row, as a press on the card's words leaves it: the card's own `d`, and no other
+    // binding of the scope takes the key beside it.
     const row = card.closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("the card is drawn in no row");
     act(() => row.focus());
-    selectQuestion();
+    selectWords(card, questionWords);
     expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "define")).toBe(true);
 
     // From the drawer's Close, which is no row and in no card: the list's own `d`.
     act(() => close.focus());
-    selectQuestion();
+    selectWords(card, questionWords);
     expect(appKeymap.conflicts()).toEqual([]);
+    expect(bindingApplies(DIALOG_SCOPE, "define")).toBe(false);
     await user.keyboard("d");
     await waitFor(() =>
       expect(defineWords).toHaveBeenCalledWith(

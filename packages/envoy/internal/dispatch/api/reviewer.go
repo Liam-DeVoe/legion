@@ -94,7 +94,7 @@ type ReviewerConfig struct {
 	// DecisionBlocks is the choice for a decision block an agent writes in a document
 	// (DISPATCH_REVIEWER_DECISION_BLOCKS): ReviewOff, ReviewAfter, or ReviewHold, which shows the
 	// block in its document and keeps it out of every person's Inbox, counts and notices until
-	// the review ends (decision_blocks.go).
+	// it posts (decision_blocks.go).
 	DecisionBlocks string
 	// Rules are the rule sets the reviewer applies (DISPATCH_REVIEWER_RULES).
 	Rules []reviewer.RuleSet
@@ -235,15 +235,11 @@ func (s *server) reviewWrite(w http.ResponseWriter, r *http.Request, actor model
 	named := false
 	_, human, err := s.optionalActor(unloggedResolution(r))
 	if err == nil && !human {
-		parent, err = s.heldParentOf(ctx, write.names)
-		named = parent != nil
-		if err == nil && parent == nil {
-			parent, err = s.heldParentOf(ctx, write.waits)
-		}
-		if err != nil {
+		if parent, err = s.heldParentOf(ctx, write.names, write.waits); err != nil {
 			s.writeHandlerError(w, err)
 			return nil, false
 		}
+		named = parent != nil && slices.Contains(write.names, parent.id)
 	}
 	method, route := routeOf(r)
 	typed := personTypedWrite(r)

@@ -621,20 +621,22 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 	}
 	bodyNames := heldBodyNames[name]
 	return func(w http.ResponseWriter, r *http.Request) {
-		parent, err := s.heldTargetOf(r, param)
-		if err != nil {
-			s.writeHandlerError(w, err)
+		if !s.keepsHeldWrites(r) {
+			handler(w, r)
 			return
 		}
 		var named heldBodyNamed
-		if bodyNames != nil && s.keepsHeldWrites(r) {
-			if named, err = bodyNames(r); err == nil && parent == nil {
-				parent, err = s.heldParentOf(r.Context(), named.names)
-			}
-			if err != nil {
+		if bodyNames != nil {
+			var err error
+			if named, err = bodyNames(r); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
+		}
+		parent, err := s.heldParentOf(r.Context(), []string{r.PathValue(param)}, named.names)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
 		}
 		if parent == nil {
 			handler(w, r)
@@ -669,14 +671,15 @@ func (s *server) keepsHeldWrites(r *http.Request) bool {
 	return s.deps.Reviewer.reviewsAny() && s.deps.Store != nil && heldPostFrom(r.Context()) == nil
 }
 
-// heldTargetOf is the held text, not yet posted, that r's path value param names, which
-// awaitHeldTarget keeps r's write beside: nil where the reviewer reads no kind, where r is a held
-// text's post running the write it kept, and where the path names no such text.
+// heldTargetOf is the held text, not yet posted, that r's path value param names, for a route whose
+// body names no held text (awaitHeldTarget reads heldBodyNames beside the path in one lookup): nil
+// where the reviewer reads no kind, where r is a held text's post running the write it kept, and
+// where the path names no such text.
 func (s *server) heldTargetOf(r *http.Request, param string) (*heldParent, error) {
 	if !s.keepsHeldWrites(r) {
 		return nil, nil
 	}
-	return s.heldParentOf(r.Context(), []string{r.PathValue(param)})
+	return s.heldParentOf(r.Context(), []string{r.PathValue(param)}, nil)
 }
 
 // heldBodyNamed is what a kept write's body names that a held text may hold (heldBodyNames):
@@ -726,9 +729,11 @@ func issuePatchNamed(r *http.Request) (heldBodyNamed, error) {
 
 // refuseHeldForeignBlockers refuses a caller whose credential names one project a held issue of
 // another project among blockers, which a write kept beside held texts would wait on, with the
-// refusal its post gives that blocker once it posted (writeBlockedBy). A blocker that has posted,
-// or one nothing holds, is the post's to judge, as every other check of a kept write is. The
-// write's own issue is of the caller's project, which withinProjectScope checked before this.
+// refusal its post gives once that blocker posted (writeBlockedBy): the first blocker of another
+// project in key order, posted or held, so the hold names the blocker its post would. Where no held
+// blocker is of another project, a blocker that has posted, or one nothing holds, is the post's to
+// judge, as every other check of a kept write is. The write's own issue is of the caller's project,
+// which withinProjectScope checked before this.
 func (s *server) refuseHeldForeignBlockers(r *http.Request, blockers []string) error {
 	covers, scoped := s.callerProject(r)
 	if !scoped || len(blockers) == 0 {
@@ -738,7 +743,15 @@ func (s *server) refuseHeldForeignBlockers(r *http.Request, blockers []string) e
 	if err != nil {
 		return err
 	}
-	return refuseForeignBlocker(covers, heldForeignTargets(held, covers))
+	heldForeign := heldForeignTargets(held, covers)
+	if len(heldForeign) == 0 {
+		return nil
+	}
+	foreign, err := foreignTargets(r.Context(), s.deps.Store.Pool, covers, blockers)
+	if err != nil {
+		return err
+	}
+	return refuseForeignBlocker(covers, append(foreign, heldForeign...))
 }
 
 // awaitsHeldTarget reports whether awaitHeldTarget holds a write of method and pattern, with the

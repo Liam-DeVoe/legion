@@ -14,6 +14,7 @@ import type {
   MyAnswerRow,
   MyAnswersResponse,
 } from "../../api/types";
+import { selectWords } from "../inbox/inbox-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { AnswersPage } from "./AnswersPage";
@@ -391,17 +392,6 @@ test("a row's Change answer opens the seeded form; after Save the row and the ca
     answerAsk.mockRestore();
   }
 });
-
-/** Selects every word under the element `selector` names in `root`, as a drag of the mouse does. */
-function selectWords(root: HTMLElement, selector: string): void {
-  const element = root.querySelector(selector);
-  if (element === null) throw new Error(`no ${selector}`);
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
 
 // The card a Change answer opens offers Quote reply and Define over its question, and the
 // selection bar names their keys. A selection made with the mouse leaves the focus where the

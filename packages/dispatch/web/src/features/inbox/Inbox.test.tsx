@@ -46,6 +46,8 @@ import {
   installInboxApiMocks,
   issueAsk,
   mockAskReads,
+  selectWords,
+  stateCardBox,
   withWaitingOnPerson,
 } from "./inbox-fixture";
 import { SnoozeControl } from "./SnoozeControl";
@@ -5048,18 +5050,6 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   }
 });
 
-/** Selects every word under the element `selector` names in `root`, as a drag of the mouse
- *  across them would, leaving the focus where it is. */
-function selectWordsIn(root: HTMLElement, selector: string): void {
-  const element = root.querySelector(selector);
-  if (element === null) throw new Error(`nothing matches ${selector}`);
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
 // A Reply row's ask thread draws the ask's own card, whose question offers Define on the
 // selection bar (`d`). The reading column's card keys find no card for that row - its id is the
 // thread's (`reply:<id>`), never the ask's - and a press on the card's words leaves the focus
@@ -5107,13 +5097,9 @@ test("in the reading column, d defines the selected words of a Reply thread's as
       }
     });
     expect(shortRow("reply:ask-theirs").getAttribute("data-inbox-selected")).toBe("true");
-    // happy-dom computes no style from a stylesheet, so the card's padding and border would read
-    // as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
-    // states its own, as a browser computes them.
-    card.style.padding = "0px";
-    card.style.borderWidth = "0px";
+    stateCardBox(card);
     act(() => shortRow("reply:ask-theirs").focus());
-    selectWordsIn(card, "[data-ask-question] .dispatch-markdown");
+    selectWords(card, "[data-ask-question] .dispatch-markdown");
     expect(appKeymap.conflicts()).toEqual([]);
     await user.keyboard("d");
     await waitFor(() =>

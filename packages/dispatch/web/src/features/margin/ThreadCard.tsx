@@ -36,13 +36,8 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "../inbox/ask-rewrite";
-import { RewriteBadge } from "../inbox/RewriteBadge";
+import { originalToggleProps } from "../inbox/ask-rewrite";
+import { useRewrittenText } from "../inbox/RewriteBadge";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -186,8 +181,7 @@ function CommentBody({
   // A comment the reviewer rewrote before anyone read it: its badge beside the author and time,
   // and, while it is pressed (or `w` with the comment in focus: the card for the thread's root,
   // the reply's own row for a reply), the agent's wording in place.
-  const rewrite = comment.rewrite;
-  const original = originalWording(rewrite, useOriginalShown(comment.id));
+  const rewritten = useRewrittenText(comment);
   let orphanNotice: ReactNode = null;
   if (showOrphan && anchor?.orphaned) {
     const originalPath =
@@ -228,9 +222,9 @@ function CommentBody({
       {orphanNotice}
       {suggestion === null ? (
         <MarkdownBody
-          markdown={original?.body ?? comment.body}
+          markdown={rewritten.markdown}
           source={textSourceOf("comment", comment.id)}
-          tree={original === undefined ? comment.body_tree : undefined}
+          tree={rewritten.tree}
         />
       ) : null}
       {suggestion !== null && anchor !== null ? (
@@ -239,9 +233,9 @@ function CommentBody({
           {comment.body === "Suggested replacement." ? null : (
             <div className={`font-sans ${textSecondaryOnSurface}`}>
               <MarkdownBody
-                markdown={original?.body ?? comment.body}
+                markdown={rewritten.markdown}
                 source={textSourceOf("comment", comment.id)}
-                tree={original === undefined ? comment.body_tree : undefined}
+                tree={rewritten.tree}
               />
             </div>
           )}
@@ -252,14 +246,9 @@ function CommentBody({
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
           {/* A rewrite is an edit of the comment, which its badge already marks. */}
-          {comment.edited_at === null || rewrite !== undefined ? null : " · edited"}
+          {comment.edited_at === null || comment.rewrite !== undefined ? null : " · edited"}
         </span>
-        <RewriteBadge
-          onToggle={() => toggleOriginal(comment.id)}
-          rewrite={rewrite}
-          showingOriginal={original !== undefined}
-          toggleKey="w"
-        />
+        {rewritten.badge}
         {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
       </p>
     </>
@@ -304,8 +293,7 @@ export function ThreadCard({
   // place as its badge does (`CommentBody`), and the folded preview reads the same wording. A
   // rewritten reply takes the focus and its own `w` (`originalToggleProps`), which the card leaves.
   const rootRewritten = root.rewrite?.state === "rewritten";
-  const rootToggle = originalToggleProps(root.id, rootRewritten);
-  const rootOriginal = originalWording(root.rewrite, useOriginalShown(root.id));
+  const rootText = useRewrittenText(root);
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
   // card offers neither; the thread is closed with Resolve like a comment.
@@ -466,9 +454,9 @@ export function ThreadCard({
           }
         }}
         // A card whose root was rewritten takes the focus, so `w` can reach it.
-        tabIndex={rootToggle.tabIndex}
+        tabIndex={rootText.toggle.tabIndex}
         onKeyDown={(event) => {
-          rootToggle.onKeyDown(event);
+          rootText.toggle.onKeyDown(event);
           if (event.defaultPrevented) return;
           if (
             event.target !== event.currentTarget ||
@@ -650,9 +638,9 @@ export function ThreadCard({
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
                       lines={1}
                       links="live"
-                      markdown={rootOriginal?.body ?? root.body}
+                      markdown={rootText.markdown}
                       source={textSourceOf("comment", root.id)}
-                      tree={rootOriginal === undefined ? root.body_tree : undefined}
+                      tree={rootText.tree}
                     />
                   )}
                 </>
@@ -668,9 +656,9 @@ export function ThreadCard({
                   <MarkdownPreview
                     lines={2}
                     links="live"
-                    markdown={rootOriginal?.body ?? root.body}
+                    markdown={rootText.markdown}
                     source={textSourceOf("comment", root.id)}
-                    tree={rootOriginal === undefined ? root.body_tree : undefined}
+                    tree={rootText.tree}
                   />
                   <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>

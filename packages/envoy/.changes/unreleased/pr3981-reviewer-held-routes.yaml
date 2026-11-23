@@ -21,7 +21,8 @@ body: |-
   reviewer reads among them is reviewed once the held text has posted. A kept write runs as the
   session that made it, held to the project its credential may write: a project-scoped token's
   kept update naming a blocker of another project fails at its post (`403 PROJECT_SCOPE`), and one
-  naming a held blocker of another project is refused at once. The writer's reply to the findings
+  naming a held blocker of another project is refused at once, naming the blocker its post would:
+  the first of another project in key order. The writer's reply to the findings
   of its held text is kept with that text, after the text posted as before. A session's other write
   without the header gets `409 HELD_TEXT` with the held id, and nothing is kept. A repeat of a
   kept write under its `Idempotency-Key`, an upload to a held issue included, is answered the

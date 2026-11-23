@@ -4,7 +4,7 @@
 -- INFRA-3231's R5 and Decision 3 of its plan: a decision block an agent writes in a document is
 -- shown in the document when the document is saved, so its ask row exists at once. With
 -- DISPATCH_REVIEWER_DECISION_BLOCKS=hold the reviewer keeps it out of every person's Inbox, every
--- open-ask count and every notice until the review ends (api/decision_blocks.go):
+-- open-ask count and every notice until it posts (api/decision_blocks.go):
 --
 --   asks.held_until  the mark of an ask a hold was put on: 'infinity' from the hold until its
 --                    post, which sets it back to null, and null for an ask nobody holds, which is

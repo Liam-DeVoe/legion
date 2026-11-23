@@ -37,6 +37,7 @@ import {
   renderCard,
   thread,
 } from "./ask-card-fixture";
+import { selectWords } from "./inbox-fixture";
 import { ThreadBody } from "./ThreadBody";
 
 installAskCardApiMocks();
@@ -1142,17 +1143,6 @@ test("a reply that is nothing but a reference shows its card", async () => {
     view.unmount();
   }
 });
-
-/** Selects every word of the first element `selector` names under `root`, as a reader's drag would. */
-function selectWords(root: HTMLElement, selector: string): void {
-  const element = root.querySelector(selector);
-  if (element === null) throw new Error(`no ${selector}`);
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
 
 test("an open ask offers Define over its question alone; a reply in its thread quotes into the answer box without it", async () => {
   const ask = answeredAsk({ answer: null, state: "open" });

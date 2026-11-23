@@ -50,12 +50,7 @@ func (rig *reviewRig) postHeldAsWritten(id string) {
 // waitDecided waits for the held text id to post or fail, and answers it.
 func (rig *reviewRig) waitDecided(id string) heldRow {
 	rig.t.Helper()
-	var row heldRow
-	pollUntil(rig.t, 20*time.Second, "held text "+id+" posted or failed", func() bool {
-		row = rig.heldRow(id)
-		return row.state == heldPosted || row.state == heldFailed
-	})
-	return row
+	return waitHeldDecided(rig.t, rig.database, rig.served, id)
 }
 
 // holdFixture holds a text of kind under id in project, written by s-writer for alice and
@@ -669,8 +664,8 @@ func TestAnUpdateAddingAHeldBlockerIsKeptAndPostsAfterIt(t *testing.T) {
 	createTestProject(t, rig.handler, "OTH")
 	blocker := rig.heldIssue("OTH", "Held blocker")
 	updated := rig.heldIssue("RVW", "Held issue updated beside its blocker")
-	reparented := createIssueAs(t, rig.handler, "RVW", "Reparented under a held issue")
-	ranked := createIssueAs(t, rig.handler, "RVW", "Ranked after a held issue")
+	reparented := createOutcomeIssue(t, rig.handler, "RVW", "Reparented under a held issue")
+	ranked := createOutcomeIssue(t, rig.handler, "RVW", "Ranked after a held issue")
 	keep := func(issue string, body map[string]any, waitsOn string) heldWriteAnswer {
 		t.Helper()
 		kept := rig.held(rig.asKeptWriter(http.MethodPatch, "/api/v1/issues/"+issue, body), "the update of "+issue)
@@ -1293,18 +1288,6 @@ func issueBlockers(t *testing.T, database *store.Store, key string) []string {
 	return blockers
 }
 
-// createIssueAs files an issue of project titled title as alice, at a browser, and answers its key.
-func createIssueAs(t *testing.T, handler http.Handler, project, title string) string {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": project, "title": title, "spec": "# Spec", "force": true,
-	}, "alice")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
-	}
-	return decodeBody[model.Issue](t, response).Key
-}
-
 // A write kept beside a held text runs at its post as the caller its hold stored, held to the one
 // project that caller's credential may write, as it is held to it with the reviewer off: a
 // project-scoped token's update of its own project's held issue naming a posted blocker of another
@@ -1318,8 +1301,8 @@ func TestAKeptWritePostsWithinTheProjectItsCallerMayWrite(t *testing.T) {
 	const token = "a-token-keeping-updates-beside-a-held-issue"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	createTestProject(t, rig.handler, brokerTestProject, "OTH")
-	own := createIssueAs(t, rig.handler, brokerTestProject, "Its own project's issue")
-	outside := createIssueAs(t, rig.handler, "OTH", "An issue of another project")
+	own := createOutcomeIssue(t, rig.handler, brokerTestProject, "Its own project's issue")
+	outside := createOutcomeIssue(t, rig.handler, "OTH", "An issue of another project")
 	held := brokerTestProject + "-900"
 	holdFixture(t, rig.database, held, "issue", brokerTestProject)
 	keep := func(blocker string) string {
@@ -1360,7 +1343,7 @@ func TestAScopedWriteIsRefusedAHeldBlockerOfAnotherProjectAtItsHold(t *testing.T
 	const token = "a-token-naming-held-blockers"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	createTestProject(t, rig.handler, brokerTestProject, "OTH")
-	own := createIssueAs(t, rig.handler, brokerTestProject, "Its own project's issue")
+	own := createOutcomeIssue(t, rig.handler, brokerTestProject, "Its own project's issue")
 	ownHeld, otherHeld := brokerTestProject+"-900", "OTH-900"
 	holdFixture(t, rig.database, ownHeld, "issue", brokerTestProject)
 	holdFixture(t, rig.database, otherHeld, "issue", "OTH")
@@ -1399,6 +1382,48 @@ func TestAScopedWriteIsRefusedAHeldBlockerOfAnotherProjectAtItsHold(t *testing.T
 	}
 	if kept := update(ownHeld); kept.Code != http.StatusAccepted || decodeBody[heldDeferred](t, kept).Held.WaitsOn != ownHeld {
 		t.Fatalf("an update adding its own project's held issue as a blocker: %d %s, want 202 waiting on %s", kept.Code, kept.Body.String(), ownHeld)
+	}
+}
+
+// A scoped write naming blockers of other projects, one posted and one held, is refused at its
+// hold naming the first of them in key order, posted or held, as its post names it once the held
+// one posted (writeBlockedBy reads its targets in key order): here the posted one, not the held one
+// it would wait on. A new issue (heldIssueCreateError) and an update (refuseHeldForeignBlockers)
+// alike, and nothing is held or kept.
+func TestAScopedWriteIsRefusedItsFirstForeignBlockerInKeyOrderAtItsHold(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{reviewer: testReviewer(ReviewerConfig{Issues: ReviewHold})})
+	caller := newBrokerCaller(t)
+	const token = "a-token-naming-a-posted-and-a-held-foreign-blocker"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	createTestProject(t, rig.handler, brokerTestProject, "OTH", "ZZZ")
+	own := createOutcomeIssue(t, rig.handler, brokerTestProject, "Its own project's issue")
+	posted := createOutcomeIssue(t, rig.handler, "OTH", "A posted issue of another project")
+	held := "ZZZ-900"
+	holdFixture(t, rig.database, held, "issue", "ZZZ")
+	blockers := []string{posted, held}
+	update := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"blocked_by": blockers})
+		request.Header.Set(contracts.AcceptsKeptWriteHeader, "1")
+		return rig.serve(request)
+	}
+	before := countRows(t, rig.database, `select count(*) from held_texts`)
+	for name, refused := range map[string]*httptest.ResponseRecorder{
+		"a new issue": rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			"project": brokerTestProject, "title": "Blocked by a posted and a held issue of other projects", "blocked_by": blockers,
+		})),
+		"an update": update(),
+	} {
+		if refused.Code != http.StatusForbidden {
+			t.Fatalf("%s blocked by %v: %d %s, want 403", name, blockers, refused.Code, refused.Body.String())
+		}
+		if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != codeProjectScope ||
+			!strings.Contains(refusal.Error, "issue "+posted+" belongs to project OTH") || strings.Contains(refusal.Error, held) {
+			t.Fatalf("%s blocked by %v: the refusal = %+v, want %s naming %s of project OTH, the first in key order", name, blockers, refusal, codeProjectScope, posted)
+		}
+	}
+	if after := countRows(t, rig.database, `select count(*) from held_texts`); after != before {
+		t.Fatalf("the refused writes left %d held texts, want %d", after, before)
 	}
 }
 
