@@ -46,6 +46,8 @@
  *
  * - Change a word in the file that holds it. Do not move it to another file.
  * - Put a part's own tables, and its new keys for a table of this module, in the part's file.
+ * - Put every new key for `PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`,
+ *   `DELIVERY_STATE_WORDS` and `AUTHOR_KIND_WORDS` in this module. A closed type fixes their keys.
  * - Put a new key for a table that a part's file declares in that file, from any pull request.
  *   TypeScript reads the keys of a table where the table is declared.
  * - Put every other new word of a pull request that is no part in this module.

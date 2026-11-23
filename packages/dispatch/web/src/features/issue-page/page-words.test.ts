@@ -61,6 +61,7 @@ import {
   wordsIn,
 } from "./page-words";
 import {
+  CLOSED_TABLE_NAMES,
   JOINED_TABLES,
   joinTables,
   type PartWords,
@@ -888,6 +889,27 @@ test("no key is given by two of the files the page's words are joined from", () 
     ({ key, files: [first, second] }) => `${key}: ${first} and ${second}`
   );
   expect(clashes).toEqual([]);
+});
+
+// A part's file ends its default export with `satisfies PartWords`. Then the type of `add`
+// refuses a key that names no table, and a key for a table of `CLOSED_TABLE_NAMES`. Without the
+// `satisfies`, TypeScript misses such a key if `add` also has a key for a table that takes a
+// part's keys. The join reads each key of `add`. So this case reads `add` as the join reads it.
+test("each key a part's file adds under add names a table that takes a part's keys", () => {
+  const tables: readonly string[] = TABLE_NAMES;
+  const closed: readonly string[] = CLOSED_TABLE_NAMES;
+  const offenders: string[] = [];
+  for (const { file, module } of WORD_FILES) {
+    const add: Readonly<Record<string, unknown>> = module.default.add;
+    for (const name of Object.keys(add)) {
+      if (!tables.includes(name)) {
+        offenders.push(`${file}: add.${name} names no table of page-words.ts`);
+      } else if (closed.includes(name)) {
+        offenders.push(`${file}: add.${name} names a table that takes keys only in page-words.ts`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
 });
 
 // A part's own table is a named export of its file, and page-words.ts exports it again. A table
