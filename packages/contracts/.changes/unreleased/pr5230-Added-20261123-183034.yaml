@@ -3,7 +3,11 @@ body: |-
     A `@legion/contracts/http-status` subpath exports `outage(status)`, the one rule this
     workspace's clients read an HTTP status by when they decide whether to ask again: a 408, a 429
     and any 5xx, the set Go's `httpoutage.Is` holds. `retriesUnderKey` reads it, and adds only
-    Dispatch's `409 KEY_IN_FLIGHT`; what it answers does not change.
+    Dispatch's `409 KEY_IN_FLIGHT`; what it answers does not change. Beside it,
+    `mayHaveReachedServer(status)` says whether a request a proxy or gateway answered with that
+    status may have reached the server behind it: after a 5xx, and not after a 408, a 429 or any
+    other status, which the hop sends before it forwards anything. The Dispatch client, the Envoy
+    client and the Legion daemon's client read it; what each answers does not change.
 time: 2026-11-23T18:30:34.654985922Z
 custom:
     Issue: pr5230

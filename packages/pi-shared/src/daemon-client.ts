@@ -1,4 +1,4 @@
-import { outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
 import {
   type LegionActivityRequest,
   LegionChildRequest,
@@ -356,13 +356,13 @@ const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
  * proxy in front of it sent one before it forwarded anything); `dropped` may have reached it (a
  * connection reset or closed before a response, or a 5xx with no code: a proxy's page in front
  * of it, or a claim route's sentence, which names no code). Each of those statuses is an outage
- * (`outage`). Undefined for an answer the daemon gave, which is never retried: a 4xx other than
- * those two above all, and any refusal that carries a code, whatever its status, such as the
- * daemon's own 502 `DISPATCH_FAILED`. */
+ * (`outage`), and `mayHaveReachedServer` says which of the two it is. Undefined for an answer the
+ * daemon gave, which is never retried: a 4xx other than those two above all, and any refusal that
+ * carries a code, whatever its status, such as the daemon's own 502 `DISPATCH_FAILED`. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
   if (error instanceof LegionDaemonApiError) {
     if (error.code !== undefined || !outage(error.status)) return undefined;
-    return error.status === 408 || error.status === 429 ? "refused" : "dropped";
+    return mayHaveReachedServer(error.status) ? "dropped" : "refused";
   }
   if (!(error instanceof Error)) return undefined;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;

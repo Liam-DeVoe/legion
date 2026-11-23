@@ -10,7 +10,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -1203,12 +1203,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       );
       // An outage (`outage`) is sent again, but for a 429: the listener's 429 is
       // `sender_rate_limited`, its answer to this message, whose sentence the agent reads to decide
-      // when to send it again. Any other 4xx is the listener's answer too. The listener writes no
-      // 408, so one is a hop's timeout on the request, sent before it forwarded anything (as
-      // `reachesDispatch` in `dispatch-http.ts` says of a gateway's): an attempt that reached
-      // nothing, so a send answered 408 on every attempt stays that refusal.
+      // when to send it again. Any other 4xx is the listener's answer too. An attempt answered
+      // with a 5xx may have reached the listener (`mayHaveReachedServer`), which may have acted on
+      // it (`onUnanswered`).
+      // The listener writes no 408, so one is a hop's timeout on the request, sent before it
+      // forwarded anything: an attempt that reached nothing, so a send answered 408 on every
+      // attempt stays that refusal.
       if (outage(response.status) && response.status !== 429) {
-        if (response.status !== 408) options.onUnanswered?.();
+        if (mayHaveReachedServer(response.status)) options.onUnanswered?.();
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
           continue;

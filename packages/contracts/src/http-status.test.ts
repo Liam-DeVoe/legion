@@ -5,7 +5,7 @@ import {
   IDEMPOTENCY_KEY_REUSED,
   retriesUnderKey,
 } from "./dispatch-api-limits";
-import { outage } from "./http-status";
+import { mayHaveReachedServer, outage } from "./http-status";
 
 /** Every status from 100 to 599. */
 const STATUSES = Array.from({ length: 500 }, (_, index) => 100 + index);
@@ -15,6 +15,17 @@ const SERVER_ERRORS = Array.from({ length: 100 }, (_, index) => 500 + index);
 
 test("an outage is a 408, a 429 and every 5xx, and no other status from 100 to 599", () => {
   expect(STATUSES.filter(outage)).toEqual([408, 429, ...SERVER_ERRORS]);
+});
+
+// A hop's answer may have come after the request reached the server only for a 5xx: so of the
+// statuses from 100 to 599 it holds of exactly the 5xx, each of them an outage, and the outages it
+// does not hold of are the 408 and the 429 a hop sends before it forwards anything.
+test("a request a hop answered may have reached the server after every 5xx, and after no other status from 100 to 599", () => {
+  expect(STATUSES.filter(mayHaveReachedServer)).toEqual(SERVER_ERRORS);
+  expect(STATUSES.filter((status) => mayHaveReachedServer(status) && !outage(status))).toEqual([]);
+  expect(STATUSES.filter((status) => outage(status) && !mayHaveReachedServer(status))).toEqual([
+    408, 429,
+  ]);
 });
 
 // A keyed write asks again after exactly the outages, and after `409 KEY_IN_FLIGHT` besides,

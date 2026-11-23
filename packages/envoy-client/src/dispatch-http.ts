@@ -98,7 +98,7 @@ import {
   sleep,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
@@ -161,7 +161,7 @@ export class DispatchGatewayError extends DispatchServiceError {
   readonly transient: boolean;
   /**
    * Whether the request may have reached Dispatch before the gateway answered, so a write may
-   * have taken effect (`reachesDispatch`).
+   * have taken effect (`mayHaveReachedServer`: only after a 5xx).
    */
   readonly mayHaveReachedDispatch: boolean;
 
@@ -178,7 +178,7 @@ export class DispatchGatewayError extends DispatchServiceError {
   ) {
     super(`HTTP_${status}`, status, message);
     this.transient = gatewayClears(status);
-    this.mayHaveReachedDispatch = reachesDispatch(status);
+    this.mayHaveReachedDispatch = mayHaveReachedServer(status);
   }
 }
 
@@ -876,15 +876,16 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
  * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
  * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
  * of which writes twice. A write answered so may already have taken effect only when the request
- * reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did
- * not, and a retry may succeed as for a read.
+ * may have reached Dispatch (`mayHaveReachedServer`: after a gateway's 5xx, not its 408 or 429),
+ * where a blind retry could apply it twice; otherwise it did not, and a retry may succeed as for
+ * a read.
  */
 function gatewayAdvice(method: string, status: number): string {
   if (!gatewayClears(status)) {
     return "a retry gets the same answer until the Dispatch URL, or whatever answers in its place, is fixed";
   }
   if (method === "GET" || (status >= 200 && status < 300)) return "a retry may succeed";
-  return reachesDispatch(status)
+  return mayHaveReachedServer(status)
     ? "the write may or may not have reached Dispatch: check whether it took effect before retrying it"
     : "the write did not reach Dispatch, and a retry may succeed";
 }
@@ -895,17 +896,6 @@ function gatewayAdvice(method: string, status: number): string {
  *  other status answers the same request the same way. */
 function gatewayClears(status: number): boolean {
   return outage(status) || (status >= 200 && status < 300);
-}
-
-/**
- * Whether a gateway that answered with `status` may have forwarded the request to Dispatch first:
- * only after a 5xx, which a gateway sends when the upstream failed, timed out or dropped the
- * connection, possibly once Dispatch had the request. A 408 or 429 is the gateway's own timeout on
- * the client's request or its own rate limit, and any other status its own refusal, each sent
- * before it forwards anything.
- */
-function reachesDispatch(status: number): boolean {
-  return status >= 500;
 }
 
 /**
