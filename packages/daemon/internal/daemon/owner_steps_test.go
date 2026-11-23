@@ -44,8 +44,10 @@ import (
 // the slot holds it, the owner is told its step as one notice owner-step. Its complete_step of
 // step 1, with its handoff record written in its own session and the pull request open, moves the
 // issue to the retro, which is the owner's too (record.PlaceWorker): the end of step 1 writes the
-// owner's slot for its own App again, and the retro is told as an owner-step once the slot holds
-// it. The owner's complete_step of the retro with its rating moves the issue to merging, and the
+// owner's slot for its own App again, and the retro, done as the implementer whose step was the
+// owner's, is told as an owner-step once the slot holds the implementer's App again, the App that
+// can resolve the pull request's threads. The owner's complete_step of the retro with its rating
+// moves the issue to merging, the retro's end writes the slot back to the owner's own App, and the
 // merge ends it at done. The records of step 1 and of the retro name the owner's claim and its
 // session, and no implementer was ever launched.
 //
@@ -94,11 +96,20 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 	if r.slotWrites(owner.token) == written {
 		t.Fatalf("the end of %s's step 1 asked no write of the owner's slot back to its own App: calls %+v", r.key, r.slotCalls())
 	}
+	asked := r.rt.CallsOf("SlotHoldsCredential")
+	if last := asked[len(asked)-1]; last.Claim != owner.token || last.Role != claim.RoleImplementer {
+		t.Fatalf("the retro of %s was told after the outbox asked whether %s's slot holds the App of %s, want the implementer's: calls %+v",
+			r.key, last.Claim, last.Role, r.slotCalls())
+	}
+	written = r.slotWrites(owner.token)
 	if status, body := r.ownerReports(api.CompleteStepRequest{Step: 0, Summary: "retro written", Commit: stepRecordsHead,
 		PlanRating: new(deploymentRating), PlanReason: new(deploymentReason)}); status != http.StatusOK {
 		t.Fatalf("the owner's complete_step of %s's retro = %d %s, want 200", r.key, status, body)
 	}
 	r.waitPhase(phase.Merging)
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the retro's end to write "+string(owner.token)+"'s slot back to its own App", func() bool {
+		return r.slotWrites(owner.token) > written
+	})
 	r.merge()
 	r.waitRecordsOf(owner, 1)
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 0 || r.claimRecorded(r.token(claim.RoleImplementer)) {

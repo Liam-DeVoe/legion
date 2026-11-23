@@ -2818,19 +2818,51 @@ func (i Issue) OwnersRowRole() claim.Role {
 	return i.StepRole
 }
 
-// OwnerActsAs is the role whose App the owner's slot holds while the owner does a step of issue's
-// task, and false where the owner does none: the role of the step where the issue's task stands at
-// a step of the key owner (PlaceRole is the architect and StepRole names that step) and the issue
-// stands in the phase that step runs as, unheld. Everywhere else the owner's slot holds the App of
-// the owner's own role: at the owner's retro, which is no step of the plan and which the owner does
-// as itself, at a step of another agent, with no plan rows, and while the issue is held, which a
-// stopped task holds too, since the owner does no step then (the route complete_step refuses a
-// report of it).
-func OwnerActsAs(issue Issue) (claim.Role, bool) {
-	if issue.Hold != nil || issue.PlaceRole != claim.RoleArchitect || issue.StepRole == "" || plan.RunsAs(string(issue.StepRole)) != issue.Phase {
+// OwnerActsAs is the role whose App the owner's slot holds while the owner does a step or the retro
+// of issue's task as another role, and false where it does neither: the role the place is done as,
+// one rule for both. At a step of the key owner (PlaceRole is the architect and StepRole names that
+// step), with the issue in the phase that step runs as, it is that step's role. At the owner's retro
+// (PlaceRole is the architect at the retro) it is the role the retro is done as (RetroActsAs, read
+// from steps, the plan rows of the issue's task): the role of the task's last step of the type
+// implementation, which is the owner's, so the owner's gh acts through its retro as the App that
+// opened the pull request, the one App GitHub lets resolve its review threads, as a fresh
+// implementer's retro does. Everywhere else the owner's slot holds the App of the owner's own role:
+// at a retro the owner does as itself, of a task with no step of the type implementation, at a step
+// or a retro of another agent, with no plan rows, and while the issue is held, which a stopped task
+// holds too, since the owner does no step then (the route complete_step refuses a report of it).
+// The daemon's ActsAs reads steps only for an issue at its retro (internal/daemon's ownerActsAs),
+// and nil steps elsewhere change nothing here.
+func OwnerActsAs(issue Issue, steps []PlanStep) (claim.Role, bool) {
+	if issue.Hold != nil || issue.PlaceRole != claim.RoleArchitect {
+		return "", false
+	}
+	if issue.Phase == phase.Retro {
+		if role := RetroActsAs(steps); role != claim.RoleArchitect {
+			return role, true
+		}
+		return "", false
+	}
+	if issue.StepRole == "" || plan.RunsAs(string(issue.StepRole)) != issue.Phase {
 		return "", false
 	}
 	return issue.StepRole, true
+}
+
+// RetroActsAs is the role the retro of a task is done as, read from steps, the task's plan rows:
+// the role of its last step of the type implementation, whose agent does the retro (PlaceWorker),
+// so the retro's gh acts as the App that step acted as; and the architect where the task has no
+// such step, whose retro the owner does as itself. Where that step's role is one a plan defines,
+// the answer is that role, whose App its type decides, as it does for the step.
+func RetroActsAs(steps []PlanStep) claim.Role {
+	var task string
+	if len(steps) > 0 {
+		task = steps[0].Task
+	}
+	retro, ok := PlaceWorker(task, TaskPlace{Kind: PlaceRetro}, steps)
+	if !ok || retro.Step < 1 || retro.Step > len(steps) {
+		return claim.RoleArchitect
+	}
+	return claim.Role(steps[retro.Step-1].Role)
 }
 
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
