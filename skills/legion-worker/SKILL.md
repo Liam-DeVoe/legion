@@ -42,7 +42,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
     Do what it asks at the head it names, with a handoff of its own.
 
   - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
-    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
+    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head, with a handoff that names it where your phase writes one.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.

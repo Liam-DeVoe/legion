@@ -29,15 +29,17 @@ import (
 // Each attempt first reads the issue, its pull request and whether its tree lingers in one
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is
 // no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt): the
-// record holds no such issue, the issue has left the workflow, its tree lingers, the record holds
-// no pull request or one that is not open, it holds no merge forward or one of another head, or the
-// row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
-// the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
-// a head that already came. What follows - a claim that failed or retired, the design gate, the
-// wake and the publish - is deliverHeld's, as it is a merge-queue removal's. The message reaches the
-// claim it names (record.MergeForwardMessage.Claim), the worker of its role's step when the
-// workflow wrote it; a row the release before wrote names none and reaches the claim the record
-// gives that step when it runs (workerToken).
+// record holds no such issue, the issue has left the workflow, its tree lingers, the row's role is
+// one the deployment this daemon booted with no longer defines (r.deployment: a restart since the
+// row was queued dropped it, and a wake would resume a claim whose launch then fails), the record
+// holds no pull request or one that is not open, it holds no merge forward or one of another head,
+// or the row is an ask or a hold and the merge forward has landed.
+// Role-message rows run in no order of the issue's, so a hold still queued behind its landed would
+// otherwise tell the worker to wait for a head that already came. What follows - a claim that
+// failed or retired, the design gate, the wake and the publish - is deliverHeld's, as it is a
+// merge-queue removal's. The message reaches the claim it names (record.MergeForwardMessage.Claim),
+// the worker of its role's step when the workflow wrote it; a row the release before wrote names
+// none and reaches the claim the record gives that step when it runs (workerToken).
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -54,7 +56,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	var left string
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Step, payload.Head)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.deployment, row.Issue, payload.Role, payload.Step, payload.Head)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)

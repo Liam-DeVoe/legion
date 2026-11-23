@@ -1617,12 +1617,32 @@ and no completion, the phase's worker is told to stop writing the workspace and 
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads.
 At `step`, a role the deployment no longer defines is told neither, since its task stays stopped until the role is defined again.
+A hold or a landed queued for such a role before the restart that dropped it is not sent either: the
+restarted daemon logs `outbox merge-forward message finished undelivered: the workflow no longer
+delivers it` with `why` naming `the deployment no longer defines the role <role>`, and the role's
+released claim is not woken.
 A completion of `testing`, `reviewing`, `step` or `retro`, the phase the issue stands in, that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
 before. In `accepting`, `retro` or `merging`, where the task has a reviewer step, the reviewer is asked to read the merge
 and approve the new head. A red check sends nothing back from anywhere.
+
+That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
+defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on
+top of the head a merge forward replaced, its completion names that commit, which is neither the
+replaced head nor the new one, and the daemon takes it: it keeps the heads each merge forward
+replaced and left, not a commit graph, and a commit the role did not push is on no remote. To find
+such a pass, read the commit the role reported:
+
+```sh
+legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<role>"].handoffCommit'
+```
+
+In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents. When one
+of them is the `head` a `workflow: the merge forward landed` line names, the step judged the code
+before the merge. The role that works the issue's phase now sends the task back to that step with
+`request_backward_move`, its `returnTo` naming the step's place.
 
 The pull request's state as the daemon sees it:
 

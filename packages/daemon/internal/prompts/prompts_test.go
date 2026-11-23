@@ -66,10 +66,11 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 		composed.Write(body)
 	}
 	holdsAndRetires(t, "the composition of a role of the deployment", composed.String(), []string{
-		"Report your step with handoff_complete: the verdict pass or fail, the commit your workspace stands on, and a `summary` of what you found.",
+		"Report your step with handoff_complete, with the verdict pass or fail and a `summary` of what you found.",
+		"The tool reports the commit your workspace stands on, `@-`, itself.",
 		"The next step's task carries that summary after your verdict.",
 		"With fail you may name `return_to`, the place of an earlier step of your task.",
-	}, []string{"and the commit your workspace stands on; with fail"})
+	}, []string{"and the commit your workspace stands on; with fail", "the verdict pass or fail, the commit your workspace stands on, and a `summary`"})
 	for _, part := range []struct {
 		name, text    string
 		want, retired []string

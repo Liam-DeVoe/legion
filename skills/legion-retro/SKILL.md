@@ -12,7 +12,9 @@ Run every step, even on a mechanical change.
 
 Retro commits nothing and pushes nothing of its own: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
 A merge forward that the daemon's merge-forward message asks of you is no part of retro (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
-No Legion check compares the head that merges with a review's head, so whether a push after a review needs a new review is the repository's own rule.
+No Legion check compares the head that merges with a review's head.
+Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for.
+Whether another push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
 In the workspace retro itself changes nothing.

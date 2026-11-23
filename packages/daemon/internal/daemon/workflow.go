@@ -1663,6 +1663,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.deployment = supervision.cfg.Deployment()
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits

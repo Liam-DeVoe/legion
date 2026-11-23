@@ -177,7 +177,8 @@ type RoleBar struct {
 type Rework struct {
 	MedianReviewRounds float64 `json:"median_review_rounds"`
 	// SentBackShare is the share of finished issues moved from testing, reviewing, accepting,
-	// retro, merging or awaiting merge back to implementing at least once (sentBackPhases).
+	// retro, merging or awaiting merge back to implementing at least once (sentBackPhases), or
+	// whose step of a role the deployment defines failed and returned its task (sentBackOnce).
 	SentBackShare float64 `json:"sent_back_share"`
 	// HoursAfterFirstReview is the implementing and testing hours after the first review, across
 	// the finished issues, and its median per issue.
@@ -649,33 +650,37 @@ func reviewRounds(issue *Issue, timeline phaseTimeline) int {
 }
 
 // sentBackPhases are the phases a send-back moves out of: "a move from `testing`, `reviewing`,
-// `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`", and `step`, where a step
-// of a role the deployment defines that fails returns the task to its step of the type
-// implementation as a tester's fail does. A tester's fail and a
+// `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A tester's fail and a
 // review that requests changes move out of testing and reviewing, and a backward move
 // (`request_backward_move`, the daemon workflow's TriggerBackward rows) out of any of them. Before
 // cybermonklabs/legion#4464 a head that started conflicting with its base sent the issue back out
-// of any of them too, and the history this reads holds those moves.
+// of any of them too, and the history this reads holds those moves. `step` is not one of them: a
+// step of a role the deployment defines that stands before the implementer moves to implementing
+// when it passes, a forward move, and a step after the implementer moves there when it fails, so
+// a move from `step` to implementing says neither. Its run does (StepRun.Returned), and
+// sentBackOnce reads that.
 var sentBackPhases = []string{
-	legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseStep, legion.PhaseAccepting,
+	legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseAccepting,
 	legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
 }
 
-// sentBackOnce is whether the issue moved from one of sentBackPhases to `implementing`: off the
-// status history written before the observed part of its timeline begins, and off that observed
-// part from there on, as the review rounds beside it are. Before observations the move is the
-// status's (sentBackStatuses): `needs_review` is the status of both reviewing and accepting,
-// `retro` the status of both retro and merging, and `in_progress` the status of implementing, but
-// not the `in_progress` a step of a role the deployment defines starts with (Issue.stepStatus);
-// and it is the return of such a step that failed, whose `in_progress` is the step's own, so no
-// status says it (StepRun.Returned).
+// sentBackOnce is whether the issue was sent back to `implementing`. Out of one of
+// sentBackPhases, the move is read off the status history written before the observed part of
+// its timeline begins, and off that observed part from there on, as the review rounds beside it
+// are. Before observations the move is the status's (sentBackStatuses): `needs_review` is the
+// status of both reviewing and accepting, `retro` the status of both retro and merging, and
+// `in_progress` the status of implementing, but not the `in_progress` a step of a role the
+// deployment defines starts with (Issue.stepStatus). Out of such a step, the send-back is the
+// return of a run that failed (StepRun.Returned), before observations and after them alike: no
+// status says it, since the step's `in_progress` is its own, and no phase does, since a step that
+// passes can move to implementing too (sentBackPhases).
 func sentBackOnce(issue *Issue, timeline phaseTimeline) bool {
 	before := timeline.statusesBefore(issue)
 	if statusMoved(slices.DeleteFunc(slices.Clone(before), issue.stepStatus), sentBackStatuses, statusImplementing) {
 		return true
 	}
 	for _, run := range issue.Runs {
-		if run.Returned && run.End != nil && (timeline.firstObserved == len(timeline.spans) || run.End.Before(timeline.spans[timeline.firstObserved].Span.From)) {
+		if run.Returned && run.End != nil {
 			return true
 		}
 	}
