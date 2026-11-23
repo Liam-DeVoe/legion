@@ -76,15 +76,17 @@ type Records interface {
 // so a unit is drawn the same way whichever opened it.
 //
 // at is the instant every answer of this call records, read once by the caller's clock, and
-// source is the random source a `random` mode is drawn with (Draw). An experiment of another
-// unit is passed over, and a declared list that holds none of this unit reads and writes
-// nothing, which is no error. Otherwise key's own record is read first, in tx, where a record the
-// caller wrote earlier in the same transaction — putNewRoot's root, recordChild's child — is
-// already there to find, and a key the daemon holds no record of — an operator's spawn of a tree
-// the daemon never recorded — is drawn for nothing (INFRA-2566's R2): no random source is read
-// and nothing is written, so a failing source refuses nothing. Writing no row for a recorded key
-// is no business of this helper's either: an experiment the key already holds a row for keeps the
-// arm it has been running under (record.Store.PutAssignments).
+// source is the random source a `random` mode is drawn with (Draw). Each answer carries the
+// `plan` of the arm drawn (config.Variant.Plan), so an issue keeps how it is done for its whole
+// life; a draw into no arm, under mode off, records no plan. An experiment of another unit is
+// passed over, and a declared list that holds none of this unit reads and writes nothing, which
+// is no error. Otherwise key's own record is read first, in tx, where a record the caller wrote
+// earlier in the same transaction — putNewRoot's root, recordChild's child — is already there to
+// find, and a key the daemon holds no record of — an operator's spawn of a tree the daemon never
+// recorded — is drawn for nothing (INFRA-2566's R2): no random source is read and nothing is
+// written, so a failing source refuses nothing. Writing no row for a recorded key is no business
+// of this helper's either: an experiment the key already holds a row for keeps the arm it has
+// been running under (record.Store.PutAssignments).
 func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
 	declared []config.Experiment, unit config.ExperimentUnit, source func(uint64) (uint64, error), at time.Time) error {
 	ofUnit := func(experiment config.Experiment) bool { return experiment.Unit == unit }
@@ -107,11 +109,33 @@ func DrawAndRecord(ctx context.Context, tx pgx.Tx, records Records, key string,
 		if err != nil {
 			return fmt.Errorf("draw the %s experiment of %s: %w", experiment.Name, key, err)
 		}
+		// A draw under mode off names no arm, and no arm is named "" (config's readVariants), so
+		// such a draw finds none and records no plan.
+		var plan config.PlanGroup
+		if arm := slices.IndexFunc(experiment.Variants, func(v config.Variant) bool { return v.Name == variant }); arm >= 0 {
+			plan = experiment.Variants[arm].Plan
+		}
 		rows = append(rows, record.Assignment{Experiment: experiment.Name, Unit: string(experiment.Unit),
-			Variant: variant, Mode: string(experiment.Mode), DrawnAt: &at})
+			Variant: variant, Mode: string(experiment.Mode), DrawnAt: &at, Plan: string(plan)})
 	}
 	_, err = records.PutAssignments(ctx, tx, key, rows)
 	return err
+}
+
+// GroupOf is the row of rows, one issue's assignments, that says how the issue is done: the one
+// whose Plan is not "", or the zero Assignment, the issue of no group, which runs as an issue with
+// no experiment runs. At most one such row exists for an issue: an experiment that sets plan draws
+// for each issue (config's checkExperimentPlans), once, when the daemon first records the issue,
+// and a project declares one such experiment at a time (config's checkExperiments). It is the one
+// reader of how an issue is done, so no reader asks the project's file, which may have changed
+// since the draw.
+func GroupOf(rows []record.Assignment) record.Assignment {
+	for _, row := range rows {
+		if row.Plan != "" {
+			return row
+		}
+	}
+	return record.Assignment{}
 }
 
 // Draw is the variant experiment gives one unit, by the experiment's mode. ExperimentOff gives the
