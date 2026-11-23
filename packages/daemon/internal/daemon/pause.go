@@ -139,13 +139,10 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // whole claim, as the owed answer reads them (supervise.Claim.ServingAt), so the stop reads no run
 // of its own and asks it whatever run the claim was left serving: a fresh claim whose first task
 // of the issue's run is not yet delivered serves that task's run and owes its phase. A worker that
-// owes that phase nothing gets no backstop but for the two kinds of such worker that rule keeps: a
-// claim that holds a task of the issue's run and phase the daemon has not delivered, of its row's
-// entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier
-// run of the issue (holdsUndeliveredEntryTask), and a claim that holds a task of news alone of the
-// issue's run and phase the daemon has not delivered, whatever it owes and whatever entry it
-// serves (holdsUndeliveredNewsTask). A stop the machine makes of a claim that holds a task no turn
-// has taken already owes it a launch (supervise's holdsTask), which brings it back at the resume.
+// owes that phase nothing gets no backstop but for the two kinds of such worker that rule keeps,
+// each holding a task of the issue's run and phase that no turn has confirmed, which getsBackstop
+// states. A stop the machine makes of a claim that holds a task no turn has taken already owes it
+// a launch (supervise's holdsTask), which brings it back at the resume.
 // A start owed once the pause has ended, with no pause open after it, is logged as a released held
 // row (decision 23), and the outbox runs it at once through the pacing; a later open pause holds
 // it, and that pause's resume logs it.

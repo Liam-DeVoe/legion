@@ -3514,7 +3514,8 @@ That architect is the issue's own architect while its claim holds its role, else
 The reminder's architect notice and the stall watch's notice of a stuck call go to the architect it names.
 The claim owes work only while the record holds that work open for the claim's role, and only where the completion route would take the claim's completion of it (`owedBy`, `packages/daemon/internal/api/owed.go`).
 So a role whose completion stands owes nothing.
-A tester, reviewer or merger that the daemon told to wait while the implementer merges the base forward owes nothing until that merge lands.
+A tester, reviewer or merger that the daemon told to wait while another role merges the base forward owes nothing until that merge lands.
+A merger that the daemon asked to merge the base forward in `merging` owes that phase, since the merge is its own work (cybermonklabs/legion#4979).
 A claim behind the entry its phase is on, or serving no run of the issue's current generation, owes nothing until the task of that entry reaches it.
 The end-of-turn reminder of both harnesses asks this route at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
 It reminds only a claim the answer says owes work, and a read that fails or gets no answer within 3 seconds reminds no one (`UNREAD_CHECK`, `packages/pi-shared/src/phase-reminder.ts`).
@@ -8071,10 +8072,10 @@ The wakes are these:
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
   Nor does a phase worker that owes its phase nothing: its completion of the phase's entry is recorded while the issue stays in the phase, a merge forward holds it, its merged pull request finished merging, it is behind that entry or still serves an earlier run, by the rule of the daemon's answer of what a claim owes (`record.PhaseOwed`, read by `armBackstops`, `internal/daemon/wake.go`).
   Such a worker is OSSV-732's reviewer, whose approval stood while GitHub held the merge for a code-owner review; a backstop would wake it every `backstop_minutes` to do nothing.
-  Any work such a worker gets later comes as a task or a message of the daemon's, which wakes the pod once it is sent: admission's owed-entry repair sends the entry's task to a worker behind its entry that holds no task of the issue's run and phase that the daemon has not delivered.
+  Any work such a worker gets later comes as a task or a message of the daemon's, which wakes the pod once it is sent: admission's owed-entry repair sends the entry's task to a worker behind its entry that holds no task of the issue's run and phase that no turn has confirmed.
   The exception is a task of news alone (`NewsOnly`), the second kind below.
   Two kinds of worker that owe their phase nothing still get the backstop.
-  The first is one that holds a task of the issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, unless its completion is recorded, a merge forward holds its role or its merged pull request is finishing its merge (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
+  The first is one that holds a task of the issue's run and phase that no turn has confirmed, of that entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, unless its completion is recorded, a merge forward holds its role or its merged pull request is finishing its merge (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
   A send can fail before any turn and then waits for the claim to come back.
   A relaunch of a failed or retired worker keeps the task of an earlier entry that it still holds, and does not deliver the new entry (`keepsStartTask`, `internal/daemon/outbox.go`).
   A task of no entry is a resume task (`ResumePhaseTask`) or a task of news alone (`NewsOnly`), which names the issue's run and phase too but is no task of the phase, so the first kind does not count it (`Delivery.StillWorked`) and the second does.
@@ -8082,7 +8083,7 @@ The wakes are these:
   Each of these three functions sends the resume task only to a claim level with the entry its phases row names.
   A claim behind that entry gets that entry's task instead (`sendOwedEntry`, `internal/workflow/effects.go`).
   Admission's owed-entry repair passes over every claim that holds an undelivered task of the issue's run and phase that it still works, of whatever entry (`Delivery.StillWorked`), so the backstop is then the one wake that brings the pod back for that delivery.
-  The second is one that holds a task of news alone of the issue's run and phase that the daemon has not delivered, whatever it owes and whatever entry it serves; a confirmed news task, or one of another run or another phase, gets none (`holdsUndeliveredNewsTask`).
+  The second is one that holds a task of news alone of the issue's run and phase that no turn has confirmed, whatever it owes and whatever entry it serves; a confirmed news task, or one of another run or another phase, gets none (`holdsUndeliveredNewsTask`).
   The daemon sends such news to a worker level with its row's entry whatever it completed, such as a reviewer whose approval stands (`newsClaimTakes`, `internal/daemon/design_news_holders.go`).
   Once a send of it fails before any turn, no news reconcile, repair or silence sweep sends it again, so for such a worker the backstop is the one wake that delivers it.
   For an issue the daemon records as waiting on another issue (its admission slot given back for the wait), the backstop wakes the pod only `WaitSilenceBound`, 24 hours, after the release armed it (`pod_wake_backstops.armed_at`), in place of `backstop_minutes`.
@@ -8355,7 +8356,7 @@ It writes the claim and the stop's record, and with them:
   The daemon also queues no outbox row keyed by another project's issue, since only that project's daemon runs such a row, against its own claims: every write of an outbox row by its key takes one rule (`claim.KeyOfProject`, `internal/claim/token.go`), so neither the stop of such a spawn nor its agent's ready queues a row of that issue or changes one;
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
-  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads, with that rule's two exceptions: a worker that holds a task of the issue's run and phase that the daemon has not delivered, of its entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, and a worker that holds a task of news alone of the issue's run and phase that the daemon has not delivered, whatever it owes and whatever entry it serves ([Idle release](#idle-release)); a cancel of its pod's release, made while the project is paused, which records it stopped by the pause, reads the same rule.
+  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads, with that rule's two exceptions: a worker that holds a task of the issue's run and phase that no turn has confirmed, of its entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, and a worker that holds a task of news alone of the issue's run and phase that no turn has confirmed, whatever it owes and whatever entry it serves ([Idle release](#idle-release)); a cancel of its pod's release, made while the project is paused, which records it stopped by the pause, reads the same rule.
 
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 

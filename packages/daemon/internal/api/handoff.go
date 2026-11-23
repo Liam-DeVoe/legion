@@ -463,8 +463,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 //
 // The fallback to the held task is narrow: a held task of another run, of another phase, or of no
 // phase at all is none of the work a completion could be of, and answers run 0. Why the held task
-// is not the issue's current task is one question with one answer (heldTaskNotCurrent), which
-// answers "" exactly where the fallback reads the held task (supervise.HoldsTaskOf), and this
+// is not the issue's current task is one question with one answer (heldTaskNotCurrent), and this
 // function is its one reader, so the 409 can never describe a rule the route does not apply. The
 // reason is asked wherever the run is 0, the fallback's or not: a claim that has retired no run
 // and holds a task the agent read or a turn confirmed, which carries no run — an operator's own,
@@ -502,15 +501,13 @@ func claimServes(c supervise.Claim, issue record.Issue) (serving uint64, entry i
 // the answer itself (noRunCompletion), so a change to which held task may back a completion cannot
 // leave the 409 describing a rule the route no longer applies.
 //
-// Every case after the first two reads a task: the second asks supervise.HoldsTask. A claim holds
+// Every case after the first reads a task: the first asks supervise.HoldsTask. A claim holds
 // none when it holds nothing and when it holds only the daemon's own delivery of a relaunch's
 // record (supervise.Delivery.Relaunch), which carries the sentence of what the relaunch ended and
 // no work; the reason says which, so that delivery is said as what it is rather than read as a
 // task of no run, which is an operator's own.
 func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
 	switch {
-	case supervise.HoldsTaskOf(pending, current, p):
-		return ""
 	case !supervise.HoldsTask(pending):
 		if pending == nil {
 			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)

@@ -2234,9 +2234,12 @@ func (c Claim) ServingEntry() int64 {
 // refusal, a lost prompt, a failed adoption or a send that failed before any turn leaves behind,
 // while the agent goes on and does the phase's work in a turn of its own or waits for its first
 // task. So the run and the entry are taken from the task the claim holds, which names the
-// generation and the phase itself, where that task is the issue's own current work (HoldsTaskOf):
-// a task of run generation and of phase at. A task of another run, of another phase, or of no
-// phase at all — an operator's own, which carries generation 0, or a wake's, which names no
+// generation and the phase itself, where that task is of the issue's run and phase (HoldsTaskOf):
+// a task of run generation and of phase at. A task of news alone (Delivery.NewsOnly) counts too:
+// it names that run and phase and carries no entry, so a fresh claim that holds one unconfirmed
+// serves the run at entry 0, which compares with no entry, as the completion route read such a
+// claim before this fallback was every reader's. A task of another run, of another phase, or of
+// no phase at all — an operator's own, which carries generation 0, or a wake's, which names no
 // phase — is none of the work the claim could owe, and such a claim serves run 0 and entry 0, as
 // one that holds no task does, whether serving's third rule read that task for it or not.
 //
@@ -2259,10 +2262,14 @@ func (c Claim) ServingAt(generation uint64, at phase.Phase) (run uint64, entry i
 }
 
 // HoldsTaskOf is whether pending, the delivery a claim holds, is a task (HoldsTask) of the issue
-// run generation and of phase at: the issue's own current work while the issue stands at that run
-// in that phase. It is the one statement of that test. ServingAt's fallback to a held task applies
-// it, and api's heldTaskNotCurrent, which says why a held task is not that work, answers "" where
-// it holds.
+// run generation and of phase at, while the issue stands at that run in that phase. It is the one
+// statement of that test. A task of news alone (Delivery.NewsOnly) counts, though it hands the
+// worker no work of the phase (HoldsWork, StillWorked pass over it): it names the issue's run and
+// phase, so a fresh claim whose news task no turn has confirmed serves that run at entry 0
+// (ServingAt), as the completion route's fallback to a held task read it before ServingAt took
+// that fallback over. ServingAt's fallback applies it, api's heldTaskNotCurrent, which says why a
+// held task is not that run's and phase's, answers "" where it holds, and internal/daemon's
+// holdsUndeliveredNewsTask reads it for the task of news alone it keeps a backstop for.
 func HoldsTaskOf(pending *Delivery, generation uint64, at phase.Phase) bool {
 	return HoldsTask(pending) && pending.Generation == generation && pending.Phase == at
 }

@@ -87,6 +87,16 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole(t *testing.T) {
 // release transaction (store.Store.ReleaseIdleIssue), with the record's reader the daemon hands
 // it (record.FillIdleClaims), and decides it as the idle tick does (workflow.IdleRelease); it
 // fails if the view reads the run from the claims row (serving_generation) instead.
+//
+// The seventh control (cybermonklabs/legion#4979) is read the same way: LEGION-208 stands in
+// merging with its pull request open at a head of which the daemon's merge forward has not
+// landed, and its live merger, level with its row's entry, reported a reminder wake a minute
+// past due. The merger the daemon asked to merge forward owes the merge, its own open work, so
+// its pod is held reminder_due. The merger the move into merging held rather than asked, since
+// the implementer's ask made in reviewing had not landed (workflow's holdMerger), owes nothing
+// while that ask holds it (record.MergeForwardHolds, read from the pull request in the store by
+// record.FillIdleClaims), so no reminder holds its pod, and quiet past the idle bound it is
+// released.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) {
 	t.Run("its role's completion is recorded", func(t *testing.T) {
 		rig := newIdleWakeRig(t, nil, idleRigOwesNothing)
@@ -156,46 +166,95 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 		rig.kube.requireServed(t)
 	})
 	t.Run("a fresh claim whose first task of the run is not yet delivered owes its phase", func(t *testing.T) {
-		const contract = 47
 		r := newPauseRig(t)
-		r.st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
-			return record.FillIdleClaims(ctx, r.pauses.records, tx, issue, at, claims)
-		})
 		fresh := r.claim(claim.RoleImplementer, supervise.StateIdle)
 		fresh.ServingGeneration, fresh.ServedEntry, fresh.GivenEntry = 0, 0, 1
 		fresh.Pending = undeliveredTask(phase.Implementing, 1)
 		r.putClaim(fresh)
 		r.putPhaseRow(claim.RoleImplementer, 1, false)
-		// The session reported twenty minutes ago, on the daemon's contract, with a reminder wake a
-		// minute past due, and the pod has recorded nothing for half an hour.
-		if _, err := r.pool.Exec(r.ctx, `update claims set plugin_contract = $2, activity_at = now() - interval '20 minutes',
-			activity_next_reminder_at = now() - interval '1 minute', updated_at = now() - interval '30 minutes'
-			where token = $1`, string(fresh.Token), contract); err != nil {
-			t.Fatalf("report the implementer's reminder wake past due: %v", err)
-		}
-		var got workflow.IdleDecision
-		var served pods.IdleClaim
-		if _, err := r.st.ReleaseIdleIssue(r.ctx, "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			got = workflow.IdleRelease(view, time.Now(), 10*time.Minute, true, false, contract)
-			for _, c := range view.Claims {
-				if c.Role == claim.RoleImplementer {
-					served = c
-				}
-			}
-			return store.IdleReleaseMark{}, nil
-		}); err != nil {
-			t.Fatalf("read the idle view of %s: %v", pauseIssue, err)
-		}
+		got, served := r.idleDecisionWithPastDueReminder(fresh)
 		if got.Hold != workflow.IdleHoldReminder {
 			t.Errorf("the pod of %s decided %+v (the implementer serves run %d, entry %d), want held %s: the fresh claim serves its first task's run and entry and owes its phase",
 				pauseIssue, got, served.ServingGeneration, served.ServingEntry, workflow.IdleHoldReminder)
 		}
 	})
+	for _, c := range []struct {
+		name string
+		// ask is the daemon's ask to merge the base forward onto the head the pull request
+		// stands at, not landed, and held whether it holds the merger.
+		ask  *record.MergeForward
+		held bool
+	}{
+		{name: "the seventh control: the merger the daemon asked to merge forward in merging owes its phase",
+			ask: mergeForwardAskOf(claim.RoleMerger, phase.Merging)},
+		{name: "a merger held in merging by the implementer's ask made in reviewing, which has not landed, owes nothing",
+			ask: mergeForwardAskOf(claim.RoleImplementer, phase.Reviewing), held: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newPauseRig(t)
+			if _, err := r.pool.Exec(r.ctx, `update issues set phase = 'merging' where key = $1`, pauseIssue); err != nil {
+				t.Fatalf("move %s into merging: %v", pauseIssue, err)
+			}
+			merger := r.claim(claim.RoleMerger, supervise.StateIdle)
+			merger.ServedEntry, merger.GivenEntry = 1, 1
+			r.putClaim(merger)
+			r.putPhaseRow(claim.RoleMerger, 1, false)
+			r.putPullRequest(record.PullRequestOpen, c.ask)
+			got, read := r.idleDecisionWithPastDueReminder(merger)
+			if read.MergeForwardHeld != c.held {
+				t.Errorf("the idle view read the merger held by the merge forward = %t, want %t", read.MergeForwardHeld, c.held)
+			}
+			if c.held {
+				if !got.Release || got.Hold != workflow.IdleHoldNone {
+					t.Errorf("the pod of %s decided %+v, want it released: the ask holds the merger, so it owes nothing and its past-due reminder holds no pod",
+						pauseIssue, got)
+				}
+				return
+			}
+			if got.Hold != workflow.IdleHoldReminder {
+				t.Errorf("the pod of %s decided %+v, want held %s: the merger owes the merge it was asked to make",
+					pauseIssue, got, workflow.IdleHoldReminder)
+			}
+		})
+	}
+}
+
+// idleDecisionWithPastDueReminder has c, a live claim of LEGION-208 the rig wrote, report on
+// the daemon's contract twenty minutes ago with a reminder wake a minute past due, its pod having
+// recorded nothing for half an hour, and decides the pod as the idle tick does
+// (workflow.IdleRelease, with a ten-minute idle bound) on the view the store's own release
+// transaction reads (store.Store.ReleaseIdleIssue), through the record's reader the daemon hands
+// the store (record.FillIdleClaims). It answers the decision and what that view read of c.
+func (r *pauseRig) idleDecisionWithPastDueReminder(c supervise.Claim) (workflow.IdleDecision, pods.IdleClaim) {
+	r.t.Helper()
+	const contract = 47
+	r.st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, r.pauses.records, tx, issue, at, claims)
+	})
+	if _, err := r.pool.Exec(r.ctx, `update claims set plugin_contract = $2, activity_at = now() - interval '20 minutes',
+		activity_next_reminder_at = now() - interval '1 minute', updated_at = now() - interval '30 minutes'
+		where token = $1`, string(c.Token), contract); err != nil {
+		r.t.Fatalf("report the %s's reminder wake past due: %v", c.Role, err)
+	}
+	var got workflow.IdleDecision
+	var read pods.IdleClaim
+	if _, err := r.st.ReleaseIdleIssue(r.ctx, "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		got = workflow.IdleRelease(view, time.Now(), 10*time.Minute, true, false, contract)
+		for _, viewed := range view.Claims {
+			if viewed.Role == c.Role {
+				read = viewed
+			}
+		}
+		return store.IdleReleaseMark{}, nil
+	}); err != nil {
+		r.t.Fatalf("read the idle view of %s: %v", pauseIssue, err)
+	}
+	return got, read
 }
 
 // The other half of dispatch://INFRA-2746 R1 at the release of a pod (check
 // c-idle-keeps-nothing-for-a-claim-that-owes-nothing): a released claim that owes nothing and
-// holds no task the daemon has yet to deliver gets no backstop, and its later work still brings
+// holds no task that no turn has confirmed gets no backstop, and its later work still brings
 // its pod back, as a daemon task once it is sent. The implementer's completion is recorded and
 // its pod is released with no backstop; the pod then stays released, pass after pass, with
 // nothing to wake it for. Then the issue moves back into implementing, as a review that asks for

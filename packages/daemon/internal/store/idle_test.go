@@ -147,7 +147,9 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 // (ReadIdleRecordsWith, record.FillIdleClaims), the entry its role's phases row stands on, whether
 // that row records a completion, whether a merge forward of the issue's pull request holds the
 // role, and whether that pull request is merged while the issue stands in merging. A claim that
-// has served no entry, a role with no row and an issue with no pull request read 0 and false.
+// has served no entry, a role with no row and an issue with no pull request read 0 and false. A
+// claim that has retired no run and holds a task of the issue's run and phase that its agent
+// neither read nor confirmed reads that task's run and entry, where its claims row records run 0.
 func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -200,7 +202,8 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	}
 
 	// The issue moves into merging and its pull request merges: the claim reads the merging
-	// finished (record.MergedInMerging), and the ask made in testing holds no role in merging.
+	// finished (record.MergedInMerging), and the ask made in testing does not hold the tester,
+	// which works no phase in merging.
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `update issues set phase = 'merging' where key = $1`, rootIssue); err != nil {
 			return err
@@ -213,6 +216,28 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	}
 	if got := idleViewOf(t, st, rootIssue).Claims[0]; !got.MergedInMerging || got.MergeForwardHeld {
 		t.Fatalf("claim = %+v, want the merging finished by the merged pull request and no merge forward holding it", got)
+	}
+
+	// The merger has retired no run, and holds the task of run 1 and merging at entry 2 that its
+	// agent neither read nor confirmed, as a send that failed before any turn leaves it.
+	merger := claim.Token("legion-legion-legion-208-merger")
+	if err := st.PutClaim(ctx, supervise.Claim{Token: merger, Project: "legion", Tree: rootIssue, Issue: rootIssue,
+		Role: claim.RoleMerger, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into pending_task_deliveries
+		(claim_token, delivery_id, task, queued_at, phase, generation, entry)
+		values ($1, 'd-merge', 'merge it', $2, 'merging', 1, 2)`, string(merger), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var read *pods.IdleClaim
+	for _, c := range idleViewOf(t, st, rootIssue).Claims {
+		if c.Role == claim.RoleMerger {
+			read = &c
+		}
+	}
+	if read == nil || read.ServingGeneration != 1 || read.ServingEntry != 2 {
+		t.Fatalf("the merger = %+v, want run 1 and entry 2 served: it has retired no run and holds the task of that run, phase and entry", read)
 	}
 }
 

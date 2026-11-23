@@ -1902,31 +1902,49 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 }
 
 // MergeForwardHolds says whether the merge forward pr records (PullRequest.MergeForward) holds
-// role while the issue stands at at: the ask is of the head pr stands at, it was made in at, it
-// has not landed (MergeForward.Landed), role is the role that works at (phase.RoleFor), and the
-// ask's hold reaches role (MergeForwardReaches, MergeForwardHold). So it answers true only for
-// the tester in testing, the reviewer in reviewing and the merger in merging: the hold told that
-// role to stop, not to complete at the head pr stands at, and to wait for the daemon's landed
-// message (MergeForwardLanded). The implementer is never held. The merge is its own open work, in
-// implementing and in retro alike, so the ask goes to it and no hold does. A nil pr, or one that
-// records no ask, holds nothing.
+// role while the issue stands at at: the ask is of the head pr stands at, it has not landed
+// (MergeForward.Landed), role is the role that works at (phase.RoleFor), the ask's hold reaches
+// role (MergeForwardReaches, MergeForwardHold), role is not the role the ask names
+// (MergeForward.Asked), and the ask was made in at, or, where at is merging, in any phase but
+// implementing. Such a hold told role to stop, not to complete at the head pr stands at, and to
+// wait for the daemon's landed message (MergeForwardLanded). So it answers true for the tester in
+// testing and the reviewer in reviewing, held by the ask of the implementer made in that phase,
+// and for the merger in merging, held by an ask of another role made in a phase other than
+// implementing: one made in testing or reviewing and carried into merging, or one that records no
+// asked role, which a daemon before cybermonklabs/legion#4979 wrote, in merging too, and which
+// Asked reads as the implementer's. In merging it holds the merger exactly where a move into
+// merging holds the merger rather than asking it (workflow's mergeForwardOnEntry, which reads it,
+// and holdMerger): an ask made in implementing covers implementing alone, so that move asks the
+// merger again, and an ask of the merger is the merger's own. The role asked is never
+// held: the merge is its own open work, the implementer's in implementing and in retro alike and
+// the merger's in merging, so the ask goes to it and no hold does, and reminding it of that work
+// is what the reminder is for. A nil pr, or one that records no ask, holds nothing.
 //
 // Whether pr is open is not read, on purpose. A close that does not merge keeps the ask and the
 // head (workflow's Engine.closed), the issue stays in its phase, and its architect decides
 // whether the work goes on; a reopen at the same head brings the same hold back. A close that
 // carries a new head ends the hold by the head clause.
 //
-// It is the one rule two readers hold a role to (dispatch://INFRA-2746 R1): the owed route (api's
-// owedBy), which tells a held role that it owes no completion, and the completion fence of a merge
-// forward (workflow's mergedForwardRefusal), which tells a held role that completes to wait for
-// the landed message rather than to complete at the head pr stands at.
+// It is the one rule the daemon holds a role to while a merge forward waits to land
+// (dispatch://INFRA-2746 R1): the move into merging, which holds the merger by it rather than
+// asking it (workflow's mergeForwardOnEntry); the owed route (api's owedBy), which tells a held
+// role that it owes no completion; the idle release's reminder hold and the backstop of a
+// released or pause-stopped worker, through the idle view (FillIdleClaims, PhaseOwed); and the
+// completion fence of a merge forward (workflow's mergedForwardRefusal), which tells a held role
+// that completes to wait for the landed message rather than to complete at the head pr stands at.
 func MergeForwardHolds(pr *PullRequest, at phase.Phase, role claim.Role) bool {
 	if pr == nil || pr.MergeForward == nil {
 		return false
 	}
 	asked := pr.MergeForward
-	return asked.Landed == "" && asked.Head == pr.HeadSHA && asked.Phase == at &&
-		phase.RoleFor(at) == role && MergeForwardReaches(MergeForwardHold, role)
+	if asked.Landed != "" || asked.Head != pr.HeadSHA || phase.RoleFor(at) != role ||
+		!MergeForwardReaches(MergeForwardHold, role) || asked.Asked() == role {
+		return false
+	}
+	if at == phase.Merging {
+		return asked.Phase != phase.Implementing
+	}
+	return asked.Phase == at
 }
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,

@@ -182,12 +182,16 @@ func TestClaimOwedIsNothingWhileTheClaimIsBehindItsEntry(t *testing.T) {
 // shape in which the end-of-turn reminder reminded a role that owed nothing, the role is told it
 // owes nothing. Each subtest builds its shape through the daemon's own workflow — completions the
 // route takes, a request_backward_move, the reviewer's own review, a conflict the daemon confirms
-// and the merge forward it asks, the synchronize that lands that merge, a hold, a park and a
-// close — then asks claims/owed, then posts that claim's completion and holds the route's answer
-// to it: taken, or the named refusal. An answer of nothing owed does not say the route refuses:
-// the route also records a completion of a phase the daemon moved the issue out of
-// (workflow's leftItsPhase), and that phase is not reminded (R8). An answer of work owed does say
-// the route takes the completion at the head the pull request stands at.
+// and the merge forward it asks, a retro's completion that moves the issue into merging, the
+// synchronize that lands that merge, a hold, a park and a close — then asks claims/owed, then
+// posts that claim's completion and holds the route's answer to it: taken, or the named refusal.
+// Two merging shapes are an ask this release's workflow does not write, which the record is
+// given directly (recordMergeForward): one a daemon before cybermonklabs/legion#4979 wrote with no
+// asked role, and one of a head the pull request no longer stands at. An answer of nothing owed
+// does not say the route refuses: the route also records a completion of a phase the daemon
+// moved the issue out of (workflow's leftItsPhase), and that phase is not reminded (R8). An
+// answer of work owed does say the route takes the completion at the head the pull request
+// stands at.
 func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T) {
 	t.Run("moved on", func(t *testing.T) {
 		h, _, _ := newEntryHarness(t)
@@ -275,6 +279,83 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 		}
 		reviewer.owes(t, "the reviewing phase of LEGION-208")
 		completion(t, h.complete(completionOf(t, reviewer, "review", headSHA, 1)))
+	})
+
+	// The implementer was asked in reviewing (record.MergeForwardAsker), and that ask held the
+	// reviewer; its merge has not landed when the retro's completion moves the issue into merging,
+	// so the move holds the merger rather than asking it (workflow's holdMerger), and the merger
+	// owes nothing while that merge is outstanding (cybermonklabs/legion#4979). The hold is the
+	// daemon's word to the merger and no fence: its completion at the head the pull request stands
+	// at is taken all the same.
+	t.Run("merger held in merging by another role's earlier ask", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Reviewing })
+		mergeForwardAsked(t, h, engine, phase.Reviewing)
+		merger := retroIntoMerging(t, h)
+		if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Asked() != claim.RoleImplementer ||
+			asked.Phase != phase.Reviewing || asked.Landed != "" {
+			t.Fatalf("the record's merge forward = %+v, want the implementer's ask of %s made in reviewing, not landed: the case's own premise", asked, headSHA)
+		}
+		merger.owesNothing(t)
+		if !queuedMergeForward(t, h, claim.RoleMerger, record.MergeForwardHold) || queuedMergeForward(t, h, claim.RoleMerger, record.MergeForwardAsk) {
+			t.Error("the move into merging did not hold the merger, or asked it: the implementer's ask keeps the merge")
+		}
+		completion(t, h.complete(mergerCompletion(t, merger, headSHA)))
+	})
+
+	// A daemon before cybermonklabs/legion#4979 asked the implementer in every phase and recorded no
+	// asked role, so an ask it made in merging reads as the implementer's (record.MergeForward.Asked)
+	// and holds the merger until it lands. The merger owes merging until that ask is recorded, and
+	// nothing after.
+	t.Run("merger held by an ask that records no asked role", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		merger := retroIntoMerging(t, h)
+		merger.owes(t, "the merging phase of LEGION-208")
+		recordMergeForward(t, h, record.MergeForward{Head: headSHA, Base: "main", Phase: phase.Merging, Why: record.ConflictRulesUnread, AskedAt: time.Now()})
+		merger.owesNothing(t)
+		completion(t, h.complete(mergerCompletion(t, merger, headSHA)))
+	})
+
+	// The control (cybermonklabs/legion#4979): a conflict confirmed in merging asks the merger, whose
+	// merge it is, so the merge forward is its own open work, it owes merging, and its completion at
+	// the head the pull request stands at is taken.
+	t.Run("merger asked to merge forward in merging", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		merger := retroIntoMerging(t, h)
+		mergeForwardAsked(t, h, engine, phase.Merging)
+		merger.owes(t, "the merging phase of LEGION-208")
+		completion(t, h.complete(mergerCompletion(t, merger, headSHA)))
+	})
+
+	// The implementer's ask made in reviewing held the merger when the issue entered merging, and
+	// its merge has landed since: nothing holds the merger any more, so it owes merging at the
+	// head the merge left, and its completion there is taken.
+	t.Run("an earlier ask that has landed", func(t *testing.T) {
+		h, engine, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Reviewing })
+		mergeForwardAsked(t, h, engine, phase.Reviewing)
+		merger := retroIntoMerging(t, h)
+		merger.owesNothing(t)
+		mergeForwardLands(t, h, engine)
+		merger.owes(t, "the merging phase of LEGION-208")
+		completion(t, h.complete(mergerCompletion(t, merger, forwardSHA)))
+	})
+
+	// The record's ask of the implementer, made in reviewing and not landed, is of a head the pull
+	// request no longer stands at: it holds no role, so the merger owes merging at the head the
+	// pull request stands at, and its completion there is taken.
+	t.Run("an ask of another head", func(t *testing.T) {
+		h, _, _ := newEntryHarness(t)
+		owedIssue(t, h)
+		merger := retroIntoMerging(t, h)
+		recordMergeForward(t, h, record.MergeForward{Head: otherHeadSHA, Base: "main", Role: claim.RoleImplementer, Phase: phase.Reviewing,
+			Why: record.ConflictRulesUnread, AskedAt: time.Now()})
+		merger.owes(t, "the merging phase of LEGION-208")
+		completion(t, h.complete(mergerCompletion(t, merger, headSHA)))
 	})
 
 	t.Run("own backward move", func(t *testing.T) {
@@ -438,6 +519,10 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 // forwardSHA is the head the implementer's merge of main forward onto headSHA leaves on #42.
 const forwardSHA = "f0d0000000000000000000000000000000000aa1"
 
+// otherHeadSHA is a head of #42 the pull request no longer stands at, which a merge forward the
+// record keeps can name.
+const otherHeadSHA = "a99e0000000000000000000000000000000000ab"
+
 // owedReviewApp is the review App's login in newOwedHarness, so a review the reviewer submits
 // through it from its own session is the reviewer's own (workflow's byReviewer).
 const owedReviewApp = "legion-review[bot]"
@@ -463,6 +548,48 @@ func owedIssue(t *testing.T, h *harness) {
 			Number: 42, Branch: "legion/LEGION-208", Base: "main", HeadSHA: headSHA, CheckedHead: headSHA, Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
+	}
+}
+
+// retroIntoMerging has the implementer's completion of LEGION-208's retro at headSHA taken, with
+// its rating of the plan, which moves the issue from retro into merging, the one move into it, and
+// so runs that move's step for a merge forward (workflow's mergeForwardOnEntry). The issue is put
+// in retro first, as the reviewer's approval and the architect's sign-off leave it: neither asks
+// anything of a merge forward, and nothing is asked in accepting or retro. It has the merger take
+// the start the move queued, and answers the merger.
+func retroIntoMerging(t *testing.T, h *harness) liveClaim {
+	t.Helper()
+	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase = phase.Retro })
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: headSHA,
+		PlanRating: new(3), PlanReason: new("The plan fit the work.")}))
+	assertIssuePhase(t, h, phase.Merging)
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+	takeStart(t, h, merger.token, "LEGION-208", claim.RoleMerger)
+	return merger
+}
+
+// mergerCompletion is merger's completion of merging at commit: merging ends with no handoff
+// record, so the completion names its commit alone.
+func mergerCompletion(t *testing.T, merger liveClaim, commit string) HandoffCompleteRequest {
+	t.Helper()
+	return HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "merged", Commit: commit}
+}
+
+// recordMergeForward writes asked as the merge forward the record holds for LEGION-208's pull
+// request, which keeps all else it holds: an ask this release's workflow does not write, as a
+// daemon before cybermonklabs/legion#4979 wrote one with no asked role, or one of a head the pull
+// request no longer stands at that no synchronize landed.
+func recordMergeForward(t *testing.T, h *harness, asked record.MergeForward) {
+	t.Helper()
+	_, _, pr := handoffRecord(t, h, "LEGION-208")
+	if pr == nil {
+		t.Fatal("the record holds no pull request for LEGION-208")
+	}
+	pr.MergeForward = &asked
+	ctx := context.Background()
+	if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().PutPullRequest(ctx, tx, *pr) }); err != nil {
+		t.Fatalf("record the merge forward %+v: %v", asked, err)
 	}
 }
 
@@ -553,9 +680,10 @@ func reviewersOwnReview(t *testing.T, h *harness, engine *workflow.Engine, revie
 // mergeForwardAsked has the workflow confirm that #42's head conflicts with main, as the daemon
 // confirms it (dispatch://INFRA-4374): a first CONFLICTING read, and a second one a minute later.
 // The base's rules are left unread, which is a reason the daemon acts on a confirmed conflict
-// (record.ConflictRulesUnread). The issue keeps its phase, in; the implementer is asked to merge
-// main forward, the worker of in is held where the hold reaches it, and the record holds the ask
-// of headSHA made in in, not landed.
+// (record.ConflictRulesUnread). The issue keeps its phase, in; the role the daemon asks there -
+// the implementer before merging, the merger in merging (cybermonklabs/legion#4979) - is asked to
+// merge main forward, the worker of in is held where the hold reaches it and it is not the role
+// asked, and the record holds the ask of headSHA made of that role in in, not landed.
 func mergeForwardAsked(t *testing.T, h *harness, engine *workflow.Engine, in phase.Phase) {
 	t.Helper()
 	first := time.Now()
@@ -564,14 +692,21 @@ func mergeForwardAsked(t *testing.T, h *harness, engine *workflow.Engine, in pha
 			HeadSHA: headSHA, Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: at})
 	}
 	assertIssuePhase(t, h, in)
-	if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Phase != in || asked.Landed != "" {
-		t.Fatalf("the record's merge forward = %+v, want the ask of %s made in %s, not landed", asked, headSHA, in)
+	// Written out rather than read from record.MergeForwardAsker, so an asker that routes wrong
+	// fails here instead of setting the expectation it is checked against.
+	asker := claim.RoleImplementer
+	if in == phase.Merging {
+		asker = claim.RoleMerger
 	}
-	if !queuedMergeForward(t, h, claim.RoleImplementer, record.MergeForwardAsk) {
-		t.Fatal("the implementer was not asked to merge main forward")
+	if asked := recordedMergeForward(t, h); asked == nil || asked.Head != headSHA || asked.Role != asker || asked.Phase != in || asked.Landed != "" {
+		t.Fatalf("the record's merge forward = %+v, want the ask of %s made of the %s in %s, not landed", asked, headSHA, asker, in)
+	}
+	if !queuedMergeForward(t, h, asker, record.MergeForwardAsk) {
+		t.Fatalf("the %s was not asked to merge main forward", asker)
 	}
 	worker := phase.RoleFor(in)
-	if held, want := queuedMergeForward(t, h, worker, record.MergeForwardHold), in != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker); held != want {
+	if held, want := queuedMergeForward(t, h, worker, record.MergeForwardHold),
+		in != phase.Implementing && worker != asker && record.MergeForwardReaches(record.MergeForwardHold, worker); held != want {
 		t.Fatalf("the %s of %s was held = %t, want %t", worker, in, held, want)
 	}
 }

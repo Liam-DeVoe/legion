@@ -11,30 +11,31 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// dispatch://INFRA-2746 R1 (spec v70) at the release of a pod, at a pause's stop and at a release
-// a pause cancels (check c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its sixth control):
-// a released claim of the open phase's role that has confirmed no task of the issue's run, and
+// dispatch://INFRA-2746 R1 at the release of a pod, at a pause's stop and at a release a pause
+// cancels (check c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its sixth control): a
+// released claim of the open phase's role that has confirmed no task of the issue's run, and
 // holds the first task of that run and phase unconfirmed, its send failed before any turn, still
 // gets a backstop. Nothing else sends that task again while its pod is gone, so the backstop is
-// the one wake that delivers it. Two shapes reach it: a fresh claim, which serves run 0, and a
-// live claim kept across a new run N+1, which still serves run N. The same claim whose phases row
-// records its completion of the row's entry owes nothing a wake could bring back, and gets none.
+// the one wake that delivers it. Two shapes reach it: a claim that has retired no run, and a live
+// claim kept across a new run N+1, which retired run N. The same claim whose phases row records
+// its completion of the row's entry owes nothing a wake could bring back, and gets none.
 //
-// By spec v72 the fresh claim serves the run and the entry of the task it holds, as the owed
-// answer reads them (supervise.Claim.ServingAt), so it gets the backstop because it owes its
-// phase; the kept claim still serves run N, owes nothing, and gets it by the first kind of claim
-// that owes nothing (holdsUndeliveredEntryTask), whose terms are that it is behind its entry or
-// still serves an earlier run. A kept claim that has served no entry is level with its row's
-// entry (0 compares with none), so it takes that kind for the earlier run it serves alone and
-// gets one too, and gets none where its row records its completion. A kept claim whose turn
-// confirmed the first task of run N+1 serves that task's run and entry, level with its row, owes
-// its phase and gets one. Verification v30's rows get none: a kept claim and a fresh claim that
-// hold no task, or hold a task of another run or of another phase unconfirmed.
+// A claim that has retired no run serves the run and the entry of the task it holds of the
+// issue's run and phase, as the owed answer reads them (supervise.Claim.ServingAt), so it gets
+// the backstop because it owes its phase. The kept claim still serves run N, owes nothing, and
+// gets it by the first kind of claim that owes nothing (holdsUndeliveredEntryTask), whose terms
+// are that it is behind its entry or still serves an earlier run. A kept claim that has served no
+// entry is level with its row's entry (0 compares with none), so it takes that kind for the
+// earlier run it serves alone and gets one too, and gets none where its row records its
+// completion. A kept claim whose turn confirmed the first task of run N+1 serves that task's run
+// and entry, level with its row, owes its phase and gets one. A kept claim and a claim that has
+// retired no run get none when they hold no task, or hold a task of another run or of another
+// phase unconfirmed.
 //
-// LEGION-208's implementer serves the run named served, the issue stands at run generation in
-// implementing, its row stands on entry rowEntry, and the claim holds the task of that run, that
-// phase and that entry. Each case runs through the three writers that arm a backstop: the
-// release's last step (outbox.armBackstops), the stop transaction of a pause
+// LEGION-208's implementer has retired the run named servingGeneration, the issue stands at run
+// generation in implementing, its row stands on entry rowEntry, and the claim holds the task of
+// that run, that phase and that entry. Each case runs through the three writers that arm a
+// backstop: the release's last step (outbox.armBackstops), the stop transaction of a pause
 // (projectPause.stopped) and the cancel of a release while the project is paused
 // (outbox.cancelRelease, store.ReleaseCancelPause.GetsBackstop).
 func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTaskOfItsRun(t *testing.T) {
@@ -71,13 +72,14 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 	} {
 		for _, c := range []struct {
 			name string
-			// generation is the run LEGION-208 stands at, and served the run the claim serves,
-			// which it has confirmed no task of.
-			generation, served uint64
-			rowEntry           int64
-			completed          bool
-			backstop           bool
-			why                string
+			// generation is the run LEGION-208 stands at, and servingGeneration the run the
+			// claim's row records it retired (supervise.Claim.ServingGeneration), 0 for a claim
+			// that has retired no run. The claim has confirmed no task of run generation.
+			generation, servingGeneration uint64
+			rowEntry                      int64
+			completed                     bool
+			backstop                      bool
+			why                           string
 			// noServedEntry leaves a kept claim having served no entry, level with its row's entry,
 			// in place of the entry below its row's.
 			noServedEntry bool
@@ -88,44 +90,44 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 			taskGeneration    uint64
 			taskPhase         phase.Phase
 		}{
-			{name: "the sixth control: a fresh claim serving run 0 holds the first task of run 1",
-				generation: 1, served: 0, rowEntry: 1, backstop: true,
+			{name: "the sixth control: a claim that has retired no run holds the first task of run 1",
+				generation: 1, servingGeneration: 0, rowEntry: 1, backstop: true,
 				why: "nothing sends its first task again, so the backstop is the one wake that delivers it"},
 			{name: "the sixth control: a claim kept across run 2 still serving run 1 holds the first task of run 2",
-				generation: 2, served: 1, rowEntry: 2, backstop: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, backstop: true,
 				why: "nothing sends its first task again, so the backstop is the one wake that delivers it"},
-			{name: "a fresh claim serving run 0 holds the first task of run 1, and its row records its completion",
-				generation: 1, served: 0, rowEntry: 1, completed: true,
+			{name: "a claim that has retired no run holds the first task of run 1, and its row records its completion",
+				generation: 1, servingGeneration: 0, rowEntry: 1, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 			{name: "a claim kept across run 2 still serving run 1 holds the first task of run 2, and its row records its completion",
-				generation: 2, served: 1, rowEntry: 2, completed: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 			{name: "a claim kept across run 2 still serving run 1, which served no entry, holds the first task of run 2",
-				generation: 2, served: 1, rowEntry: 2, noServedEntry: true, backstop: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, noServedEntry: true, backstop: true,
 				why: "it is level with its row's entry and still serves an earlier run, and nothing sends its first task again"},
 			{name: "a claim kept across run 2 still serving run 1, which served no entry, holds the first task of run 2, and its row records its completion",
-				generation: 2, served: 1, rowEntry: 2, noServedEntry: true, completed: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, noServedEntry: true, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 			{name: "a claim kept across run 2 holds the first task of run 2 confirmed",
-				generation: 2, served: 1, rowEntry: 2, confirmed: true, backstop: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, confirmed: true, backstop: true,
 				why: "a turn confirmed the task, so the claim serves run 2 and entry 2, level with its row, and owes its phase"},
 			{name: "a claim kept across run 2 still serving run 1 holds no task",
-				generation: 2, served: 1, rowEntry: 2, noTask: true,
+				generation: 2, servingGeneration: 1, rowEntry: 2, noTask: true,
 				why: "it holds no task for a wake to deliver and owes nothing"},
 			{name: "a claim kept across run 2 still serving run 1 holds a task of run 1 unconfirmed",
-				generation: 2, served: 1, rowEntry: 2, taskGeneration: 1,
+				generation: 2, servingGeneration: 1, rowEntry: 2, taskGeneration: 1,
 				why: "the task it holds is of another run, so it is no task of the issue's run for a wake to deliver"},
 			{name: "a claim kept across run 2 still serving run 1 holds a task of run 2's retro unconfirmed",
-				generation: 2, served: 1, rowEntry: 2, taskPhase: phase.Retro,
+				generation: 2, servingGeneration: 1, rowEntry: 2, taskPhase: phase.Retro,
 				why: "the task it holds is of another phase, so it is no task of the issue's phase for a wake to deliver"},
-			{name: "a fresh claim serving run 0 holds no task",
-				generation: 1, served: 0, rowEntry: 1, noTask: true,
+			{name: "a claim that has retired no run holds no task",
+				generation: 1, servingGeneration: 0, rowEntry: 1, noTask: true,
 				why: "it holds no task of the issue's run, so it serves no run and owes nothing"},
-			{name: "a fresh claim serving run 0 holds a task of run 1 unconfirmed, and the issue stands at run 2",
-				generation: 2, served: 0, rowEntry: 1, taskGeneration: 1,
+			{name: "a claim that has retired no run holds a task of run 1 unconfirmed, and the issue stands at run 2",
+				generation: 2, servingGeneration: 0, rowEntry: 1, taskGeneration: 1,
 				why: "the task it holds is of another run, so it serves no run and owes nothing"},
-			{name: "a fresh claim serving run 0 holds a task of run 1's retro unconfirmed",
-				generation: 1, served: 0, rowEntry: 1, taskPhase: phase.Retro,
+			{name: "a claim that has retired no run holds a task of run 1's retro unconfirmed",
+				generation: 1, servingGeneration: 0, rowEntry: 1, taskPhase: phase.Retro,
 				why: "the task it holds is of another phase, so it serves no run and owes nothing"},
 		} {
 			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
@@ -136,9 +138,9 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopForTheUndeliveredFirstTask
 				}
 				issue := record.Issue{Key: pauseIssue, Tree: pauseIssue, Phase: phase.Implementing, Generation: c.generation}
 				implementer := r.claim(claim.RoleImplementer, supervise.StateSuspended)
-				implementer.Generation, implementer.ServingGeneration = c.generation, c.served
+				implementer.Generation, implementer.ServingGeneration = c.generation, c.servingGeneration
 				implementer.ServedEntry = 0
-				if c.served != 0 {
+				if c.servingGeneration != 0 {
 					implementer.ServedEntry = c.rowEntry - 1
 				}
 				if c.noServedEntry {

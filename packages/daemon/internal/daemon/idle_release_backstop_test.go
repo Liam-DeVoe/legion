@@ -14,11 +14,12 @@ import (
 
 // dispatch://INFRA-2746 R1 at the release of a pod (check
 // c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its daemon row and its second, third,
-// fourth and fifth controls), through the writer a release's last step runs (outbox.armBackstops)
-// on the pause rig's store, with no pause: the released worker of LEGION-208's open phase gets the
-// backstop the release arms while it owes its phase by the owed answer's rule (record.PhaseOwed),
-// and while it is of one of the two kinds of claim that owe nothing and still get one
-// (holdsUndeliveredEntryTask, holdsUndeliveredNewsTask), and gets none otherwise.
+// fourth, fifth and seventh controls), through the writer a release's last step runs
+// (outbox.armBackstops) on the pause rig's store, with no pause: the released worker of
+// LEGION-208's open phase gets the backstop the release arms while it owes its phase by the owed
+// answer's rule (record.PhaseOwed), and while it is of one of the two kinds of claim that owe
+// nothing and still get one (holdsUndeliveredEntryTask, holdsUndeliveredNewsTask), and gets none
+// otherwise.
 // TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole drives a recorded completion through
 // the daemon a deployment runs; these rows are shapes that rig does not build, each read from the
 // whole claim and from the record in the store (store.ClaimTx, record.FillIdleClaims).
@@ -66,6 +67,15 @@ import (
 // A merger in merging whose pull request is merged gets none, since the merge finished its
 // merging (record.MergedInMerging). The controls, an implementer that serves its row's entry and
 // a merger whose pull request is open, each owe their phase and get one.
+//
+// The seventh control is a merger in merging with a merge forward of its pull request's head that
+// has not landed (cybermonklabs/legion#4979). The merger the daemon asked to merge forward owes
+// the merge, which is its own open work, so the release arms its backstop. The merger the move
+// into merging held rather than asked, since the implementer's ask made in reviewing had not
+// landed (workflow's holdMerger), is held by that ask (record.MergeForwardHolds) and gets none:
+// the landed message wakes its pod. Each reads the ask from the pull request in the store
+// (record.FillIdleClaims), so a rule that holds the merger asked, or not the merger held, fails
+// one of them.
 func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -85,11 +95,11 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 		// news is the task of news alone (supervise.Delivery.NewsOnly, newsTask) the worker
 		// holds in place of any other, nil for none.
 		news *supervise.Delivery
-		// pullRequest is the state of LEGION-208's pull request, "" for none, and mergeForward
-		// whether the daemon asked the implementer, in the phase at, to merge the base forward
-		// onto the head that pull request stands at, which holds the tester of testing.
-		pullRequest  record.PullRequestState
-		mergeForward bool
+		// pullRequest is the state of LEGION-208's pull request, "" for none, and ask the
+		// daemon's ask to merge the base forward onto the head that pull request stands at, not
+		// landed, nil for none (mergeForwardAskOf).
+		pullRequest record.PullRequestState
+		ask         *record.MergeForward
 		// backstop is whether the release arms the worker's backstop, and why says why.
 		backstop bool
 		why      string
@@ -114,7 +124,7 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 			role: claim.RoleImplementer, served: 1, rowEntry: 3, task: 2, completed: true,
 			why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 		{name: "it holds the task of its entry and a merge forward holds it", at: phase.Testing, role: claim.RoleTester,
-			served: 1, rowEntry: 2, task: 2, pullRequest: record.PullRequestOpen, mergeForward: true,
+			served: 1, rowEntry: 2, task: 2, pullRequest: record.PullRequestOpen, ask: mergeForwardAskOf(claim.RoleImplementer, phase.Testing),
 			why: "the merge forward told it to wait for the landed message, which wakes its pod"},
 		{name: "the fifth control: a reviewer level with its row's entry, its approval of that entry recorded, holds an unconfirmed task of news alone of the issue's run and phase, whose send failed before any turn",
 			at: phase.Reviewing, role: claim.RoleReviewer, served: 1, rowEntry: 1, completed: true,
@@ -139,6 +149,12 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 			served: 1, rowEntry: 1, pullRequest: record.PullRequestMerged, why: "the merge finished its merging"},
 		{name: "the control: a merger in merging whose pull request is open", at: phase.Merging, role: claim.RoleMerger,
 			served: 1, rowEntry: 1, pullRequest: record.PullRequestOpen, backstop: true, why: "it owes the merge"},
+		{name: "the seventh control: the merger the daemon asked to merge forward in merging, its merge not landed", at: phase.Merging,
+			role: claim.RoleMerger, served: 1, rowEntry: 1, pullRequest: record.PullRequestOpen, ask: mergeForwardAskOf(claim.RoleMerger, phase.Merging),
+			backstop: true, why: "the merge forward is its own open work, so it owes the merge"},
+		{name: "a merger held in merging by the implementer's ask made in reviewing, which has not landed", at: phase.Merging,
+			role: claim.RoleMerger, served: 1, rowEntry: 1, pullRequest: record.PullRequestOpen, ask: mergeForwardAskOf(claim.RoleImplementer, phase.Reviewing),
+			why: "the ask holds it to wait for the landed message, which wakes its pod"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newPauseRig(t)
@@ -159,7 +175,7 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 			r.putClaim(worker)
 			r.putPhaseRow(c.role, c.rowEntry, c.completed)
 			if c.pullRequest != "" {
-				r.putPullRequest(c.pullRequest, c.at, c.mergeForward)
+				r.putPullRequest(c.pullRequest, c.ask)
 			}
 
 			runner := &outbox{pool: r.pool, records: r.pauses.records, trees: r.st, project: "legion", backstop: time.Hour,
@@ -180,16 +196,19 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 	}
 }
 
-// putPullRequest records LEGION-208's pull request in state at head c0de, with the daemon's ask
-// of the implementer to merge the base forward onto that head, made in the phase at, where
-// mergeForward is set.
-func (r *pauseRig) putPullRequest(state record.PullRequestState, at phase.Phase, mergeForward bool) {
+// mergeForwardAskOf is the daemon's ask of role to merge the base forward onto head c0de, made in
+// the phase in and not landed, as the record keeps it (record.MergeForward).
+func mergeForwardAskOf(role claim.Role, in phase.Phase) *record.MergeForward {
+	return &record.MergeForward{Head: "c0de", Base: "main", Role: role, Phase: in, Why: record.ConflictRulesUnread,
+		AskedAt: time.Now().UTC()}
+}
+
+// putPullRequest records LEGION-208's pull request in state at head c0de, with ask as the merge
+// forward the record holds, nil for none.
+func (r *pauseRig) putPullRequest(state record.PullRequestState, ask *record.MergeForward) {
 	r.t.Helper()
 	pr := record.PullRequest{State: state, Issue: pauseIssue, Repo: "acme/widgets", Number: 42, Branch: "legion/" + pauseIssue,
-		HeadSHA: "c0de", Failing: []string{}}
-	if mergeForward {
-		pr.MergeForward = &record.MergeForward{Head: "c0de", Base: "main", Phase: at, AskedAt: time.Now().UTC()}
-	}
+		HeadSHA: "c0de", Failing: []string{}, MergeForward: ask}
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		return r.pauses.records.PutPullRequest(r.ctx, tx, pr)
 	}); err != nil {

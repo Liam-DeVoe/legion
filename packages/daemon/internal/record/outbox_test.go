@@ -1283,18 +1283,29 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 }
 
 // A merge forward holds a role while it waits to land (dispatch://INFRA-2746 R1, the fifth term
-// of what a claim owes): the ask is of the head the pull request stands at, it was made in the
-// phase the issue stands in, it has not landed, and its hold told the role that works that phase
-// to stop and wait for the new head (MergeForwardHold). The table runs every role against every
-// phase a merge forward is asked in (MergeForwardPhases), so a role or a phase added later joins
-// it: the ask holds the tester in testing, the reviewer in reviewing and the merger in merging,
-// and no other pairing. The implementer is held in neither implementing nor retro, where the
-// merge is its own open work, and the architect is held in accepting by nothing, its checks-red
-// notice being what tells it. Each held pairing is then held no more once the ask landed, for an
-// ask of another head and for an ask made in another phase, and nothing is held with no pull
-// request or no ask. A pull request closed with its ask standing still holds: a close that does
-// not merge keeps the ask and the head (workflow's Engine.closed), and a reopen at the same head
-// brings the same hold back.
+// of what a claim owes): the ask is of the head the pull request stands at, it has not landed,
+// its hold told the role that works the phase the issue stands in to stop and wait for the new
+// head (MergeForwardHold), and that role is not the one the ask names (MergeForward.Asked). The
+// table runs every role against every phase a merge forward is asked in (MergeForwardPhases), so
+// a role or a phase added later joins it: an ask made in the phase, which names no role, holds
+// the tester in testing, the reviewer in reviewing and the merger in merging, and no other
+// pairing. The implementer is held in neither implementing nor retro, where the merge is its own
+// open work, and the architect is held in accepting by nothing, its checks-red notice being what
+// tells it. Each held pairing is then held no more once the ask landed and for an ask of another
+// head, the tester and the reviewer for an ask made in another phase, and nothing is held with
+// no pull request or no ask. A pull request closed with its ask standing still holds: a close
+// that does not merge keeps the ask and the head (workflow's Engine.closed), and a reopen at the
+// same head brings the same hold back.
+//
+// In merging the merger is held exactly where the move into merging holds it rather than asking
+// it (workflow's mergeForwardOnEntry, holdMerger; cybermonklabs/legion#4979), and while the ask has
+// not landed: an ask of the head made of another role in a phase other than implementing, or
+// one that records no asked role. The merger the daemon asked in merging is not held, since the
+// merge is its own work; an ask of the implementer made in testing or in reviewing and carried
+// into merging holds it, and so does an ask with no role that a daemon before #4979 wrote, made
+// in merging or carried into it from a phase other than implementing; an ask made in
+// implementing, which the move into merging asks again, holds it not; and once such an ask
+// landed, or while it is of another head, it holds no role at all.
 func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLands(t *testing.T) {
 	const head, landed, older = "c0de", "d00d", "beef"
 	asked := func(of string, in phase.Phase) *PullRequest {
@@ -1338,8 +1349,10 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 		if MergeForwardHolds(asked(older, at), at, role) {
 			t.Errorf("an ask of head %s made in %s holds the %s while the pull request stands at %s, want no hold", older, at, role, head)
 		}
+		// In merging an ask made in another phase holds the merger but for implementing's: the
+		// merging rows below.
 		for _, other := range MergeForwardPhases {
-			if other != at && MergeForwardHolds(asked(head, other), at, role) {
+			if other != at && at != phase.Merging && MergeForwardHolds(asked(head, other), at, role) {
 				t.Errorf("an ask made in %s holds the %s in %s, want no hold: no hold of %s reached it", other, role, at, at)
 			}
 		}
@@ -1353,6 +1366,45 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 		closed.State = PullRequestClosed
 		if !MergeForwardHolds(closed, at, role) {
 			t.Errorf("a pull request closed with its ask of %s standing holds the %s in %s = false, want the hold kept", at, role, at)
+		}
+	}
+
+	askedOf := func(of string, role claim.Role, in phase.Phase) *PullRequest {
+		pullRequest := asked(of, in)
+		pullRequest.MergeForward.Role = role
+		return pullRequest
+	}
+	landedAt := func(pullRequest *PullRequest) *PullRequest {
+		pullRequest.HeadSHA, pullRequest.MergeForward.Landed = landed, landed
+		return pullRequest
+	}
+	for _, merging := range []struct {
+		name string
+		pr   *PullRequest
+		// held is whether the ask holds the merger; it holds no other role in merging.
+		held bool
+	}{
+		{name: "the merger asked in merging", pr: askedOf(head, claim.RoleMerger, phase.Merging)},
+		{name: "an ask of the implementer made in reviewing, carried into merging, not landed",
+			pr: askedOf(head, claim.RoleImplementer, phase.Reviewing), held: true},
+		{name: "an ask of the implementer made in testing, carried into merging, not landed",
+			pr: askedOf(head, claim.RoleImplementer, phase.Testing), held: true},
+		{name: "an ask that records no asked role, made in merging", pr: askedOf(head, "", phase.Merging), held: true},
+		{name: "an ask that records no asked role, made in reviewing and carried into merging",
+			pr: askedOf(head, "", phase.Reviewing), held: true},
+		{name: "an ask of the implementer made in implementing, carried into merging", pr: askedOf(head, claim.RoleImplementer, phase.Implementing)},
+		{name: "an ask that records no asked role, made in implementing and carried into merging",
+			pr: askedOf(head, "", phase.Implementing)},
+		{name: "an ask of the implementer made in reviewing that landed", pr: landedAt(askedOf(head, claim.RoleImplementer, phase.Reviewing))},
+		{name: "an ask that records no asked role, made in merging, that landed", pr: landedAt(askedOf(head, "", phase.Merging))},
+		{name: "the merger asked in merging, its ask landed", pr: landedAt(askedOf(head, claim.RoleMerger, phase.Merging))},
+		{name: "an ask of the implementer made in reviewing, of another head", pr: askedOf(older, claim.RoleImplementer, phase.Reviewing)},
+		{name: "an ask that records no asked role, made in merging, of another head", pr: askedOf(older, "", phase.Merging)},
+	} {
+		for _, role := range roles {
+			if got, want := MergeForwardHolds(merging.pr, phase.Merging, role), merging.held && role == claim.RoleMerger; got != want {
+				t.Errorf("%s holds the %s in merging = %t, want %t", merging.name, role, got, want)
+			}
 		}
 	}
 }

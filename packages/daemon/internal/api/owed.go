@@ -212,12 +212,16 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //   - The row does not record the claim's completion of that entry (record.PhaseRow.Completed). A
 //     reviewer whose round waits for a review, or a merger whose completion the workflow recorded
 //     without moving the issue, owes nothing, and the daemon sends a level claim no entry's work.
-//   - No merge forward holds the claim's role (record.MergeForwardHolds): the daemon asked the
-//     implementer to merge the base forward onto the head the pull request stands at, in the phase
-//     the issue stands in, the merge has not landed, and the ask's hold told this role — the
-//     tester, the reviewer or the merger of that phase — to stop and to wait for the new head. The
-//     completion fence of a merge forward (workflow's mergedForwardRefusal) is the other reader of
-//     that rule. The hold reaches no implementer: an ask in implementing or in retro is its own
+//   - No merge forward holds the claim's role (record.MergeForwardHolds): the daemon asked
+//     another role to merge the base forward onto the head the pull request stands at, the merge
+//     has not landed, and the ask's hold told this role to stop and to wait for the new head: the
+//     tester in testing or the reviewer in reviewing, for an ask made in that phase, or the merger
+//     in merging, for an ask made in a phase other than implementing, one that records no asked
+//     role included. The completion fence of a merge forward (workflow's mergedForwardRefusal)
+//     reads that rule too, and so does the move into merging, which holds the merger by it rather
+//     than asking it (workflow's mergeForwardOnEntry). The hold never reaches the role the daemon
+//     asked to make the merge (record.MergeForward.Asked): the implementer, in implementing or in
+//     retro, and the merger in merging (cybermonklabs/legion#4979), whose merge forward is its own
 //     open work, which is what a reminder is for.
 //
 // A prompt of the task Oh My Pi acknowledged and has not answered (supervise's

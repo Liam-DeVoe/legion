@@ -1064,6 +1064,14 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // (supervise.Claim.ServingAt) and owes its phase, and a claim kept across a new run, which still
 // serves the earlier run and is of the first kind. Every row here serves the issue's run.
 //
+// The seventh control is LEGION-208's merger in merging with a merge forward of its open pull
+// request's head that has not landed (cybermonklabs/legion#4979). The merger the daemon asked to
+// merge forward owes the merge, its own open work, so both writers arm its backstop; the merger
+// the move into merging held rather than asked, since the implementer's ask made in reviewing had
+// not landed (workflow's holdMerger), is held by that ask (record.MergeForwardHolds), and gets
+// none from either writer: the landed message wakes its pod. Each reads the ask from the pull
+// request in the store (record.FillIdleClaims).
+//
 // The stop transaction's row stops it owing no launch, as every row here does; the machine's own
 // stop of a claim holding such a task owes it a launch as well (supervise's holdsTask), which the
 // row leaves out so that the stop reads the backstop's rule. The control, the same stop of an
@@ -1073,14 +1081,14 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
 	for _, writer := range []struct {
 		name string
-		// released is whether the implementer's pod was released before the pause, so that
+		// released is whether the worker's pod was released before the pause, so that
 		// stop is the cancel of that release: the claim suspended as `released` under the
 		// release's mark.
 		released bool
-		stop     func(r *pauseRig, held store.Pause, implementer supervise.Claim)
+		stop     func(r *pauseRig, held store.Pause, worker supervise.Claim)
 	}{
-		{name: "the stop transaction", stop: func(r *pauseRig, held store.Pause, implementer supervise.Claim) {
-			r.mustStop(implementer, supervise.PauseStop{Pause: held.ID})
+		{name: "the stop transaction", stop: func(r *pauseRig, held store.Pause, worker supervise.Claim) {
+			r.mustStop(worker, supervise.PauseStop{Pause: held.ID})
 		}},
 		{name: "a cancel of its release while paused", released: true, stop: func(r *pauseRig, _ store.Pause, _ supervise.Claim) {
 			r.cancelRelease()
@@ -1102,7 +1110,14 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			// news is the task of news alone (supervise.Delivery.NewsOnly, newsTask) the
 			// implementer holds in place of any other, nil for none.
 			news *supervise.Delivery
-			// backstop is whether the stop arms the implementer's backstop, and why says why.
+			// role, where set, is the worker of the phase at the pause stops, in place of the
+			// implementer in implementing, and ask the daemon's ask to merge the base forward onto
+			// the head LEGION-208's open pull request stands at (mergeForwardAskOf), nil for no
+			// pull request.
+			role claim.Role
+			at   phase.Phase
+			ask  *record.MergeForward
+			// backstop is whether the stop arms the worker's backstop, and why says why.
 			backstop bool
 			why      string
 		}{
@@ -1135,37 +1150,53 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 				served: 1, rowEntry: 1, completed: true, news: newsTask(phase.Testing, 1, false),
 				why: "a task of news alone of another phase gets none"},
 			{name: "the control: its role owes its phase", served: 1, rowEntry: 1, backstop: true, why: "it owes its phase"},
+			{name: "the seventh control: the merger the daemon asked to merge forward in merging, its merge not landed",
+				role: claim.RoleMerger, at: phase.Merging, served: 1, rowEntry: 1, ask: mergeForwardAskOf(claim.RoleMerger, phase.Merging),
+				backstop: true, why: "the merge forward is its own open work, so it owes the merge"},
+			{name: "a merger held in merging by the implementer's ask made in reviewing, which has not landed",
+				role: claim.RoleMerger, at: phase.Merging, served: 1, rowEntry: 1, ask: mergeForwardAskOf(claim.RoleImplementer, phase.Reviewing),
+				why: "the ask holds it to wait for the landed message, which wakes its pod"},
 		} {
 			t.Run(writer.name+"/"+c.name, func(t *testing.T) {
-				r := newPauseRig(t, claim.RoleImplementer)
-				implementer := r.claim(claim.RoleImplementer, supervise.StateSuspended)
-				implementer.ServedEntry = c.served
+				role, at := claim.RoleImplementer, phase.Implementing
+				if c.role != "" {
+					role, at = c.role, c.at
+				}
+				r := newPauseRig(t, role)
+				if _, err := r.pool.Exec(r.ctx, `update issues set phase = $2 where key = $1`, pauseIssue, string(at)); err != nil {
+					t.Fatalf("move %s into %s: %v", pauseIssue, at, err)
+				}
+				worker := r.claim(role, supervise.StateSuspended)
+				worker.ServedEntry = c.served
 				switch {
 				case c.task != 0:
-					implementer.GivenEntry, implementer.Pending = c.task, undeliveredTask(phase.Implementing, c.task)
+					worker.GivenEntry, worker.Pending = c.task, undeliveredTask(at, c.task)
 				case c.noEntryTask:
-					implementer.Pending = undeliveredTask(phase.Implementing, 0)
+					worker.Pending = undeliveredTask(at, 0)
 				case c.news != nil:
 					task := *c.news
-					implementer.Pending = &task
+					worker.Pending = &task
 				}
-				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
+				r.putPhaseRow(role, c.rowEntry, c.completed)
+				if c.ask != nil {
+					r.putPullRequest(record.PullRequestOpen, c.ask)
+				}
 				if writer.released {
-					r.markReleased(implementer)
+					r.markReleased(worker)
 				}
 				held := r.pauseLegion()
-				writer.stop(r, held, implementer)
+				writer.stop(r, held, worker)
 
-				if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
-					t.Fatalf("the implementer's stops = %+v, want one stopped and owed no launch", got)
+				if got := r.stops(held.ID, role); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
+					t.Fatalf("the %s's stops = %+v, want one stopped and owed no launch", role, got)
 				}
-				armed := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`, pauseIssue)
+				armed := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = $2 and not fired`, pauseIssue, string(role))
 				want := 0
 				if c.backstop {
 					want = 1
 				}
 				if armed != want {
-					t.Errorf("the pause's stop of %s's implementer armed %d open backstops, want %d: %s", pauseIssue, armed, want, c.why)
+					t.Errorf("the pause's stop of %s's %s armed %d open backstops, want %d: %s", pauseIssue, role, armed, want, c.why)
 				}
 			})
 		}
