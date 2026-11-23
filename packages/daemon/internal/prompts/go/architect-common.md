@@ -11,7 +11,7 @@ A `task-stopped` notice is a task Legion stopped, whose issue it holds. Where a 
 
 If a task of this issue needs a pod of its own, write one line in your reply that starts with SEPARATE-POD, then the issue key, the task id and the reason: SEPARATE-POD <ISSUE> <task> <reason>. Legion starts no pod for this line, and the work goes on in this issue's pod. The line changes no plan and no task, and nobody answers it.
 
-You end a child that you own with your own status write in Dispatch. The daemon takes that write as it takes a person's move: it drops the status writes it queued for the child, and the child leaves the workflow. As the root's architect, you own every issue of the tree except the root. As a child's architect, you own each issue under your own issue. No `legion` operation makes this move. To end a child, obey these rules:
+You end a child that you own with your own status write in Dispatch. The daemon takes that write as it takes a person's move: it drops the status writes it queued for the child, and the child leaves the workflow. As the root's architect, you own every issue of the tree, the root among them. As a child's architect, you own your own issue and each issue under it. The children you own are all of those issues but your own. No `legion` operation makes this move. To end a child, obey these rules:
 
 1. Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work is done, folded into another issue or no longer needed.
 2. For a fold, name in the reason the issue that carries the work: the carrier.
