@@ -3276,11 +3276,11 @@ package api
 // /legion/v1/state` or of a request moves, and this change adds no store migration; its records
 // in contract-shapes.json and request-shapes.json are 217's, written again at 230 by `-update`.
 // (This entry keeps 230, above main's 217: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head of each of the 34 open pull requests of cybermonklabs/legion, of 502 open,
-// whose file list names this file, made on 2026-11-23 between 02:14:11Z and 02:20:05Z, found 218
-// declared by #3831, 219 by #4611, 220 by #4930, 221 by #3993, #4049, #4392, #4432, #4771, #4940
-// and #5164, 222 by #4661, #5156 and #5160, 223 by #4805, 224 by #4960, 225 by #3712, 226 by
-// #4175, 227 by #4065 and #5162, 228 by #4590 and 229 by #2230, and none but this change
+// refs/pull/<n>/head of each of the 35 open pull requests of cybermonklabs/legion, of 515 open,
+// whose file list names this file, made on 2026-11-23 between 05:10:03Z and 05:18:49Z, found 218
+// declared by #3831 and #5168, 219 by #4611, 220 by #4930, 221 by #4049, #4392, #4432, #4940 and
+// #5164, 222 by #5156 and #5160, 223 by #3993, #4065 and #4661, 224 by #4960 and #5165, 225 by
+// #3712, 226 by #4175, 227 by #5162, 228 by #4590 and 229 by #2230, and none but this change
 // declaring 230. This entry stood at 200, 202, 209, 212, 221 and 225 before. Read the base's own
 // number and every open pull request again at the next merge rather than from this line.)
 const DaemonAPIVersion = 230
