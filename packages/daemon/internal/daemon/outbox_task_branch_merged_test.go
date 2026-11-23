@@ -145,7 +145,7 @@ func (rig *mergedNeedRig) git(t *testing.T, args ...string) string {
 // made (its control: StartsFrom read as the needs' branches, as the executor read them, under which
 // c's row is answered 404 for b's branch and fails), and a conflict whose repair names that branch
 // (its control: the told branch of each conflict read from the need's row, under which d is told
-// legion/LEGION-208.b@origin).
+// b's branch).
 func TestATaskWhoseNeedMergedStartsFromMain(t *testing.T) {
 	t.Parallel()
 	t.Run("c needs b alone", func(t *testing.T) {
@@ -211,8 +211,8 @@ func TestATaskWhoseNeedMergedStartsFromMain(t *testing.T) {
 		}
 		task := newestStartTask(t, rig.taskBranchRig, rig.issue)
 		repair := "`jj new " + joinBranchOfD + "@origin main@origin -m \"LEGION-208: join the work of task b\"`"
-		if !strings.Contains(task, repair) || strings.Contains(task, "legion/LEGION-208.b@origin") {
-			t.Fatalf("the task of d's start row = %q,\nwant it to hold %q and no branch of b", task, repair)
+		if b := rig.branch(t, "b") + "@origin"; !strings.Contains(task, repair) || strings.Contains(task, b) {
+			t.Fatalf("the task of d's start row = %q,\nwant it to hold %q and no %s", task, repair, b)
 		}
 	})
 	t.Run("GitHub has no main", func(t *testing.T) {
