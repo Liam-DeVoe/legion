@@ -98,9 +98,11 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 }
 
 // The implementer's parts name every trigger of a forward merge that its skill names, so the two
-// lists agree. Retro's own work commits nothing, and a merge forward the daemon asks for in retro
-// is no part of it, so the parts that say retro commits nothing say "of its own". Each part is
-// read alone. This shows the text is loaded, never that an implementer follows it.
+// lists agree. The merge is the merger's only where no step of the task is left before it
+// (classify.MergeComesNext): an `accepting` that a step follows still asks the implementer
+// (record.MergeForwardAsker). Retro's own work commits nothing, and a merge forward the daemon asks
+// for in retro is no part of it, so the parts that say retro commits nothing say "of its own". Each
+// part is read alone. This shows the text is loaded, never that an implementer follows it.
 func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 	for _, part := range []struct {
 		name, text    string
@@ -109,10 +111,11 @@ func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
 			"Merge the base forward only on one of five triggers.",
 			"(in `implementing` your own assignment and its completion stand)",
-			"From `accepting` on, the merge with the base is the merger's",
+			"In `retro`, in `merging`, and in `accepting` where no step of the task follows the acceptance, the merge with the base is the merger's.",
+			"The daemon asks the merger for it in `merging`, not you.",
 			"The controller asks you to, because of a conflict.",
 			"The architect's move back names a parent's last round.",
-		}, []string{"one of four triggers", "one of six triggers", "and `retro` your own assignment"}},
+		}, []string{"one of four triggers", "one of six triggers", "and `retro` your own assignment", "From `accepting` on"}},
 		{"go/implementer.md", goPart(t, "implementer.md"), []string{
 			"Retro commits nothing and pushes nothing of its own:",
 			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
