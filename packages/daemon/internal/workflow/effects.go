@@ -145,7 +145,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
 // phase row's CompletedAt, which the next phase's start clears in clearHandoff). The row is the
-// role's row now (record.PhaseRowOf), the row of the step whose entry was raised last, since a
+// role's row now (record.PhaseRowOf), the row of the step with the highest entry, since a
 // role that stands at two steps has a row for each and its worker is owed the turn of the one it
 // works. It answers that row too, an empty row naming the issue and role where the record holds
 // none, so the silence repair reads it once.

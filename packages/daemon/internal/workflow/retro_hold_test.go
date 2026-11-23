@@ -422,7 +422,6 @@ func TestAHeldRetroAfterTheImplementersLastStepGetsItsReport(t *testing.T) {
 				t.Helper()
 				pool := migratedPool(t)
 				engine := textEngine()
-				tickingClock(engine)
 				root := stepRoot(t, pool, phase.Admitted)
 				seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 				if child {

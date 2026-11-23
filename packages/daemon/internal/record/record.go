@@ -2740,38 +2740,44 @@ func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim
 	}
 }
 
-// PhaseRowOf is role's row among rows now, read with no walk: the row whose entry was raised last
-// (RaisedLater), and the zero row where the record holds no row of that role: a role no transition
-// has ever handed work on, which stands on no entry, names no handoff and holds no claim. A role
-// that stands at two steps of a task has a row for each, and the one whose entry was raised last
-// is the row of the step the role works now, or worked last, which is the row PhaseRowAt gives
-// where the task stands; an issue with no plan rows has one row for each role. Every reader of one
-// role's row among an issue's that holds no walk picks it here — the state the projection writes
+// PhaseRowOf is role's row among rows now, read with no walk: the row with the highest entry, and
+// the zero row where the record holds no row of that role: a role no transition has ever handed
+// work on, which stands on no entry, names no handoff and holds no claim. A role that stands at two
+// steps of a task has a row for each, and a step's start raises its entry above every row of its
+// role (workflow's enter), so the row with the highest entry is the row of the step the role works
+// now, or worked last, which is the row PhaseRowAt gives where the task stands; an issue with no
+// plan rows has one row for each role. Rows level on one entry, which only a release before that
+// rule wrote, are told apart by their step, the later first (rowAbove). Every reader of one role's
+// row among an issue's that holds no walk picks it here — the state the projection writes
 // (projection.Project), the entry the admission pass weighs a claim against (admit's
 // resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
-// (internal/daemon's outbox), the claim of a role's worker (WorkerClaim) and a batched read of
-// many issues' rows (Store.PhaseEntries) — so that rule is stated once and read the same way by
-// all of them.
+// (internal/daemon's outbox), the claim of a role's worker (WorkerClaim) — and the statements that
+// pick it among many issues' rows (Store.PhaseEntries, the implementer's commit of
+// Store.HandedOffWithoutOpenOrMergedPullRequest), the fold of a new generation
+// (Store.ClearGeneration) and the way back of the step key keep the same order, so that rule is
+// stated once and read the same way by all of them.
 func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	var now PhaseRow
 	found := false
 	for _, row := range rows {
-		if row.Role == role && (!found || RaisedLater(row.EntryRaisedAt, row.Entry, now.EntryRaisedAt, now.Entry)) {
+		if row.Role == role && (!found || rowAbove(row, now)) {
 			now, found = row, true
 		}
 	}
 	return now
 }
 
-// RaisedLater says whether the entry entry, raised at at, was raised after the entry than, raised
-// at thanAt: at a later moment, or at the same moment and higher. A row no entry was raised on
-// holds the zero moment, so it loses to any row one was raised on. It is the one order of a
-// role's rows that PhaseRowOf and Store.PhaseEntries pick the row of a role now by.
-func RaisedLater(at time.Time, entry int64, thanAt time.Time, than int64) bool {
-	if !at.Equal(thanAt) {
-		return at.After(thanAt)
+// rowAbove says whether row stands above than among one role's rows: a higher entry, or the same
+// entry and a later step, by step task and then step place. It is the order `entry desc,
+// step_task desc, step_place desc` of the statements that pick a role's row now (PhaseRowOf).
+func rowAbove(row, than PhaseRow) bool {
+	switch {
+	case row.Entry != than.Entry:
+		return row.Entry > than.Entry
+	case row.StepTask != than.StepTask:
+		return row.StepTask > than.StepTask
 	}
-	return entry > than
+	return row.StepPlace > than.StepPlace
 }
 
 // OtherStepsEntry is the highest entry a row of row's role holds other than row, the row of
@@ -2831,8 +2837,8 @@ func StartLeft(rows []PhaseRow, role claim.Role, token claim.Token, entry int64)
 //
 // It is the one reading of a role's row where a walk is known: the engine's (workflow's phaseRow,
 // enter and reportsBefore) and the completion route's, which knows the place it was handed. A
-// reader with no walk reads PhaseRowOf, the row whose entry was raised last, which is this row at
-// where the task stands while the role works there or worked there last.
+// reader with no walk reads PhaseRowOf, the row with the highest entry, which is this row at where
+// the task stands while the role works there or worked there last.
 func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, steps []PlanStep) PhaseRow {
 	if task == "" {
 		return PhaseRowOf(rows, role)

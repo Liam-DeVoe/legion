@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,18 +88,6 @@ func TestTheDefaultStepsAreNamedWhenTheyAreWritten(t *testing.T) {
 	}
 }
 
-// tickingClock gives engine a clock that moves a second at each read, as a real clock moves
-// between two transactions: a role that stands at two steps has a row for each, and its row now is
-// the one whose entry was raised last (record.PhaseRowOf), which a clock that never moves cannot
-// tell apart.
-func tickingClock(engine *Engine) {
-	now := stepClock
-	engine.cfg.Clock = func() time.Time {
-		now = now.Add(time.Second)
-		return now
-	}
-}
-
 // rolesRows is every phases row of key's role, by place.
 func rolesRows(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) map[int]record.PhaseRow {
 	t.Helper()
@@ -117,8 +104,8 @@ func rolesRows(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, rol
 	return rows
 }
 
-// roleRowNow is role's row of key now, the one whose entry was raised last (record.PhaseRowOf),
-// read with no walk: where an entry rose since, it is the row that rose.
+// roleRowNow is role's row of key now, the one with the highest entry (record.PhaseRowOf), read
+// with no walk: where an entry rose since, it is the row that rose.
 func roleRowNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	var row record.PhaseRow
@@ -137,7 +124,6 @@ func roleRowNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, ro
 func TestARowOfNoStepBecomesTheRowOfTheRolesStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: agentToken(t, "implementer"), Entry: 4,
 		LastHandoff: "implement-of-the-generation-before", EntryRaisedAt: stepClock})
@@ -176,7 +162,6 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := textEngine()
-			tickingClock(engine)
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -217,7 +202,6 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 func TestAReviewerReadsTheLatestImplementersRowBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -246,7 +230,6 @@ func TestAReviewerReadsTheLatestImplementersRowBeforeIt(t *testing.T) {
 func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -274,7 +257,6 @@ func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
 	implementer := agentToken(t, "implementer")
@@ -299,7 +281,6 @@ func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
@@ -347,7 +328,6 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
@@ -381,7 +361,6 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + root.Key,
 		HeadSHA: "head", Failing: []string{}})
@@ -529,7 +508,6 @@ func TestAReturnToARolesEarlierStepRefusesTheRecordOfItsLaterStep(t *testing.T) 
 func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	steps := []string{"implementer:a", "reviewer:b", "implementer:b"}
 	seedStepsPlan(t, pool, root.Key, root.Generation, steps...)
@@ -582,7 +560,6 @@ func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *te
 func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:b", "implementer:b")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "reviewer")

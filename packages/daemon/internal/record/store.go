@@ -358,14 +358,14 @@ func (s *Postgres) UnnamedIssues(ctx context.Context, tx pgx.Tx, project string)
 
 // HandedOffWithoutOpenOrMergedPullRequest reads each issue of project in implementing whose
 // implementer's row now holds a handoff commit and that has no open or merged pull request. The
-// row is the implementer's row now, as PhaseRowOf picks it (RaisedLater, then the first by task and
-// place): an implementer that stands at two steps of a task has a row for each, and an earlier
+// row is the implementer's row now, as PhaseRowOf picks it (the highest entry, then the later
+// step): an implementer that stands at two steps of a task has a row for each, and an earlier
 // step's commit is no handoff of the step that runs.
 func (s *Postgres) HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, tx pgx.Tx, project string) ([]HandedOff, error) {
 	const what = "in implementing with a recorded handoff and no open or merged pull request"
 	rows, err := tx.Query(ctx, "select "+issueColumns+", implementer.handoff_commit from issues"+
 		" join (select distinct on (issue) issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"'"+
-		" order by issue, entry_raised_at desc nulls last, entry desc, step_task, step_place)"+
+		" order by issue, entry desc, step_task desc, step_place desc)"+
 		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key and implementer.handoff_commit <> ''"+
 		" where project = $1 and github_repo <> '' and phase = '"+string(phase.Implementing)+"'"+
 		" and key not in (select issue from pull_requests where state = any($2))"+
@@ -578,9 +578,9 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised, whether
 // its task is one to send as written, and the claim and step the row names, in one statement,
 // keyed by issue and role: for a role that stands at two steps, the row PhaseRowOf picks from the
-// issue's rows, the one whose entry was raised last (RaisedLater), read in the order Phases reads
-// them, so the two readings take one row. The rows of an issue the record holds none of are
-// simply absent, which every reader takes as the zero entry.
+// issue's rows, the one with the highest entry, then the later step, so the two readings take one
+// row. The rows of an issue the record holds none of are simply absent, which every reader takes
+// as the zero entry.
 // entry_raised_at is the row's one nullable column (PutPhase), null on a row no entry has been
 // raised on, and reads back as the zero moment.
 func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
@@ -588,8 +588,8 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim, claim, step_task from phases where issue = any($1)
-		order by issue, role, step_task, step_place`, issues)
+	rows, err := tx.Query(ctx, `select distinct on (issue, role) issue, role, entry, entry_raised_at, entry_verbatim, claim, step_task from phases
+		where issue = any($1) order by issue, role, entry desc, step_task desc, step_place desc`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -606,9 +606,7 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 			entry.RaisedAt = raisedAt.UTC()
 		}
 		key.Role, entry.Claim = claim.Role(role), claim.Token(token)
-		if kept, ok := entries[key]; !ok || RaisedLater(entry.RaisedAt, entry.Entry, kept.RaisedAt, kept.Entry) {
-			entries[key] = entry
-		}
+		entries[key] = entry
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)

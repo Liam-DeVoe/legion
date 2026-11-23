@@ -255,7 +255,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if err != nil {
 			return api.State{}, err
 		}
-		// Each role's row now (record.PhaseRowOf), the row whose entry was raised last: a role that
+		// Each role's row now (record.PhaseRowOf), the row with the highest entry: a role that
 		// stands at two steps of a task has a row for each, and its worker is served from the row of
 		// the step it works now or worked last, the row the admission pass weighs it against. The
 		// reviewer's row now is the round's: its decision is read from it, and so is what the round

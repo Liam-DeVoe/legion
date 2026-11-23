@@ -1183,30 +1183,29 @@ func TestATreesNewGenerationKeepsTheStepsOfAMemberWhoseGenerationStands(t *testi
 }
 
 // A pass over many issues reads each role's row as PhaseRowOf reads it from one issue's rows: the
-// row whose entry was raised last. After a return to step 1 of `implementer:a reviewer:b
-// implementer:b` that is step 1's row, whose entry is lower than step 3's, and the claim of the
-// role's worker is step 1's agent's (WorkerClaimOf), whichever row the statement reads last.
+// row with the highest entry. After a return to step 1 of `implementer:a reviewer:b
+// implementer:b` that is step 1's row, whose entry the return raised above step 3's, and the claim
+// of the role's worker is step 1's agent's (WorkerClaimOf), whichever row the statement reads last.
 func TestPhaseEntriesReadARolesRowNow(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-295")
-	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
 	const first, second claim.Token = "legion-legion-legion-295-implementer", "legion-legion-legion-295-reviewer"
 	for _, order := range [][]int{{1, 3}, {3, 1}} {
 		inTx(t, st, func(tx pgx.Tx) {
 			must(t, records.PutIssue(ctx, tx, issue))
 			for _, place := range order {
-				row := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: first, StepTask: "t", StepPlace: 1, Entry: 2, EntryRaisedAt: at(4)}
+				row := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: first, StepTask: "t", StepPlace: 1, Entry: 4}
 				if place == 3 {
-					row = PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: second, StepTask: "t", StepPlace: 3, Entry: 3, EntryRaisedAt: at(3)}
+					row = PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: second, StepTask: "t", StepPlace: 3, Entry: 3}
 				}
 				must(t, records.PutPhase(ctx, tx, row))
 			}
 			entries, err := records.PhaseEntries(ctx, tx, []string{issue.Key})
 			must(t, err)
-			if got := entries[PhaseRole{Issue: issue.Key, Role: claim.RoleImplementer}]; got.Entry != 2 || got.Claim != first {
-				t.Fatalf("written in place order %v, PhaseEntries(implementer) = %+v, want step 1's row at entry 2", order, got)
+			if got := entries[PhaseRole{Issue: issue.Key, Role: claim.RoleImplementer}]; got.Entry != 4 || got.Claim != first {
+				t.Fatalf("written in place order %v, PhaseEntries(implementer) = %+v, want step 1's row at entry 4", order, got)
 			}
 			if got, err := WorkerClaimOf("legion", issue.Key, claim.RoleImplementer, entries); err != nil || got != first {
 				t.Fatalf("written in place order %v, WorkerClaimOf(implementer) = %q, %v, want %q", order, got, err, first)
