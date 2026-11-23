@@ -6,9 +6,12 @@ disable-model-invocation: true
 
 # Thermonuclear Code Quality
 
-Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: another session's open directories may sit beside yours, as they do in a shared `$TMPDIR`.
+This is a maintainability review of one diff: the current branch's changes, or the range you are given.
 
-This is a maintainability review of one diff: the current branch's changes, or the range you are given. Every remedy keeps behavior the same and removes code or concepts, or moves code where a reader finds it without reading the rest of the file. A behavior change is work for `skill://thermonuclear-deep-review`. The table's last two rows change ordering or failure behavior: say so in the finding.
+- Every remedy keeps behavior the same. It removes code or concepts, or moves code where a reader finds it without reading the rest of the file.
+- A behavior change is work for `skill://thermonuclear-deep-review`.
+- The table's last two rows change ordering or failure behavior: say so in the finding.
+- Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: another session's open directories may sit beside yours, as they do in a shared `$TMPDIR`.
 
 ## Report
 
@@ -21,13 +24,15 @@ Then one entry per finding: `path:line`, the smell, the cost it adds, and the re
 
 ## Steps
 
-1. Read the diff and each changed file around its hunks. Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow, such as a function it lengthens or adds a branch or parameter to. A finding on code the pull request leaves alone blocks it for work it did not cause. A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.
-2. Look for the code-judo move first: a restructure onto the existing architecture that deletes whole branches, helpers, modes, conditionals or layers. It often removes the line-level findings with it.
-3. For a refactor, count the concepts (types, functions, flags, modes) a reader must know before and after. A move that keeps the count is not a simplification: say so. When the problem is structural, do not suggest a rename.
-4. Check every hunk against the table below. For file size, compare `git show <base>:<path> | wc -l` with `wc -l <path>`; `<base>` is the range start your brief names, else `git merge-base HEAD origin/<default branch>`.
-5. Before you report a finding, quote its line at the reviewed head. For a boundary, type or duplicate-helper claim, also read the callers (`grep` the symbol) and the existing helper you name.
-6. Report only a cost you can name (the Cost column). A preference or a micro-optimization with no such cost is not a finding. When a structural finding exists, leave out naming and style nits.
-7. Ask for a new abstraction (a type, module or policy object) only when the code shows two real callers or two ways it will change. With one, the abstraction is the thin wrapper row 6 flags.
+1. **Read the diff and each changed file around its hunks.**
+   - Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow, such as a function it lengthens or adds a branch or parameter to. A finding on code the pull request leaves alone blocks it for work it did not cause.
+   - A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.
+2. **Look for the code-judo move first:** a restructure onto the existing architecture that deletes whole branches, helpers, modes, conditionals or layers. It often removes the line-level findings with it.
+3. **Count the concepts.** For a refactor, count the concepts (types, functions, flags, modes) a reader must know before and after. A move that keeps the count is not a simplification: say so. When the problem is structural, do not suggest a rename.
+4. **Check every hunk against the table below.** For file size, compare `git show <base>:<path> | wc -l` with `wc -l <path>`. `<base>` is the range start your brief names, else `git merge-base HEAD origin/<default branch>`.
+5. **Quote the line.** Before you report a finding, quote its line at the reviewed head. For a boundary, type or duplicate-helper claim, also read the callers (`grep` the symbol) and the existing helper you name.
+6. **Name the cost.** Report only a cost you can name (the Cost column). A preference or a micro-optimization with no such cost is not a finding. When a structural finding exists, leave out naming and style nits.
+7. **New abstraction.** Ask for a new abstraction (a type, module or policy object) only when the code shows two real callers or two ways it will change. With one, the abstraction is the thin wrapper row 6 flags.
 
 ## Smells and remedies
 
@@ -54,5 +59,7 @@ Then one entry per finding: `path:line`, the smell, the cost it adds, and the re
 
 ## Findings
 
-- Rate each finding; the lead disposes of it (act on, consider, noted or dismissed). Give each the evidence, the cost and what it depends on, and put on the must-fix list only what must be fixed before this change ships.
+- Rate each finding. The lead disposes of it (act on, consider, noted or dismissed).
+- Give each finding the evidence, the cost and what it depends on.
+- Put on the must-fix list only what must be fixed before this change ships.
 - Do not review a diff you wrote: hand it to a session that did not write it.
