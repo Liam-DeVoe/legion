@@ -85,10 +85,10 @@ export function focusOnMount(element: HTMLElement | null): void {
 /** Where a hand-off sends the focus a control took away with it, nearest first: the control now
  *  at `index` in `controls` where it stands at the lost control's place (`atPlace`), then each
  *  control before that place, walking back. `index` is the lost control's place among `controls`
- *  as they stand now: how many of them come before the point it left. The page's rescue counts the
- *  place of a control taken away while it holds the focus off the spot it went from, in every
- *  engine, Chromium's `focusout` included (`Loss`'s `index`), so however many controls went
- *  together, its walk starts where they were. */
+ *  as they stand now: how many of them come before the point it left. The page's rescue and a
+ *  component's hand-off count the place of a control taken away off the spot it went from, once
+ *  it has gone (`placeOfRemoval`; `Loss`'s `index`, `useFocusPlace`), so however many controls
+ *  went together, the walk starts where they were. */
 function placesFrom(
   controls: readonly HTMLElement[],
   index: number,
@@ -140,13 +140,15 @@ function placeIn(container: Element, element: Element): { index: number; counted
 }
 
 /** Where the keyboard focus sat: the element, the container it is counted in, its place among
- *  that container's focusable controls, and the rows it stood in inside that container, nearest
- *  first (`atPlaceOf`). */
+ *  that container's focusable controls, the rows it stood in inside that container, nearest
+ *  first (`atPlaceOf`), and where it stood in that container (`spotsOf`): the place and the spots
+ *  are read as it takes the focus and again after each commit while it holds it. */
 interface Place {
   readonly container: Element;
   readonly element: Element;
   index: number;
   readonly rows: readonly Element[];
+  spots: readonly Spot[];
 }
 
 /**
@@ -183,8 +185,14 @@ interface Place {
  * In a selection bar, the bar's own hand-off (`SelectionBar`) answers a loss the reader caused.
  * The page's rescue leaves a loss there that the reader did not cause as `leaveUncaused` says. An
  * element React bubbled up from a portal is no control of the container, so it is counted at the
- * place of the one counted before it there, in that one's rows, and not at all without one: a
- * nested panel's input is counted where the trigger that opened that panel is.
+ * place of the one counted before it there, in that one's rows and spots, and not at all without
+ * one: a nested panel's input is counted where the trigger that opened that panel is.
+ *
+ * The place is counted again once the element has gone, off the spot it went from in the
+ * container (`placeOfRemoval`): its place counted while it stood there takes in every control
+ * before it that went with it, as an Inbox card's subscriber chip takes its name link away with
+ * its Unsubscribe, and the walk would start at the control after them. Where no spot of it went
+ * from a parent still in the container, the place counted while it stood there is used.
  *
  * The check runs after every commit of the component, so after the one that took the element
  * away, and moves the focus only when the element has left the page and the focus is on the
@@ -211,15 +219,20 @@ export function useFocusPlace(
       if (held.container.contains(held.element)) {
         const { counted, index } = placeIn(held.container, held.element);
         if (counted) held.index = index;
+        held.spots = spotsOf(held.element, held.container);
       }
       return;
     }
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
     if (!causedByReader(held.element)) return;
-    const walked = held.container.isConnected
-      ? walkBack(focusableIn(held.container), held.index, atPlaceOf(held.rows, held.container))
-      : [];
+    let walked: HTMLElement[] = [];
+    if (held.container.isConnected) {
+      const controls = focusableIn(held.container);
+      const spot = held.spots.find((each) => goneFrom(each, held.container));
+      const index = spot === undefined ? held.index : placeOfRemoval(controls, spot);
+      walked = walkBack(controls, index, atPlaceOf(held.rows, held.container));
+    }
     const fallbackControl = fallback(held.container);
     const candidates = fallbackControl === null ? walked : [...walked, fallbackControl];
     if (candidates.length === 0) return;
@@ -243,7 +256,9 @@ export function useFocusPlace(
     if (!container.contains(element)) {
       // A portal's element: at the place of the control counted before it, or nowhere.
       place.current =
-        carried === null ? null : { container, element, index: carried.index, rows: carried.rows };
+        carried === null
+          ? null
+          : { container, element, index: carried.index, rows: carried.rows, spots: carried.spots };
       return;
     }
     const { counted, index } = placeIn(container, element);
@@ -252,6 +267,7 @@ export function useFocusPlace(
       element,
       index: counted ? index : (carried?.index ?? -1),
       rows: rowsAround(element).filter((row) => row !== container && container.contains(row)),
+      spots: spotsOf(element, container),
     };
   };
 }
@@ -1068,14 +1084,15 @@ interface Spot {
   readonly previous: Node | null;
 }
 
-/** Where `element` stands in `region`, and where each parent of it up to the region's own
- *  children stands, nearest first: read while the element is still in the page, so that the spot
- *  a press later takes it, or a parent of it, away from is known (`controlsInPlace`), and so are
- *  the spots of the rows around it (`controlsOfRowMovedUp`). */
-function spotsOf(element: Element, region: Element): Spot[] {
+/** Where `element` stands in `within` - a loss's region, or a component's container - and where
+ *  each parent of it up to `within`'s own children stands, nearest first: read while the element
+ *  is still in the page, so that the spot a press later takes it, or a parent of it, away from is
+ *  known (`controlsInPlace`, and the place counted off it in `useFocusPlace`), and so are the
+ *  spots of the rows around it (`controlsOfRowMovedUp`). */
+function spotsOf(element: Element, within: Element): Spot[] {
   const spots: Spot[] = [];
   let node: Node = element;
-  for (let parent = node.parentNode; parent !== null && node !== region; parent = node.parentNode) {
+  for (let parent = node.parentNode; parent !== null && node !== within; parent = node.parentNode) {
     spots.push({ next: node.nextSibling, node, parent, previous: node.previousSibling });
     node = parent;
   }
@@ -1094,9 +1111,10 @@ function rowsIn(spots: readonly Spot[]): Element[] {
   return rows;
 }
 
-/** Whether `spot`'s node has left the page while the parent it stood in is still in `region`. */
-function goneFrom(spot: Spot, region: Element): boolean {
-  return !spot.node.isConnected && spot.parent.isConnected && region.contains(spot.parent);
+/** Whether `spot`'s node has left the page while the parent it stood in is still in `within`: a
+ *  loss's region, or a component's container (`useFocusPlace`). */
+function goneFrom(spot: Spot, within: Element): boolean {
+  return !spot.node.isConnected && spot.parent.isConnected && within.contains(spot.parent);
 }
 
 /** What a row holds as its controls, by markup alone: what the focus can reach (`FOCUSABLE`), and
@@ -1160,10 +1178,12 @@ interface Loss {
   readonly caused: boolean;
   readonly element: HTMLElement;
   /** The element's place among the controls its region draws: how many of them come before the
-   *  point it left. A control taken away while it holds the focus is counted off the spot it went
-   *  from, once it has gone (`placeOfRemoval`): off the removal Firefox and WebKit report alone,
-   *  and in Chromium, whose `focusout` comes while the control still stands in the page, again
-   *  once the commit that took it has run (`record`). */
+   *  point it left. A control taken away is counted off the removal that took it, once it has
+   *  gone (`placeOfRemoval`): off that removal alone where it went with no `focusout`, as in
+   *  Firefox and WebKit, and again off it for a loss noted at a `focusout` while the control still
+   *  stood in the page - Chromium's as a commit takes it away, or any engine's as it is disabled
+   *  or hidden under the focus - where the removal comes while the loss's check or wait is out
+   *  (the page's watcher in `useFocusRescue`). */
   index: number;
   /** The item the element was in (`itemOf`), read as the loss is noted where the element is still
    *  in it, as its row places are, else the one it was in as it took the focus; null where it was
@@ -1287,15 +1307,15 @@ function removalOf(records: readonly MutationRecord[], element: Element): Remova
   }
 }
 
-/** The place of a control taken away from `spot`, itself or with a parent, among the controls
- *  `region` draws: how many of them come before the point it was taken from - before the sibling
- *  after it while that is still in the page, else up to and through the sibling before it, else
- *  through the parent it was taken from. */
-function placeOfRemoval(region: Element, spot: Spot, main: HTMLElement | null): number {
+/** The place of a control taken away from `spot`, itself or with a parent, among `controls`: how
+ *  many of them come before the point it was taken from - before the sibling after it while that
+ *  is still in the page, else up to and through the sibling before it, else through the parent it
+ *  was taken from. */
+function placeOfRemoval(controls: readonly Element[], spot: Spot): number {
   const next = spot.next?.isConnected ? spot.next : null;
   const through = spot.previous?.isConnected ? spot.previous : spot.parent;
   let index = 0;
-  for (const control of drawnIn(region, main)) {
+  for (const control of controls) {
     const before =
       next === null
         ? through.contains(control) ||
@@ -1693,10 +1713,12 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * run, and nothing answers it, even when a commit after that takes the control away - the issue
  * title's editor, whose save draws the heading in its place. A control a commit takes away fires
  * Chromium's `focusout` during the removal itself, while it is still in the page, so by that
- * microtask it has gone, and its loss is answered. Its place is counted again in that microtask,
- * off the spot it went from, as the place of a control taken away with no `focusout` is: counted
- * at the `focusout`, it took in every control before it that went with it. A new loss cancels
- * whatever is still out for the one before it.
+ * microtask it has gone, and its loss is answered. A loss noted at a `focusout` - that one, or
+ * one at a disable or a hide - counts its place while the control still stands in the page, with
+ * every control before it that goes with it. So where the page's watcher sees the removal that
+ * takes the control while the loss's check or wait is out, the place is counted again off that
+ * removal, as for a control taken away with no `focusout`. A new loss cancels whatever is still
+ * out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: whatever moves the focus
@@ -2027,20 +2049,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Wri
       // `blur()`, their click on the page's text - is no loss: the control still stands in the
       // page, enabled and drawn, once the event that moved the focus has run, and is marked left
       // then. A control a commit takes away fires Chromium's `focusout` during the removal
-      // itself, so by this microtask it has gone, and its loss stays one to answer. Its place was
-      // counted while it still stood in the page, with every control before it that went with
-      // it, as an Inbox card's subscriber chip takes its name link away with its Unsubscribe. That
-      // count lies past the place they left, so the walk back would start at the control after
-      // them. Once the element has gone, its place is counted again off the spot it went from, as
-      // the removal Firefox and WebKit report alone is counted. A loss the reader did not cause
-      // holds no spots, so it keeps no place.
+      // itself, so by this microtask it has gone, and its loss stays one to answer.
       if (!loss.taken) {
         queueMicrotask(() => {
           loss.left = element.isConnected && stands(element);
-          const spot = element.isConnected
-            ? undefined
-            : loss.spots.find((each) => goneFrom(each, region));
-          if (spot !== undefined) loss.index = placeOfRemoval(region, spot, main.current);
         });
       }
     };
@@ -2049,9 +2061,21 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Wri
     // element or a parent of it - is read off the last mutation that took it, at the place it was
     // taken from, or at the region's end where no record of this batch names it. Every batch
     // that comes while a loss's check or wait is out is noted first as that loss's arrivals,
-    // where it notes any.
+    // where it notes any. Where that batch took the loss's element away, the loss's place is
+    // counted again off that removal: a loss noted at a `focusout` counted it while the element
+    // still stood in the page, with every control before it that went with it, as an Inbox card's
+    // subscriber chip takes its name link away with its Unsubscribe, and the walk back would start
+    // at the control after them. A loss the reader did not cause notes no arrivals and keeps no
+    // place.
     const watcher = new MutationObserver((records) => {
-      if (pending?.loss.arrived) noteArrivals(records, pending.loss.arrived);
+      const out = pending?.loss;
+      if (out?.arrived) {
+        noteArrivals(records, out.arrived);
+        const removal = out.element.isConnected ? undefined : removalOf(records, out.element);
+        if (removal !== undefined && out.region.isConnected) {
+          out.index = placeOfRemoval(drawnIn(out.region, main.current), removal.spot);
+        }
+      }
       const held = focused;
       if (held === null || held.element.isConnected) return;
       focused = null;
@@ -2076,7 +2100,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Wri
       const index =
         removal === undefined || !held.region.isConnected
           ? drawnIn(held.region, main.current).length
-          : placeOfRemoval(held.region, removal.spot, main.current);
+          : placeOfRemoval(drawnIn(held.region, main.current), removal.spot);
       // What this batch added from the last record that took the element on is what can stand in
       // its place; what it added before that record is not.
       const arrived = new Set<Node>();

@@ -4207,6 +4207,40 @@ test("a caused landing partly in sight is shown at its nearest edge and no furth
   expect(moved).toEqual(belongs);
 });
 
+/** An Inbox list in `main`, built by hand: a question's row holding its card, whose recipients are
+ *  drawn as one list of chips per group - each chip the session's name link, then its remove
+ *  button - for a follower's Unfollow and a subscriber's Unsubscribe, and the next question's row
+ *  with its Select checkbox. Answers the subscribers' list and its Unsubscribe. */
+function recipientsCard(main: HTMLElement): { chips: HTMLElement; remove: HTMLButtonElement } {
+  const list = document.createElement("ul");
+  main.append(list);
+  const row = document.createElement("li");
+  const card = document.createElement("article");
+  row.append(card);
+  list.append(row);
+  // A list of one chip: the session's name link, then its remove button.
+  const chipList = (name: string, label: string) => {
+    const chips = document.createElement("ul");
+    card.append(chips);
+    const chip = document.createElement("li");
+    chips.append(chip);
+    const link = document.createElement("a");
+    link.href = `/agents/${name}`;
+    link.textContent = name;
+    chip.append(link);
+    return { chips, remove: buttonIn(chip, label) };
+  };
+  chipList("Replier", "Unfollow");
+  const subscribers = chipList("Watcher", "Unsubscribe");
+  const next = document.createElement("li");
+  list.append(next);
+  const mark = document.createElement("input");
+  mark.type = "checkbox";
+  mark.setAttribute("aria-label", "Select CORE-3");
+  next.append(mark);
+  return subscribers;
+}
+
 // (cz) The place of a control a commit takes away is counted off the spot it went from, in
 // Chromium as in Firefox and WebKit. An Inbox card's subscriber chip draws the subscriber's name
 // link before its Unsubscribe, and the chip's list goes with both once the write lands. Chromium
@@ -4220,33 +4254,7 @@ test("a control taken away with a control before it in its chip lands on the car
   const landed: Record<string, string | null> = {};
   for (const withFocusout of [true, false]) {
     await withRescue(async () => {
-      const { main } = mainOf("Before");
-      const list = document.createElement("ul");
-      main.append(list);
-      const row = document.createElement("li");
-      const card = document.createElement("article");
-      row.append(card);
-      list.append(row);
-      // A list of one chip: the session's name link, then its remove button.
-      const chipList = (name: string, label: string) => {
-        const chips = document.createElement("ul");
-        card.append(chips);
-        const chip = document.createElement("li");
-        chips.append(chip);
-        const link = document.createElement("a");
-        link.href = `/agents/${name}`;
-        link.textContent = name;
-        chip.append(link);
-        return { chips, remove: buttonIn(chip, label) };
-      };
-      chipList("Replier", "Unfollow");
-      const subscribers = chipList("Watcher", "Unsubscribe");
-      const next = document.createElement("li");
-      list.append(next);
-      const mark = document.createElement("input");
-      mark.type = "checkbox";
-      mark.setAttribute("aria-label", "Select CORE-3");
-      next.append(mark);
+      const subscribers = recipientsCard(mainOf("Before").main);
       subscribers.remove.focus();
       enterPress(subscribers.remove);
       // The write lands, and the subscribers' list goes with the name link and the Unsubscribe.
@@ -4254,6 +4262,122 @@ test("a control taken away with a control before it in its chip lands on the car
       else subscribers.chips.remove();
       await settled();
       landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
+    });
+  }
+  expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
+});
+
+// (da) The same place for a control disabled under the focus and then taken away. Its loss is
+// noted at a `focusout` while it still stands in the page: every engine's at the disable, or
+// Chromium's at the removal where that comes before the disable's own. Counted there, the place
+// takes in the name link that goes with it, and the walk back starts at the next question's
+// Select checkbox. Counted again off the removal that takes the control while the loss's check or
+// its wait on the held control is out, the focus lands on the card's Unfollow, as for a control
+// taken away with no `focusout`.
+test("a control disabled under the focus and then taken away with a control before it lands on the card's control before the place", async () => {
+  const ways = [
+    "focusout at the disable",
+    "Chromium's focusout at the removal",
+    "no focusout",
+  ] as const;
+  const landed: Record<string, string | null> = {};
+  for (const way of ways) {
+    await withRescue(async () => {
+      const subscribers = recipientsCard(mainOf("Before").main);
+      const unsubscribe = subscribers.remove;
+      unsubscribe.focus();
+      enterPress(unsubscribe);
+      if (way === "focusout at the disable") {
+        // happy-dom blurs no disabled button, so the `focusout` comes just before the disable, as
+        // in (c). The rescue then waits on the held control, until the write's answer takes the
+        // subscribers' list away.
+        unsubscribe.blur();
+        unsubscribe.disabled = true;
+        await settled();
+        subscribers.chips.remove();
+        await settled();
+      } else {
+        unsubscribe.disabled = true;
+        if (way === "no focusout") subscribers.chips.remove();
+        else lose(unsubscribe, () => subscribers.chips.remove());
+      }
+      await settled();
+      landed[way] = focusedName();
+    });
+  }
+  expect(landed).toEqual(Object.fromEntries(ways.map((way) => [way, "Unfollow"])));
+});
+
+/** The card of `recipientsCard`, drawn by React inside a list that hands its own focus off
+ *  (`useFocusPlace`), the list its container. Drawn again without `subscribers`, it takes the
+ *  subscribers' list away with the name link and the Unsubscribe. */
+function RecipientsList(props: { readonly subscribers: boolean }): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (list.current?.contains(element) ? list.current : null),
+    () => null
+  );
+  // A list of one chip: the session's name link, then its remove button.
+  const chipList = (name: string, label: string) =>
+    createElement(
+      "ul",
+      { key: name },
+      createElement(
+        "li",
+        null,
+        createElement("a", { href: `/agents/${name}` }, name),
+        createElement("button", { type: "button" }, label)
+      )
+    );
+  return createElement(
+    "ul",
+    { onFocus: noteFocus, ref: list },
+    createElement(
+      "li",
+      null,
+      createElement(
+        "article",
+        null,
+        chipList("Replier", "Unfollow"),
+        props.subscribers ? chipList("Watcher", "Unsubscribe") : null
+      )
+    ),
+    createElement(
+      "li",
+      null,
+      createElement("input", { "aria-label": "Select CORE-3", type: "checkbox" })
+    )
+  );
+}
+
+// (db) A component's own hand-off counts the same place off the spot the control went from in
+// its container (`useFocusPlace`). Counted while the Unsubscribe still stood there, the place takes
+// in the name link that went with it, and the walk back starts at the next question's Select
+// checkbox. With the page's rescue mounted, and with Chromium's `focusout` and without: the
+// component's hand-off answers in the commit that takes the list away, before the rescue's check.
+test("a component's hand-off for a control taken away with a control before it lands on the card's control before the place", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { main } = mainOf();
+      const view = render(createElement(RecipientsList, { subscribers: true }), {
+        container: main,
+      });
+      try {
+        const unsubscribe = [...main.querySelectorAll("button")].find(
+          (button) => button.textContent === "Unsubscribe"
+        ) as HTMLButtonElement;
+        unsubscribe.focus();
+        enterPress(unsubscribe);
+        // The write lands, and the commit takes the subscribers' list away.
+        const answer = () => view.rerender(createElement(RecipientsList, { subscribers: false }));
+        if (withFocusout) lose(unsubscribe, answer);
+        else answer();
+        await settled();
+        landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
+      } finally {
+        view.unmount();
+      }
     });
   }
   expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
