@@ -10,8 +10,10 @@ import (
 )
 
 // quotingStatusLine is a token endpoint's status line whose reason phrase quotes the probe's URL,
-// credentials and all.
-const quotingStatusLine = "400 see https://" + redacttest.User + ":" + redacttest.Password + "@idp.example/help?session=" + redacttest.Token
+// credentials and all. Its status, 503, is an outage (oauthrefusal.Outage), so the client check
+// and the code exchange each wrap the answer in their error: a refusal's status (a 400) would have
+// the check name the client refused, in an error that carries no word of the answer at all.
+const quotingStatusLine = "503 see https://" + redacttest.User + ":" + redacttest.Password + "@idp.example/help?session=" + redacttest.Token
 
 // TestAnIssuersStatusLinePrintsInNoErrorOfTheClientCheckOrTheExchange: a token endpoint that
 // answers with no OAuth error code, under a reason phrase that quotes a credential's URL, gives an
