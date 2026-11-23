@@ -158,11 +158,16 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No
-	// broker-issued token holds approve, whatever its project scope (brokerPersonScopes): every
-	// one is made from a file on the machine that holds it, a machine login or a person's sign-in,
-	// so whoever copies that file holds it, and approve settles what only the person settles - an
-	// approval, a credential decision or revoke, a personal token. Those need the person's browser
-	// session or a personal token the person gave approve. A token scoped to a project gets no
+	// broker-issued token a machine holds gets approve, whatever its project scope
+	// (brokerPersonScopes): every one is made from a file on the machine that holds it, a machine
+	// login or a person's sign-in, so whoever copies that file holds it, and approve settles what
+	// only the person settles - an approval, a credential decision or revoke, a personal token.
+	// Those need the person's browser session, a personal token the person gave approve, or the
+	// one broker-issued token no machine holds: an approve-only token (ciphertoken.Caller.
+	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
+	// pod's key and spends through its proxy without ever releasing it. That token holds both of
+	// the person's scopes and is marked approve-only, so refuseApproveOnlyToken holds it to the
+	// approve list (approveScopeRoutes) before any route runs. A token scoped to a project gets no
 	// scope, because the deployment mapped that token to a project and not to the person: it
 	// proves a session, not that any person stands behind the request. A token that names a
 	// service and no person gets none either, whatever scope the broker answered: there is no
@@ -171,7 +176,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// and its one scope, read, is carried as the credential's ReadOnly mark and never as a scope a
 	// route could require.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
+	switch {
+	case caller.ApproveOnly:
+		scopes = model.Scopes
+	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
 	}
 	actor := model.Actor{
@@ -179,8 +187,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, which is all refuseReadOnlyToken reads.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
+		// is marked as one, which is all refuseReadOnlyToken reads, and an approve-only token as
+		// one, which is all refuseApproveOnlyToken reads.
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, ApproveOnly: caller.ApproveOnly},
 		Proven:     true,
 	}
 	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),

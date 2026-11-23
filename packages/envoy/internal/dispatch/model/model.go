@@ -81,6 +81,14 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
+	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
+	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
+	// does. False for every other credential.
+	ApproveOnly bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a

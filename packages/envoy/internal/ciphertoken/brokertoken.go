@@ -194,6 +194,13 @@ type Caller struct {
 	// the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
+	// ApproveOnly is true exactly when the verifier accepted an approve-only token: the project
+	// scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no service and no
+	// project (shapeOf) - the token the secrets broker mints for a person's approve grant and
+	// spends through its proxy, never released. Only a verifier built with
+	// Options.ServesApproveOnly answers such a Caller, and the service that set the switch holds
+	// it to the routes that settle what a person settles.
+	ApproveOnly bool
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
@@ -242,6 +249,16 @@ type Options struct {
 	// so admitting the token there would open every route that service serves to a token minted
 	// only to read.
 	ServesReadOnly bool
+	// ServesApproveOnly is this service serving an approve-only token on the routes it chooses:
+	// the project scope ProjectScopePerson beside the one scope ScopeApprove, a person, and no
+	// service and no project (shapeOf). A verifier built with it accepts that token and marks its
+	// Caller ApproveOnly, and the service holds every route it does not choose closed to such a
+	// caller. Only Dispatch sets it, whose approve list names those routes.
+	//
+	// Without it an approve-only token is ErrNotASession: a service that leaves it unset reads no
+	// Caller.ApproveOnly, so admitting the token there would read it as its person's ordinary
+	// token on every route that service serves.
+	ServesApproveOnly bool
 }
 
 // Verifier decides callers presenting a broker-issued DPoP token. It is safe for concurrent use
@@ -262,8 +279,10 @@ type Verifier struct {
 	flight    singleflight.Group
 	now       func() time.Time
 
-	// servesReadOnly is Options.ServesReadOnly: whether live lets a read-only answer through.
-	servesReadOnly bool
+	// servesReadOnly is Options.ServesReadOnly: whether live lets a read-only answer through, and
+	// servesApproveOnly Options.ServesApproveOnly, whether it lets an approve-only one through.
+	servesReadOnly    bool
+	servesApproveOnly bool
 }
 
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
@@ -321,7 +340,8 @@ func New(options Options) (*Verifier, error) {
 		cache:     newAnswerCache(),
 		now:       now,
 
-		servesReadOnly: options.ServesReadOnly,
+		servesReadOnly:    options.ServesReadOnly,
+		servesApproveOnly: options.ServesApproveOnly,
 	}, nil
 }
 
@@ -414,7 +434,7 @@ func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (strin
 	if err != nil {
 		return "", Introspection{}, Caller{}, err
 	}
-	caller, err := sessionCaller(answer, v.servesReadOnly)
+	caller, err := sessionCaller(answer, v.servesReadOnly, v.servesApproveOnly)
 	if err != nil {
 		return "", Introspection{}, Caller{}, err
 	}
@@ -422,21 +442,22 @@ func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (strin
 }
 
 // SessionCaller is the NATS auth service's reading of the broker's answer about a token as a
-// session's caller (internal/cipher/natscallout): sessionCaller with the read-only switch off, so it
-// serves no read-only token, as a verifier built without Options.ServesReadOnly serves none. It
-// holds no proof to the key; whoever calls it checks the proof its credential carries against
-// answer.Thumbprint.
+// session's caller (internal/cipher/natscallout): sessionCaller with both switches off, so it
+// serves no read-only and no approve-only token, as a verifier built without
+// Options.ServesReadOnly and Options.ServesApproveOnly serves neither. It holds no proof to the
+// key; whoever calls it checks the proof its credential carries against answer.Thumbprint.
 func SessionCaller(answer Introspection) (Caller, error) {
-	return sessionCaller(answer, false)
+	return sessionCaller(answer, false, false)
 }
 
 // sessionCaller is the one reading of the broker's answer about a token as a session's caller:
-// Verify and Live make it through live with their verifier's Options.ServesReadOnly, and the NATS
-// auth service through SessionCaller with the switch off. The token is live (ErrNotActive), bound
-// to a key (ErrKeyMismatch: no proof can be the key it does not have), and issued for acting as a
-// session in a shape this package reads, a read-only one only when servesReadOnly is set
+// Verify and Live make it through live with their verifier's Options.ServesReadOnly and
+// Options.ServesApproveOnly, and the NATS auth service through SessionCaller with both off. The
+// token is live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not
+// have), and issued for acting as a session in a shape this package reads, a read-only one only
+// when servesReadOnly is set and an approve-only one only when servesApproveOnly is
 // (ErrNotASession); the Caller it names is callerOf the answer.
-func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
+func sessionCaller(answer Introspection, servesReadOnly, servesApproveOnly bool) (Caller, error) {
 	if !answer.Active {
 		return Caller{}, ErrNotActive
 	}
@@ -459,7 +480,7 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// a project, which the exchange refuses to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
-		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
+		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) || (shape == shapeApproveOnly && !servesApproveOnly) ||
 		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
@@ -475,40 +496,55 @@ type tokenShape int
 const (
 	// shapeNotASession is an answer no verifier reads as a session's token, whatever its
 	// switch: a project scope that is absent or a word this package does not know, the project
-	// scope none in any shape but shapeReadOnly's, or the scope read beside the project scope
-	// named or person.
+	// scope none in any shape but shapeReadOnly's, the scope read beside the project scope
+	// named or person, or the scope approve in any shape but shapeApproveOnly's.
 	shapeNotASession tokenShape = iota
-	// shapeOrdinary is the project scope named or person with no scope read beside it: every
-	// token the broker minted before read entries existed, and every token it mints from any
-	// other entry now.
+	// shapeOrdinary is the project scope named or person with neither read nor approve beside
+	// it: every token the broker minted before read entries existed, and every token it mints
+	// from any other entry now.
 	shapeOrdinary
 	// shapeReadOnly is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS): the
 	// project scope none, the scope exactly the one word read, a service, and no person and no
 	// projects. A verifier accepts it only under Options.ServesReadOnly.
 	shapeReadOnly
+	// shapeApproveOnly is the token the broker mints for a person's approve grant and spends
+	// through its proxy: the project scope person, the scope exactly the one word approve, a
+	// person, and no service and no projects. A verifier accepts it only under
+	// Options.ServesApproveOnly.
+	shapeApproveOnly
 )
 
-// shapeOf is the one rule that says what a read-only token is, and so what every other answer
-// is beside it. The read-only shape is exact: the project scope ProjectScopeNone, a Scope that
-// is the one word ScopeRead, a service, and no person and no projects. An answer carrying none
-// in any other shape is no session's token, and so is one whose Scope holds the word read
-// beside the project scope named or person, since no broker mints either and read beside a
-// project scope that writes would let a token meant to read write.
+// shapeOf is the one rule that says what a read-only and an approve-only token are, and so what
+// every other answer is beside them. The read-only shape is exact: the project scope
+// ProjectScopeNone, a Scope that is the one word ScopeRead, a service, and no person and no
+// projects. So is the approve-only shape: the project scope ProjectScopePerson, a Scope that is
+// the one word ScopeApprove, a person, and no service and no projects. An answer carrying none,
+// read or approve in any other shape is no session's token, since no broker mints one and read
+// beside a project scope that writes would let a token meant to read write, and approve beside
+// anything else would read as an ordinary token whose scope a reader of ordinary tokens ignores.
 //
 // Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
 // no slice built of them, because this runs on every request a verifier decides, an answer
 // served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	words, read := 0, false
+	words, read, approve := 0, false, false
 	for word := range strings.FieldsSeq(answer.Scope) {
 		words++
-		if word == ScopeRead {
+		switch word {
+		case ScopeRead:
 			read = true
+		case ScopeApprove:
+			approve = true
 		}
 	}
 	switch answer.ProjectScope {
 	case ProjectScopeNamed, ProjectScopePerson:
-		if read {
+		switch {
+		case read:
+			return shapeNotASession
+		case approve && answer.ProjectScope == ProjectScopePerson && words == 1 && answer.Person != "" && answer.Service == "" && len(answer.Projects) == 0:
+			return shapeApproveOnly
+		case approve:
 			return shapeNotASession
 		}
 		return shapeOrdinary

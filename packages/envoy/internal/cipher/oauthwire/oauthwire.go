@@ -33,6 +33,11 @@ const (
 	// decides it, never the request: the exchange client is registered for Scope alone, so the
 	// library refuses a request that names this one invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopeApprove is the one OAuth scope of the token the broker mints for a person's approve
+	// grant and spends through its proxy: beside the project scope person it is an approve-only
+	// token, which a resource server that serves one holds to its approve routes and every other
+	// service refuses (ciphertoken). No exchange grants it to a token it hands out.
+	ScopeApprove = "approve"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"

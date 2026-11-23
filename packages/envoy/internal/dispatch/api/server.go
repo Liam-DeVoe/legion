@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -430,6 +431,9 @@ type server struct {
 	// holding a copy of its own. A server register did not build has none, and
 	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
 	readOnlyRefusal string
+	// approveOnlyRefusal is the message every route the approve list does not name answers an
+	// approve-only token with (refuseApproveOnlyToken), built by register as readOnlyRefusal is.
+	approveOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going GoingCatalogue
@@ -816,6 +820,14 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
 	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
 		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+	if refused := routesNotMounted(slices.Values(approveScopeRoutes)); len(refused) > 0 {
+		// An approve list naming a route nothing serves opens nothing while it reads as though it
+		// did - a row renamed or deleted and its entry left behind - so the table is refused
+		// rather than mounted (approveScopeRoutes).
+		panic("api.Register: the route table's approve list names a route the table does not mount: " + strings.Join(refused, "; "))
+	}
+	s.approveOnlyRefusal = "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
+		strings.Join(approveScopeRoutes, ", ") + "): nothing ran"
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -907,6 +919,10 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
 	// client that asked to be told to continue is handled as for every other early answer.
 	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
+	// Beside it, for the same reasons and at the same depth, an approve-only token on a row the
+	// approve list does not name: refused before the row's scopes, which it would otherwise pass
+	// with both of its person's scopes, and before anything the row does.
+	handler = s.refuseApproveOnlyToken(route.ApproveOnly, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -960,7 +976,7 @@ const liveSocketPattern = "/ws/live"
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+		s.refuseReadOnlyToken(false, s.refuseApproveOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve)))))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1400,6 +1416,11 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 // needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
+// codeApproveOnlyToken is the code of the 403 for a request by an approve-only token - the token
+// the secrets broker mints for a person's approve grant and spends through its proxy - to a route
+// Dispatch's approve list does not name (refuseApproveOnlyToken): the route ran nothing.
+const codeApproveOnlyToken = "APPROVE_ONLY_TOKEN"
+
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
 // for a scope the credential does not hold. Both ways of writing that refusal go through it, so
 // a caller cannot tell them apart by the challenge.
@@ -1483,6 +1504,33 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
 			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
 			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// refuseApproveOnlyToken is the one place an approve-only token is held to the approve list:
+// register wraps every row of the table in it, listed being the row's apiRoute.ApproveOnly, and
+// GET /ws/live with listed false. On a route the list does not name (approveScopeRoutes), a caller
+// decideBrokerToken resolved to an approve-only credential (model.Credential.ApproveOnly) is
+// answered 403 APPROVE_ONLY_TOKEN and next does not run; every other request runs next as it always
+// did. A row the list names is handed back as it is. It reads the decision decideBrokerToken
+// carried and resolves nothing of its own, for the reason refuseReadOnlyToken gives, and carries no
+// WWW-Authenticate challenge, since no scope makes such a route the token's to call. A server
+// register did not build holds no refusal, and wrapping a route of it panics.
+func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
+	if listed {
+		return next
+	}
+	refusal := s.approveOnlyRefusal
+	if refusal == "" {
+		panic("api: refuseApproveOnlyToken wraps a route of a server register did not build, which holds no approve-only refusal to answer")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
+			caller.actor.Credential != nil && caller.actor.Credential.ApproveOnly {
+			writeError(w, codeApproveOnlyToken, http.StatusForbidden, refusal)
 			return
 		}
 		next(w, r)
