@@ -134,7 +134,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 		e.logOnCommit(ctx, "workflow: the item a root waits on left the person, and its wait moves to what is still with them",
 			"issue", root.Key, "ask", before.Ask, "next_ask", next.Ask, "next_version", next.GateVersion, "left_by", by)
 		root.Awaiting.Ask, root.Awaiting.GateVersion, root.Awaiting.Artifact = next.Ask, next.GateVersion, next.Artifact
-		return e.store.PutIssue(ctx, tx, root)
+		return e.WriteIssue(ctx, tx, root)
 	}
 	e.logOnCommit(ctx, "workflow: an item of a root's wait left the person, and nothing else is with them", "issue", root.Key,
 		"ask", before.Ask, "left_by", by, "detail", detail)
@@ -170,5 +170,5 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string, reviewed int) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail, root.Awaiting.AnsweredVersion = &at, by, detail, reviewed
-	return e.store.PutIssue(ctx, tx, root)
+	return e.WriteIssue(ctx, tx, root)
 }

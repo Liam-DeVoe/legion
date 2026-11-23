@@ -98,7 +98,7 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 func (r *leftPullRequestRig) opens(repo string, number int, state record.PullRequestState) {
 	r.t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: leftPullRequestKey, Repo: repo, Number: number,
 			Branch: "legion/" + leftPullRequestKey, HeadSHA: "c4a7f0b", State: state})
 	}); err != nil {

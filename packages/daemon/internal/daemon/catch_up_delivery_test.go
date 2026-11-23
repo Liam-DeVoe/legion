@@ -47,8 +47,7 @@ func newCatchUpDelivery(t *testing.T) *catchUpDelivery {
 // write runs one write against the record between the queueing and the delivery.
 func (d *catchUpDelivery) write(t *testing.T, what string, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error { return write(ctx, tx) }); err != nil {
+	if err := store.Transact(context.Background(), d.pool, write); err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
 }

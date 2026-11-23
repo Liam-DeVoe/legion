@@ -266,6 +266,7 @@ func (r *backstopRig) resumes(token claim.Token) []fake.Call {
 // bound it passed, when the turn began and the call the record names. The arguments of that call
 // are in no part of the notice, as they are in no column.
 func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-209", backstopBound+30*time.Minute, true)
 	claims := rig.supervising(stalled)
@@ -322,6 +323,7 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 // A claim whose agent has sent nothing since its turn began is judged from that turn's start,
 // which is the only moment its record holds.
 func TestTheStallBackstopJudgesAClaimWithNoCallFromItsTurnsStart(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleTester, "LEGION-210", backstopBound+time.Minute, false)
 	claims := rig.supervising(stalled)
@@ -339,6 +341,7 @@ func TestTheStallBackstopJudgesAClaimWithNoCallFromItsTurnsStart(t *testing.T) {
 // is the first two: an agent that is sending frames is never touched however long its turn runs,
 // and a role whose bound is 0 is never touched by this rule at all.
 func TestTheStallBackstopLeavesTheseClaimsAlone(t *testing.T) {
+	t.Parallel()
 	for name, build := range map[string]func(*backstopRig) supervise.Claim{
 		"an agent still stepping inside its bound": func(r *backstopRig) supervise.Claim {
 			return r.claim(claim.RoleImplementer, "LEGION-211", backstopBound-time.Minute, true)
@@ -398,6 +401,7 @@ func TestTheStallBackstopLeavesTheseClaimsAlone(t *testing.T) {
 // writes one a moment later. The rule that no write is tried at all is read where it is
 // decided, in the call itself (TestTheStallBackstopWritesNothingForAClaimOnNoIssue).
 func TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	project, err := claim.ProjectToken("legion")
 	if err != nil {
@@ -425,6 +429,7 @@ func TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue(t *testing.T) 
 // with no issue has no owner to tell, so the call writes nothing and reports the owner told —
 // a notice nobody is owed is not one to keep and try again at the next sweep (oweStallNotice).
 func TestTheStallBackstopWritesNothingForAClaimOnNoIssue(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	project, err := claim.ProjectToken("legion")
 	if err != nil {
@@ -453,6 +458,7 @@ func TestTheStallBackstopWritesNothingForAClaimOnNoIssue(t *testing.T) {
 // is written. The case sweeps again only once the refused notice is kept (awaitOwed): a sweep
 // made before then finds nothing owed to tell.
 func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	rig.refusing(errors.New("the store is down"))
 	stalled := rig.claim(claim.RolePlanner, "LEGION-219", backstopBound+time.Hour, true)
@@ -488,6 +494,7 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 // It drives a bare supervision, with no machine, because what it reads is the owed set's own
 // rule: the two notices are told apart by the call each record names.
 func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *testing.T) {
+	t.Parallel()
 	stopAt := func(call string, at time.Time) supervise.StallBackstopStop {
 		step := supervise.StepRecord{TurnStartedAt: at.Add(-time.Hour), At: at, StartedAt: at, Tool: "bash", CallID: call}
 		return supervise.StallBackstopStop{Step: step, LastStep: step.LastStep(), Bound: backstopBound, End: supervise.EndRelaunched}
@@ -563,6 +570,7 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 // notice of the tree that no child's own architect takes reaches that architect, so nobody outside
 // it would hear of the turn the daemon ended. A worker's stall is its architect's alone.
 func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)
 	root.Role = claim.RoleArchitect
@@ -602,6 +610,7 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) 
 // notice saying the turn was ended and the session brought back would send its architect
 // looking for a recovery that never happened.
 func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	moving := rig.claim(claim.RoleImplementer, "LEGION-221", time.Minute, true)
 	rig.supervising(moving)
@@ -630,6 +639,7 @@ func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
 // the claim is suspended with nothing queued for it, and names what it waits on — a resume, or
 // a close that retires it — rather than promising a resume nobody has asked for.
 func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-222", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -673,6 +683,7 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 // have been measured — so a stall that falls in it is a worker stopped and an owner who would
 // otherwise hear nothing at all.
 func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-223", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -716,6 +727,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T)
 // and the owner is told that rather than that it was stopped: a pod the runtime still runs goes
 // on holding its node's room and its disk, which is the half of this the owner acts on.
 func TestTheStallBackstopTellsAStopTheRuntimeWouldNotMake(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-227", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -751,6 +763,7 @@ func TestTheStallBackstopTellsAStopTheRuntimeWouldNotMake(t *testing.T) {
 // replacement charged (stallChargeClause), so the end that failed the claim says how many rather
 // than keeping a sentence of its own.
 func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleTester, "LEGION-224", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -795,6 +808,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 // the clause is read from what the machine says this replacement charged and not from the row
 // (stallChargeClause).
 func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-228", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -830,6 +844,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testi
 // launchNow, relaunchLater). The end is the relaunch pending, and the failure charged on the
 // way to it is charged whatever the end was.
 func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleTester, "LEGION-229", backstopBound+time.Hour, true)
 	claims := rig.supervising(stalled)
@@ -882,6 +897,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 // machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how long
 // a wave takes.
 func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
 	rig.sup.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
@@ -986,6 +1002,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // end that no longer exists. It cannot catch a sentence that is merely wrong about what the
 // machine did: the cases above read each end's own notice for that.
 func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
+	t.Parallel()
 	const relaunched = "its session was brought back on the replacement the daemon started"
 	worded := map[supervise.ProcessEnd]bool{}
 	for end := range stallBackstopEnds {
@@ -1138,6 +1155,7 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 // avoiding every word for the thing it is talking about, where a list needed only a verb
 // nobody had listed.
 func TestTheRowsOwnWordsSayNothingOfTheSubjectsTheDaemonDerives(t *testing.T) {
+	t.Parallel()
 	c := rigClaim()
 	for _, end := range supervise.ProcessEnds() {
 		for _, charged := range []int{0, 2} {

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -70,7 +71,7 @@ func seedHandOverRace(t *testing.T, w *workflowRuntime) {
 	ctx := context.Background()
 	until := time.Now().Add(time.Hour)
 	parent := handOverRaceRoot
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := w.records.PutIssue(ctx, tx, record.Issue{Key: handOverRaceRoot, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: handOverRaceRoot, Project: "LEGION", Title: handOverRaceRoot,
 			Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", HandedOver: true, LingerUntil: &until}); err != nil {

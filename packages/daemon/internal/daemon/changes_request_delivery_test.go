@@ -74,7 +74,7 @@ func TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
 				t.Fatalf("register the spec gate at version 3: %v", err)
@@ -286,7 +286,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
 				t.Fatalf("register the spec gate at version 3: %v", err)
@@ -436,7 +436,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
 					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
@@ -494,13 +494,11 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				}
 				held.LeaseToken = leaseOutboxRow(t, pool, request.id)
 			}
-			scoped, committed := intake.WithCommitHooks(ctx)
-			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-				return tc.clear(scoped, tx, engine, clock)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.clear(ctx, tx, engine, clock)
 			}); err != nil {
 				t.Fatalf("clear the generation: %v", err)
 			}
-			committed()
 			if tc.leased {
 				if err := runner.run(ctx, held); err != nil {
 					t.Fatalf("the leased run of the relay's row %d: %v", held.ID, err)
@@ -611,7 +609,7 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
 					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 3})
 			}); err != nil {
@@ -658,13 +656,11 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 
 			clock = clock.Add(time.Minute)
 			applyFacts(t, pool, engine, []intake.Fact{movedGate(reviewed.Add(5 * time.Minute))})
-			scoped, committed := intake.WithCommitHooks(ctx)
-			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-				return tc.clear(scoped, tx, engine, clock)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.clear(ctx, tx, engine, clock)
 			}); err != nil {
 				t.Fatalf("clear the generation: %v", err)
 			}
-			committed()
 			kept = keptDecisions(t, pool, records, "LEGION-1")
 			keptStands := len(kept) == 1 && kept[0].Decision == record.DecisionDesignChangesRequested
 			if relayStands := relays() == 1; !keptStands || !relayStands {

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -35,7 +36,7 @@ const resumeDocument = "artifact-451"
 func (r *mainPathRig) putSpecGate(gate record.DesignGate) {
 	r.t.Helper()
 	gate.Issue, gate.Step, gate.ArtifactID = r.key, record.DesignStepSpec, resumeDocument
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.PutGate(r.ctx, tx, gate) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return r.records.PutGate(ctx, tx, gate) }); err != nil {
 		r.t.Fatalf("register the spec gate: %v", err)
 	}
 }
@@ -89,7 +90,9 @@ func (r *mainPathRig) runStart(id int64) {
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		r.t.Fatalf("run start row %d: %v", row.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
 		r.t.Fatalf("finish start row %d: %v", row.ID, err)
 	}
 	r.waitMachine()
@@ -254,8 +257,8 @@ func TestAKeptApprovalALaterApprovalSupersededIsDroppedFromTheHeldTask(t *testin
 		t.Run(fmt.Sprintf("approved since %t", approved), func(t *testing.T) {
 			r := newMainPathRig(t, true)
 			r.put(r.waitingRoot())
-			if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-				return r.records.KeepReadmittedApproval(r.ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
+			if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return r.records.KeepReadmittedApproval(ctx, tx, r.key, record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3})
 			}); err != nil {
 				t.Fatalf("keep the re-admission's approval: %v", err)
 			}

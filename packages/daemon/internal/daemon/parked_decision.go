@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -42,12 +43,13 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // nobody in its tree hears (record.RelayParkedDecision): the project's controller is told, in a
 // parked-decision notice of its own, and the decision is kept for the root's next architect start.
 // It runs in a transaction of its own that marks key processed and owns the commit hook the write
-// registers (projectRecords, intake.OnCommit), so the notice's lane wakes as it commits. It does
+// registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It does
 // nothing for a kind that is no spec decision. Every outcome logs one line that pairs the
 // undelivered row with what became of its decision: sent, kept for a root that waits for its slot,
 // not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
 // root with no record), or handled before under the same key, by an earlier run or another row
-// carrying the same notice, whose own line said what became of it.
+// carrying the same notice, whose own line said what became of it. The line is a hook of the
+// transaction, so it is logged once the transaction has committed.
 //
 // A decision that is no longer the person's word is not relayed: the gates of the issue it was
 // made on, as the record holds them now, are asked (decisionSuperseded), and the controller is not
@@ -63,19 +65,42 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	now := r.now().UTC()
 	outcome, fresh, recorded := record.RelayNone, false, false
 	var superseded *workflow.Supersession
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			switch {
+			case !fresh:
+				r.log.Info("outbox parked decision handled before under this key", args...)
+			case !recorded:
+				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+			case superseded != nil && superseded.By == nil:
+				r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
+					append(args, "version", notice.Version, "approved", superseded.By)...)
+			case superseded != nil:
+				r.log.Info("outbox parked decision not relayed: the person's approval followed it",
+					append(args, "version", notice.Version, "approved", superseded.By)...)
+			case outcome == record.RelaySent:
+				r.log.Info("outbox parked decision sent to the controller", args...)
+			case outcome == record.RelayKept:
+				r.log.Info("outbox parked decision kept for its root's start, which waits for its slot", args...)
+			case outcome == record.RelayNoPerson, outcome == record.RelayNoPersonWaiting:
+				r.log.Info("outbox parked decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
+			case outcome == record.RelayNotParked:
+				r.log.Info("outbox parked decision not relayed: its root is not parked", args...)
+			default:
+				r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
+			}
+		})
+		marked, err := r.records.MarkProcessed(ctx, tx, parkedDecisionSource, key)
 		if err != nil || !marked {
 			return err
 		}
 		fresh = true
-		stored, err := r.records.Issue(scoped, tx, root)
+		stored, err := r.records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return err
 		}
 		recorded = true
-		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded != nil {
+		if superseded, err = r.decisionSuperseded(ctx, tx, issue, notice, decision); err != nil || superseded != nil {
 			return err
 		}
 		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
@@ -89,36 +114,13 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		if at.IsZero() {
 			at = now
 		}
-		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
+		outcome, err = record.RelayParkedDecision(ctx, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
 				Artifact: notice.Artifact, Version: notice.Version},
 			notice, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)
-	}
-	committed()
-	switch {
-	case !fresh:
-		r.log.Info("outbox parked decision handled before under this key", args...)
-	case !recorded:
-		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
-	case superseded != nil && superseded.By == nil:
-		r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
-			append(args, "version", notice.Version, "approved", superseded.By)...)
-	case superseded != nil:
-		r.log.Info("outbox parked decision not relayed: the person's approval followed it",
-			append(args, "version", notice.Version, "approved", superseded.By)...)
-	case outcome == record.RelaySent:
-		r.log.Info("outbox parked decision sent to the controller", args...)
-	case outcome == record.RelayKept:
-		r.log.Info("outbox parked decision kept for its root's start, which waits for its slot", args...)
-	case outcome == record.RelayNoPerson, outcome == record.RelayNoPersonWaiting:
-		r.log.Info("outbox parked decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
-	case outcome == record.RelayNotParked:
-		r.log.Info("outbox parked decision not relayed: its root is not parked", args...)
-	default:
-		r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
 	}
 	return nil
 }
@@ -199,21 +201,19 @@ func (r *outbox) writeSettlement(ctx context.Context, root string, row int64, wr
 
 // settleUnderFacts runs write in a transaction of its own that serializes with every fact
 // (intake.SerializeFacts) and owns the commit hooks its writes register (projectRecords,
-// intake.OnCommit), so the lane of each row its writes queue wakes as it commits. Every settlement
+// store.OnCommit), so the lane of each row its writes queue wakes as it commits. Every settlement
 // the outbox writes under the fact lock runs here: a hand-over of what a root keeps
 // (writeSettlement), and the settlement of the news a tree is owed (settleNews). The caller names
 // what was settled in the error.
 func (r *outbox) settleUnderFacts(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the settlement with every fact: %w", err)
 		}
-		return write(scoped, tx)
+		return write(ctx, tx)
 	}); err != nil {
 		return err
 	}
-	committed()
 	return nil
 }
 
@@ -226,7 +226,7 @@ func (r *outbox) settleUnderFacts(ctx context.Context, write func(context.Contex
 // (record.Notice.Published), since one key is one telling however many rows publish it. A start
 // needs none: its claim records the row with the delivery (supervise.Claim.DeliveredRows).
 func (r *outbox) toldKept(ctx context.Context, root, key string) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := r.records.MarkProcessed(ctx, tx, record.KeptToldSource, key)
 		return err
 	}); err != nil {
@@ -255,7 +255,7 @@ func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload r
 	// copy's being the row it copies (record.Notice.Published).
 	root := row.Issue
 	_, key := payload.Published(row.ID)
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		told, err := r.records.Processed(ctx, tx, record.KeptToldSource, key)
 		if err != nil || !told {
 			return err

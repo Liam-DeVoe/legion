@@ -60,7 +60,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	rowOf := func(st *Store, issue string, role claim.Role) record.PhaseRow {
 		t.Helper()
 		var rows []record.PhaseRow
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			rows, err = record.NewStore().Phases(ctx, tx, issue)
 			return err
@@ -86,7 +86,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	entries := func(st *Store) map[record.PhaseRole]record.PhaseEntry {
 		t.Helper()
 		var read map[record.PhaseRole]record.PhaseEntry
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			read, err = record.NewStore().PhaseEntries(ctx, tx, []string{"LEGION-208", "LEGION-209"})
 			return err
@@ -111,7 +111,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 		Since: record.EventMark{Seq: 10, At: answeredAt.Add(-time.Hour)}}
 	want := rowOf(store, "LEGION-209", claim.RoleArchitect)
 	want.Entry, want.EntryTask, want.EntryAwaiting = 2, "A person requested changes to your spec on LEGION-209.", &wait
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPhase(ctx, tx, want)
 	}); err != nil {
 		t.Fatalf("put the architect's row of the resume's entry: %v", err)

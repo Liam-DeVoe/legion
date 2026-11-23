@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -103,10 +104,10 @@ func TestRepositoryCorrectionOpensAnUpdateRoundNamingBothRepositories(t *testing
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		rig.awaitAsked(role, podUpdateRound)
 	}
-	text := supervise.UpdateTask(podUpdateRound, podUpdateRepositoryReason, podUpdateStart.Add(podUpdateGrace))
 	asked := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		asked[ask.Role]++
+		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateRepositoryReason, podUpdateStart.Add(podUpdateGrace))
 		if ask.Round != podUpdateRound || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s with the text:\n%s", ask.Role, ask, podUpdateRound, text)
 		}
@@ -283,7 +284,7 @@ func TestTheRenamePassAndTheEventAfterItNamingTheOldNameCorrectNothingAndReplace
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.s.plan.repositories = newRepositories("LEGION", renames)
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := record.RenameIssueRepository(ctx, tx, podUpdateIssue, podUpdateRepo, renamedTo)
 		return err
 	}); err != nil {
@@ -295,7 +296,7 @@ func TestTheRenamePassAndTheEventAfterItNamingTheOldNameCorrectNothingAndReplace
 		Steps: config.DesignGateOff.Steps(), Clock: rig.clock.Now}, quietLogger())
 	stillOld := intake.DispatchIssue{Key: podUpdateIssue, ResolvedRepo: podUpdateRepo,
 		RepositoryRead: &ghbranch.Repository{Name: ghrepo.MustParse(podUpdateRepo), DefaultBranch: "main"}}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := rig.records.Issue(ctx, tx, podUpdateIssue)
 		if err != nil {
 			return err

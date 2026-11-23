@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Repositories is what the daemon holds in memory of the repositories of its project, which the
@@ -305,7 +306,7 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 // one rolled back asks nothing.
 func (e *Engine) followOnCommit(ctx context.Context, key string) {
 	if follow := e.cfg.FollowIssue; follow != nil {
-		intake.OnCommit(ctx, func() { follow(key) })
+		store.OnCommit(ctx, func() { follow(key) })
 	}
 }
 

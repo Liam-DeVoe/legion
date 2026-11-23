@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -309,13 +310,12 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 	if err != nil {
 		t.Fatalf("prepare the hand-over: %v", err)
 	}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		stored, err := w.records.Issue(scoped, tx, "LEGION-1041")
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		stored, err := w.records.Issue(ctx, tx, "LEGION-1041")
 		if err != nil {
 			return err
 		}
-		return w.engine.ApplyRepositoryChange(scoped, tx, *stored, intake.DispatchIssue{
+		return w.engine.ApplyRepositoryChange(ctx, tx, *stored, intake.DispatchIssue{
 			Key:                   "LEGION-1041",
 			ResolvedRepo:          handover.ResolvedRepo,
 			RepositoryRead:        handover.RepositoryRead,
@@ -325,7 +325,6 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 	}); err != nil {
 		t.Fatalf("apply the hand-over's correction: %v", err)
 	}
-	committed()
 }
 
 // A correction whose reads GitHub does not answer writes nothing and says nothing, and its issue

@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -55,7 +56,7 @@ func TestAKeptAndARelayedChangesRequestAgreeOnAnApprovalOfALaterVersionMarkedBef
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1",
 					Step: record.DesignStepSpec, ArtifactID: "artifact-1", LatestVersion: 1})
 			}); err != nil {
@@ -107,13 +108,11 @@ func TestAKeptAndARelayedChangesRequestAgreeOnAnApprovalOfALaterVersionMarkedBef
 
 			clock = clock.Add(time.Minute)
 			applyFacts(t, pool, engine, []intake.Fact{laterApproval})
-			scoped, committed := intake.WithCommitHooks(ctx)
-			if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-				return tc.clear(scoped, tx, engine, clock)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.clear(ctx, tx, engine, clock)
 			}); err != nil {
 				t.Fatalf("clear the generation: %v", err)
 			}
-			committed()
 			if kept, relayed := keptRequest(), relays(); kept || relayed != 0 {
 				t.Fatalf("after %s the request is still kept: %v, and the outbox holds %d relays of it; "+
 					"want neither: the person approved version 2 after reviewing version 1, which "+
