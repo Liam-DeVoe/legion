@@ -442,6 +442,16 @@ Each item below names a script, then what it proves.
   `TASKS_CONTROL` names one control, which makes its check fail.
   No GitHub, no cluster
 
+- `task-copies.sh`
+
+  each task of an issue's plan works in a working copy of its own, from the join of the tasks it needs, in the issue's one pod, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with two issues of one project, each working copy made for real at its adoption:
+  the example plan's `b` planner and `a` implementer are each in a turn at one time, in the working copies of `legion/<KEY>.b` and `legion/<KEY>`, two directories;
+  `d`'s working copy starts at a commit that holds the last commit of `a`, `b` and `c`, and `e`'s one that holds those of all four;
+  on a second issue whose `a` and `c` conflict, `d`'s first step is told to repair their join on its join branch, and once its agent follows the jj commands it is told, that branch holds both with no conflict marker and `d`'s pull request lists `d`'s own file alone;
+  every launch and every adoption of an issue is in that issue's one pod, and each step's agent is launched once.
+  `TASK_COPIES_CONTROL` names one control, which makes its check fail.
+  No GitHub, no cluster
+
 - `owner-steps-client.sh`
 
   the calls the `legion` tool makes for an owner's plan, made by the plugin's own daemon client (`createLegionDaemonClient` under bun, each grant from `mintClaimGrant`, each completion through the phase op `executePhaseOp`) against the whole daemon booted as [`owner-steps.sh`](#owner-stepssh) boots it, over four issues of one project:
@@ -5438,6 +5448,57 @@ Each control used makes the same fault: a task, or a step, that starts at the ga
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for, and GitHub's REST API is `tasksGitHub`.
 `TASKS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## task-copies.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] [TASK_COPIES_CONTROL=<control>] bash scripts/e2e/task-copies.sh     # → "task copies e2e: PASS in <n>s", exit 0
+```
+
+The live proof that each task of an issue's plan works in a working copy of its own, from the join of the tasks it needs, in the issue's one pod, run before the change merges.
+It needs what [`owner-steps.sh`](#owner-stepssh) needs, and `jj` 0.38 or later makes each working copy too:
+before the checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) the script refuses a host with no `bun` or no `node_modules` (`require_dispatch_cli`), and exports `LEGION_E2E_REPO_ROOT`.
+The script starts no database, and the broker is the run's own.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestTaskCopiesLive` (`internal/daemon/task_copies_live_test.go`, `-tags e2e`) |
+| `proof` | the checks below, each printing what it drove and what it read back between its own `== <name>` and one line `ok <name>`, `FAIL <name>`, or `UNKNOWN <name>: <why>` when it read nothing to judge |
+
+The rig is [`tasks.sh`](#taskssh)'s (`tasksRig`, through `newTasksRigWith`), over two issues of one project of the run's own (`TK<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request.
+The owner gives each plan as `plan.md` on Dispatch, and `register_plan` through the daemon's API, which reads the version from Dispatch with the daemon's own client.
+GitHub is a fake API over a real bare repository (`tasksGitHub`), so each task's branch, the join of its needs and its pull request are ones git can read; a review is a person's on the run's broker, and the merge is GitHub's envelope there.
+The runtime is the fake one, as a pod's runtime is to the daemon: it provisions each workspace itself, so the daemon provisions none.
+Each adoption of a working copy the daemon asks of it makes that working copy for real, as the shim of the issue's pod makes it (`copiesShim`): the issue's own once with `workspace.Provision`, and each other task's beside it with `workspace.ProvisionTask`, each a jj workspace of one clone of the fake GitHub's repository, under the daemon's state directory, in the directory each step's task names.
+Each agent works where its task says: an implementer commits in its working copy with `git` and pushes its task's branch, opening its pull request against the base its task names, and the agent of a first step told to repair a join runs, in its working copy, each `jj` command its task tells.
+This release runs one agent of each role for an issue, so the steps of one role share one key in every task (`implementer:i`, `reviewer:r`), and the two tasks that run at one time start at steps of two roles: `a` at its implementer, `b` at its planner.
+Two steps of one role that would run at one time in two tasks, each with an agent of its own, wait for a step-keyed `phases` table, which this release does not hold.
+
+| check | driven by | read back as | the fault it catches |
+| :--- | :--- | :--- | :--- |
+| `two-tasks-two-copies` | the example plan of [`tasks.sh`](#taskssh) given and the gate opened; `b`'s planner takes its task, and while it is in that turn `a`'s implementer is registered and takes its own | `b`'s task names the working copy of `legion/<KEY>.b` and `a`'s the issue's own, `legion/<KEY>`, each the directory the adoption of its branch made, two directories; both claims in a turn at one time | two tasks that run at one time in one directory, or a turn in one task's working copy that holds the adoption of another's |
+| `d-starts-from-the-join` | each step the daemon gives played in turn, to `e`'s merge | the commit `d`'s working copy started at, once `a` and `c` are done, holds the last commit of `a`, of `b` and of `c`; `e`'s holds those of `a`, `b`, `c` and `d` | a task whose working copy starts without the work of a task it needs |
+| `join-conflict-repaired` | a second issue's plan: `a` and `c` (`implementer:i`) each write line 1 of `x.txt` their own way, `d` needs both and `e` needs `d`; each step played until `d`'s first, whose agent follows its task in `d`'s working copy, writing both lines into `x.txt`, then pushes its own `d.txt` | `d`'s task tells it GitHub could not join `c` into its join branch `legion/<KEY>.d.join`, the base of its pull request; that branch then holds `a`'s and `c`'s last commits and `x.txt` repaired with no conflict marker, `d`'s branch holds it, and `d`'s pull request against it lists `d.txt` alone | a join that conflicts left unrepaired, or repaired on the task's own branch, where its pull request shows a need's work as the task's |
+| `one-pod` | the runtime's calls, once both issues are walked | every launch of each issue in the pod the Sandbox runtime gives that issue (`sandbox.SandboxName`), every adoption of a working copy of the issue, its own or a task's, to a claim in that pod, and the agent of each step launched once | a task given a pod or an agent of its own |
+
+Each check has its control, a change of the driver's input that `TASK_COPIES_CONTROL` names, one per run; a run with a control never passes, and its check must be the one that fails:
+
+| `TASK_COPIES_CONTROL` | the change | the check that fails, and why |
+| :--- | :--- | :--- |
+| `rows-deleted` | the example issue's rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` once its plan is given | `two-tasks-two-copies` ends `UNKNOWN`: it read no task |
+| `adoption-drops-branch` | the shim adopts the issue's own working copy whatever branch the adoption names, as a shim did before each task had a working copy of its own | `two-tasks-two-copies`: `b`'s step is told the working copy of `legion/<KEY>.b`, which no adoption made |
+| `no-needs` | `c` needs nothing, and `e` needs `b` and `d` | `d-starts-from-the-join`: `d`'s start lacks `b`'s last commit |
+| `no-repair` | the agent of `d`'s first step leaves the join its task tells it to repair, and pushes its own work alone | `join-conflict-repaired`: the join branch lacks `c`'s last commit |
+| `implementer-gone` | the runtime reports the second issue's implementer gone, and the daemon launches it again | `one-pod`: that implementer was launched twice |
+
+The control of `d-starts-from-the-join` is not the plain one, `c`'s needs taken out alone: `register_plan` refuses that plan in this release, for leaving `b` a second task no task needs, whose work would merge by itself.
+`e` needing `b` keeps the plan's one task that merges, and `d` still starts once `a` and `c` are done, without `b`'s work.
+
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for; GitHub's REST API is `tasksGitHub`, and the shim of the issue's pod, which makes each working copy at its adoption, is `copiesShim`.
+`TASK_COPIES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
 ## owner-steps-client.sh
 
 ```sh
@@ -7523,13 +7584,13 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 | `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `TASKS_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `TASKS_EVIDENCE_DIR`, `TASK_COPIES_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
 the configuration the daemon boots with (`newLiveProof` reads `LEGION_E2E_NATS_URL`, skips when it is unset, and builds the workflow configuration around it);
 the stream the daemon's intake consumes;
-the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `owner-steps.sh`, `owner-steps-client.sh` and `tasks.sh` replace with the real Dispatch server;
+the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `owner-steps.sh`, `owner-steps-client.sh`, `tasks.sh` and `task-copies.sh` replace with the real Dispatch server;
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`).
 The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `conflict-no-takeover.sh`'s and `phase-entry-converge.sh`'s) share more of it (`liveIssueProof`), in `internal/daemon/live_issue_proof_test.go`, which carries `//go:build e2e` because no untagged test calls it: that issue's seed and the daemon's boot over the fake runtime, each role's registered session and the turns a step plays on its connection (`liveSession`, `liveClaimant`), GitHub's stand-in for the pull request at the head last pushed (`liveGitHub`), and the envelopes of the implementer's push, GitHub's synchronize and a push onto the base.
