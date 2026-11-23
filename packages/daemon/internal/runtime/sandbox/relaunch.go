@@ -658,9 +658,6 @@ func (r *Runtime) tryBound(l launch) time.Duration {
 			extra++
 		}
 	}
-	if extra == 0 {
-		return r.launchBound
-	}
 	return r.launchBound + time.Duration(relaunchRoleCalls*extra)*apiTimeout
 }
 
