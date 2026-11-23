@@ -314,6 +314,10 @@ var valueReadWindow = policy.PendingValueWindow
 // refuses before showing anything rather than waiting forever.
 var errNoForeground = errors.New("no shell can bring the value prompt to the foreground of this terminal")
 
+// errNoValuePrompt is readHidden's answer on a platform the value prompt does not run on
+// (secret_prompt_other.go): the value must be piped in.
+var errNoValuePrompt = errors.New("no value prompt is available on this platform")
+
 // promptControlByteError is an unhandled control byte typed or pasted at the prompt: c, the first
 // one the line held, and whether the value held text before it (textBefore) and after it
 // (textAfter), which say where it came. Its parts let the form turn the reader error into a usage
@@ -444,7 +448,7 @@ func readSecretValue(name, pipeTo string, deadline time.Time, stderr io.Writer) 
 		if errors.Is(err, errPromptStopped) {
 			return "", usageErr{fmt.Errorf("nothing was stored: %w; run %s again and type the whole value", err, pipeTo)}
 		}
-		if errors.Is(err, errNoForeground) {
+		if errors.Is(err, errNoForeground) || errors.Is(err, errNoValuePrompt) {
 			return "", usageErr{fmt.Errorf("%w; pipe the value in: %s < FILE", err, pipeTo)}
 		}
 		var control promptControlByteError
