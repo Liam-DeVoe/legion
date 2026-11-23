@@ -581,7 +581,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return e.started(ctx, tx, issue, role, to, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
 }
 
-// SendOwedEntry sends role the work the entry of its phases row names, at that entry, for agent,
+// SendOwedEntry sends role the work the entry of its phases row names, at that entry, for token,
 // a claim that is behind it. row is that row, read by the caller: the admission pass weighs the
 // claim against the entry it names and hands both here, so the row the rule was weighed against is
 // the row whose work is sent, to the claim it was weighed for, and the rows are read once (admit's
@@ -599,8 +599,8 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
 // what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
-func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, agent claim.Token, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, agent, row, startMarks{})
+func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token, row record.PhaseRow) error {
+	return e.sendOwedEntry(ctx, tx, issue, role, token, row, startMarks{})
 }
 
 // sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
