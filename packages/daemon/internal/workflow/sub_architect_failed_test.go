@@ -25,13 +25,15 @@ import (
 // reason names the child.
 // For a child at a place its own architect does not end alone, as here in testing, the reason says
 // its notices come to the reader until it runs again, and that the daemon starts it again at the
-// child's next phase start; at a step of its own or its retro the daemon starts it again at once,
-// at most OwnerRestarts times in that step's run, and then the stranded list names it for the
-// operator's retry (restartFailedOwner). The owner walk sends it above the child
-// (record.OwningArchitect). The controller hears nothing of it, since an
-// architect inside the tree is left to act. A done child, a child that left the workflow and a
-// child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
-// kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
+// child's next phase start. At a step of its own other than its acceptance, or at its retro, the
+// daemon starts it again at once, at most OwnerRestarts times in that step's run
+// (restartFailedOwner). Then the stranded list names it for the operator's retry or the
+// controller's fresh_session. The owner walk sends the worker-died above the child
+// (record.OwningArchitect). Here the controller hears nothing of it, since an architect inside the
+// tree is left to act. It hears each failure past the restarts at a place only that architect ends.
+// A done child, a child that left the workflow and a child of a lingering tree tell nobody: a done
+// child's claims were closed (retired, sessions kept), a parked child's were suspended, and a
+// lingering tree holds its members where they stood.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"
 	root, until := "LEGION-208", time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)

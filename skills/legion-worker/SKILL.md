@@ -12,7 +12,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
    the architect records decisions there that it does not message.
-   Then read each handoff your task's `Step <j> (<role>) reported:` lines name, as those lines say.
+   Then read each handoff a `(<role>) reported:` line of your task names, as it says.
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
@@ -77,7 +77,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 ## Pull request and merge gate
 
 - An implementation step's agent opens the pull request with the line `Dispatch: <KEY>` in its body;
-  later steps push to that branch and edit that pull request; a task with no such step has none.
+  later steps push to that branch and edit that pull request; an issue none of whose steps opened one has none.
 
 - No deferrals where the issue has a pull request.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.

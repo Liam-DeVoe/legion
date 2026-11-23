@@ -726,7 +726,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
   expect([
     ...lacks("legion-worker/SKILL.md", [
       /no tester step[^.;]*an implementation step's evidence serves/,
-      /implementation step's agent opens the pull request[^.]*a task with no such step has none/,
+      /implementation step's agent opens the pull request[^.]*an issue none of whose steps opened one has none/,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /with no tester step the implementation step's agent[^.;]*real surface/,
@@ -903,9 +903,10 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
-// The wake table sends the three notices an owner's plan adds to the reference that holds their
-// handling, and a conflict merged forward in `accepting` to the reference that waits for a review
-// only where the task has a reviewer step.
+// The wake table sends each notice an owner's plan adds (`retro-held`, `task-stopped`,
+// `plan-not-taken` and `owner-step`) to the reference that holds its handling. It sends a conflict
+// merged forward in `accepting` to the reference that waits for a review only where the task has
+// a reviewer step.
 test("the architect's wake table sends each owner-plan notice to where its handling is", () => {
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
@@ -950,18 +951,21 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /Read it with `--at <head>`, which compares every check with that one commit\./,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
-      /On an issue with no pull request each such check reads `no_head`[^.]*\. No role waits for it or fails a round for it\./,
+      /On an issue with no pull request each such check reads `no_head`: no run can prove it, so its words are wrong for that task\./,
+      /hold their verdict with a `WAITING` line until the check is rewritten/,
+      /No step passes while such a check stands, and the retro holds its completion for it/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
-      /`dispatch results --issue <issue> --at <the head the last step passed>`/,
-      /Send a name that no run answers \(`absent`\), or `no_head`, to the architect as a finding/,
+      /`dispatch results --issue <issue> --at <head>`/,
+      /A `no_head` check can never pass: it is a defect, held as \*When retro stops\* says\./,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /Then read each handoff your task's `Step <j> \(<role>\) reported:` lines name/,
+      /Then read each handoff a `\(<role>\) reported:` line of your task names, as it says\./,
       /Commit nothing in the copy\./,
     ]),
     ...lacks("legion-architect/references/plan.md", [
-      /A `ci_check` that reads `absent` or `no_head` moves nothing back either/,
+      /A `ci_check` that reads `absent` moves nothing back either/,
+      /One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check\./,
     ]),
     ...lacks("legion-architect/references/acceptance.md", [
       /or its verdict with no pull request or at `reviewer:owner`/,

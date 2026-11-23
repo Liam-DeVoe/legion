@@ -1973,11 +1973,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
 	// The end of a step the owner did queues the write of the owner's slot back to its own App
-	// (workflow's ownerSlotCredential); a notice queued after it waits until that write ran, so
-	// nothing told the owner after its step ended reaches it while its gh files still hold the
-	// step's App. Under Kubernetes the kubelet's sync of the written Secret into the pod is not
-	// waited for here: the next owner-step waits for the slot's gh files to hold its App, the
-	// owner's own App among them (ownerSlotHolds).
+	// (workflow's ownerSlotCredential), and a notice queued after it waits until that write ran.
+	// Under tmux the write changes the pane's gh files at once. Under Kubernetes it changes the
+	// slot's Secret, and the kubelet's sync of that Secret into the pod is not waited for here. So
+	// a notice of another kind can reach the owner while its gh files still hold the step's App.
+	// The next owner-step waits for the slot's gh files to hold its App, the owner's own App among
+	// them (ownerSlotHolds).
 	if pending, err := r.slotWritePending(ctx, architect, row.ID); err != nil {
 		return err
 	} else if pending {
@@ -2119,7 +2120,7 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 // ownerStepRuns is whether the run an owner-step notice names is still the open run of its place
 // on issue: the place's latest start is the one the notice counted (record.NoticeStep.Starts) and
 // its run has no end. A notice that names no run (a row written before the notice named one) is
-// judged by its App alone (ownerSlotHolds), so it answers true.
+// judged by the role the owner's slot acts as alone (ownerSlotHolds), so it answers true.
 func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step *record.NoticeStep) (bool, error) {
 	if step == nil {
 		return true, nil
@@ -4004,10 +4005,10 @@ func (r *outbox) issueSandboxName(issue string) string {
 // in the database for the issue's next pod, which would restore it over everything they pushed
 // in between.
 //
-// A cancel while the project is paused queues no resume: the store records each role the release
-// had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
-// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759), with what
-// releaseCancelPause gives it.
+// A cancel while the project is paused queues no resume. The store records each role the release
+// had stopped as stopped by the pause, and holds the pod. It arms the backstop the stop
+// transaction arms, with what releaseCancelPause gives it: the owner's at a step or a retro of its
+// own other than its acceptance, and elsewhere the worker's of the open phase.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
 		releaseCancelPause(r.now(), r.backstop))
@@ -4034,12 +4035,12 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 }
 
 // releaseCancelPause is the paused half of every cancel of a release the outbox makes
-// (store.ReleaseCancelPause): the moment at the stops are stamped with, the idle release's
-// backstop, and the workflow's rule of which claim a backstop is armed for, read from the issue's
-// key, project and phase and the two roles its plan rows give it (workflow.BackstopTargetAt), so a
-// paused cancel arms the backstop the stop transaction arms (projectPause.stopTx, which reads
-// workflow.BackstopClaim of the issue's record): the owner's at its own place, and elsewhere the
-// worker's of the place.
+// (store.ReleaseCancelPause). It gives the moment the stops are stamped with, and the idle
+// release's backstop. It gives the workflow's rule of which claim a backstop is armed for
+// (workflow.BackstopTargetAt). The rule reads the issue's key, project and phase, and the two
+// roles its plan rows give it. So a paused cancel arms the backstop the stop transaction arms
+// (projectPause.stopTx, through workflow.BackstopClaim). That is the owner's at a step or a retro
+// of its own other than its acceptance, and elsewhere the worker's of the place.
 func releaseCancelPause(at time.Time, backstop time.Duration) store.ReleaseCancelPause {
 	return store.ReleaseCancelPause{At: at, Backstop: backstop, BackstopTarget: workflow.BackstopTargetAt}
 }
