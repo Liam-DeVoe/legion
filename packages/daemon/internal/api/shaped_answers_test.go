@@ -359,7 +359,7 @@ func valueStripCases() map[string]valueStripCase {
 		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
 		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
 		// version.go's 56. Every entry of Legion's roles whose state that process knows stays, in
-		// the order the report named it; a pod this far back is below deploymentRolesContract too,
+		// the order the report named it. A pod this far back is below deploymentRolesContract too,
 		// so an entry of a role of the deployment goes. The field is older than the floor, so the
 		// case names no value that arrived with it.
 		droppedStrandedState: {

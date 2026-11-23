@@ -674,10 +674,10 @@ export default function legionExtension(pi: PiApi): void {
        * idle, up to three times, until every row is present — a check that lost the boot-time
        * race stayed reported open for the session's whole life, since the boot measured once and
        * never again. The architect measures first at the sixth tick as every other role of
-       * `LEGION_ROLES` does (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`; a role of
-       * the deployment, outside it, at the twelfth); its extra readies make
-       * its waiting notices due at once, which is the same release a relaunched architect's ready
-       * already makes.
+       * `LEGION_ROLES` does (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its
+       * extra readies make its waiting notices due at once, which is the same release a
+       * relaunched architect's ready already makes. A role of the deployment, outside
+       * `LEGION_ROLES`, measures first at the twelfth tick.
        *
        * The measurement's input is snapshotted here, since the host's accessors answer only from
        * a handler and throw at factory time, and it is read before `registerLegionTool()` below,

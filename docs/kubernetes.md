@@ -3327,7 +3327,10 @@ The commits already stamped keep their line: it is in their messages, which noth
 **The phase entry (daemon API contract 94).**
 A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
-An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where a role works the issue's current phase (`record.Issue.RoleAt`: the phase's role, or at `step` the role of the running step; `internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where a role works the issue's current phase (`internal/projection/project.go`).
+That role is the phase's role, or at `step` the role of the running step (`record.Issue.RoleAt`).
+The daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names.
+It does so on each admission pass and on a sweep of its own each minute.
 Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
 from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
@@ -5315,7 +5318,9 @@ The bundle holds one directory per owner the role's App is installed on, one mor
 A directory is named for its owner's login, lowercased, and takes every login GitHub serves an account under: up to 39 letters, digits, hyphens and underscores, beginning with a letter or digit, so a managed user's login, which ends in `_<shortcode>` (`mona-cat_octo`), names one too.
 So the login of every owner a repository can be configured or recorded under is a directory's name, the issue's own owner among them.
 A login GitHub lists that is no such name is left out the same way: no lease is asked for it, it is said once on the daemon's stderr naming it, and only where it is the owner a controller's bundle is asked for does it fail the bundle instead.
-Every directory's token is the role's own App's: the implement App's for the implementer, the merger and each role of `roles` whose `github_app` is `implement`; the review App's for every other role, a role of `roles` with no `github_app` among them.
+Every directory's token is the role's own App's.
+It is the implement App's for the implementer, the merger and each role of `roles` whose `github_app` is `implement`.
+It is the review App's for every other role, a role of `roles` with no `github_app` among them.
 Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
 A role's Secret therefore holds tokens to push to, open a pull request in and review a pull request of every repository its App reaches.
