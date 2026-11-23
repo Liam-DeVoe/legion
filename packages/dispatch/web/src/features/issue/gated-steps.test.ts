@@ -55,9 +55,7 @@ test("an issue whose parent is in another project is a root of its own project a
   const rootUnderAnotherProject: IssueDetails = { ...root, parent: "OTHR-6" };
 
   expect(
-    gatedStepEntries(gating("criteria", "spec"), rootUnderAnotherProject).map(
-      (entry) => entry.step
-    )
+    gatedStepEntries(gating("criteria", "spec"), rootUnderAnotherProject).map((entry) => entry.step)
   ).toEqual(["criteria", "spec"]);
   expect(gatedStepEntries(gating("criteria", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
 });
