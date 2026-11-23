@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The controller brings back a tree root's architect that ran out of launches or prompts, once its cause is gone, with `fresh_session` on that architect's claim, which keeps the tree's phase, generation and admission slot.
+  `legion-controller`'s wakes and parked-decisions references no longer restart the tree with `set_status` (`backlog`, then `todo`), which re-admitted the root at `admitted` at a new generation, and the `legion` tool's description no longer names a root's restart as an exception to the rule for `backlog`.
+custom:
+  Issue: pr5284
+time: 2026-11-23T21:57:12.000000000Z

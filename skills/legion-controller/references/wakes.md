@@ -30,7 +30,7 @@ Without `reason`, the architect that owns the issue decides: do nothing. With `r
 
 ## `worker-died` (architect)
 
-The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, `fresh_session` the architect's claim (`issue` the root, `role` `architect`): it keeps the tree's phase, generation and admission slot. Never restart the tree for it with `set_status`: a root moved to `backlog` and back gives its slot back and starts again at `admitted` at a new generation, waiting for a slot by its Dispatch rank, behind every issue whose work came back. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
 
 ## `worker-stalled` (architect)
 

@@ -680,9 +680,10 @@ outstanding, prompts it acknowledged without taking a turn, and the times it was
 that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller. A root's
-architect that runs out goes to the controller, which restarts a running tree when it finds no
-cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
-that runs out holds nothing: the architect above it is told and takes the child's notices, and
+architect that runs out goes to the controller, which starts that architect again in a fresh
+session when it finds no cause or the cause is gone, keeping the tree's phase, generation and
+admission slot, and otherwise asks a person whether to park it. A child's architect that runs out
+holds nothing: the architect above it is told and takes the child's notices, and
 the daemon starts the child's architect again, with fresh budgets, at the child's next phase
 start.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
@@ -703,8 +704,9 @@ in the admission line. Where the pull request's head is red, the issue goes on t
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. A restart, the root set to `backlog` and then to
-`todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
-from its architect.
+`todo`, runs the whole tree over as a new generation, which is the move for a tree that must run
+over from its start. A root's architect that failed is started again in a fresh session of its
+claim instead, and its tree keeps its phase, generation and admission slot.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

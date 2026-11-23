@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The controller's role prompt no longer names a root's restart (`backlog`, then `todo`) as an exception to the rule for `backlog`: the controller brings a failed root architect back with `fresh_session`, which keeps the tree's phase, generation and admission slot.
+custom:
+  Issue: pr5284
+time: 2026-11-23T21:57:12.000000000Z

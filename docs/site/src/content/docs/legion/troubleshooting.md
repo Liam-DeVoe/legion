@@ -685,8 +685,9 @@ task) or `children` (a parent waits, before its retro, for the issues beneath it
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
-restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
-it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
+asks for a fresh session of the architect's claim when it finds no cause or the cause is gone,
+which keeps the tree's phase, generation and slot, and asks a person whether to park it when the
+cause stays. A child's own architect that failed holds nothing and wakes no controller:
 the architect above it is told with a `worker-died` and takes the child's notices, and the child's
 next phase start starts it again. What brings a root's architect back depends on where its tree
 stands:
