@@ -122,7 +122,9 @@ const (
 
 // The phases the daemon reports, which is what a FieldPhase observation holds
 // (packages/daemon/internal/phase). A reader of the board or of the metrics names them from
-// here, so the two never spell one of them differently.
+// here, so the two never spell one of them differently. PhaseStep is the phase of a step whose
+// role the deployment defines, of any type its settings name, whose role the daemon reports as
+// the issue's `stepRole`.
 const (
 	PhaseAdmitted       = "admitted"
 	PhaseAwaitingPerson = "awaiting_person"
@@ -130,6 +132,7 @@ const (
 	PhaseImplementing   = "implementing"
 	PhaseTesting        = "testing"
 	PhaseReviewing      = "reviewing"
+	PhaseStep           = "step"
 	PhaseAccepting      = "accepting"
 	PhaseRetro          = "retro"
 	PhaseMerging        = "merging"
