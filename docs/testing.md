@@ -555,18 +555,42 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 ## A test reads a lock wait from pg_locks
 
-A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads
-`pg_locks`: `pid in (select pid from pg_locks where not granted)`, with `and locktype = '…'` for
-one kind of lock, or `pg_blocking_pids`, which reads the same queue. It never reads
-`pg_stat_activity`'s `wait_event_type` or `wait_event`. A waiting backend's request stays queued
-in `pg_locks` until the lock is granted or the wait is cancelled. Its wait event reads `Lock` only
-while the backend sleeps on its latch. Each time the backend is woken, by its deadlock check at
-`deadlock_timeout` or by a signal, the wait event reads nothing until it sleeps again. Beside the
-whole of `internal/daemon` under `-race`, one waiting backend read so 1.007 to 1.011 s into its
-wait, with `deadlock_timeout` at its default of 1 s. `TestReadyzIsFalseUntilTheDaemonServes` took
-one such read and counted 0 of the daemon's backends waiting while its one connection waited (CI
-run 45206462019). Each module's `internal/textcheck` (`lock_wait_reads_test.go`) fails on a
-comparison of `wait_event_type` with `Lock`, or of `wait_event` with a lock type.
+A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
+through `packages/envoy/lockwaittest`: `lockwaittest.Waiting` is the condition, on a row of
+`pg_stat_activity`, that `pg_locks` holds an ungranted request of its pid, and
+`lockwaittest.WaitingOn("advisory")` is the same for one kind of lock. `pg_blocking_pids` reads the
+same queue. A test never reads `pg_stat_activity`'s `wait_event_type` or `wait_event` for it. A
+waiting backend's request stays queued in `pg_locks` until the lock is granted or the wait is
+cancelled. Its wait event reads `Lock` only while the backend sleeps on its latch. Each time the
+backend is woken, by its deadlock check at `deadlock_timeout` or by a signal, the wait event reads
+nothing until it sleeps again.
+
+What was measured: a probe sampled one waiting backend's wait event and its `pg_locks` request
+together, beside the whole of `internal/daemon` under `-race`, with `deadlock_timeout` at its
+default of 1 s. In 2 of 10 waits it read no wait event at 1.007, 1.009 and 1.011 s into the wait,
+with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once,
+about 1 s into its wait, and counted 0 of the daemon's backends waiting while its one connection
+waited (CI run 45206462019).
+
+Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
+Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
+that writes `lockwaittest`'s predicate out (`select pid from pg_locks where not granted`), and on
+one that compares a wait event with a lock: `wait_event_type = 'Lock'`, the reverse
+`'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like`, `wait_event`
+with a lock type such as `'advisory'`, and each of those with the column qualified
+(`a.wait_event_type`), in a `coalesce` or cast (`::text`). It fails too on a root that holds no
+`go.mod`, and on a module in which it read no Go file. It does not see:
+
+- a comparison made in Go, of a `wait_event_type` the test scanned;
+- a statement built from pieces: a value passed as a bind parameter (`wait_event_type = $1`), a
+  column and a value in two literals joined by `+`, or a format verb;
+- another operator, such as `= any(…)`, or a literal in a `testdata` directory;
+- a test that decides on one sample of a wait event other than a lock's, such as an idle
+  holder's `Client/ClientRead`, which a signal blanks the same way. Such a test reads the
+  sample again, within a bound, until it holds.
+
+A read of one lock from `pg_locks`, by relation or by advisory key, and a read of one backend's
+request by its pid, do not write the predicate out, and the check leaves them alone.
 
 ## A file a test runs
 
@@ -597,9 +621,12 @@ Each module's `internal/textcheck` holds those two kinds of package to the rule 
 - an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
   function gives an execute bit, or a mode it cannot read as a constant, with a `Chmod`:
   `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
-  the function moved it to, or the file's own `Chmod` method, or `os.Chmod` of the file's
-  `Name()`. The last two follow the variable or field the open's own call assigns the file to,
-  and an open wrapped in a call, as `must(os.CreateTemp(dir, ""))`;
+  the function moved it to after the open, or the `Chmod` method of an expression that holds the
+  file, or `os.Chmod` of that one's `Name()`. The open holds its file, and so does a call that
+  wraps it at any depth, as `must(wrap(os.CreateTemp(dir, "")))`. So does a variable or field an
+  assignment of the function gives one of those, or a variable or field that held the file at
+  that point (`g := f`), and each field a keyed composite literal sets to one, nested too
+  (`h := &holder{f: f}` gives `h.f` the file). `(*h).f` is read as `h.f`;
 - a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
 - a dot import of `os`.
 
@@ -607,6 +634,11 @@ It reads each file's syntax alone, with no types, so it does not see:
 
 - a `Chmod` in another function than the open, or of the same path spelled another way, such as
   a variable that holds the open's `filepath.Join` or its file's `Name()`;
+- a file handed to a name other than one an assignment of the open's own function gives it, from
+  the open, from a call that wraps it, or from a variable or field that holds it, directly or
+  through a keyed composite literal: a parameter of another function, a channel, a positional
+  composite literal, a slice that `append` adds it to, the address of a variable that holds it,
+  or a copy of a struct value that holds it in a field;
 - a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
   and returns the file, which its caller then gives an execute bit;
 - a file written by another function of `os` (`os.CopyFS`) or by another package's function
