@@ -1854,9 +1854,10 @@ type Refusal struct {
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
 // the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
 // HeldTaskChanged), one that changes whether the work of a task merges once its retro or its merge
-// has started or is held (MergeOfStartedActChanged), one that moves the base of a running or held
-// task (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The
-// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+// has started or is held (MergeOfStartedActChanged), one that leaves a done task whose work did not
+// merge needed by no task (DoneTaskWouldMerge), one that moves the base of a running or held task
+// (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The message
+// holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1892,6 +1893,16 @@ func MergeOfStartedActChanged(task, act string, held bool) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
 		"task %s stands at its %s, which %s, so this version cannot change whether its work merges. Keep each need on task %s as it is until it is done.",
 		task, act, stands, task)}
+}
+
+// DoneTaskWouldMerge is the reason a later version of the plan is refused when it leaves task, done
+// and with work that did not merge (record.StoredPlan.WorkMerged), needed by no task, so its work
+// would merge by itself (record.StoredPlan.Merging): a done task does not start again, and no act
+// of the engine leads from done to a retro. The owner keeps a need on it, or adds a task that
+// needs it, so no work is lost in silence.
+func DoneTaskWouldMerge(task string) plan.Refusal {
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is done and its work did not merge, and in this version no task needs it, "+
+		"so its work would merge by itself; a done task does not start again. Add a task that needs task %s, or keep a need on it.", task, task)}
 }
 
 // StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the

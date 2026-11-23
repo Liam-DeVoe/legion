@@ -428,9 +428,14 @@ func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
 // or ends at its last step, by the answer in force when that step passes (plan.Line). A task
 // running or held at its retro or its merge is refused (intake.MergeOfStartedActChanged): that act
 // has started, or a hold keeps it back, and neither a retro whose task would no longer merge nor a
-// task past its last step that would now merge can be carried out. A task the version changes or
-// removes (changed) is left to the refusal that names it already (intake.RunningTaskChanged,
-// intake.HeldTaskChanged, intake.FinishedTask), so no task is named twice.
+// task past its last step that would now merge can be carried out. A done task whose work merged
+// (record.StoredPlan.WorkMerged, the fact its merge wrote, which this version does not change, as
+// it changes Merging) takes the version, and nothing of it runs again. A done task whose work did
+// not merge, which after leaves needed by no task, is refused for good
+// (intake.DoneTaskWouldMerge): its work would merge by itself, and a done task does not start
+// again. A task the version changes or removes (changed) is left to the refusal that names it
+// already (intake.RunningTaskChanged, intake.HeldTaskChanged, intake.FinishedTask), so no task is
+// named twice.
 func mergeChangeRefusals(before, after record.StoredPlan, changed []string) []plan.Refusal {
 	was, will := before.Merging(), after.Merging()
 	var refused []plan.Refusal
@@ -439,8 +444,11 @@ func mergeChangeRefusals(before, after record.StoredPlan, changed []string) []pl
 			continue
 		}
 		atAct := task.Place.Kind == record.PlaceRetro || task.Place.Kind == record.PlaceMerge
-		if atAct && (task.State == record.TaskRunning || task.State == record.TaskHeld) {
+		switch {
+		case atAct && (task.State == record.TaskRunning || task.State == record.TaskHeld):
 			refused = append(refused, intake.MergeOfStartedActChanged(task.Task, task.Place.Kind, task.State == record.TaskHeld))
+		case task.State == record.TaskDone && !before.WorkMerged(task.Task) && slices.Contains(will, task.Task):
+			refused = append(refused, intake.DoneTaskWouldMerge(task.Task))
 		}
 	}
 	return refused
