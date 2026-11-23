@@ -9,6 +9,13 @@
 # the controls' pods) use the admin context. It is the production-EKS driver LEGION-206
 # Requirement 12 asks for.
 #
+# Every issue of the run walks the project's default steps, `planner implementer tester reviewer
+# acceptance:owner` (the run's legion.yaml names none, and no architect is told to give a plan):
+# as far as each issue gets, its implementer opens its pull request, its architect does one step of
+# its own, the acceptance, whose App is the review App the architect already acts as, the
+# implementer does its retro, and a merger merges its pull request. Each sentence below that names
+# a step, a role's App or a pull request holds of those steps.
+#
 # Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
 # (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
 # changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
@@ -4777,11 +4784,12 @@ pass
 begin tree-reviewed
 send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
-# No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
-# nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
-# since #1850 (workflow/engine.go movesBack → recordRound). So tree 1 stands at round 0 here and at
-# round 1 once the review below requests changes; `round_line 1` and `round_correction_pushed 1`
-# below label that round.
+# No review has counted tree 1's task a round yet: the conflict of conflict-no-takeover moved
+# nothing (dispatch://INFRA-4374), and a round is counted only by a review's request for changes or
+# the fail of a review step that runs as step, each only where that step's agent is not the architect
+# (workflow/engine.go transition → recordRound); every other move back counts a pass, not a round
+# (recordPass). So tree 1 stands at round 0 here and at round 1 once the review below requests
+# changes; `round_line 1` and `round_correction_pushed 1` below label that round.
 assert_handoff_record "$tree1" tester testing 0
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and pod to keep: $(claim_view "$tree1" reviewer)"
@@ -4879,16 +4887,17 @@ review_thread "$bot_thread_id" >"$evidence/bot-thread-at-approval.json" ||
 [ "$decision" = approve ] ||
   fail "the reviewer requested changes again on its re-review of pull request #$pr_number; its thread then read $(jq -c . "$evidence/review-thread-at-approval.json")"
 note "the reviewer approved pull request #$pr_number at its head; its thread then read isResolved $(jq -r .isResolved "$evidence/review-thread-at-approval.json"), the bot's isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json")"
-# The approval moves tree 1 to accepting, where no worker starts and the board keeps needs_review:
-# the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
-# the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
+# The approval moves tree 1 to accepting, its step acceptance:owner, where no worker starts and the
+# board keeps needs_review: the tree's architect, told of that step by an owner-step notice (the
+# reviewer's phase-finished notice comes too), accepts with sign_off or sends the issue back. The
+# wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
 # children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
 # past its review, so the daemon takes the row back there, while its tree stays live and its
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
-until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
+until_true 180 "the architect to receive the reviewer's phase-finished notice, which comes beside its owner-step" notice_delivered "$tree1" architect \
   "$(notice_needle phase-finished "$tree1")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
 # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task is
 # the claim's `pending` until the turn it started ends; the implementer may still be in the turn
