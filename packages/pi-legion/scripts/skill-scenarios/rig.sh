@@ -601,7 +601,11 @@ base_env() {
 # The record also holds the last 64 KiB of what the call wrote to standard error (`stderr`), which
 # it still writes there as it comes: `bun test` writes its report there, each file's `<file>:`
 # line and the `Ran <n> tests across <m> files.` line, so a score can tell a call that ran tests
-# from one Bun refused before it ran any (`error: Invalid timeout: "oops"`, exit 1).
+# from one Bun refused before it ran any (`error: Invalid timeout: "oops"`, exit 1). The stand-in
+# runs the real bun without the variables that change that report, so it reads the same wherever
+# the rig runs: `GITHUB_ACTIONS` (set in every CI step) puts each file's line in GitHub's group form
+# (`::group::<file>:`), and `CLAUDECODE`, `AGENT` and `REPL_ID` (an agent's shell sets the first
+# two) leave out the passing tests and the line of a file whose tests pass and print nothing.
 # The score reads the tester's runs from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 standins() {
@@ -628,7 +632,7 @@ fi
 err=\$(mktemp)
 trap 'rm -f "\$err"' EXIT
 status=0
-$(printf %q "$bun_real") "\$@" 2> >(tee "\$err" >&2) || status=\$?
+env -u GITHUB_ACTIONS -u CLAUDECODE -u AGENT -u REPL_ID $(printf %q "$bun_real") "\$@" 2> >(tee "\$err" >&2) || status=\$?
 wait \$! 2>/dev/null || true
 jq -cn --arg at "\$at" --argjson exit "\$status" --argjson workspace "\$workspace" --rawfile stderr <(tail -c 65536 "\$err") \\
   '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, workspace:\$workspace, stderr:\$stderr}' \\

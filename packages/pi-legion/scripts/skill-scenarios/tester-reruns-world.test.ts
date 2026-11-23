@@ -334,6 +334,62 @@ describe("tester-reruns", () => {
       "tester-reruns",
     ]).stdout.toString();
 
+  // Bun's report changes with its caller's environment: GitHub's group form under CI's
+  // `GITHUB_ACTIONS`, and no passing test lines under an agent's `CLAUDECODE`, `AGENT` or
+  // `REPL_ID`. The record a score reads must not: the stand-in, run for real on c1 at H1, records
+  // one report whichever of them its caller sets, and that report holds c1's file line and the
+  // summary line the score reads.
+  test(
+    "tester-reruns: the bun stand-in records one report of c1 whatever CI or agent variable its caller sets",
+    () => {
+      const runDir = path.join(freshDir("stand-in"), "runs", "tester-reruns-clean-push-env-1");
+      const repo = world.rerunsRepository(
+        path.join(runDir, "src"),
+        "clean-push",
+        "ACME-1",
+        1_800_000_000
+      );
+      const standIn = Bun.spawnSync([
+        "bash",
+        "-c",
+        `R=$1 here=$2\n${fn("standins")}\nstandins`,
+        "-",
+        runDir,
+        import.meta.dir,
+      ]);
+      expect(standIn.exitCode).toBe(0);
+      expect(git(path.join(runDir, "src"), "rev-parse", "HEAD")).toBe(repo.h1);
+      const reportVariables = ["GITHUB_ACTIONS", "CLAUDECODE", "AGENT", "REPL_ID"];
+      const base = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !reportVariables.includes(name))
+      );
+      const variants = [
+        {},
+        { GITHUB_ACTIONS: "true" },
+        { CLAUDECODE: "1" },
+        { AGENT: "1" },
+        { REPL_ID: "1" },
+      ];
+      for (const variant of variants) {
+        const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), "test", "limits.test.ts"], {
+          cwd: path.join(runDir, "src"),
+          env: { ...base, ...variant },
+        });
+        expect(ran.exitCode).toBe(0);
+      }
+      // Each report with its timings left out, one per variant, in order.
+      const reports = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => String(JSON.parse(line).stderr).replace(/\[[0-9.]+m?s\]/g, "[time]"));
+      expect(reports).toHaveLength(variants.length);
+      expect(reports[0]).toMatch(/^limits\.test\.ts:$/m);
+      expect(reports[0]).toMatch(/^Ran 1 test across 1 file\./m);
+      expect(reports).toEqual(reports.map(() => reports[0]));
+    },
+    REPOSITORY_ROW_MS
+  );
+
   // The bun stand-in rig.sh writes, run for real on the fixture repository at H0 and at H1, and
   // the run it records scored by score.ts: clean-push's output is the same at both heads, so only
   // the files the stand-in read tell a run at H1 from one at H0.
