@@ -308,11 +308,23 @@ type WorkspaceWorkReader interface {
 	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
 }
 
-// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
-// commit under a workspace's working copy or a local bookmark that no branch or tag on origin
-// holds. A commit with no change and no description is no work, and neither is a commit a fetch
-// left visible or a side head that no working copy and no bookmark reaches (the shim's
-// workspaceWorkRevset says why).
+// PodWorkspaceReader asks the issue pod's launcher, which runs in the pod whether or not a role
+// process does, to make WorkspaceWorkReader's read of the issue workspace, with the same count
+// (R6 of dispatch://INFRA-3271). The release of a pod no claim owns and the close of a left pod
+// with no live claim make it before they delete a disk, since no role's shim runs there to read
+// through. The pod read is the one the runtime holds for the issue now; a pod with no launcher
+// that says it reads a workspace, a pod the runtime cannot name, and a launcher that refuses are
+// each an error, never an answer of no work. A runtime whose processes run in no pod implements
+// nothing here.
+type PodWorkspaceReader interface {
+	PodWorkspaceWork(ctx context.Context, issue string) (WorkspaceWork, error)
+}
+
+// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader,
+// PodWorkspaceReader). Work is a commit under a workspace's working copy or a local bookmark that
+// no branch or tag on origin holds. A commit with no change and no description is no work, and
+// neither is a commit a fetch left visible or a side head that no working copy and no bookmark
+// reaches (workspace.WorkRevset says why).
 type WorkspaceWork struct {
 	// Head is the commit id of the working copy the read was made in.
 	Head string

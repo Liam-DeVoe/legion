@@ -141,7 +141,7 @@ const (
 // role reads one account of its workspace, and what they say is what the daemon knows: the
 // release's check keeps a pod whose workspace holds a commit on a working copy or a local bookmark
 // that no branch or tag on origin holds, or a working-copy change (internal/daemon's
-// checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk went with it comes
+// checkIssueWorkspace, workspace.WorkRevset), and a pod whose disk went with it comes
 // back with a workspace that provisioning made from the issue's pushed branch. The read does not
 // count a commit that no working copy and no bookmark reaches, a side head a role left with
 // `jj new <base>`, so the release can take one, and the text says so: it never says that nothing

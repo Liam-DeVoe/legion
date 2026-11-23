@@ -26,6 +26,7 @@ var (
 	_ runtime.IssuePodReplacer    = (*Runtime)(nil)
 	_ runtime.LaunchSessionNamer  = (*Runtime)(nil)
 	_ runtime.WorkspaceWorkReader = (*Runtime)(nil)
+	_ runtime.PodWorkspaceReader  = (*Runtime)(nil)
 	_ runtime.IssueVolumeReader   = (*Runtime)(nil)
 )
 
@@ -303,18 +304,19 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 	return session, named
 }
 
-// ScriptWorkspaceWork makes every later WorkspaceWork of issue answer work, as the Sandbox runtime
-// answers what the shim of a role in the issue's pod read. An issue no call named holds no work,
-// which is the uninteresting case.
+// ScriptWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork of issue answer work, as
+// the Sandbox runtime answers what the shim of a role in the issue's pod, or the pod's launcher,
+// read: the roles and the launcher of a pod read the one workspace. An issue no call named holds no
+// work, which is the uninteresting case.
 func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.work[issue] = work
 }
 
-// FailWorkspaceWork makes every later WorkspaceWork of issue return err, as the Sandbox runtime
-// answers a read that no role's process could make or that the shim refused. nil clears it, and
-// the issue's scripted reading answers again.
+// FailWorkspaceWork makes every later WorkspaceWork and PodWorkspaceWork of issue return err, as
+// the Sandbox runtime answers a read that no process of the pod could make or that the shim or the
+// launcher refused. nil clears it, and the issue's scripted reading answers again.
 func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("WorkspaceWork:"+issue, err) }
 
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
@@ -323,6 +325,20 @@ func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	return r.workspaceWork(issue)
+}
+
+// PodWorkspaceWork is the read the Sandbox runtime has the issue pod's launcher make: it records
+// its call, with no role, and answers as WorkspaceWork does.
+func (r *Runtime) PodWorkspaceWork(_ context.Context, issue string) (runtime.WorkspaceWork, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodWorkspaceWork", Issue: issue})
+	return r.workspaceWork(issue)
+}
+
+// workspaceWork is what a read of issue answers, the caller holding mu.
+func (r *Runtime) workspaceWork(issue string) (runtime.WorkspaceWork, error) {
 	if err := r.failures["WorkspaceWork:"+issue]; err != nil {
 		return runtime.WorkspaceWork{}, err
 	}

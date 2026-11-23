@@ -71,8 +71,9 @@ type IdleReleaseRow struct {
 // Rows empty means the pod is not released, and nothing is written.
 //
 // SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
-// every claim is already failed, retired or suspended: it suspends no role and reads no
-// workspace, so it names no role and queues the teardown alone. The mark records which of the two rules
+// every claim is already failed, retired or suspended: it suspends no role, so it names no role,
+// and queues the teardown, behind the workspace check its pod's launcher reads where the release
+// deletes the disk (record.IssueWorkspaceCheck.Launcher). The mark records which of the two rules
 // wrote it (issue_releases.kind), because what a release did is what its teardown and its
 // cancel must read: a release that suspended nothing has nothing to resume and no roles to
 // record. A mark that suspends a role names it, and one that suspends none leaves Role empty.
@@ -485,6 +486,11 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // origin holds, and whether the working copy holds a change; a read that failed found none of
 // them. PodUID is the pod the read was made in, "" where the runtime could not say. Message is the
 // one row that tells the role the release waits for its push; nil sends none.
+//
+// Kept is the decline of a pod in which no role process runs, whose launcher made the read (R6 of
+// dispatch://INFRA-3271): the release of a pod no claim owns or the close of a left pod with no live
+// claim. Its Role is the issue's architect and its Message the architect's workspace-kept notice,
+// which recordDecline queues once for each pod, whether the read found work or failed.
 type IdleReleaseDecline struct {
 	At      time.Time
 	Role    claim.Role
@@ -494,6 +500,7 @@ type IdleReleaseDecline struct {
 	Changed bool
 	PodUID  string
 	Message *IdleReleaseRow
+	Kept    bool
 }
 
 // check refuses a decline the rules could not read.
@@ -574,8 +581,24 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 // pod than the row's keeps no work, since the work was found on a disk that pod replaced. On no
 // row, it writes a row that holds no work. Any other decline replaces the row whole, at its own
 // moment, and queues its message.
+//
+// A Kept decline, the read of a pod's launcher where no role process runs (R6 of
+// dispatch://INFRA-3271), tells the issue's architect once for each pod: its message is queued
+// unless the row on record already names this pod and the architect, whether the read found work
+// or failed. A failed read that tells moves the row's role to the architect and its declined_at to
+// the read's moment, the telling's own.
 func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, decline IdleReleaseDecline) (bool, error) {
 	const startedRow = `(select coalesce(max(last_start_row), 0) from claims where project = $1 and issue = $2)`
+	// toldOfPod is a Kept decline whose pod the row on record already told the architect of.
+	var toldOfPod bool
+	if decline.Kept {
+		err := tx.QueryRow(ctx, `select pod_uid = $3 and role = $4
+			from idle_release_declines where project = $1 and issue = $2 for update`,
+			project, issue, decline.PodUID, string(decline.Role)).Scan(&toldOfPod)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
+		}
+	}
 	if decline.Reason == pods.DeclineWorkspaceUnread {
 		// The row's pod and the failed read's are both named and differ: the pod was made again.
 		const otherPod = `idle_release_declines.pod_uid <> '' and excluded.pod_uid <> ''
@@ -592,7 +615,17 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 			project, issue, decline.At, string(decline.Role), decline.Reason, decline.PodUID); err != nil {
 			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
-		return false, nil
+		if !decline.Kept || toldOfPod || decline.Message == nil {
+			return false, nil
+		}
+		if _, err := tx.Exec(ctx, `update idle_release_declines set role = $3, declined_at = $4
+			where project = $1 and issue = $2`, project, issue, string(decline.Role), decline.At); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+		}
+		if _, err := insertOutboxRow(ctx, tx, project, issue, *decline.Message); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	var same bool
 	err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
@@ -620,7 +653,7 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 		decline.PodUID); err != nil {
 		return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 	}
-	if decline.Message == nil {
+	if decline.Message == nil || toldOfPod {
 		return false, nil
 	}
 	if _, err := insertOutboxRow(ctx, tx, project, issue, *decline.Message); err != nil {

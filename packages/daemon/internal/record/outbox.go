@@ -1377,6 +1377,17 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
 // (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
 // release's row leaves it zero, since its mark holds it.
+//
+// Launcher makes the pod's launcher read the workspace rather than Role's shim (R6 of
+// dispatch://INFRA-3271, runtime.PodWorkspaceReader): no role process runs in the pod, so no shim
+// is there to read through. It is the check of the release of a pod no claim owns
+// (workflow.UnownedPodRelease), inside that release's mark, and, with Close, of the close of a left
+// pod with no live claim, which marks no release and stops no role: its clean read queues the
+// Sandbox suspension alone, fenced on TurnStart. On such a row Role is the issue's architect, the
+// role a decline tells (workspace-kept, WorkspaceKeptNotice), since no live role is there to tell.
+// A release before these two fields refuses a row that carries either (DisallowUnknownFields), so
+// a rollback waits for such rows to run (docs/kubernetes.md, "Rolling back the release that keeps
+// no saved workspace").
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
@@ -1384,7 +1395,13 @@ type IssueWorkspaceCheck struct {
 	Role           claim.Role   `json:"role"`
 	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
 	TurnStart      time.Time    `json:"turnStart,omitzero"`
+	Launcher       bool         `json:"launcher,omitempty"`
+	Close          bool         `json:"close,omitempty"`
 }
+
+// LeftPodClose is whether the check is the first act of a left pod's close (CloseRoles, or Close
+// for a close that stops no role) rather than of a release.
+func (c IssueWorkspaceCheck) LeftPodClose() bool { return len(c.CloseRoles) > 0 || c.Close }
 
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
@@ -2339,6 +2356,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
 			return fmt.Errorf("a release's workspace check requires its tree, both workflow generations and the role whose shim reads the workspace")
 		}
+		if value.Launcher && len(value.CloseRoles) > 0 {
+			return fmt.Errorf("a workspace check the pod's launcher reads stops no role, so it names no close roles")
+		}
+		if value.Close && !value.Launcher {
+			return fmt.Errorf("a close's workspace check that stops no role is read by the pod's launcher")
+		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("an issue release requires its tree and both workflow generations")
@@ -2687,13 +2710,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
+// disk.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-forgotten", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault", WorkspaceKeptNotice,
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
@@ -2703,6 +2729,17 @@ var validNoticeKinds = []NoticeKind{
 // volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
 // architect is who can stop or redirect it.
 const VolumeNearFullNotice NoticeKind = "volume-near-full"
+
+// WorkspaceKeptNotice is the architect's notice that the daemon keeps a pod in which no role
+// process runs, because the pod's launcher read its workspace and found work that no branch or tag
+// on origin holds, or could not read it (R6 of dispatch://INFRA-3271, internal/daemon's
+// keptMessage): the release of a pod no claim owns and the close of a left pod with no live claim
+// delete a disk only after a read shows it clean. It names the state of each claim of the issue
+// and what the read found, and it is sent once for each pod kept so (store's recordDecline). It is
+// the architect's because no live role of the issue is there to push the work, and the architect
+// is who can bring one back. No earlier release decodes it, so a rollback deletes its unsent rows
+// first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+const WorkspaceKeptNotice NoticeKind = "workspace-kept"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

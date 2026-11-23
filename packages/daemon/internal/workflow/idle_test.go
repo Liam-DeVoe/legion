@@ -510,7 +510,9 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		name    string
 		view    pods.IdleView
 		sandbox bool
-		want    IdleHold
+		// kept is the runtime's word that the issue's Sandbox keeps a volume the next pod mounts.
+		kept bool
+		want IdleHold
 	}{
 		{
 			name: "every condition holds", view: unownedIssue(), sandbox: true, want: IdleHoldNone,
@@ -712,7 +714,8 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedUnpushedWork,
 		},
 		{
-			// A read that failed with no read that found work before it says nothing of the disk.
+			// R6: the pod's launcher could not read the disk, so nothing shows it clean, and the
+			// decline holds the pod until its retry, a start or another pod.
 			name: "a decline for a workspace the check could not read and no work on record",
 			view: func() pods.IdleView {
 				v := unownedIssue()
@@ -720,7 +723,30 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
 				return v
 			}(),
+			sandbox: true, want: IdleHoldUnownedWorkspaceUnread,
+		},
+		{
+			// The retry of a read that failed has come: the release reads again.
+			name: "a decline for a workspace the check could not read, past its retry",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.PodUID = "pod-a"
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-pods.DeclineUnreadRetry - time.Minute), Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
+				return v
+			}(),
 			sandbox: true, want: IdleHoldNone,
+		},
+		{
+			// A kept volume the next pod mounts is not deleted, so no read is owed and a failed
+			// one holds nothing.
+			name: "a kept volume and a decline for a workspace the check could not read",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.PodUID = "pod-a"
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
+				return v
+			}(),
+			sandbox: true, kept: true, want: IdleHoldNone,
 		},
 		{
 			// The ordinary case this rule meets: an earlier idle release suspended the role and
@@ -746,12 +772,16 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := UnownedPodRelease(tc.view, idleNow, idlePeriod, tc.sandbox)
+			got := UnownedPodRelease(tc.view, idleNow, idlePeriod, tc.sandbox, tc.kept)
 			if got.Hold != tc.want {
 				t.Fatalf("hold = %s, want %s", got.Hold, tc.want)
 			}
 			if want := tc.want == IdleHoldNone; got.Release != want {
 				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
+			}
+			// R6: a release that deletes the disk has the pod's launcher read it first.
+			if want := got.Release && !tc.kept; got.Read != want {
+				t.Fatalf("read = %v, want %v: a release reads the disk it deletes, and a kept volume is not deleted", got.Read, want)
 			}
 			if len(got.Roles) != 0 {
 				t.Fatalf("roles = %v, want none: this release suspends no role", got.Roles)
@@ -838,6 +868,17 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 			}(),
 			want: IdleHoldUnownedUnpushedWork,
 		},
+		{
+			// R6: the pod's launcher could not read the disk, and that decline stands.
+			name: "no live claim and a decline for a workspace the launcher could not read",
+			view: func() pods.IdleView {
+				v := failedImplementer()
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), CheckedAt: idleNow.Add(-30 * time.Minute),
+					Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
+				return v
+			}(),
+			want: IdleHoldUnownedWorkspaceUnread,
+		},
 		{name: "no live claim and no decline", view: failedImplementer()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -847,6 +888,11 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 			}
 			if !slices.Equal(got.Roles, tc.roles) {
 				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+			}
+			// R6: a close with no live role has the pod's launcher read the disk first; one with a
+			// live role reads through that role.
+			if want := got.Close && len(tc.roles) == 0; got.Read != want {
+				t.Fatalf("read = %v, want %v", got.Read, want)
 			}
 		})
 	}

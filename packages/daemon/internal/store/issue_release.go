@@ -102,9 +102,10 @@ func (c ReleaseCause) String() string {
 // and Suspended is the set a cancel resumes and a finished release records.
 //
 // SuspendsNoRole is the mark's kind read back (issue_releases.kind, IdleReleaseMark): the
-// release of a pod no role can use suspends none and reads no workspace, so its rows must be able
-// to tell what release they belong to. A decision that holds no mark — a row of a release that
-// is over — carries the zero of it, as it carries the zero of every other field.
+// release of a pod no role can use suspends none, and its check, where it has one, is read by the
+// pod's launcher, so its rows must be able to tell what release they belong to. A decision that
+// holds no mark — a row of a release that is over — carries the zero of it, as it carries the zero
+// of every other field.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
@@ -169,8 +170,8 @@ func (m releaseMark) roles() []claim.Role {
 }
 
 // suspendsNoRole is whether this mark's release is the one that suspends no role: the release
-// of a pod no role can use, which reads no workspace and queues the teardown alone
-// (IdleReleaseMark.SuspendsNoRole). Its rows read the kind rather than the empty role, because
+// of a pod no role can use, which queues the teardown behind its launcher's read, or alone where
+// it deletes no disk (IdleReleaseMark.SuspendsNoRole). Its rows read the kind rather than the empty role, because
 // the kind is what the rule wrote and the empty role is only how the table spells it.
 func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned }
 

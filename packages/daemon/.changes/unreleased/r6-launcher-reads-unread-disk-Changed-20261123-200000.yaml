@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  The release of a pod no claim owns and the close of a left pod with no live claim delete the
+  pod's disk only after a read of its workspace finds nothing that no branch or tag on origin holds
+  (R6 of INFRA-3271). No role process runs in such a pod, so the pod's launcher makes the read, with
+  the count a role's shim makes: its hello says `readsWorkspace`, and it answers the
+  `workspace-work` frame on its own connection. The release queues that check before its teardown,
+  and the close queues it alone and suspends the Sandbox only after a clean read, fenced on the
+  turn start the pass read. A read that finds work keeps the pod (`unowned_unpushed_work`), and so
+  does a read that cannot be made, such as a pod whose launcher predates the read
+  (`unowned_workspace_unread`, asked again after an hour or a start). The issue's architect gets
+  one `workspace-kept` notice for each pod kept so, naming each claim's state and what the read
+  found. The daemon pushes and saves nothing. A release of a pod whose Sandbox keeps a volume the
+  issue's next pod mounts deletes no disk and reads nothing. The launcher runs the read's jj with
+  signing and the file monitor turned off, so no repository configuration a role wrote runs a
+  program as the launcher.
+time: 2026-11-23T20:00:00Z
+custom:
+  Issue: r6-launcher-reads-unread-disk

@@ -2,7 +2,6 @@ package shim
 
 import (
 	"fmt"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -11,39 +10,11 @@ import (
 )
 
 // The workspace read: the shim of one role answers whether the workspace every role of its issue
-// shares holds work that no branch or tag on origin holds. A pod update round that replaces the
-// pod without waiting for every role reads it to name what goes with the pod, and the idle release
-// reads it to take the pod only when it holds no work. Only a shim can read it: it runs the jj of
-// the workspace it already works in.
-
-// workspaceWorkRevset is the work the read counts: every commit under a workspace's working copy
-// or a local bookmark, less three kinds of commit that are not work.
-//
-// A commit origin holds is not work: one under a remote bookmark or a tag is already pushed, and
-// the replacement pod's fetch gets it back. Tags are subtracted beside remote bookmarks because a
-// clone of this repository holds thousands of them, jj makes each tagged commit a visible head,
-// and the release commits they point at are reachable from no remote bookmark: with remote
-// bookmarks alone subtracted, every such commit under a working copy or a bookmark would count as
-// work that origin already holds.
-//
-// A commit with no change and no description is not work: it carries nothing a replacement can
-// lose, whether it is a working copy or the parent a bare `jj new` leaves. Every issue pod's clone
-// keeps such a working copy, and jj 0.45.1 keeps the old empty working copy as the new one's
-// parent after a bare `jj new` (measured). A described empty commit is work: a role wrote its
-// description.
-//
-// A commit a fetch left visible, and a side head that no working copy and no bookmark reaches,
-// are not counted, because Legion's clones keep unreachable commits
-// (git.abandon-unreachable-commits = false, workspace's ensureFetchConfiguration): after any
-// role's `jj git fetch`, the commits of every branch origin deleted or rewrote stay visible with
-// no bookmark, hundreds of them other issues' work. Counting every visible head would name those
-// as this issue's. The cost is a side head of this issue's own (a role ran `jj new` over a
-// rewritten parent, workspace's bookmark.go), which goes uncounted: a round does not name it, and
-// a release does not keep the pod for it.
-//
-// This read is the one both the pod update round and the idle release make, so the work a round
-// names as going with a pod is the work that keeps a release from taking it.
-const workspaceWorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() | tags())) ~ (empty() & description(exact:""))`
+// shares holds work that no branch or tag on origin holds (workspace.ReadWork, which counts
+// workspace.WorkRevset). A pod update round that replaces the pod without waiting for every role
+// reads it to name what goes with the pod, and the idle release reads it to take the pod only when
+// it holds no work. The shim runs the jj of the workspace it already works in; where no role
+// process runs, the pod's launcher makes the same read (internal/launcher's readWorkspace).
 
 // workspaceWork answers `workspace-work`: the read of the work the workspace this shim runs in
 // holds that origin does not. A request the shim cannot act on is answered with the reason when it
@@ -99,35 +70,17 @@ func cutAnswerError(reason string) string {
 		reason[:head], tail-head, len(reason), reason[tail:])
 }
 
-// readWorkspaceWork runs the read's two jj commands in the workspace the shim's environment
+// readWorkspaceWork runs the read (workspace.ReadWork) in the workspace the shim's environment
 // names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as the adoption
-// does (openWorkspace). The first reads the working copy's commit and whether it is empty, and it
-// is the one jj snapshot the read makes; the second is --ignore-working-copy, so both describe one
-// state of the workspace. It answers the working copy's commit, whether that commit holds a
-// change, and every work commit (workspaceWorkRevset), newest first. The snapshot is what the read
-// writes, as every jj command that reads the working copy does: jj records an operation and, where
-// files of the working copy changed, a new working-copy commit and the git ref jj keeps for it
-// (refs/jj/keep). The read changes no file of the working copy, moves no bookmark and pushes
-// nothing, and it needs no git.
+// does (openWorkspace). It answers the working copy's commit, whether that commit holds a change,
+// and every work commit (workspace.WorkRevset), newest first; the one thing it writes is jj's
+// snapshot of the working copy.
 func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
 	opened, done, err := s.openWorkspace("read", s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return "", false, nil, err
 	}
 	defer done()
-	dir, jj, run := opened.dir, opened.jj, opened.run
-
-	at, err := run(nil, jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)
-	if err != nil {
-		return "", false, nil, err
-	}
-	head, empty, _ := strings.Cut(at, " ")
-	if head == "" || (empty != "true" && empty != "false") {
-		return "", false, nil, fmt.Errorf("worker-shim: jj answered %q for the working copy, not its commit and whether it is empty", at)
-	}
-	listed, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", workspaceWorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)
-	if err != nil {
-		return "", false, nil, err
-	}
-	return head, empty == "false", workspace.OutputLines(listed), nil
+	run := func(args ...string) (string, error) { return opened.run(nil, args...) }
+	return workspace.ReadWork(run, opened.jj, opened.dir)
 }

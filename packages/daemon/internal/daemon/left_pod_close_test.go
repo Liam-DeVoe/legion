@@ -343,8 +343,9 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 //
 // The test stages that pod — a parked child of a running tree, its one claim suspended by the
 // daemon and recording no process, the runtime still holding its Sandbox, quiet for half an hour
-// — and reads that a pass takes it: the passes queue the close's Sandbox suspension alone, which
-// deletes the Sandbox, the pod and the disk, and leave the claim as it was.
+// — and reads that a pass takes it: the passes queue the close's workspace check, which the pod's
+// launcher reads since no role runs there (R6), and whose clean read queues the Sandbox suspension,
+// which deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
 func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, true)
@@ -356,8 +357,11 @@ func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T
 	}
 
 	queued := rig.queuedBy(t, func() { idlePasses(rig) })
-	if !slices.Equal(queued, []string{"issue_suspend"}) {
-		t.Fatalf("the passes queued %v, want the close's Sandbox suspension alone: no claim is left to stop, and nothing else takes the pod", queued)
+	if !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone: no claim is left to stop, and nothing else takes the pod", queued)
+	}
+	if reads := rig.rt.CallsOf("PodWorkspaceWork"); len(reads) != 0 {
+		t.Fatalf("the pod's launcher read the workspace %d times before the lane ran the check", len(reads))
 	}
 	rig.drain(t)
 
@@ -819,7 +823,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 // close would delete it with the pod: the passes hold the pod as unowned_unpushed_work, as the
 // release of a pod no claim owns does (pods.IdleDecline.HoldsUnpushedWork), queue nothing, ask for
 // no teardown and record one streak of that hold. The control stands the same pod with no decline,
-// and the passes close it as before: the Sandbox suspension alone.
+// and the passes close it: the workspace check alone, which the pod's launcher reads (R6).
 func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -866,8 +870,8 @@ func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 
 	t.Run("control: no decline", func(t *testing.T) {
 		rig := failedLeftPod(t)
-		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_suspend"}) {
-			t.Fatalf("the passes queued %v, want the close's Sandbox suspension alone", queued)
+		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+			t.Fatalf("the passes queued %v, want the close's workspace check alone, read by the pod's launcher", queued)
 		}
 	})
 }

@@ -7696,16 +7696,23 @@ A claim is live while it is not `failed`, not `retired` and not `suspended`, so 
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
 This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-It reads no workspace and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
-The daemon cannot read that workspace: it reads a workspace only over a role process, and a pod with no live claim runs none.
-It reads the decline of the issue's idle release instead:
+It changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
+It deletes the disk only after a read of the workspace found nothing that no branch or tag on origin holds.
+No role process runs in that pod, so the pod's launcher makes the read, with the count a role's shim makes: the release queues that workspace check first, and the teardown waits for it.
+A read that finds work keeps the pod (`unowned_unpushed_work`), and so does a read that cannot be made (`unowned_workspace_unread`), such as a pod whose launcher is older than the read and so does not say `readsWorkspace` in its hello.
+The issue's architect, the one that owns the issue (the notice route walks up the tree), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found.
+A failed read is asked again after an hour, or after a start of a claim of the issue; a read that found work holds the pod until a later read finds nothing, the runtime holds another pod for the issue, or the issue or its tree leaves the workflow or lingers.
+The daemon pushes and saves nothing.
+A start or a turn of a claim of the issue after the release's mark cancels the teardown, so a read a later turn could make stale deletes nothing.
+Where the Sandbox keeps a volume the issue's next pod mounts, the release deletes no disk, and it reads nothing.
+Before any read, the rule reads the decline of the issue's idle release:
 where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
 A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
-Of the reasons that hold such a pod past the idle period, the daemon writes four to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), and a decline says the disk holds unpushed work (`unowned_unpushed_work`).
-A project's pause adds a fifth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
+Of the reasons that hold such a pod past the idle period, the daemon writes five to its hold records, each under a name of its own:
+a claim of the issue still records a process (`unowned_claim_process`), an operator's own suspension holds a claim (`unowned_operator_suspended`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), a decline or the launcher's read says the disk holds unpushed work (`unowned_unpushed_work`), and the launcher could not read the disk (`unowned_workspace_unread`).
+A project's pause adds a sixth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
@@ -7728,8 +7735,9 @@ it suspends each live claim for the daemon, which keeps the claim's session, and
 Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it:
 a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
 While that check waits on the lane the pass holds the pod as its own act under way (`releasing`), which no record counts.
-The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before;
-it keeps such a pod where a decline says its disk holds work that origin does not hold, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`).
+The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, which no pass decided before, with the read made by the pod's launcher, since no role runs to read through:
+the pass queues that workspace check alone, and a clean read queues the Sandbox suspension, fenced on the newest turn start the pass read, so a turn after the read leaves the suspension without acting.
+A read that finds work, or cannot be made, keeps the pod, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`, `unowned_workspace_unread`), and tells the issue's architect once for the pod (`workspace-kept`); so does a decline on record that says the disk holds work.
 A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
 A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
 Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running:
@@ -7961,8 +7969,10 @@ For each row of `select issue, release_id, size_bytes from workspace_bundles`, w
 Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
-A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
-It is the last paragraph of the migration's header, and the two say the same statements:
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`), and one that a launcher reads (whose payload names `launcher` or `close`), is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
+Nor does the release before decode the notice kind `workspace-kept`, which a later release added with no migration of its own, so delete the unsent ones before the block: `delete from outbox where kind = 'notice' and payload->>'kind' = 'workspace-kept'`.
+A rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows and the `workspace-kept` notices, and not the block.
+The block below is the last paragraph of the migration's header, and the two say the same statements:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'

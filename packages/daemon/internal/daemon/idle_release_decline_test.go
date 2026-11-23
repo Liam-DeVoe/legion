@@ -330,10 +330,12 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 		t.Fatalf("teardowns asked after a start in the same pod = %v, want none", asked)
 	}
 
-	// A relaunch built pod-b in pod-a's place: the disk, and the work on it, went with pod-a.
+	// A relaunch built pod-b in pod-a's place: the disk, and the work on it, went with pod-a. The
+	// release reads pod-b's disk through its launcher first (R6), which holds nothing origin lacks.
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b")
-	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_release"}) {
-		t.Fatalf("the pass after the pod was made again queued %v, want the unowned release's teardown alone", queued)
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_bundle", "issue_release"}) {
+		t.Fatalf("the pass after the pod was made again queued %v, want the unowned release's launcher check and its teardown", queued)
 	}
 	rig.drain(t)
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {

@@ -3,12 +3,15 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +80,10 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// readsWorkspace is whether this launcher's hello said it answers the workspace read on its
+	// own connection (shimwire.LauncherHello.ReadsWorkspace). A launcher built before it closes
+	// its connection on that frame, so the daemon asks only one that said so (workspaceReader).
+	readsWorkspace bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -105,7 +112,8 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, guardKil
 func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		readsWorkspace: hello.ReadsWorkspace}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -154,6 +162,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.mu.Unlock()
 			s.deliver(value.ID, value)
 		case shimwire.LauncherStopResult:
+			s.deliver(value.ID, value)
+		case shimwire.WorkspaceWorkResult:
 			s.deliver(value.ID, value)
 		case shimwire.LauncherLeakCheckResult:
 			s.deliver(sliceWaiter(value.ID, value.Index), value)
@@ -243,6 +253,84 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return !session.closed && session.resumesBySession
+}
+
+// workspaceReader is a connected, ready launcher session of issue's pod podUID whose hello said it
+// reads the issue workspace (launcherSession.readsWorkspace), and nil where there is none. Every
+// role of a pod has a launcher connection of its own, and each of them reads the one workspace the
+// pod's roles share, so any of them answers the same; the one whose token sorts first is asked, so
+// two reads of one pod go to the same launcher while it stays connected.
+func (d *launchers) workspaceReader(issue, podUID string) *launcherSession {
+	d.mu.Lock()
+	candidates := make([]*launcherSession, 0, len(d.sessions))
+	for _, session := range d.sessions {
+		if session.issue == issue && session.podUID == podUID && session.readsWorkspace {
+			candidates = append(candidates, session)
+		}
+	}
+	d.mu.Unlock()
+	slices.SortFunc(candidates, func(a, b *launcherSession) int { return strings.Compare(string(a.token), string(b.token)) })
+	for _, session := range candidates {
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			continue
+		}
+		select {
+		case <-session.ready:
+			return session
+		default:
+		}
+	}
+	return nil
+}
+
+var _ runtime.PodWorkspaceReader = (*Runtime)(nil)
+
+// PodWorkspaceWork has the launcher of issue's pod read whether the issue workspace holds work that
+// no branch or tag on origin holds, where no role process runs to read through
+// (runtime.PodWorkspaceReader, R6 of dispatch://INFRA-3271). The pod is the one the runtime holds
+// for the issue now (IssuePod); the launcher is a connected one of that pod whose hello said it
+// reads a workspace (launchers.workspaceReader). The read is bounded by the read's own budget
+// (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. A pod the runtime
+// cannot name or holds none of, a pod with no such launcher, a connection that closes before the
+// answer and a launcher that refuses are each an error, which the caller reads as a read that
+// could not be made, never as no work.
+func (r *Runtime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	pod, read := r.IssuePod(issue)
+	switch {
+	case !read:
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime cannot say which pod holds it", issue)
+	case pod == "":
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime holds no pod of the issue", issue)
+	}
+	session := r.launchers.workspaceReader(issue, pod)
+	if session == nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: no launcher of pod %s that reads a workspace is connected", issue, pod)
+	}
+	id := rand.Text()
+	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(runtime.WorkspaceWorkTimeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, runtime.WorkspaceWorkTimeout+apiTimeout)
+	defer cancel()
+	answer, _, err := r.launchers.requestSession(bounded, session, frame, id)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s of pod %s: %w", issue, session.token, pod, err)
+	}
+	result, ok := answer.(shimwire.WorkspaceWorkResult)
+	if !ok {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
+	}
+	if err := result.Validate(); err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
+	}
+	if !result.OK {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, result.Error)
+	}
+	return runtime.WorkspaceWork{Head: result.Head, Changed: result.Changed, Commits: result.Commits, Count: result.Count}, nil
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
