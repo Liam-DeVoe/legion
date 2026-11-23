@@ -602,7 +602,7 @@ export function parseCommand(
           const name = value.slice(prefix.text.length);
           const own = `--${singular(flagName(field))}`;
           problems.push(
-            `${flag} takes ${prefix.names} alone, so ${flag} ${quoteWord(value)} would send ${prefix.text}${value}: write ${flag} ${quoteWord(name)}, or ${own} ${quoteWord(value)}`
+            `${flag} takes ${prefix.names} alone, so ${flag} ${shellQuote(value)} would send ${prefix.text}${value}: write ${flag} ${shellQuote(name)}, or ${own} ${shellQuote(value)}`
           );
           break;
         }
