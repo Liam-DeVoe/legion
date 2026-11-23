@@ -1,6 +1,5 @@
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
-import { MARK_ATTRIBUTE } from "../web/src/hooks/useFootInset";
 import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
 import {
   createAgentMessage,
@@ -18,6 +17,7 @@ import {
 } from "./api";
 import { filterPicker } from "./filters";
 import { openWithFloats, routeFloats, seedRefusedMove, updateBanner } from "./foot-floats";
+import { expectNoEndRoom } from "./foot-probe";
 import { nextFrames } from "./frames";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import { APPROVAL_FOOT, inboxAt, seedApprovalPlace } from "./inbox-pane-scroll";
@@ -575,12 +575,6 @@ async function footBoxes(
   return boxes;
 }
 
-/** Both floats are gone, so nothing lies over content, and no scroller keeps the end room it took
- *  for them. */
-async function expectNoEndRoom(page: Page): Promise<void> {
-  await expect(page.locator(`[${MARK_ATTRIBUTE}]`)).toHaveCount(0);
-}
-
 /**
  * Fails unless, at each of `sizes`, no two of the elements `shown` on `page` meet and nothing
  * covers the centre of a control of theirs. Where `end` is given, its scroller is scrolled to the
@@ -685,8 +679,9 @@ async function expectFootClear(
 // refused change is discarded for the last. Each combination is read at the project's own size
 // and, from 640 px wide, at three desktop sizes. At those, the table's box holds more rows than it
 // shows, and each reading is made at the real end of its scroll (`readEnd`), where its last row
-// meets neither Pending changes nor the banner. Once both floats are gone, no element is marked
-// as a scroller that takes end room for them.
+// meets neither Pending changes nor the banner. Once both floats are gone, and every scroller is
+// back at its start, out of any room it kept, no element is marked as a scroller that takes end
+// room for them (`expectNoEndRoom`).
 // Each reading is that no two of the elements' boxes meet, and that the element at the centre of
 // every control of each is that control or inside it, never another element over it. A reading is
 // taken again until it holds, since the foot moves a frame or more after a resize or a press. A
@@ -775,7 +770,7 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
     await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
     await expect(pending).toHaveCount(0);
     await expectFootClear(page, [bar], sizes, end);
-    await expectNoEndRoom(page);
+    await expectNoEndRoom(page, "issues-table bar");
   } finally {
     await context.close();
   }
@@ -791,8 +786,8 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
 // discarded, then alone, each reading as the row above takes it. There the last row of the
 // section of ended sessions, at the real end of the document's scroll, meets neither Pending
 // changes nor the banner, and nothing covers the centre of its session link, which the banner
-// once lay over at 1280x720. Once both floats are gone, no element is marked as a scroller that
-// takes end room for them.
+// once lay over at 1280x720. Once both floats are gone, and every scroller is back at its start,
+// out of any room it kept, no element is marked as a scroller that takes end room for them.
 // SLOW(>=2s): the composer's three combinations at seven sizes each, each a settled reading of
 // every control shown at the real end of the document's scroll.
 test("no two of the broadcast composer, Pending changes and the update banner meet on the Agents page, its ended session's row scrolls clear of the floats, and nothing covers the centre of a control of any of them @phone @foot", async ({
@@ -912,7 +907,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
       .click({ timeout: 5_000 });
     await expect(update.box).toHaveCount(0);
     await expectFootClear(page, [composer], sizes, end);
-    await expectNoEndRoom(page);
+    await expectNoEndRoom(page, "agents broadcast-composer");
   } finally {
     await context.close();
   }
@@ -924,7 +919,9 @@ test("no two of the broadcast composer, Pending changes and the update banner me
 // with the update banner shown. At 1280x720, 1600x1000 and 1920x1080 the page's scroller is
 // scrolled to the real end of its scroll (`readEnd`), and there its last element child, clipped
 // to the scroller's box, meets neither float. Then the banner is dismissed and the change is
-// discarded, and no element is marked any more: the end room goes with the floats.
+// discarded at that end, and once every scroller is back at its start no element is marked any
+// more: the end room goes with the floats, and room the reader stood in when they went goes at
+// the scroll that leaves it.
 // SLOW(>=2s): three pages, each read at three sizes after a change refused on the issues table,
 // one of them behind a transcript at the stream's limit.
 test("the margin column, the live view's transcript and the Inbox reading pane each scroll their last content clear of the floats @foot", async ({
@@ -1000,8 +997,8 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
     /**
      * Fails unless, at 1280x720, 1600x1000 and 1920x1080, the last content of `scroller` meets
      * neither float at the real end of its scroll: each size one reading, taken again until it
-     * holds. Then closes both floats, and fails unless no element is marked any more as a
-     * scroller that takes end room for them.
+     * holds. Then closes both floats, and fails unless, once every scroller is back at its start,
+     * no element is marked any more as a scroller that takes end room for them.
      */
     const expectEndClear = async (scroller: Scroller) => {
       for (const size of DESKTOP_SIZES) {
@@ -1028,7 +1025,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
         .getByRole("button", { name: "Discard", exact: true })
         .click({ timeout: 5_000 });
       await expect(pendingChanges.box).toHaveCount(0);
-      await expectNoEndRoom(page);
+      await expectNoEndRoom(page, scroller.name);
     };
 
     // The margin's column from xl up, holding a card for each question.

@@ -8,11 +8,14 @@
  *  The floats are Pending changes and the update banner, read by their accessible names, so a
  *  float with no box is left out. A "problem" is something a reader of the screen would see.
  *
- *  Beside the reads stand the two helpers the rows that sweep the foot call
- *  (`e2e/foot-sweep.e2e.ts`): `expectFootClear`, the one settled reading of both reads, and
- *  `readFoot` with `footCellLine`, which answer both reads' results and write the `FOOT-CELL`
- *  line a run's output carries for each reading. */
+ *  Beside the reads stand the helpers the rows that read the foot call (`e2e/foot-sweep.e2e.ts`,
+ *  `e2e/issues-table.e2e.ts`): `expectFootClear`, the one settled reading of both reads;
+ *  `expectNoEndRoom`, the reading with no float shown; and `readFoot` with `footCellLine`, which
+ *  answer both reads' results and write the `FOOT-CELL` line a run's output carries for each
+ *  reading. */
 import { expect, type Page } from "@playwright/test";
+
+import { MARK_ATTRIBUTE } from "../web/src/hooks/useFootInset";
 
 /** A box of the page, as `getBoundingClientRect` answers it, cut to its four edges. */
 interface Edges {
@@ -387,5 +390,48 @@ export async function expectFootClear(
       .toEqual([]);
   } finally {
     console.log(footCellLine(message, problems));
+  }
+}
+
+/**
+ * Fails unless no element of `page` carries `MARK_ATTRIBUTE`, read until it holds with the
+ * document and every scroller back at the start of its scroll: with no float shown, no scroller
+ * keeps end room once its reader is out of it. The start is out of every scroller's room: the
+ * hook keeps a scroller's room after its floats go while the reader stands in it, since taking
+ * it then would clamp the scroll and move what they read, and takes it at the first scroll that
+ * leaves it (`web/src/hooks/useFootInset.ts`). It is also where the Conversation's `Jump to
+ * latest`, a float of the foot's top layer, is gone: the Conversation lists its newest turn
+ * first, so the button shows once the reader leaves the top, and the document takes room for it
+ * there, as the rule asks. Each read is made two frames after the scroll, so the foot's pass for
+ * it has run. `cell` names the reading in its `FOOT-CELL` line, which is printed either way,
+ * naming each marked element where the read failed.
+ */
+export async function expectNoEndRoom(page: Page, cell: string): Promise<void> {
+  let marked: readonly string[] = ["the page was never read"];
+  try {
+    await expect
+      .poll(
+        async () => {
+          marked = await page.evaluate(async (attribute) => {
+            const scrolled = [document.documentElement, ...document.querySelectorAll("*")];
+            for (const element of scrolled) if (element.scrollTop > 0) element.scrollTop = 0;
+            const frames = Promise.withResolvers<void>();
+            requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+            await frames.promise;
+            const jump = document.querySelector('[data-testid="jump-to-latest"]');
+            const jumpShown = jump !== null && jump.getBoundingClientRect().height > 0;
+            return [...document.querySelectorAll(`[${attribute}]`)].map(
+              (element) =>
+                `${element.tagName}${element.id ? `#${element.id}` : ""} carries ${attribute}` +
+                (jumpShown ? " while Jump to latest shows" : "")
+            );
+          }, MARK_ATTRIBUTE);
+          return marked;
+        },
+        { message: `${cell}: no element carries ${MARK_ATTRIBUTE}` }
+      )
+      .toEqual([]);
+  } finally {
+    console.log(footCellLine(cell, marked));
   }
 }
