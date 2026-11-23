@@ -302,6 +302,7 @@ legion_command: &legion_command
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/steprecord/*'
+  - 'packages/envoy/programfile/*'
 listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
   - 'packages/envoy/internal/cipher/oauthwire/*'
@@ -1458,6 +1459,7 @@ pi_legion:
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/steprecord/*'
+  - 'packages/envoy/programfile/*'
   - *go_workspace
   - 'AGENTS.md'
   - 'README.md'
