@@ -21,10 +21,12 @@ import (
 // a wait only where waitsOf answers nothing for it: a root waiting on a person, a tree's own root
 // whose design gate has never opened, and a root that arrived carrying the row of the tree it
 // left. A rule whose wait keeps the slot (record.SlotRule.LinkWaitGivesBack false, or
-// ChildrenWaitGivesBack false) makes every holder that waits so a holder of this kind. Under a
-// rule whose start may take a cover (record.TakeCover) the waits are the ones a cover reads
-// (CoverWaits), so a counted waiter's mark is the wait that holds its next start, and a link of an
-// issue past its review, which holds none, marks nothing.
+// ChildrenWaitGivesBack false) makes every holder that waits so a holder of this kind, and so does
+// a rule whose wait gives the slot back only after a grace (record.SlotRule.WaitGrace) while the
+// holder's wait is younger than the grace. Under a rule whose start may take a cover
+// (record.TakeCover) the waits are the ones a cover reads (CoverWaits), so a counted waiter's
+// mark is the wait that holds its next start, and a link of an issue past its review, which holds
+// none, marks nothing.
 func KeptWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
 	given := waitsOf(rows, issue, facts)
 	var kept []string

@@ -728,7 +728,10 @@ func (d *driver) down(at time.Time) bool {
 // of the trace's slots from the record's count, the assumptions of the turns and of the slots being
 // named among those the run rests on where it counted any — and the moment each children wait the
 // start state marked told began (childWait), as the line of its telling would have set it; hands the
-// records it wrote to the snapshot timeline, and reads back the claims it wrote for the stub.
+// records it wrote to the snapshot timeline, and reads back the claims it wrote for the stub. Under
+// a rule that places the line's returned part by first slots it keeps the first slot of each issue
+// in the run it stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment
+// once the slot went back.
 func (d *driver) seed() error {
 	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
 		report, err := SeedAndReport(d.ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
@@ -762,6 +765,11 @@ func (d *driver) seed() error {
 			}
 			if first := d.firstSlotBefore(issue.Key); !first.IsZero() {
 				d.started[issue.Key] = first
+				if readsFirstSlots(d.rule) {
+					if err := keepFirstSlot(d.ctx, tx, issue, first); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		claims, err := d.st.ClaimsTx(d.ctx, tx)

@@ -44,8 +44,10 @@ const fixtureTolerance = 1e-6
 // for changes and a failed test, each kept as recorded; an issue that reopens and works again; a
 // send-back from accepting at a full cap; two waiters on one blocker; a priority inversion of a
 // holder below a waiting issue; an issue that never starts, under each named scenario; a window
-// whose every time is far from the wall clock's; and a segment that starts with 42 more issues in
-// flight than the record had.
+// whose every time is far from the wall clock's; a segment that starts with 42 more issues in
+// flight than the record had; a wait on another issue that lasts one minute, under the daemon's
+// rule and under a rule whose wait keeps the slot for a grace; and a tree root that holds its slot
+// with no turn while its children run, the shapes two deployments reported.
 var k1Facts = []string{
 	"phase-goes-on-during-link-wait",
 	"gate-holds-child-first-phase",
@@ -61,6 +63,8 @@ var k1Facts = []string{
 	"never-starts",
 	"clock-far-from-now",
 	"forty-two-more-in-flight",
+	"one-minute-wait",
+	"root-idle-while-children-run",
 }
 
 // fixtureExpect is a fixture window's expect.json: the Scorecard a replay must give under each

@@ -1784,8 +1784,9 @@ func slotStandsAt(iss *IssueTrace, at time.Time) bool {
 }
 
 // waitGivesBackAt says whether a wait of iss that stands at at (standsAt) gives the issue's slot
-// back under rule: a link or children wait where the rule gives the slot back for it, a wait on a
-// person where the rule keeps no slot awaiting one, a hold where it keeps none held.
+// back under rule: a link or children wait where the rule gives the slot back for it and the wait
+// has lasted the rule's grace by at (record.SlotRule.GraceOver), a wait on a person where the rule
+// keeps no slot awaiting one, a hold where it keeps none held.
 func waitGivesBackAt(iss *IssueTrace, at time.Time, rule record.SlotRule) bool {
 	return slices.ContainsFunc(iss.Waits, func(wait Wait) bool {
 		if !standsAt(wait.Start, wait.End, at) {
@@ -1793,9 +1794,9 @@ func waitGivesBackAt(iss *IssueTrace, at time.Time, rule record.SlotRule) bool {
 		}
 		switch wait.Kind {
 		case WaitLink:
-			return rule.OrMain().LinkWaitGivesBack
+			return rule.OrMain().LinkWaitGivesBack && rule.GraceOver(wait.Start, at)
 		case WaitChildren:
-			return rule.OrMain().ChildrenWaitGivesBack
+			return rule.OrMain().ChildrenWaitGivesBack && rule.GraceOver(wait.Start, at)
 		case WaitPerson:
 			return !rule.PhaseKeepsSlot(phase.AwaitingPerson)
 		case WaitHeld:

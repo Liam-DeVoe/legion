@@ -480,15 +480,17 @@ type LineFacts struct {
 	// — classification alone does (HeldFacts.treeRoot) — and the gates it reads are the gates
 	// of roots among the pass's own issues, so the line cannot change for either read.
 	Roots map[string]Issue
-	// Now is the moment the pass reads the record, which classification alone reads: the
-	// tree_closed word asks whether a root's linger is still running at it (Lingering,
-	// HeldReasonOf), so that a parked root's members read tree_parked once its linger has run
-	// out rather than tree_closed for ever. The one caller that fills it is the judgement every
-	// reader of the line comes through (blockers.JudgeLine), which takes the clock of the pass
-	// that called it. The zero moment reads every armed linger as still running, which is what a
-	// caller that builds the line itself — a test, a reader with no clock — gets, and it leaves
-	// each such member reading tree_closed. Waiting's placement reads it nowhere, so the line
-	// cannot change for it.
+	// Now is the moment the pass reads the record, which classification reads: the tree_closed
+	// word asks whether a root's linger is still running at it (Lingering, HeldReasonOf), so that a
+	// parked root's members read tree_parked once its linger has run out rather than tree_closed for
+	// ever. Under a rule whose wait gives the slot back only after a grace (SlotRule.WaitGrace) the
+	// wait judgement reads it too: a holder's wait keeps its slot while its grace has not run out at
+	// it (InWaitGrace). The one caller that fills it is the judgement every reader of the line comes
+	// through (blockers.JudgeLine), which takes the clock of the pass that called it. The zero moment
+	// reads every armed linger as still running, which is what a caller that builds the line itself
+	// — a test, a reader with no clock — gets, and it leaves each such member reading tree_closed.
+	// Waiting's placement reads it nowhere, so the line changes for it only through the waits it is
+	// handed (Waits).
 	Now time.Time
 	// Held is the unfinished blockers of each issue a Dispatch blocker holds where it stands, by
 	// key: the issues whose first phase the line must not offer a slot to, however long they
@@ -516,6 +518,13 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// SlotWaits is, under a rule whose wait on another issue gives the slot back only after a grace
+	// (SlotRule.WaitGrace), each slot holder of the judgement by key, with the moment it began to
+	// wait on another issue while it kept its slot (Slot.WaitsSince), nil where no pass has marked
+	// one yet: what the grace is read against (InWaitGrace). The one caller that fills it is the
+	// judgement every reader of the line comes through (blockers.JudgeLine), from the slots it is
+	// handed. Nil under every other rule, the daemon's own among them, which reads none.
+	SlotWaits map[string]*time.Time
 	// Rule is the slot rule the line and every judgement over these facts read (SlotRule): the
 	// admission pass's own rule for the facts it judges, and the daemon's for the facts the state
 	// projection reads, each set where the facts are read (ReadLineFactsUnder). The zero value is
@@ -549,6 +558,13 @@ type LineFacts struct {
 	// and reads none; a replay under such a rule reads them from its own records and a table of its
 	// own database (admit's RuleTables). Nil under every other rule.
 	BeneathWaits map[string][]string
+	// FirstSlots is, under a rule that orders the line's returned part by first slots (SlotRule.Order,
+	// LineReturnedByFirstSlot), the moment of each issue's first slot in its current generation, by
+	// key, which Waiting places a returned issue by. The daemon keeps no such moment once a slot goes
+	// back, and runs no such rule; a replay under one keeps them in a table of its own database,
+	// which the pass reads in here (admit's RuleTables), and an issue it holds none of is placed by
+	// the moment its work came back. Nil under every other rule.
+	FirstSlots map[string]time.Time
 }
 
 // KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
@@ -560,6 +576,20 @@ func (f LineFacts) KeepsSlot(issue Issue) bool {
 		return false
 	}
 	return f.Rule.KeepsSlot(issue)
+}
+
+// InWaitGrace says whether a wait of the slot holder key on another issue keeps its slot for now
+// under the facts' rule's grace (SlotRule.WaitGrace): the rule names a grace, key holds a slot
+// (SlotWaits), and either no pass has marked the start of its wait yet, so the wait begins at this
+// pass, or the grace from that start has not run out at Now (SlotRule.GraceOver). A rule with no
+// grace keeps no slot through such a wait here, and an issue that holds no slot has none to keep.
+func (f LineFacts) InWaitGrace(key string) bool {
+	rule := f.Rule.OrMain()
+	if rule.WaitGrace <= 0 {
+		return false
+	}
+	since, holds := f.SlotWaits[key]
+	return holds && (since == nil || !rule.GraceOver(*since, f.Now))
 }
 
 // NeedsSlot is NeedsSlot under the facts' rule: issue's tree is live, its root does not linger,
@@ -1205,12 +1235,13 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // kept out by a tree that keeps filing children.
 //
 // Those two orders are the daemon's own rule's (LineReturnedOldestFirst). The facts carry the
-// rule the line is built under (LineFacts.Rule), and two other orders are a rule's to choose: a
+// rule the line is built under (LineFacts.Rule), and three other orders are a rule's to choose: a
 // rule may place the returned part by the board's rank as the starting part is placed
-// (LineReturnedByRank), or put first in the starting part each issue that an issue the daemon
-// has started waits on (LineBlockersFirst). Which issues are in the line is the same under each
-// of them, save where the rule's phases decide whether an issue needs a slot
-// (LineFacts.NeedsSlot).
+// (LineReturnedByRank), or by the moment of each issue's first slot in its current generation
+// (LineReturnedByFirstSlot, LineFacts.FirstSlots), or put first in the starting part each issue
+// that an issue the daemon has started waits on (LineBlockersFirst). Which issues are in the line
+// is the same under each of them, save where the rule's phases decide whether an issue needs a
+// slot (LineFacts.NeedsSlot).
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
@@ -1300,10 +1331,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		return running
 	}
 
+	// timed is one entry of the returned part with the moment its work came back (at), the owed
+	// row's id that breaks a tie of moments, and, under a rule that places the part by first slots
+	// (LineReturnedByFirstSlot), the moment it is placed by (first).
 	type timed struct {
 		entry LineEntry
 		at    time.Time
 		id    int64
+		first time.Time
 	}
 	var returned []timed
 	// The issues this first loop puts in the line as LineWaitingOnIssue, which the branches
@@ -1509,13 +1544,30 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		return RankLess(left, right)
 	}
+	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot) places
+	// each entry by the moment of its issue's first slot in its current generation where the facts
+	// hold one (LineFacts.FirstSlots), and by the moment its work came back where they hold none;
+	// a tie of those moments falls to the daemon's own order below.
+	if order == LineReturnedByFirstSlot {
+		for i := range returned {
+			first, kept := facts.FirstSlots[returned[i].entry.Issue.Key]
+			if !kept {
+				first = returned[i].at
+			}
+			returned[i].first = first
+		}
+	}
 	sort.Slice(returned, func(i, j int) bool {
 		left, right := returned[i], returned[j]
 		// A rule that places work that came back by the board's rank (LineReturnedByRank)
 		// orders the returned part as the starting part is ordered, and the moment the work came
-		// back still stands on the entry (LineEntry.Since) as what put it in this part.
+		// back still stands on the entry (LineEntry.Since) as what put it in this part, as it does
+		// under a rule that places it by first slots.
 		if order == LineReturnedByRank {
 			return byRank(left.entry.Issue, right.entry.Issue)
+		}
+		if !left.first.Equal(right.first) {
+			return left.first.Before(right.first)
 		}
 		if !left.at.Equal(right.at) {
 			return left.at.Before(right.at)

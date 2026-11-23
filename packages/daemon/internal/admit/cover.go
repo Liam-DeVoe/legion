@@ -15,14 +15,17 @@ import (
 
 // RuleTables is where an admission pass under a slot rule the daemon does not run reads, and
 // keeps, what that rule records beyond the daemon's own tables: the merger's ready mark of a rule
-// that gives the slot back at it (record.LineFacts.Ready), and the covers that stand under a rule
-// whose start may take a cover (record.LineFacts.Covers). A replay of a recorded window gives one
-// over tables it makes in its own database (UseRuleTables), so no daemon migration carries a
-// table of a rule the daemon never runs; the daemon gives none, and its passes read and keep
-// nothing beyond the record.
+// that gives the slot back at it (record.LineFacts.Ready), the covers that stand under a rule
+// whose start may take a cover (record.LineFacts.Covers), and the moment of each issue's first
+// slot in its generation under a rule that places the line's returned part by it
+// (record.LineFacts.FirstSlots). A replay of a recorded window gives one over tables it makes in
+// its own database (UseRuleTables), so no daemon migration carries a table of a rule the daemon
+// never runs; the daemon gives none, and its passes read and keep nothing beyond the record.
 type RuleTables interface {
 	// ReadRuleFacts adds to facts, in tx, what the rule facts carry (record.LineFacts.Rule) reads
-	// from the tables about issues, the pass's live records.
+	// from the tables about issues, the pass's live records. Every pass reads its facts here
+	// before it moves a slot, so a table whose rows the slots of the moment give (the first slots)
+	// keeps them here, before it reads them.
 	ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts *record.LineFacts) error
 	// KeepCovers makes covers the covers that stand, in tx: the holder of each covered waiter, by
 	// the waiter's key.

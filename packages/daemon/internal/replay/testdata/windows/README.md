@@ -27,6 +27,8 @@ files.
 | `never-starts` | an issue the record never started, under each scenario | `main` |
 | `forty-two-more-in-flight` | a segment that starts with 42 more issues in flight grows by f | `keep-past-review`, `main` |
 | `every-trigger` | a root and two children through every trigger keep their recorded moves | `main` |
+| `one-minute-wait` | a wait on another issue that lasts one minute gives the slot back, or keeps it for a grace | `main`, `wait-grace` |
+| `root-idle-while-children-run` | a tree root holds its slot with no turn while its children run | `main` |
 
 ## What a directory holds
 
@@ -130,6 +132,10 @@ reconstruction error the tool reports; these windows hold the exact one.
   the cover's work is done, when it takes its slot back at once; a second waiter on an issue already
   started keeps its own slot; the line is ordered by rank; and a waiter's next start waits for its
   wait to end, slot or not.
+- Under `wait-grace`, a wait on another issue keeps its holder's slot for five minutes
+  (`record.SlotRule.WaitGrace`): the pass that finds the wait marks its start on the slot, a wait
+  that ends inside the grace frees no slot, and the first pass at or after the start plus the grace
+  gives the slot back as `main` does at once.
 
 ## The knobs of design section 7
 

@@ -1872,6 +1872,13 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // own again. Under the daemon's own rule nothing else of it moves —
 // no claim is suspended, no phase changes, no Dispatch status is written.
 //
+// Under a rule whose wait gives the slot back only after a grace (record.SlotRule.WaitGrace) the
+// judgement names no holder whose wait is younger than the grace (record.LineFacts.InWaitGrace),
+// so this frees none of them: such a holder keeps its row through the wait, the pass marks the
+// wait's start beside it (markSlotWaits), and the first pass at or after that start plus the
+// grace finds it waiting and frees its row here. Nothing asks for a pass at that moment: the
+// next fact of the project or the next controller tick makes it, so the delay is the rule's own.
+//
 // Under a rule whose wait stops the phase under way (record.SlotRule.WaitStopsPhase) the release
 // also stops the worker of the phase the issue stands in (workflow.Engine.StopForWait), so the
 // phase waits with its slot rather than going on without it. The worker comes back with the
@@ -2472,7 +2479,7 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // and the repair all answer under the one rule the admission was given, and none of them reads
 // the daemon's own in its place. Where the admission was given tables of a rule the daemon does
 // not run (UseRuleTables), what that rule records there is read in beside them: the merger's
-// ready marks and the covers that stand (RuleTables.ReadRuleFacts).
+// ready marks, the covers that stand and the first slots (RuleTables.ReadRuleFacts).
 func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
 	facts, err := record.ReadLineFactsUnder(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps(), a.rule)
 	if err != nil || a.tables == nil {

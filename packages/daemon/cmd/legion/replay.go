@@ -774,7 +774,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 		if *asJSON {
 			views := make([]slotRuleView, 0, len(rules))
 			for _, rule := range rules {
-				views = append(views, slotRuleView(rule))
+				views = append(views, slotRuleViewOf(rule))
 			}
 			encoder := json.NewEncoder(stdout)
 			encoder.SetIndent("", "  ")
@@ -795,6 +795,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  keeps a slot in: %s\n", strings.Join(keeps, ", "))
 			fmt.Fprintf(stdout, "  a link wait gives the slot back: %t\n", rule.LinkWaitGivesBack)
 			fmt.Fprintf(stdout, "  a children wait gives the slot back: %t\n", rule.ChildrenWaitGivesBack)
+			fmt.Fprintf(stdout, "  a wait gives the slot back after: %s\n", rule.WaitGrace)
 			fmt.Fprintf(stdout, "  a wait stops the phase under way: %t\n", rule.WaitStopsPhase)
 			fmt.Fprintf(stdout, "  the line's order: %s\n", rule.Order)
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
@@ -807,18 +808,27 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 }
 
 // slotRuleView is a record.SlotRule as `legion replay rules --json` prints it: the rule's fields
-// under JSON names, since the rule itself is no wire type.
+// under JSON names, since the rule itself is no wire type, and its grace as a Go duration
+// ("5m0s"), as the rule's text prints it.
 type slotRuleView struct {
 	Name                  string              `json:"name"`
 	Commit                string              `json:"commit"`
 	KeepsSlotIn           []phase.Phase       `json:"keepsSlotIn"`
 	LinkWaitGivesBack     bool                `json:"linkWaitGivesBack"`
 	ChildrenWaitGivesBack bool                `json:"childrenWaitGivesBack"`
+	WaitGrace             string              `json:"waitGrace"`
 	WaitStopsPhase        bool                `json:"waitStopsPhase"`
 	Order                 record.LineOrder    `json:"order"`
 	Take                  record.StartTake    `json:"take"`
 	Conflict              record.ConflictPath `json:"conflict"`
 	ReleaseAtReady        bool                `json:"releaseAtReady"`
+}
+
+// slotRuleViewOf is rule as `legion replay rules --json` prints it (slotRuleView).
+func slotRuleViewOf(rule record.SlotRule) slotRuleView {
+	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
+		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
+		Order: rule.Order, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady}
 }
 
 // missingFlag is the first of names cmd was not given, "" when each was.

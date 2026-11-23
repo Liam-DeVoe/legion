@@ -309,7 +309,12 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // wait gives the slot back (record.SlotRule.LinkWaitGivesBack, ChildrenWaitGivesBack): a rule
 // whose wait keeps the slot has its started issue hold its row through the wait, so no release
 // frees it, no mark is written and the line places it in no record.LineWaitingOnIssue entry.
-// Under the daemon's own rule both waits give it back.
+// Under the daemon's own rule both waits give it back. Under a rule whose wait gives the slot
+// back only after a grace (record.SlotRule.WaitGrace) neither counts for a slot holder whose wait
+// is younger than the grace (record.LineFacts.InWaitGrace): it keeps its row through the wait for
+// now, which is a wait it keeps its slot through (KeptWaits) and whose start the pass marks on
+// the slot (admit's markSlotWaits), and the first pass at or after that start plus the grace
+// finds both counting and gives the row back.
 //
 // An issue whose phase keeps no slot (record.LineFacts.KeepsSlot: past its review, done, or out
 // of the workflow, under the facts' rule) waits on nothing here, whatever its links say. The wait
@@ -354,6 +359,9 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 		return nil
 	}
 	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
+		return nil
+	}
+	if facts.InWaitGrace(issue.Key) {
 		return nil
 	}
 	rule := facts.Rule.OrMain()
@@ -444,7 +452,8 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // filled, so the release, the promotion, the architect's notice and the state's `blocked` all
 // answer from the one judgement.
 // slots is the caller's own read of the slots table, which record.Waiting reads as the set of
-// issues already holding one.
+// issues already holding one, and which a rule whose wait gives the slot back only after a grace
+// reads each holder's wait start from (record.LineFacts.SlotWaits).
 //
 // The held rows are what the line left behind, with the word for why (record.Waiting's second
 // answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
@@ -453,10 +462,12 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // tick read them, and so does the admission pass's stalled-tree measure (admit's
 // tellStalledTrees), which takes the words of this judgement rather than walking the project's
 // issues again; every other caller takes the value and ignores it. now is the caller's
-// own clock, and the one thing it decides is one of those words: the tree_closed word asks
+// own clock, and it decides two things: one of those words, since the tree_closed word asks
 // whether a root's linger is still running at it (record.Lingering), so that a parked root's
-// member reads tree_parked once that root's linger has run out. It reaches the judgement as
-// record.LineFacts.Now, which the line's own placement reads nowhere.
+// member reads tree_parked once that root's linger has run out; and, under a rule whose wait
+// gives the slot back only after a grace, whether a holder's grace has run out
+// (record.LineFacts.InWaitGrace). It reaches the judgement as record.LineFacts.Now, which the
+// line's own placement reads nowhere.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
@@ -466,6 +477,7 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	slots []record.Slot, facts record.LineFacts, rows map[string]Row, now time.Time,
 ) (map[string]Row, record.LineFacts, []record.LineEntry, []record.HeldIssue, error) {
 	facts.Now = now
+	facts.SlotWaits = slotWaits(slots, facts.Rule)
 	if rows == nil {
 		rows = map[string]Row{}
 	}
@@ -488,6 +500,21 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	line, held := record.Waiting(issues, slots, facts)
 	rows, err = loadMissing(ctx, tx, store, project, Judged(issues, record.WaitingIssues(line)), rows)
 	return rows, facts, line, held, err
+}
+
+// slotWaits is each holder of slots by key with the moment its wait on another issue began while
+// it kept its slot (record.Slot.WaitsSince), under a rule whose wait gives the slot back only
+// after a grace (record.SlotRule.WaitGrace), which reads the grace against it
+// (record.LineFacts.SlotWaits, InWaitGrace); nil under every other rule, which reads none.
+func slotWaits(slots []record.Slot, rule record.SlotRule) map[string]*time.Time {
+	if rule.OrMain().WaitGrace <= 0 {
+		return nil
+	}
+	waits := make(map[string]*time.Time, len(slots))
+	for _, slot := range slots {
+		waits[slot.Issue] = slot.WaitsSince
+	}
+	return waits
 }
 
 // loadMissing adds to rows the mirror rows of the keys among keys whose row it does not already

@@ -622,6 +622,8 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
 | `cover` | A slot kept until the work is done, and an issue that a waiter waits on started on the waiter's slot, one cover for each holder. | `0d3786da` |
+| `wait-grace` | `main` with a wait on another issue that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part. | `0d3786da` |
+| `returned-by-first-slot` | `main` with a returned issue placed in the line by its first slot in its current generation, not by the time at which its work came back, for the reason that a deployment reported: a started issue sent back from merging for one forward merge stood last of 76 in the returned part, and the issue of the one-minute wait last of 79. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -632,6 +634,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
   a start takes: own_slot
@@ -642,6 +645,7 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
   a start takes: own_slot
@@ -652,6 +656,7 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
   a link wait gives the slot back: false
   a children wait gives the slot back: false
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
   a start takes: own_slot
@@ -662,6 +667,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
   a start takes: own_slot
@@ -672,6 +678,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: blockers_first
   a start takes: own_slot
@@ -682,6 +689,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
   a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_by_rank
   a start takes: own_slot
@@ -692,9 +700,32 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
   a link wait gives the slot back: false
   a children wait gives the slot back: false
+  a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
   a start takes: cover
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 5m0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_by_first_slot
+  a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
 ```
@@ -706,11 +737,16 @@ Each line of a rule gives one choice:
 
 - `a link wait gives the slot back` and `a children wait gives the slot back`: whether a started issue gives its slot back while it waits on an unfinished `blocked_by` link, or on its open children.
 
+- `a wait gives the slot back after`: how long such a wait lasts before it gives the slot back.
+  A holder whose wait is younger than this keeps its slot, and the first pass at or after the wait's start plus this time gives the slot back.
+  `0s` gives it back at the pass that finds the wait.
+
 - `a wait stops the phase under way`: whether such a wait also stops the worker of the phase.
   Where it does not, the phase goes on while the issue waits, and only its next start waits.
 
 - `the line's order`: `returned_oldest_first`, the returned issues first, oldest first, and then the issues that have not started by rank.
   `returned_by_rank` places a returned issue by its board rank.
+  `returned_by_first_slot` places a returned issue by the time of its first slot in its current generation.
   `blockers_first` places first, among the issues that have not started, each issue that a started issue waits on.
 
 - `a start takes`: `own_slot`, a slot of its own while the cap has one free.
@@ -721,6 +757,56 @@ Each line of a rule gives one choice:
   Under every rule, a conflict in accepting or retro keeps its phase and waits for merging, where the merger merges the base forward (assumption 37).
 
 - `the slot goes back at the ready mark`: whether an issue in merging gives its slot back at the merger's ready mark, under a rule that keeps a slot in merging.
+
+### `wait-grace` and its grace
+
+`wait-grace` keeps a holder's slot through a wait on another issue for five minutes.
+The admission pass that first finds the holder waiting marks the start of the wait on its slot, as it marks every wait that a holder keeps its slot through.
+A wait that ends inside the five minutes frees no slot, and its issue stands in no place of the line.
+The first pass at or after the wait's start plus five minutes gives the slot back, as `main` gives it back at once.
+
+No pass is asked for at the end of the grace, because the daemon has no wake that an admission pass can ask for at a time of its choosing.
+The slot goes back at the next pass after the grace: the next fact of the project or the next controller tick, at most `controller_wake_interval_seconds` later.
+That delay is the rule's own, in the daemon and in a replay alike.
+
+The value comes from window one of the comparison, 94 hours at a cap of 157:
+
+| Reading of the window | Value |
+| --- | --- |
+| Slots taken again in the pass that freed them | 776 of 819 |
+| Median time from a slot's release to the next taking of a slot | 19 microseconds |
+| Median time from one pass that frees a slot to the next | 4 minutes 44 seconds, over 760 such passes |
+| Waits on another issue that gave a slot back | 114: 61 on a link and 53 on children, 62 still open at the window's end |
+| Median length of those waits | 20 hours 24 minutes, an open wait counted to the window's end; 26 hours 22 minutes over the ended waits alone |
+| The shortest of those waits | 15 seconds, then 14 minutes, 15 minutes and 25 minutes |
+| Median time from a release for a wait to the issue's next slot | 18 hours 18 minutes, over 49 |
+| Median time from the end of such a wait to the issue's next slot | 7 minutes 48 seconds, over 49 |
+
+| Grace | Waits shorter than the grace | Slot-hours the grace keeps |
+| --- | --- | --- |
+| 1 minute | 1 (0.9%) | 1.89 |
+| 2 minutes | 1 (0.9%) | 3.77 |
+| 5 minutes | 1 (0.9%) | 9.42 |
+| 10 minutes | 1 (0.9%) | 18.84 |
+| 15 minutes | 2 (1.8%) | 28.24 |
+| 30 minutes | 4 (3.5%) | 55.89 |
+| 1 hour | 8 (7.0%) | 109.28 |
+| 2 hours | 12 (10.5%) | 210.24 |
+| 4 hours | 15 (13.2%) | 399.98 |
+
+The median time from a slot's release to its next taking names no grace: the cap was full, and the pass that freed a slot gave it out at once in 776 of 819 releases.
+The time from one pass that frees a slot to the next, 4 minutes 44 seconds, is when a slot next comes free, and five minutes is that time rounded up.
+Five minutes keeps the slot through the one-minute class, the 15-second wait of the window, and through no other wait of the window, because the next shortest lasted 14 minutes.
+Each longer wait holds its slot five minutes more, 9.4 slot-hours of the window's 14,768.
+Over the window's waits, the next pass that a replay makes after the grace's end, an event, a recorded move, a slot moved or a tick, came a median 2.6 seconds later, at most 31.5 seconds.
+
+### `returned-by-first-slot` and the first slot
+
+`returned-by-first-slot` places each issue of the returned part by the time of its first slot in its current generation, the earliest first.
+An issue that the daemon started early and that gave its slot back stands, when its work comes back, ahead of the returned issues that the daemon started after it.
+The daemon records no first slot once a slot goes back, because the slot's row goes with it.
+A replay keeps the first slots in a table of its own database: each pass keeps the slot of each holder as the first of its generation where the table holds none, and the start state keeps the first slot that the record shows for each issue in its current run.
+A deployment that adopts this rule needs that record in the daemon's own store first.
 
 ## The branches
 

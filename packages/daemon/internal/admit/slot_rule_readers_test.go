@@ -388,6 +388,25 @@ func slotRuleReaders() []slotRuleReader {
 			why:     "a started parent that waits on its open children gives its slot back for the wait only under a rule whose children wait does",
 		},
 		slotRuleReader{
+			reader:  "blockers.waitsOf: a wait within the grace",
+			changes: []string{"WaitGrace"},
+			rule:    ruleWith("main with a wait grace", func(rule *record.SlotRule) { rule.WaitGrace = keptWaitGrace() }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const waiter, blocker = "ACME-75", "ACME-76"
+				acmeRoot(t, pool, waiter, phase.Implementing, "in_progress", "a", []string{blocker}, nil)
+				takeSlot(t, pool, waiter)
+				seedMirrorIn(t, pool, acmeProject, blocker, "in_progress")
+				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
+				return slotWord(t, pool, waiter) + "; " + markWord(t, pool, waiter)
+			},
+			main:    "ACME-75 holds no slot; ACME-75 carries the mark of a release for a wait",
+			changed: "ACME-75 holds a slot; ACME-75 carries no mark of a release for a wait",
+			why: "a started issue that waits on another issue gives its slot back at the pass that finds the wait, and under a rule " +
+				"with a grace keeps it while the wait is younger than the grace",
+		},
+		slotRuleReader{
 			reader:  "the release for a wait: a wait that stops the phase",
 			changes: []string{"WaitStopsPhase"},
 			rule:    ruleWith("main with a wait that stops the phase", func(rule *record.SlotRule) { rule.WaitStopsPhase = true }),
@@ -468,6 +487,29 @@ func slotRuleReaders() []slotRuleReader {
 			changed: "the trees open of [ACME-121 ACME-122] are [ACME-122]; the line is [ACME-120 ACME-121]",
 			why: "the issues that have not started stand by rank, or with the issues started work waits on first under a rule " +
 				"that orders them so, and the slot the waiter gave back goes to the first of them",
+		},
+		slotRuleReader{
+			reader:  "record.Waiting's order of the line: returned work by first slot",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with returned work by first slot", func(rule *record.SlotRule) { rule.Order = record.LineReturnedByFirstSlot }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const holder, returnedFirst, startedFirst = "ACME-115", "ACME-116", "ACME-117"
+				seedSlottedInPhase(t, pool, acmeProject, holder, "a", phase.Admitted, nil)
+				acmeRoot(t, pool, returnedFirst, phase.Implementing, "in_progress", "b", nil, nil)
+				oweMemberStart(t, pool, returnedFirst, returnedFirst, phase.Implementing)
+				acmeRoot(t, pool, startedFirst, phase.Implementing, "in_progress", "c", nil, nil)
+				oweMemberStart(t, pool, startedFirst, startedFirst, phase.Implementing)
+				admission := ruledAdmission(t, 2, rule, silent())
+				admission.UseRuleTables(firstSlotTables{returnedFirst: fixedNow.Add(-time.Hour), startedFirst: fixedNow.Add(-3 * time.Hour)})
+				tickThrough(t, pool, admission, "the pass")
+				return slotWord(t, pool, returnedFirst) + "; " + slotWord(t, pool, startedFirst)
+			},
+			main:    "ACME-116 holds a slot; ACME-117 holds no slot",
+			changed: "ACME-116 holds no slot; ACME-117 holds a slot",
+			why: "the issues whose work came back take a free slot in the order their work came back, or by the moment of their " +
+				"first slot under a rule that orders them so",
 		},
 		slotRuleReader{
 			reader:  "admit's capLets in the promotion",

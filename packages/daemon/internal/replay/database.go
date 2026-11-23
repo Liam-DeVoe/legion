@@ -26,9 +26,12 @@ const replayDatabasePrefix = "legion_replay_"
 // 9542c6fb (ReadyMark, assumption 20), which the rule legion-v19.57.3 reads, kept for the issue's
 // generation and the merger's phase entry it was made in, so a later visit to merging reads none
 // of it; the sign-offs the workflow held behind an issue beneath, which the rule cover reads as a
-// wait (HeldSignOff), kept the same way for the architect's entry into accepting; and the covers
-// that stand under the rule cover, the holder of each covered waiter. The admission pass reads
-// them and keeps the covers through ruleTables. A rule added with a table of its own adds it here.
+// wait (HeldSignOff), kept the same way for the architect's entry into accepting; the covers
+// that stand under the rule cover, the holder of each covered waiter; and the moment of each
+// issue's first slot in a generation, which the rule returned-by-first-slot places the line's
+// returned part by, kept from the slot rows the passes read and from the start state. The
+// admission pass reads them and keeps the covers and the first slots through ruleTables. A rule
+// added with a table of its own adds it here.
 var replayTables = []string{
 	`create table replay_ready_marks (
 		issue text not null,
@@ -47,6 +50,12 @@ var replayTables = []string{
 	`create table replay_covers (
 		waiter text primary key,
 		holder text not null unique
+	)`,
+	`create table replay_first_slots (
+		issue text not null,
+		generation bigint not null,
+		slot_at timestamptz not null,
+		primary key (issue, generation)
 	)`,
 }
 

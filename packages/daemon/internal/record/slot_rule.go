@@ -2,17 +2,19 @@ package record
 
 import (
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // SlotRule is one rule of which issues hold one of the cap's admission slots and how the waiting
 // line gives the slots out: the phases that keep a slot, which waits on another issue give it
-// back, whether such a wait stops the phase under way, the order of the line, what a start may
-// take from the cap, what a head that conflicts with its base does, and where inside merging the
-// slot goes back. It is a value with a name, so that the daemon runs its own rule (MainRule) and a
-// replay of a recorded window runs the daemon's own admission pass under another rule the
-// repository keeps (SlotRules), and a rule is read by name rather than copied into a script.
+// back and after how long, whether such a wait stops the phase under way, the order of the line,
+// what a start may take from the cap, what a head that conflicts with its base does, and where
+// inside merging the slot goes back. It is a value with a name, so that the daemon runs its own
+// rule (MainRule) and a replay of a recorded window runs the daemon's own admission pass under
+// another rule the repository keeps (SlotRules), and a rule is read by name rather than copied
+// into a script.
 //
 // Every reader of the rule takes it from the pass, the engine or the projection it was given to
 // (admit's Admission.UseSlotRule, workflow.Config.SlotRule, LineFacts.Rule): no reader reads a
@@ -35,6 +37,19 @@ type SlotRule struct {
 	// ChildrenWaitGivesBack says whether a started parent that waits on its open Dispatch
 	// children gives its slot back for the wait (blockers.waitsOf).
 	ChildrenWaitGivesBack bool
+	// WaitGrace is how long a wait on another issue that gives the slot back (LinkWaitGivesBack,
+	// ChildrenWaitGivesBack) lasts before it does: a slot holder whose wait is younger than the
+	// grace keeps its slot through it, as a holder keeps it through a wait the rule keeps the slot
+	// for (blockers.KeptWaits), and the first admission pass at or after the wait's start plus the
+	// grace gives the slot back as a rule with no grace gives it back at once (LineFacts.InWaitGrace,
+	// blockers.waitsOf). The wait's start is the pass that first found the holder waiting while it
+	// kept its slot, which marks it on the slot (Slot.WaitsSince). No pass is asked for at the
+	// grace's end, since the daemon has no wake an admission pass can ask for at a moment of its
+	// choosing: the slot goes back at the next pass after the grace, which every fact of the
+	// project and every controller tick makes, and that delay is the rule's own (GraceOver). Zero,
+	// the daemon's own and every rule's but wait-grace's, gives the slot back at the pass that
+	// finds the wait.
+	WaitGrace time.Duration
 	// WaitStopsPhase says whether a wait on another issue stops the phase under way: under a rule
 	// where it does, a started parent waits on its open children in whatever phase it stands
 	// (ChildWaitsOf), and the worker of the phase is stopped for the wait. Under a rule where it
@@ -68,6 +83,11 @@ const (
 	// LineBlockersFirst is the daemon's own order with the issues that a started issue waits on
 	// placed first among the issues that have not started.
 	LineBlockersFirst LineOrder = "blockers_first"
+	// LineReturnedByFirstSlot places an issue whose work came back by the moment of its first slot
+	// in its current generation (LineFacts.FirstSlots), the earliest first, rather than by the
+	// moment its work came back: an issue the daemon started early that gave its slot back stands
+	// ahead, when its work comes back, of the returned issues it started before.
+	LineReturnedByFirstSlot LineOrder = "returned_by_first_slot"
 )
 
 // StartTake is what a start may take from the cap, a SlotRule's choice.
@@ -99,9 +119,10 @@ const (
 
 // MainRule is the daemon's own rule, the one it is built with: a slot is kept from the start
 // through the review and in held, and none past the review; a link wait and a children wait give
-// the slot back and stop nothing; work that came back goes first, oldest first, then the line by
-// rank; a start takes a slot of its own; a conflicting head keeps its phase while the base is
-// merged forward. Its commit is the commit the rule was first written as a value at.
+// the slot back at the pass that finds them, with no grace, and stop nothing; work that came back
+// goes first, oldest first, then the line by rank; a start takes a slot of its own; a conflicting
+// head keeps its phase while the base is merged forward. Its commit is the commit the rule was
+// first written as a value at.
 var MainRule = SlotRule{
 	Name:   "main",
 	Commit: "0d3786da536722f2eb26a793ab1b9827b6e90f47",
@@ -109,6 +130,7 @@ var MainRule = SlotRule{
 		phase.Reviewing, phase.Held},
 	LinkWaitGivesBack:     true,
 	ChildrenWaitGivesBack: true,
+	WaitGrace:             0,
 	WaitStopsPhase:        false,
 	Order:                 LineReturnedOldestFirst,
 	Take:                  TakeOwnSlot,
@@ -128,6 +150,14 @@ func (r SlotRule) OrMain() SlotRule {
 // PhaseKeepsSlot says whether an issue standing at at keeps its slot under r (KeepsSlotIn).
 func (r SlotRule) PhaseKeepsSlot(at phase.Phase) bool {
 	return slices.Contains(r.OrMain().KeepsSlotIn, at)
+}
+
+// GraceOver says whether a wait on another issue that began at since has lasted r's grace by now
+// (WaitGrace), so that it gives the slot back: at once under a rule with no grace, and from since
+// plus the grace on under one with a grace. The pass that gives the slot back is the first at or
+// after that moment, so the delay to it is the rule's own.
+func (r SlotRule) GraceOver(since, now time.Time) bool {
+	return !now.Before(since.Add(r.OrMain().WaitGrace))
 }
 
 // KeepsSlot is the phase half of r's admission rule, as the package's KeepsSlot is of the
@@ -203,13 +233,15 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules two recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3) and the four candidates of the comparison (keep-past-review,
-// blockers-first, returned-by-rank, cover). `legion replay rules` prints them. Each answer is built
-// afresh, so a caller that changes a rule it was handed changes no other caller's.
+// (legion-v20.42.5, legion-v19.57.3) and the six candidates of the comparison (keep-past-review,
+// blockers-first, returned-by-rank, cover, wait-grace, returned-by-first-slot). `legion replay
+// rules` prints them. Each answer is built afresh, so a caller that changes a rule it was handed
+// changes no other caller's.
 func SlotRules() []SlotRule {
 	daemon := MainRule
 	daemon.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
-	return []SlotRule{daemon, windowOneRule(), windowTwoRule(), keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule()}
+	return []SlotRule{daemon, windowOneRule(), windowTwoRule(), keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
+		waitGraceRule(), returnedByFirstSlotRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -304,6 +336,50 @@ func coverRule() SlotRule {
 		rule.KeepsSlotIn = everyWorkflowPhase()
 		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
 		rule.Take = TakeCover
+	})
+}
+
+// waitGraceRule is the daemon's own rule with a wait on another issue that gives the slot back
+// only once it has lasted the grace (WaitGrace, waitGrace): a holder keeps its slot through a
+// shorter wait, which neither frees a slot nor sends the holder to the line, and a longer one gives
+// it back at the first pass at or after the grace's end, as the daemon's rule gives it back at
+// once. Its reason is a deployment's reported cases: a started issue's blocked_by link set and
+// taken off within a minute took its slot back and placed it last of 79 in the line's returned
+// part, which orders by the moment the work came back, so one minute of a wait put work in
+// progress behind every issue that came back before it.
+func waitGraceRule() SlotRule {
+	return mainRuleWith("wait-grace", func(rule *SlotRule) {
+		rule.WaitGrace = waitGrace
+	})
+}
+
+// waitGrace is the grace of the rule wait-grace, five minutes, read from the recorded window the
+// comparison names window one (94 hours at a cap of 157). There a slot that came free was taken in
+// the pass that freed it (776 of 819 releases), so the median time from a slot's release to its
+// next taking, 19 microseconds, names no grace; the median time from one pass that freed a slot to
+// the next was 4 minutes 44 seconds (760 such passes), the moment a slot next comes free, and five
+// minutes is that time rounded up. Of the 114 waits on another issue that gave a slot back there,
+// one lasted under a minute (15 seconds) and the next shortest 14 minutes, the median 20 hours, so
+// five minutes keeps the slot through the one-minute class and through no longer wait of the
+// window, at a cost of five more minutes of slot for each longer wait: 9.4 slot-hours of the
+// window's 14,768. The pass that gives the slot back is the first after the grace's end, the
+// rule's own delay: over that window's waits the next pass a replay makes (an event, a recorded
+// move, a slot moved or a tick) came a median 2.6 seconds after the grace's end, at most 31.5.
+const waitGrace = 5 * time.Minute
+
+// returnedByFirstSlotRule is the daemon's own rule with an issue whose work came back placed in the
+// line by the moment of its first slot in its current generation (LineReturnedByFirstSlot) rather
+// than by the moment its work came back. Its reason is a deployment's reported cases: a started
+// issue sent back from merging for one forward merge stood last of 76 in the line's returned part,
+// and one whose one-minute wait gave its slot back last of 79, since that part orders by the moment
+// the work came back; under this rule each stands where its first admission puts it, ahead of the
+// returned work the daemon started after it. The daemon records no first slot once a slot goes
+// back (its slot row goes with it), so a replay keeps the first slots in a table of its own
+// (LineFacts.FirstSlots, admit's RuleTables), and a deployment that adopts this rule needs that
+// record in the daemon's own store first.
+func returnedByFirstSlotRule() SlotRule {
+	return mainRuleWith("returned-by-first-slot", func(rule *SlotRule) {
+		rule.Order = LineReturnedByFirstSlot
 	})
 }
 
