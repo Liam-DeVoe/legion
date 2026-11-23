@@ -951,6 +951,11 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
  *   - reviewer-own-head's no-verdict-fail, where #702's head holds the implementer's pass and the
  *     tester's fail and the task names no verdict of the tester, so only that line, which reads not
  *     known, shows the fail: the review requests changes and its body names k1;
+ *   - reviewer-own-head's ci-check-fail, where k1, a check that no CI job runs, reads yes at #702's
+ *     head and k2, a check a CI job runs, reads no there for its job's failure: the review
+ *     requests changes and its body names k2, since each check, those a CI job runs among them,
+ *     must read yes at the head the reviewer reviews. In ci-check-fail-other-head k2 fails only at
+ *     #703's head, and the review approves #702, where each check reads yes;
  *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
  *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
  *     still going: the review requests changes and its body names k1, and no reply of the run
@@ -972,16 +977,18 @@ function headsReview(
   const review = reviews.filter((r) => r.pr === pr).at(-1);
   const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
   const approves = review?.event === "APPROVE" && review.commit === head;
-  const namesCheck = /\bk1\b/.test(review?.body ?? "");
+  // The check a refusal must name: k2, the check a CI job runs, in the worlds where its job failed.
+  const named = world.startsWith("ci-check-fail") ? "k2" : "k1";
+  const namesCheck = new RegExp(`\\b${named}\\b`).test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
   const pass =
-    world === "no-verdict-fail"
+    world === "no-verdict-fail" || world === "ci-check-fail"
       ? refuses
       : scenario === "reviewer-own-head"
         ? approves
         : refuses && waiting.length === 0;
   const notes = [
-    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} names${named.toUpperCase()}=${namesCheck} reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...reviews.map(
       (r) =>
         `  review #${r.pr} ${r.event || "none"} at ${r.commit || "none"}: ${JSON.stringify(r.body.slice(0, 200))}`
@@ -1057,9 +1064,13 @@ function headsTester(runDir: string, run: string, label: string): Row {
  * `dispatch results` tells the two apart. The architect's calls are the daemon stand-in's log
  * (daemon.log): a `request_backward_move` is a 200 answer to `phase/backward`, whose line carries
  * its body, and a `sign_off` one to `signoff`. A pass, but in no-verdict-pass: a move back whose
- * reason names k1, no sign-off, and no reply of the run that starts WAITING before its first move
- * or sign-off (with neither, no reply at all): a WAITING line after the move waits for the next
- * phase, not for the check. A pass in no-verdict-pass: a sign-off and no move back. A run of a case
+ * reason names the case's check, no sign-off, and no reply of the run that starts WAITING before
+ * its first move or sign-off (with neither, no reply at all): a WAITING line after the move waits
+ * for the next phase, not for the check. A pass in no-verdict-pass: a sign-off and no move back.
+ * The case's check is k1, but in ci-check-fail and ci-check-fail-other-head, where k1, a check that
+ * no CI job runs, reads yes at #702's head and k2, a check a CI job runs, reads no for its job's
+ * failure at #702's head or at #703's: there it is k2, since the architect accepts only when each
+ * check, those a CI job runs among them, reads yes at each open head of the issue. A run of a case
  * has the row `architect-pass-and-fail:<case>`. `ref` is never counted. */
 function headsArchitect(
   runDir: string,
@@ -1077,7 +1088,8 @@ function headsArchitect(
     const value = field(line.body, "reason");
     return typeof value === "string" ? value : "";
   };
-  const sentBack = backs.some((line) => /\bk1\b/.test(reason(line)));
+  const named = dirCase.startsWith("ci-check-fail") ? "k2" : "k1";
+  const sentBack = backs.some((line) => new RegExp(`\\b${named}\\b`).test(reason(line)));
   const decided = calls.find(
     (line) => line.path === "/legion/v1/phase/backward" || line.path === "/legion/v1/signoff"
   );
