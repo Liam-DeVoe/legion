@@ -27,7 +27,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
-A step names one of Legion's roles in the table below, or a role this deployment defines: your launch lists both after your addressing ("The roles of this deployment"), each with the type of its step.
+A step names one of Legion's roles in the table below, or a role this deployment defines: your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.
 A `planner` step may stand at any place, and `implementer` stands before each `tester`, `reviewer` and `acceptance:owner` step, since each of them reads the pull request the implementer opens: a plan that names one of them with no `implementer` step before it is refused with a reason that ends `This release of Legion does not carry it out yet.`
 A role this deployment defines runs where its step stands in your plan, at the phase `step`, and reports pass or fail.
 It reads no pull request, so it may stand at any place too.
@@ -44,7 +44,8 @@ The table lists Legion's steps in the order of the default steps:
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name (`absent`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 

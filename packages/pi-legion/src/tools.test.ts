@@ -195,8 +195,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
   "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. Only a completion with the verdict " +
-  "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
+  "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
   "(RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
@@ -253,7 +253,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
   "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
   "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
-  "step and after each step of the type implementation; a " +
+  "step and after each other step of the type implementation; a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +

@@ -205,6 +205,12 @@ test("declares the six phase-worker operations under one op, and names the Envoy
   expect(definition.description).toContain(
     "since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; ",
   )
+  // The daemon refuses `return_to` on a completion that fails no step, and request_backward_move
+  // takes its own, so the description limits completions alone.
+  expect(definition.description).toContain(
+    "A completion names it only with the verdict fail (RETURN_TO_NEEDS_FAIL).",
+  )
+  expect(definition.description).not.toContain("Only a completion with the verdict fail names it")
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
 

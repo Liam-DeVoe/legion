@@ -16,10 +16,13 @@
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
 //	                         the rig's claim on the root issue of its tree or on a child under it;
-//	                         an architect's addressing ends with the roles of the rig's deployment
-//	                         (rigRoles, deploymentRolesLine) where the checkout's daemon has the key
-//	                         `roles`, and a root architect's prompt then with the design gate steps
-//	                         of a deployment that sets no `gates.design`, as such a launch's does
+//	                         an architect's addressing goes on with the roles of the rig's
+//	                         deployment (rigRoles, deploymentRolesLine) where the checkout's daemon
+//	                         has the key `roles`, a root architect's then with the design gate
+//	                         steps of a deployment that sets no `gates.design`, and every
+//	                         architect's ends with the production check of one that sets no
+//	                         `production_check` (productionCheckLine) where the daemon has that
+//	                         key, as such a launch's does
 //	prompt step <prompt_file> [<role>]
 //	                         prints the system prompt a launch of a step of a role of the rig's
 //	                         deployment starts with (stepPrompt), the checker's or the role named.
@@ -226,6 +229,47 @@ func deploymentRolesLine(roles []rigRole) string {
 	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
 }
 
+// rigProductionCheck is the production check of the rig's deployment, which sets no
+// `production_check`: the tester, the role config's readProject gives a project that names no
+// such key. daemon-pane_test.go holds it to the key table's default.
+const rigProductionCheck = claim.RoleTester
+
+// checksProduction says whether this checkout's daemon has the project key `production_check`: a
+// nested key of its key table's entry `projects` (config.ConfigReference), as definesRoles reads
+// `roles`. Where it has the key, every architect is told the production check last in its
+// addressing (productionCheckLine). The key table holds no sign of that sentence itself, so a
+// checkout whose daemon has the key and tells no such sentence, one from the key table
+// (7ed02373162) to the sentence (b537812fb53, #3995), is composed here with the sentence all the
+// same.
+func checksProduction() bool {
+	for _, key := range config.ConfigReference() {
+		if key.Name != "projects" {
+			continue
+		}
+		for _, nested := range key.Nested {
+			if nested.Path == "projects.<KEY>" && nested.Name == "production_check" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// productionCheckLine is the sentence every architect is told last in its addressing, after the
+// roles of its deployment and, for the architect of a tree's root, after the design gate steps:
+// the project's `production_check` (check), the role that works the production check a merge
+// opens, or `off` for the empty role. It restates the daemon's daemon.ProductionCheckFragment,
+// since one program runs against each label's checkout of the daemon module, and an older one
+// lacks that function. It is that function's sentence at the commit this file is part of, which
+// daemon-pane_test.go holds it equal to.
+func productionCheckLine(check claim.Role) string {
+	word := string(check)
+	if word == "" {
+		word = "off"
+	}
+	return "Production check: " + word + "."
+}
+
 // stepPromptPaths is the prompt of a step of a role of the deployment, as the paths of its parts:
 // the headless part every phase worker is told, as prompts.New(stateDir) snapshots it, then
 // promptFile, the role's own prompt (`roles.<name>.prompt_file`), then the daemon's part every
@@ -419,12 +463,13 @@ func stepPrompt(stateDir, project string, c supervise.Claim, promptFile string) 
 
 // joinedPrompt is the text of the files at paths concatenated, with the newlines that end them
 // dropped, a blank line, then c's addressing for the rig's repository. An architect's addressing
-// ends with the roles of the rig's deployment (deploymentRolesLine) where the checkout's daemon has
-// the key `roles`, and that of the architect of a tree's root then with the design gate steps of a
-// deployment that leaves `gates.design` unset (config.Gates.Steps), as workerSpawnSpec appends
-// them. The join is this program's own copy of the daemon's (runtime.ComposePrompt), since the rig
-// runs it against each label's checkout of the daemon module, an older one among them, which
-// lacks it.
+// goes on with the roles of the rig's deployment (deploymentRolesLine) where the checkout's daemon
+// has the key `roles`, that of the architect of a tree's root then with the design gate steps of a
+// deployment that leaves `gates.design` unset (config.Gates.Steps), and every architect's ends with
+// the production check of the rig's deployment (productionCheckLine, rigProductionCheck) where the
+// daemon has the key `production_check`, as workerSpawnSpec appends them. The join is this
+// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
+// label's checkout of the daemon module, an older one among them, which lacks it.
 func joinedPrompt(paths []string, project string, c supervise.Claim) (string, error) {
 	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
 	if err != nil {
@@ -439,6 +484,9 @@ func joinedPrompt(paths []string, project string, c supervise.Claim) (string, er
 	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + daemon.DesignGateFragment(config.Gates{}.Steps())
+	}
+	if c.Role == claim.RoleArchitect && checksProduction() {
+		addressing += " " + productionCheckLine(rigProductionCheck)
 	}
 	var body strings.Builder
 	for _, path := range paths {

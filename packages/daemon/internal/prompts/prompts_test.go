@@ -98,9 +98,11 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 }
 
 // The implementer's parts name every trigger of a forward merge that its skill names, so the two
-// lists agree. Retro's own work commits nothing, and a merge forward the daemon asks for in retro
-// is no part of it, so the parts that say retro commits nothing say "of its own". Each part is
-// read alone. This shows the text is loaded, never that an implementer follows it.
+// lists agree. The merge is the merger's only where no step of the task is left before it
+// (classify.MergeComesNext): an `accepting` that a step follows still asks the implementer
+// (record.MergeForwardAsker). Retro's own work commits nothing, and a merge forward the daemon asks
+// for in retro is no part of it, so the parts that say retro commits nothing say "of its own". Each
+// part is read alone. This shows the text is loaded, never that an implementer follows it.
 func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 	for _, part := range []struct {
 		name, text    string
@@ -109,10 +111,11 @@ func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
 			"Merge the base forward only on one of five triggers.",
 			"(in `implementing` your own assignment and its completion stand)",
-			"From `accepting` on, the merge with the base is the merger's",
+			"In `retro`, in `merging`, and in `accepting` where no step of the task follows the acceptance, the merge with the base is the merger's.",
+			"The daemon asks the merger for it in `merging`, not you.",
 			"The controller asks you to, because of a conflict.",
 			"The architect's move back names a parent's last round.",
-		}, []string{"one of four triggers", "one of six triggers", "and `retro` your own assignment"}},
+		}, []string{"one of four triggers", "one of six triggers", "and `retro` your own assignment", "From `accepting` on"}},
 		{"go/implementer.md", goPart(t, "implementer.md"), []string{
 			"Retro commits nothing and pushes nothing of its own:",
 			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
@@ -123,8 +126,8 @@ func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 	}
 }
 
-// The owner is told the roles a step of its plan may name by the list its launch gives after its
-// addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
+// The owner is told the roles a step of its plan may name by the list in its `Legion addressing`
+// line, never by a list in its prompt, since the deployment's settings name roles no prompt
 // part can know. Its prompt says where a step of such a role runs, that it runs at the phase step
 // whatever its type, and that it reports pass or fail. It also says what goes on after a task
 // stops because the deployment no longer defines the role of one of its steps. Both architect
@@ -137,10 +140,22 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 	}
 	for _, isRoot := range []bool{true, false} {
 		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
+			"A step names a role of the list in your `Legion addressing` line, \"The roles of this deployment\", each with the type of its step:",
 			"A role this deployment defines runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
 			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
-		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands"})
+		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands", "the list your launch gives after your addressing"})
 	}
+}
+
+// An architect owns the issues the owner walk ends at it for (record.OwningIssue): the root's
+// architect the root too, and a child's architect its own issue too. The children an architect
+// ends with a status write are those issues but its own, since the daemon sets back a status on
+// the tree root and a child's architect's status on its own issue. The part that says so agrees
+// with the walk. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnerIsToldWhichIssuesItOwns(t *testing.T) {
+	holdsAndRetires(t, "go/architect-common.md", goPart(t, "architect-common.md"), []string{
+		"As the root's architect, you own every issue of the tree, the root among them. As a child's architect, you own your own issue and each issue under it. The children you own are all of those issues but your own.",
+	}, []string{"you own every issue of the tree except the root", "you own each issue under your own issue"})
 }
 
 // The owner's move back from accepting to `step` works only where it says which earlier step of

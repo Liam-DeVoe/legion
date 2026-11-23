@@ -29,7 +29,7 @@ Edit the live body: read it (`gh api repos/{owner}/{repo}/pulls/{number} --jq .b
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+**Thermo:** `simplify-settled-diff` <once at <head-sha> | not run (docs-only change)>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
 - `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
 - `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
 Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
@@ -61,7 +61,8 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
 
 ## The simplify pass and the `Thermo` line
 
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes, whatever the diff touches, a docs-only diff included.
+- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes.
+  The pass covers every file the diff touches, and a docs-only diff needs none.
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
   A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
   the `Thermo` line names the count and the fixing commit.

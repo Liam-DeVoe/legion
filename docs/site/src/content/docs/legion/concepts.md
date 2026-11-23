@@ -201,7 +201,8 @@ some of `planner implementer tester reviewer acceptance:owner` and of the roles 
 defines, each named once, in the order the owner names them,
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
-and after each step of the type implementation, since Legion's retro is done by the implementer,
+and after each other step of the type implementation,
+since Legion's retro is done by the implementer,
 where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and

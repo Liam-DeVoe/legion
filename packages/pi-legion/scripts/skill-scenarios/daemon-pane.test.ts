@@ -301,22 +301,42 @@ test.skipIf(skip)(
 );
 
 // Every architect owns a plan, whose steps name the roles of the deployment, so its addressing
-// ends with them: Legion's five, then the rig's checker and critic, each with its type.
+// goes on with them: Legion's five, then the rig's checker and critic, each with its type. Its
+// production check line comes after them (the row below).
 test.skipIf(skip)(
   "tells an architect the roles of the rig's deployment after its addressing",
   () => {
     const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
     expect(child).toMatch(
-      /\n\nLegion addressing: [^\n]* The roles of this deployment, each with the type of its step: [^\n]*, checker \(testing\), critic \(review\)\.$/
+      /\n\nLegion addressing: [^\n]* The roles of this deployment, each with the type of its step: [^\n]*, checker \(testing\), critic \(review\)\. Production check: [^\n]+\.$/
     );
   },
   600_000
 );
 
-// daemon-pane.go restates two of the daemon's functions, the parts of a step of a role of the
-// deployment and the sentence of the deployment's roles, and daemon-pane_test.go holds each to the
-// daemon's own in this checkout's module. `go test` exits 0 on a run that holds no test, so the row
-// asks for the test's own PASS line.
+// Every architect's addressing ends with the project's production check line, after the roles of
+// the deployment and, for a root's architect, after the design gate steps, as a launch's does
+// (workerSpawnSpec). The rig's deployment leaves `production_check` unset, so the line names the
+// tester.
+test.skipIf(skip)(
+  "ends an architect's addressing with the production check line of a deployment that leaves it unset",
+  () => {
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    expect(root).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Design gate steps: [^\n]+\. Production check: tester\.$/
+    );
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Production check: tester\.$/
+    );
+  },
+  600_000
+);
+
+// daemon-pane.go restates three of the daemon's functions, the parts of a step of a role of the
+// deployment, the sentence of the deployment's roles and the sentence of its production check, and
+// daemon-pane_test.go holds each to the daemon's own in this checkout's module. `go test` exits 0
+// on a run that holds no test, so the row asks for the test's own PASS line.
 test.skipIf(skip)(
   "holds the rig's restatements of the daemon to the daemon's own functions in this checkout",
   () => {
