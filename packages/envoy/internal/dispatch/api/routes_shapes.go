@@ -926,7 +926,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: projectTimelineResponse{}, Params: projectTimelineQuery{},
 	},
 	"GET /api/v1/projects/{key}/deploy-runs/{id}": {
-		Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}, Params: projectDeployRunQuery{},
+		Status: http.StatusOK, Response: projectDeployRunView{}, Params: projectDeployRunQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
