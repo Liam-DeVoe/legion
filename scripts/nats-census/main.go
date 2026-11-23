@@ -38,6 +38,14 @@ const (
 // at its timer (nats.go:6105-6143); FlushWithContext refuses a context with no deadline and ends at
 // it (context.go:177-218); the PING is "PING\r\n" (nats.go:2108, 6071-6076). A listed ack that
 // passes an AckOpt is a request all the same (passesAckOpt). Every method not listed is a request.
+//
+// One listed method waits on a condition the census cannot see: Subscription.Unsubscribe of a
+// JetStream subscription whose consumer nats.go created sends DeleteConsumer and waits for the
+// answer (nats.go:5477-5500; js.go:1472-1488, 2033-2035). It is listed because the unsubscribe of a
+// core subscription, or of one bound to an existing consumer with nats.Bind, sends no request.
+// KeyWatcher.Stop and KeyLister.Stop are not listed: a KV watch's subscription is an ordered
+// consumer that nats.go creates (jetstream/kv.go:1335-1360), so a stop deletes it and waits
+// (jetstream/kv.go:1236-1241, 1495-1497).
 var local = map[string]bool{
 	// *nats.Conn
 	"Conn.NewInbox": true, "Conn.IsConnected": true, "Conn.IsClosed": true, "Conn.IsReconnecting": true,
@@ -70,7 +78,7 @@ var local = map[string]bool{
 	"KeyValueEntry.Value": true, "KeyValueEntry.Revision": true, "KeyValueEntry.Key": true,
 	"KeyValueEntry.Bucket": true, "KeyValueEntry.Created": true, "KeyValueEntry.Delta": true,
 	"KeyValueEntry.Operation": true, "KeyValue.Bucket": true, "KeyWatcher.Updates": true,
-	"KeyWatcher.Stop": true, "KeyWatcher.Context": true, "KeyWatcher.Error": true,
+	"KeyWatcher.Context": true, "KeyWatcher.Error": true,
 	"KeyValueStatus.Bucket": true, "KeyValueStatus.Values": true, "KeyValueStatus.History": true,
 	"KeyValueStatus.TTL": true, "KeyValueStatus.BackingStore": true, "KeyValueStatus.Bytes": true,
 	"KeyValueStatus.IsCompressed": true, "KeyValueStatus.LimitMarkerTTL": true, "KeyValueStatus.Config": true,
@@ -82,7 +90,7 @@ var local = map[string]bool{
 	"JetStreamContext.PublishAsyncPending": true, "JetStreamContext.PublishAsyncComplete": true,
 	"StreamInfoLister.Info": true, "StreamInfoLister.Err": true, "StreamNameLister.Name": true,
 	"StreamNameLister.Err": true, "ConsumerInfoLister.Info": true, "ConsumerInfoLister.Err": true,
-	"KeyLister.Keys": true, "KeyLister.Stop": true, "PubAckFuture.Ok": true, "PubAckFuture.Err": true,
+	"KeyLister.Keys": true, "PubAckFuture.Ok": true, "PubAckFuture.Err": true,
 	"PubAckFuture.Msg": true, "APIError.Error": true, "APIError.APIError": true, "APIError.Is": true,
 	"Header.Get": true, "Header.Set": true, "Header.Add": true, "Header.Values": true, "Header.Del": true,
 	"ErrHandler": true, "Status.String": true,
