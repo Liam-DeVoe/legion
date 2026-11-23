@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A publish's `recipients` and `recipients_connected` count a session only when its consumer would
+  receive the message. A session whose interest row or known-session record follows the topic
+  only through a topic its consumer filter drops is no longer counted: a Legion controller notice
+  lane whose role the session does not hold (an earlier build's row, or the record of a session
+  that lost the role, which a stopped session kept for 30 days), another session's inbox, a
+  failed-delivery lane, or a wildcard reaching one. Such a publish answered `recipients 1` for a
+  message no consumer delivered; it now answers `recipients 0` where no other session follows the
+  topic. Counting a publish on a controller notice lane reads that role's claim record, within
+  500 ms; a read that does not answer leaves both counts out. A claim that takes a role from
+  another session now filters that session's consumer on its stored row again, and rewrites its
+  known-session record, before the claim is answered, so a notice published on the role's lane
+  after the answer reaches the new holder alone rather than the former holder until its next
+  heartbeat.
+time: 2026-11-23T08:21:23Z
+custom:
+    Issue: pr5203
