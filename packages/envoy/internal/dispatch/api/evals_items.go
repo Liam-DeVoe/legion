@@ -141,19 +141,15 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), the
-// delivery settings the delivery and CI rows are read under (evals.BuiltSettingsIn of the first
-// repository the project's own sources read: those the stored rows stand built under, so the items
-// a row's value counts are read by the rule that counted them), nil where the project has none
-// recorded, which leaves no such row to read, the reads the range's readers share
-// (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
+// the range, the deploy repositories the rows stand recorded under (evals.DeployReposIn), whose
+// rules the delivery and CI rows of each are read under (repoRules), the reads the range's readers
+// share (evalRangeReads), and tx, the answer's one snapshot, which every read of the answer reads in.
 type evalItemsRead struct {
 	project     string
 	entry       evals.Entry
 	request     evalItemsRequest
 	rng         evalItemsRange
 	deployRepos *evals.DeployRepos
-	settings    *delivery.DeliverySettings
 	shared      *evalRangeReads
 	tx          pgx.Tx
 }
@@ -165,7 +161,7 @@ type evalItemsRead struct {
 // both read the record's rows behind it.
 type evalRangeReads struct {
 	counted      map[string]map[string]bool
-	merged       *delivery.MergedRows
+	merged       map[string]delivery.MergedRows
 	days         []evals.DayRow
 	read         bool
 	failures     []evals.FailureItem
@@ -309,12 +305,6 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	if err != nil {
 		return nil, err
 	}
-	var settings *delivery.DeliverySettings
-	if owned := deployRepos.Owned(project); len(owned) > 0 {
-		if settings, err = evals.BuiltSettingsIn(ctx, tx, owned[0]); err != nil {
-			return nil, err
-		}
-	}
 	kept := func(kind string) bool {
 		if request.sort != "" {
 			return kind == evalRowJob
@@ -324,7 +314,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	definition := entry.Definition
 	var sources []evalItemSource
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, settings: settings, shared: &evalRangeReads{}, tx: tx}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, deployRepos: deployRepos, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !kept(kind.kind) {
@@ -397,18 +387,47 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 	return read.shared.days, nil
 }
 
-// mergedRowsOf is the pull requests merged in read's range with the deploy runs created from its
-// start on (delivery.ReadMergedRows, as the day builder reads them), read once a range
-// (evalRangeReads), for every reader of the range that reads them.
-func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead) (delivery.MergedRows, error) {
-	if read.shared.merged == nil {
-		merged, err := delivery.ReadMergedRows(ctx, read.tx, *read.settings, read.rng.days.From, read.rng.days.To)
-		if err != nil {
-			return delivery.MergedRows{}, err
-		}
-		read.shared.merged = &merged
+// mergedRowsOf is the pull requests merged in read's range with the deploy runs of rule's
+// repository created from its start on (delivery.ReadMergedRows under rule, as the day builder
+// reads them), read once a range for each repository (evalRangeReads).
+func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead, rule delivery.DeliverySettings) (delivery.MergedRows, error) {
+	if merged, held := read.shared.merged[rule.DeployRepo]; held {
+		return merged, nil
 	}
-	return *read.shared.merged, nil
+	merged, err := delivery.ReadMergedRows(ctx, read.tx, rule, read.rng.days.From, read.rng.days.To)
+	if err != nil {
+		return delivery.MergedRows{}, err
+	}
+	if read.shared.merged == nil {
+		read.shared.merged = map[string]delivery.MergedRows{}
+	}
+	read.shared.merged[rule.DeployRepo] = merged
+	return merged, nil
+}
+
+// repoRules is the rule of each deploy repository read's eval reads (evals.DeployRepoOf), as its
+// rows stand built under it (evals.BuiltSettingsIn), its DeployRepo that repository, in their
+// order: the rule the day builder counted that repository's rows by, whichever project's source
+// reads it, so a project with no source of its own reads the rows its pull requests' issues count
+// for it. An eval no deploy repository moves, and an events repository, whose posted deploys no
+// rule judges, have none.
+func (s *server) repoRules(ctx context.Context, read evalItemsRead) ([]delivery.DeliverySettings, error) {
+	var rules []delivery.DeliverySettings
+	for _, repo := range evals.DeployRepoOf(read.entry.Definition, read.deployRepos) {
+		if repo == "" || strings.HasPrefix(repo, delivery.SourceKindEvents+":") {
+			continue
+		}
+		rule, err := evals.BuiltSettingsIn(ctx, read.tx, repo)
+		if err != nil {
+			return nil, err
+		}
+		if rule != nil {
+			one := *rule
+			one.DeployRepo = repo
+			rules = append(rules, one)
+		}
+	}
+	return rules, nil
 }
 
 // readingItemRow is a stored reading as an items row: its own row key and row kind, its columns
@@ -636,30 +655,44 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 }
 
 // pullRequestItemRows is the pull requests a delivery eval's day rows of the range counted: those
-// merged in it (delivery.ReadMergedRows, as the day builder reads them), each with the deploy
-// that ships it (delivery.ContainingRun) and its four lead times, each built by its eval's day
-// builder over the one pull request (measures.MergeToProductionDay and the rest), so a row's
-// minutes are its part of that eval's day.
+// merged in it (delivery.ListPullRequestsInWindow, as the day builder reads them), each with the
+// first deploy that ships it among the deploy repositories the eval reads, each under its own rule
+// (repoRules, delivery.ContainingRun), none for an eval no deploy repository moves, and its four
+// lead times, each built by its eval's day builder over the one pull request
+// (measures.MergeToProductionDay and the rest), so a row's minutes are its part of that eval's day.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	if read.settings == nil {
-		return nil, nil
-	}
-	settings := *read.settings
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
 		return nil, err
 	}
-	merged, err := s.mergedRowsOf(ctx, read)
+	rules, err := s.repoRules(ctx, read)
 	if err != nil {
 		return nil, err
 	}
-	applies := delivery.ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, settings.Production()).Applies
+	prs, err := delivery.ListPullRequestsInWindow(ctx, read.tx, read.rng.days.From, read.rng.days.To)
+	if err != nil {
+		return nil, err
+	}
+	shipping := map[string]*delivery.Apply{}
+	for _, rule := range rules {
+		merged, err := s.mergedRowsOf(ctx, read, rule)
+		if err != nil {
+			return nil, err
+		}
+		applies := delivery.ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, rule.Production()).Applies
+		for _, pr := range prs {
+			key := evals.PullRequestMember(pr.Repo, pr.Number)
+			if apply := delivery.ContainingRun(pr, rule.DeployRepo, applies); apply != nil && (shipping[key] == nil || apply.CompletedAt.Before(shipping[key].CompletedAt)) {
+				shipping[key] = apply
+			}
+		}
+	}
 	var rows []evalItemRow
-	for _, pr := range merged.PullRequests {
+	for _, pr := range prs {
 		if pr.CreatedAt == nil || pr.MergedAt == nil || !members[evals.PullRequestMember(pr.Repo, pr.Number)] {
 			continue
 		}
-		measured := measures.PROf(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies))
+		measured := measures.PROf(pr, shipping[evals.PullRequestMember(pr.Repo, pr.Number)])
 		day, one := measures.Midnight(*pr.MergedAt), []measures.PR{measured}
 		rows = append(rows, evalItemRow{
 			RowKey:  measured.ID,
@@ -674,7 +707,7 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 				"open_to_merge_minutes":              sampleOf(measures.OpenToMergeDay(day, one)),
 			},
 			MeasuredAt: *pr.MergedAt,
-			Source:     "delivery.ReadMergedRows",
+			Source:     "delivery.ListPullRequestsInWindow",
 			Href:       pr.URL,
 			Links:      []evals.Link{},
 			Range:      read.rng.label,
@@ -693,40 +726,42 @@ func sampleOf(parts []measures.DayPart) *float64 {
 	return nil
 }
 
-// deployItemRows is the deploy runs a delivery eval's day rows of the range counted: the deploy
-// workflow's runs on main started in it (delivery.ReadDeploys, as the day builder reads them),
-// each with whether it reached production and how many pull requests it ships
-// (delivery.Deploys.ShippedBy, the rule with_prs counts by).
+// deployItemRows is the deploy runs a delivery eval's day rows of the range counted: each deploy
+// repository's deploy workflow runs on main started in it (repoRules, delivery.ReadDeploys under
+// that repository's rule, as the day builder reads them), each with whether it reached production
+// and how many pull requests it ships (delivery.Deploys.ShippedBy, the rule with_prs counts by).
 func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	if read.settings == nil {
-		return nil, nil
-	}
-	settings := *read.settings
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
 		return nil, err
 	}
-	deploys, err := delivery.ReadDeploys(ctx, read.tx, settings, read.rng.days.From, read.rng.days.To)
+	rules, err := s.repoRules(ctx, read)
 	if err != nil {
 		return nil, err
-	}
-	merged, err := s.mergedRowsOf(ctx, read)
-	if err != nil {
-		return nil, err
-	}
-	shipped := deploys.ShippedBy(merged, settings)
-	reached := map[int64]bool{}
-	for _, apply := range deploys.Applies {
-		reached[apply.RunID] = true
 	}
 	var rows []evalItemRow
-	for _, run := range deploys.Started.Runs {
-		if !members[evals.RunMember(run.Repo, run.RunID)] {
-			continue
+	for _, rule := range rules {
+		deploys, err := delivery.ReadDeploys(ctx, read.tx, rule, read.rng.days.From, read.rng.days.To)
+		if err != nil {
+			return nil, err
 		}
-		rows = append(rows, runItemRow(run, evalRowDeploy, "delivery.ReadDeploys", read.rng.label, map[string]any{
-			"reached_production": reached[run.RunID], "shipped_prs": len(shipped[run.RunID]),
-		}))
+		merged, err := s.mergedRowsOf(ctx, read, rule)
+		if err != nil {
+			return nil, err
+		}
+		shipped := deploys.ShippedBy(merged, rule)
+		reached := map[int64]bool{}
+		for _, apply := range deploys.Applies {
+			reached[apply.RunID] = true
+		}
+		for _, run := range deploys.Started.Runs {
+			if !members[evals.RunMember(run.Repo, run.RunID)] {
+				continue
+			}
+			rows = append(rows, runItemRow(run, evalRowDeploy, "delivery.ReadDeploys", read.rng.label, map[string]any{
+				"reached_production": reached[run.RunID], "shipped_prs": len(shipped[run.RunID]),
+			}))
+		}
 	}
 	return rows, nil
 }
@@ -811,56 +846,57 @@ func runItemRow(run delivery.DeliveryRun, kind, source, label string, extra map[
 	}
 }
 
-// runItemRows is the runs a CI eval's day rows of the range counted (delivery.ReadCIRows, as the
-// day builder reads them): pr-ci's pull-request checks runs, each with its wall time and outcome,
-// and a deploy card's eval's push runs on main, each with the card's job's minutes and outcome;
-// each built by its eval's day builder over the one run (measures.PRChecksDay,
-// measures.DeployJobsDay), so a row's minutes are its part of that eval's day.
+// runItemRows is the runs a CI eval's day rows of the range counted: each deploy repository's
+// (repoRules, delivery.ReadCIRows under that repository's rule, as the day builder reads them):
+// pr-ci's pull-request checks runs, each with its wall time and outcome, and a deploy card's
+// eval's push runs on main, each with the card's job's minutes and outcome; each built by its
+// eval's day builder over the one run (measures.PRChecksDay, measures.DeployJobsDay), so a row's
+// minutes are its part of that eval's day.
 func (s *server) runItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	if read.settings == nil {
-		return nil, nil
-	}
-	settings := *read.settings
 	members, err := s.counted(ctx, read, evals.KindCI, read.rng.days)
 	if err != nil {
 		return nil, err
 	}
-	cards := measures.DeployCards(settings)
-	ci, err := delivery.ReadCIRows(ctx, read.tx, settings.DeployRepo, read.rng.days.From, read.rng.days.To, measures.DeployCardJobNames(cards))
+	rules, err := s.repoRules(ctx, read)
 	if err != nil {
 		return nil, err
 	}
 	card, isCard := evals.CardOf(read.entry.Definition.Slug)
-	runs, jobs := ci.Checks.Runs, ci.Checks.Jobs
-	if isCard {
-		runs, jobs = ci.Deploys.Runs, ci.Deploys.Jobs
-	}
-	cardIndex := -1
-	if isCard {
-		cardIndex = slices.IndexFunc(cards, func(c measures.DeployJobCard) bool { return c.CardID == card })
-	}
 	var rows []evalItemRow
-	for _, run := range runs {
-		if !members[evals.RunMember(run.Repo, run.RunID)] {
-			continue
+	for _, rule := range rules {
+		cards := measures.DeployCards(rule)
+		ci, err := delivery.ReadCIRows(ctx, read.tx, rule.DeployRepo, read.rng.days.From, read.rng.days.To, measures.DeployCardJobNames(cards))
+		if err != nil {
+			return nil, err
 		}
-		day, one := measures.Midnight(run.StartedAt), []delivery.DeliveryRun{run}
-		var parts []measures.DayPart
-		extra := map[string]any{}
+		runs, jobs := ci.Checks.Runs, ci.Checks.Jobs
+		cardIndex := -1
 		if isCard {
-			if cardIndex < 0 {
+			runs, jobs = ci.Deploys.Runs, ci.Deploys.Jobs
+			cardIndex = slices.IndexFunc(cards, func(c measures.DeployJobCard) bool { return c.CardID == card })
+		}
+		for _, run := range runs {
+			if !members[evals.RunMember(run.Repo, run.RunID)] {
 				continue
 			}
-			parts = measures.DeployJobsDay(day, one, jobs, cards)[card]
-			extra["job"] = strings.Join(cards[cardIndex].JobNames, " or ")
-		} else {
-			parts = slices.DeleteFunc(measures.PRChecksDay(day, one, jobs), func(part measures.DayPart) bool {
-				return part.Series != measures.SeriesMinutes
-			})
-			extra["jobs"] = len(jobs[run.RunID])
+			day, one := measures.Midnight(run.StartedAt), []delivery.DeliveryRun{run}
+			var parts []measures.DayPart
+			extra := map[string]any{}
+			if isCard {
+				if cardIndex < 0 {
+					continue
+				}
+				parts = measures.DeployJobsDay(day, one, jobs, cards)[card]
+				extra["job"] = strings.Join(cards[cardIndex].JobNames, " or ")
+			} else {
+				parts = slices.DeleteFunc(measures.PRChecksDay(day, one, jobs), func(part measures.DayPart) bool {
+					return part.Series != measures.SeriesMinutes
+				})
+				extra["jobs"] = len(jobs[run.RunID])
+			}
+			extra["minutes"], extra["outcome"] = sampleOf(parts), outcomeOf(parts)
+			rows = append(rows, runItemRow(run, evalRowRun, "delivery.ReadCIRows", read.rng.label, extra))
 		}
-		extra["minutes"], extra["outcome"] = sampleOf(parts), outcomeOf(parts)
-		rows = append(rows, runItemRow(run, evalRowRun, "delivery.ReadCIRows", read.rng.label, extra))
 	}
 	return rows, nil
 }
@@ -962,31 +998,44 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end,
 // the list the Pipeline route's failing-jobs table answers for an `at` at that end when the range
-// starts on the first of the seven days that at shows: the pull-request checks runs started on
-// the range's days (delivery.ReadCIRows over read.rng.days, which hold every run that can finish
-// a job in those 24 hours however long before them it started within the range), those the
-// project's CI day rows counted, through the same measures.FailingJobs; each job with its
-// failures, its results and its latest failed run, which it links to.
+// starts on the first of the seven days that at shows: of each deploy repository (repoRules), the
+// pull-request checks runs started on the range's days (delivery.ReadCIRows over read.rng.days,
+// which hold every run that can finish a job in those 24 hours however long before them it started
+// within the range), those the project's CI day rows counted, through the same
+// measures.FailingJobs under that repository's roll-up job. A job belongs to its repository's
+// workflow, so each repository's jobs are rows of their own, each naming its repository, with its
+// failures, its results and its latest failed run, which it links to; most failures first.
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	if read.settings == nil {
-		return nil, nil
-	}
-	settings := *read.settings
 	end := read.rng.end
 	span := read.rng.days
 	members, err := s.counted(ctx, read, evals.KindCI, span)
 	if err != nil {
 		return nil, err
 	}
-	ci, err := delivery.ReadCIRows(ctx, read.tx, settings.DeployRepo, span.From, span.To,
-		measures.DeployCardJobNames(measures.DeployCards(settings)))
+	rules, err := s.repoRules(ctx, read)
 	if err != nil {
 		return nil, err
 	}
-	runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
-	rollup := deref(settings.PRChecksRollupJobName)
+	type repoJob struct {
+		repo string
+		job  measures.FailingJob
+	}
+	var failing []repoJob
+	for _, rule := range rules {
+		ci, err := delivery.ReadCIRows(ctx, read.tx, rule.DeployRepo, span.From, span.To,
+			measures.DeployCardJobNames(measures.DeployCards(rule)))
+		if err != nil {
+			return nil, err
+		}
+		runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
+		for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, deref(rule.PRChecksRollupJobName)) {
+			failing = append(failing, repoJob{repo: rule.DeployRepo, job: job})
+		}
+	}
+	slices.SortStableFunc(failing, func(a, b repoJob) int { return b.job.Failures - a.job.Failures })
 	var rows []evalItemRow
-	for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, rollup) {
+	for _, one := range failing {
+		job := one.job
 		if read.request.series != "" && read.request.series != measures.JobSeriesPrefix+job.Name {
 			continue
 		}
@@ -994,8 +1043,8 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 			RowKey:  job.Name,
 			RowKind: evalRowJob,
 			Cols: map[string]any{
-				"name": job.Name, "failures": job.Failures, "results": job.Results, "last_failed_at": job.LastFailedAt,
-				"last_run_url": job.LastRunURL,
+				"name": job.Name, "repo": one.repo, "failures": job.Failures, "results": job.Results,
+				"last_failed_at": job.LastFailedAt, "last_run_url": job.LastRunURL,
 			},
 			MeasuredAt: job.LastFailedAt,
 			Source:     "measures.FailingJobs",
