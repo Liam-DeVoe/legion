@@ -579,4 +579,4 @@ runtime:
 # that one.
 capabilities:
   decided:
-    secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"
+    secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod asks the broker for a secret"
