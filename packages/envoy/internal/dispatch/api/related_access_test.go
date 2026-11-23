@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,8 +20,14 @@ import (
 // project the reader does not see is ranked or named.
 //
 // The terms are the one word every object holds, and its vector is near nothing, so each
-// statement answers what its keyword legs find: the rows the check's project rule
-// (relatedProjectVisible) decides.
+// statement answers what its keyword legs find.
+//
+// Every statement also holds each row to the node rule of its kinds CTE (searchKindsCTE), which
+// hides these objects from alice whatever the arms do, so the whole statements cannot tell
+// whether the arms' own project rule holds. The keyword legs are therefore also run alone, under
+// the check's own q, where relatedProjectVisible is the only rule between alice and the rows: a
+// leg that lets a row of a project its reader does not see through counts it in the matches and
+// the total before that rule drops it, and runs the rank for it.
 func TestTheRelatedStatementsNameNothingOfAProjectTheirReaderDoesNotSee(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{searchAccessMeaning: queryVector(), searchAccessWord: angledVector(0, 3)}}
 	seed := seedPrivateProjectWith(t, testServerOptions{embedder: embedder})
@@ -79,4 +87,33 @@ func TestTheRelatedStatementsNameNothingOfAProjectTheirReaderDoesNotSee(t *testi
 			})
 		}
 	}
+
+	// The keyword legs alone: $1 the terms as a tsquery, $2 the project, $3 and $4 the lexemes and
+	// their idf, $5 the reader's viewer.
+	legs := `
+with q as (select $1::tsquery as tsq, ''::text as term, '{}'::text[] as own_keys,
+                  ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
+` + relatedTermWeights(3) + `legs as (` + relatedKeywordLegs(5) + `
+)
+select kind || '/' || id from legs order by 1`
+	t.Run("the keyword legs alone", func(t *testing.T) {
+		answer := func(who model.Actor) []string {
+			t.Helper()
+			rows, err := pool.Query(ctx, legs, picked.TSQuery, seedPrivate, []string{lexeme}, []float64{1}, relatedViewer(who))
+			if err != nil {
+				t.Fatalf("run the keyword legs: %v", err)
+			}
+			keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the keyword legs: %v", err)
+			}
+			return keys
+		}
+		if got := answer(carol); !slices.Equal(got, want) {
+			t.Fatalf("the keyword legs answer carol, who sees %s, %v; want its objects %v", seedPrivate, got, want)
+		}
+		if got := answer(alice); len(got) != 0 {
+			t.Errorf("the keyword legs answer alice, who does not see %s, %v; want nothing", seedPrivate, got)
+		}
+	})
 }
