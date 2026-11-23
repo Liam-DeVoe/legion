@@ -10823,7 +10823,7 @@
       "guard": "dispatch-approval-at-not-printed"
     },
     {
-      "site": "daemon dispatch PlanDocument (main's #5161): a block Dispatch's answer could not cut printed the block's id, and its text with %q, in the read's error, which the daemon's plan route answers and logs",
+      "site": "daemon dispatch PlanDocument (main's #5161): a block Dispatch's answer could not cut was named in the read's error by its id, and its text quoted with %q; the error is the read's own text, which any caller that prints or wraps it would print raw (the plan route answers a fixed sentence today)",
       "source": "the class search of round 8, at the merge of main 7cb1f22936",
       "guard": "dispatch-plan-block-range-not-printed"
     },
