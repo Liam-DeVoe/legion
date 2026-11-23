@@ -7,17 +7,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -103,122 +100,187 @@ func TestALoginPollTheBrokerCouldNotAnswerSettlesNothing(t *testing.T) {
 	}
 }
 
-// scriptedPolls stands in for x/oauth2's DeviceAccessToken (Broker.testDeviceAccessToken): its
-// calls are answered in turn by answer, which is handed each call's index and the device
-// authorization pollLogin polls, and each call's da.Interval is recorded.
-type scriptedPolls struct {
-	mu        sync.Mutex
-	intervals []int64
-	answer    func(call int, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
+// pollAnswer answers one device code poll of the fake broker (fakeBroker.devicePollAnswer).
+type pollAnswer func(w http.ResponseWriter)
+
+// answering is an OAuth error answer of status naming code ("" names none), with header's pairs.
+func answering(status int, code string, header ...string) pollAnswer {
+	return func(w http.ResponseWriter) {
+		for i := 0; i+1 < len(header); i += 2 {
+			w.Header().Set(header[i], header[i+1])
+		}
+		writeJSON(w, status, map[string]string{"error": code})
+	}
 }
 
-func (s *scriptedPolls) poll(_ context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
-	s.mu.Lock()
-	s.intervals = append(s.intervals, da.Interval)
-	call := len(s.intervals) - 1
-	s.mu.Unlock()
-	return s.answer(call, da)
+// hangingUp answers a poll with no answer at all: the connection closes once the request is read.
+func hangingUp(w http.ResponseWriter) {
+	if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+		conn.Close()
+	}
 }
 
-func (s *scriptedPolls) seen() []int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.intervals)
+// pollRig is a Broker logged in against the fake broker, whose first polls are answered in turn
+// by answers and every later one by the fake itself (an approval), and whose waits before each
+// poll are recorded, not waited (Broker.testLoginWait). lapseAt, when not 0, is the wait that
+// lapses the code, after which the helper polls no more; a negative one also leaves the code 2 s
+// at the first wait, and lapses it at the wait -lapseAt.
+type pollRig struct {
+	f     *fakeBroker
+	b     *Broker
+	mu    sync.Mutex
+	waits []time.Duration
+	until []time.Duration // each wait's time left of the code's lifetime, read as it was handed over
 }
 
-// answeredPoll is DeviceAccessToken's error for a poll the broker answered status naming code.
-func answeredPoll(status int, code string) error {
-	return &oauth2.RetrieveError{Response: &http.Response{StatusCode: status}, ErrorCode: code}
-}
-
-// unansweredPoll is DeviceAccessToken's error for a poll that got no answer: its transport's.
-var unansweredPoll = &url.Error{Op: "Post", URL: "http://broker.invalid/v1/oauth/token", Err: syscall.ECONNREFUSED}
-
-// approvedPoll is the token answer of an approved device code, with the broker's extras.
-func approvedPoll() *oauth2.Token {
-	// Named as the fake broker's writeTokens names its tokens.
-	access, refresh := fmt.Sprintf("access-%d", 1), fmt.Sprintf("refresh-%d", 1)
-	return (&oauth2.Token{AccessToken: access, TokenType: "DPoP", RefreshToken: refresh, Expiry: time.Now().Add(15 * time.Minute)}).
-		WithExtra(map[string]any{oauthwire.ExtraCredentialID: "lcred-approved", oauthwire.ExtraCredentialExpiresAt: time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)})
-}
-
-// scriptedBroker is a Broker whose login polls are scripted's, after a device authorization the
-// fake broker answers with an interval of 1 s.
-func scriptedBroker(t *testing.T, scripted *scriptedPolls) *Broker {
+func newPollRig(t *testing.T, lapseAt int, answers ...pollAnswer) *pollRig {
 	t.Helper()
-	f := newFakeBroker(t)
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), testDeviceAccessToken: scripted.poll}
-	t.Cleanup(b.Close)
-	if _, err := b.Login(context.Background(), "host-a"); err != nil {
+	r := &pollRig{f: newFakeBroker(t)}
+	r.f.mu.Lock()
+	r.f.devicePollAnswer = func(poll int, w http.ResponseWriter) bool {
+		if poll > len(answers) {
+			return false
+		}
+		answers[poll-1](w)
+		return true
+	}
+	r.f.mu.Unlock()
+	r.b = &Broker{URL: cipheraddr.New(r.f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: r.f.srv.Client(),
+		testLoginWait: func(wait time.Duration, da *oauth2.DeviceAuthResponse) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.waits, r.until = append(r.waits, wait), append(r.until, time.Until(da.Expiry))
+			if lapseAt < 0 && len(r.waits) == 1 {
+				da.Expiry = time.Now().Add(2 * time.Second)
+			}
+			if len(r.waits) == lapseAt || len(r.waits) == -lapseAt {
+				da.Expiry = time.Now().Add(-time.Second)
+			}
+		}}
+	t.Cleanup(r.b.Close)
+	if _, err := r.b.Login(context.Background(), "host-a"); err != nil {
 		t.Fatal(err)
 	}
-	return b
+	return r
 }
 
-// TestALoginPollTheBrokerDidNotAnswerPollsLessOften: RFC 8628 section 3.5 has a client poll less
-// often after a connection timeout. x/oauth2 sets each call's ticker once, from da.Interval, so a
-// poll the broker did not answer, or answered with an outage, raises it 5 s before the next call,
-// and every call after polls 5 s further apart. A refusal that settles nothing keeps the interval.
-func TestALoginPollTheBrokerDidNotAnswerPollsLessOften(t *testing.T) {
+func (r *pollRig) seen() ([]time.Duration, []time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.waits), slices.Clone(r.until)
+}
+
+func (r *pollRig) polls() int {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	return r.f.devicePolls
+}
+
+// TestALoginPollGrowsItsIntervalAsRFC8628Has: each poll waits the interval first, the fake's 1 s.
+// RFC 8628 section 3.5 grows it by 5 s for that poll and every later one on a slow_down, at
+// whatever status its body names it, and on a poll the broker did not answer or answered with an
+// outage, once for an answer that is both; authorization_pending, and a refusal naming no deciding
+// error, keep it. These are the TypeScript device login's rules.
+func TestALoginPollGrowsItsIntervalAsRFC8628Has(t *testing.T) {
+	const s = time.Second
 	for _, c := range []struct {
 		name    string
-		answers []error // the calls' answers in turn; past them, the approval
-		want    []int64
+		answers []pollAnswer // the first polls' answers; the next is the approval
+		want    []time.Duration
 	}{
-		{"no answer, then a 503, then the approval", []error{unansweredPoll, answeredPoll(http.StatusServiceUnavailable, "")}, []int64{1, 6, 11}},
-		{"a 429 and a 408 naming access_denied, then the approval", []error{answeredPoll(http.StatusTooManyRequests, "access_denied"), answeredPoll(http.StatusRequestTimeout, "access_denied")}, []int64{1, 6, 11}},
-		// Control: a refusal naming no deciding error is answered, and keeps the interval.
-		{"a 503, a 401 invalid_client, then the approval", []error{answeredPoll(http.StatusServiceUnavailable, ""), answeredPoll(http.StatusUnauthorized, "invalid_client")}, []int64{1, 6, 6}},
+		{"no answer, then a 503, then the approval", []pollAnswer{hangingUp, answering(http.StatusServiceUnavailable, "")}, []time.Duration{s, 6 * s, 11 * s}},
+		{"a 429 and a 408 naming access_denied, then the approval", []pollAnswer{answering(http.StatusTooManyRequests, "access_denied"), answering(http.StatusRequestTimeout, "access_denied")}, []time.Duration{s, 6 * s, 11 * s}},
+		{"a slow_down, a 503, authorization_pending, then the approval", []pollAnswer{answering(http.StatusBadRequest, "slow_down"), answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending")}, []time.Duration{s, 6 * s, 11 * s, 11 * s}},
+		{"a 503 naming authorization_pending, then the approval", []pollAnswer{answering(http.StatusServiceUnavailable, "authorization_pending")}, []time.Duration{s, 6 * s}},
+		{"a 429 naming slow_down, then the approval", []pollAnswer{answering(http.StatusTooManyRequests, "slow_down")}, []time.Duration{s, 6 * s}},
+		// Controls: authorization_pending, and a refusal naming no deciding error, keep the interval.
+		{"a 503, a 401 invalid_client, then the approval", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusUnauthorized, "invalid_client")}, []time.Duration{s, 6 * s, 6 * s}},
+		{"authorization_pending twice, then the approval", []pollAnswer{answering(http.StatusBadRequest, "authorization_pending"), answering(http.StatusBadRequest, "authorization_pending")}, []time.Duration{s, s, s}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			scripted := &scriptedPolls{answer: func(call int, _ *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
-				if call < len(c.answers) {
-					return nil, c.answers[call]
-				}
-				return approvedPoll(), nil
-			}}
-			b := scriptedBroker(t, scripted)
-			waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
-			if got := scripted.seen(); !slices.Equal(got, c.want) {
-				t.Fatalf("the calls polled at intervals %v, want %v", got, c.want)
+			r := newPollRig(t, 0, c.answers...)
+			waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+			if got, _ := r.seen(); !slices.Equal(got, c.want) {
+				t.Fatalf("the polls waited %v, want %v", got, c.want)
 			}
 		})
 	}
+}
+
+// TestALoginPollWaitsOutAnOutagesRetryAfter: an outage's Retry-After, in seconds or as an HTTP
+// date, is waited before the next poll where it asks longer than the interval, though never past
+// the code's lifetime. The broker's own 429 carries Retry-After: 30.
+func TestALoginPollWaitsOutAnOutagesRetryAfter(t *testing.T) {
+	t.Run("Retry-After: 30 on a 429", func(t *testing.T) {
+		r := newPollRig(t, 0, answering(http.StatusTooManyRequests, "invalid_request", "Retry-After", "30"))
+		waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+		if got, _ := r.seen(); !slices.Equal(got, []time.Duration{time.Second, 30 * time.Second}) {
+			t.Fatalf("the polls waited %v, want [1s 30s]", got)
+		}
+	})
+	t.Run("an HTTP date on a 503", func(t *testing.T) {
+		at := time.Now().Add(31 * time.Second).Truncate(time.Second)
+		r := newPollRig(t, 0, answering(http.StatusServiceUnavailable, "", "Retry-After", at.UTC().Format(http.TimeFormat)))
+		waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+		got, _ := r.seen()
+		// Read between the answer and now, so no clock decides the row.
+		if len(got) != 2 || got[1] > 31*time.Second || got[1] < time.Until(at) {
+			t.Fatalf("the polls waited %v, want 1 s and then until %s", got, at)
+		}
+	})
+	t.Run("a Retry-After past the code's lifetime", func(t *testing.T) {
+		r := newPollRig(t, 0, answering(http.StatusTooManyRequests, "", "Retry-After", "86400"))
+		waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+		got, until := r.seen()
+		// The fake's code lives 900 s; the wait is what was left of it, read before it was handed over.
+		if len(got) != 2 || got[1] > 900*time.Second || got[1] < until[1] {
+			t.Fatalf("the polls waited %v with %v of the code left, want 1 s and then the code's lifetime", got, until)
+		}
+	})
 }
 
 // TestALoginThatLapsesAfterUnansweredPollsNamesThem: a code whose lifetime passes after polls the
 // broker did not answer, or answered with an outage, records "expired" with a Reason naming how
-// many came in a row just before; the lapse itself (x/oauth2's wait ending on the code's deadline)
-// is no poll. An answered poll since the last outage, and the lapse names none.
+// many came in a row just before; the lapse itself is no poll. An answered poll since the last
+// outage, and the lapse names none.
 func TestALoginThatLapsesAfterUnansweredPollsNamesThem(t *testing.T) {
 	for _, c := range []struct {
 		name    string
-		answers []error // the calls' answers in turn; the next call lapses the code
+		answers []pollAnswer // the polls' answers; the wait after them lapses the code
 		reason  string
 	}{
-		{"a 503, then no answer", []error{answeredPoll(http.StatusServiceUnavailable, ""), unansweredPoll}, "the broker was unreachable or busy for the last 2 polls"},
-		{"a refusal, then a 429", []error{answeredPoll(http.StatusUnauthorized, "invalid_client"), answeredPoll(http.StatusTooManyRequests, "")}, "the broker was unreachable or busy for the last poll"},
+		{"a 503, then no answer", []pollAnswer{answering(http.StatusServiceUnavailable, ""), hangingUp}, "the broker was unreachable or busy for the last 2 polls"},
+		// Each poll counts, and authorization_pending is an answer that ends the run.
+		{"a 503, then authorization_pending", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending")}, ""},
+		{"a 503, authorization_pending, a 503", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending"), answering(http.StatusServiceUnavailable, "")}, "the broker was unreachable or busy for the last poll"},
+		{"a refusal, then a 429", []pollAnswer{answering(http.StatusUnauthorized, "invalid_client"), answering(http.StatusTooManyRequests, "")}, "the broker was unreachable or busy for the last poll"},
 		// Control: the outage was followed by an answer.
-		{"a 503, then a refusal", []error{answeredPoll(http.StatusServiceUnavailable, ""), answeredPoll(http.StatusUnauthorized, "invalid_client")}, ""},
+		{"a 503, then a refusal", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusUnauthorized, "invalid_client")}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			scripted := &scriptedPolls{answer: func(call int, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
-				if call < len(c.answers) {
-					return nil, c.answers[call]
-				}
-				// The code's lifetime passes during this call's wait, which x/oauth2 ends with its
-				// deadline's own error.
-				da.Expiry = time.Now().Add(-time.Second)
-				return nil, context.DeadlineExceeded
-			}}
-			b := scriptedBroker(t, scripted)
-			waitFor(t, func() bool { return b.LoginStatus().State == "expired" })
-			if got := b.LoginStatus().Reason; got != c.reason {
+			r := newPollRig(t, len(c.answers)+1, c.answers...)
+			waitFor(t, func() bool { return r.b.LoginStatus().State == "expired" })
+			if got := r.b.LoginStatus().Reason; got != c.reason {
 				t.Fatalf("the expired login's reason %q, want %q", got, c.reason)
 			}
-			if got := len(scripted.seen()); got != len(c.answers)+1 {
-				t.Fatalf("the helper polled %d times, want %d", got, len(c.answers)+1)
+			if got := r.polls(); got != len(c.answers) {
+				t.Fatalf("the helper polled %d times, want %d", got, len(c.answers))
 			}
 		})
+	}
+}
+
+// TestALoginPollsWaitEndsAtTheCodesLifetime: no wait passes the code's lifetime. With 2 s of it
+// left, a 503 that grows the interval to 6 s waits what is left, and a code that lapses in that
+// wait is polled no more and records the outage before it.
+func TestALoginPollsWaitEndsAtTheCodesLifetime(t *testing.T) {
+	r := newPollRig(t, -2, answering(http.StatusServiceUnavailable, ""))
+	waitFor(t, func() bool { return r.b.LoginStatus().State == "expired" })
+	got, _ := r.seen()
+	if len(got) != 2 || got[0] != time.Second || got[1] > 2*time.Second {
+		t.Fatalf("the polls waited %v, want 1 s and then no more than the 2 s left", got)
+	}
+	if reason := r.b.LoginStatus().Reason; reason != "the broker was unreachable or busy for the last poll" || r.polls() != 1 {
+		t.Fatalf("the lapse recorded %q after %d polls, want the last poll named after 1", reason, r.polls())
 	}
 }

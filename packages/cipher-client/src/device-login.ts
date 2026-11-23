@@ -451,16 +451,14 @@ function retryAfterMs(error: unknown): number {
  * both: RFC 8628 Section 3.5 grows the interval on a `slow_down` and slows the polling on a
  * connection timeout, and `pollLogin` grows it the same way. An outage whose answer names a
  * `Retry-After`, in seconds or as an HTTP date, is waited at least that long before the next
- * poll, though never past the code's lifetime. Any other answer of a 4xx, with another OAuth
- * error or without one (a proxy's HTML page, a bare `WWW-Authenticate` challenge), stops the poll
- * at once, naming the status, rather than polling until the code lapses and saying it expired.
- * That is where this poll and `pollLogin` differ by choice: the helper polls on there until the
- * code lapses, as it records the login's state in the background, where a person waits on this
- * poll. They differ where their libraries differ too: x/oauth2, under `pollLogin`, reads
- * `authorization_pending` and `slow_down` at any status, so the helper keeps its interval on an
- * outage naming `authorization_pending`; each call of it starts from the interval `pollLogin` last
- * set, so a `slow_down` it met inside a call is not kept once the call returns; and `pollLogin`
- * waits out no `Retry-After`. Each refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a
+ * poll, though never past the code's lifetime, as `pollLogin` waits it. Any other answer of a 4xx,
+ * with another OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate`
+ * challenge), stops the poll at once, naming the status, rather than polling until the code lapses
+ * and saying it expired. That is the one place this poll and `pollLogin` differ by choice: the
+ * helper polls on there until the code lapses, as it records the login's state in the background,
+ * where a person waits on this poll. Beyond it they differ only in the answers the library under
+ * this poll never reads as an OAuth error ({@link outage}'s module header says which). Each refusal
+ * names {@link DEVICE_LOGIN_COMMAND}, and none writes a
  * file. An approved login that cannot be kept is refused naming its credential, which the broker
  * holds live, and where to revoke it, and a copy of it written whole is kept beside the file
  * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the
@@ -498,8 +496,11 @@ export async function finishDeviceLogin(
   // The wait before the next poll: the interval, or an outage's longer `Retry-After`.
   let waitMs = interval * 1000;
   while (true) {
+    const left = started.expiresAt.getTime() - Date.now();
+    if (left <= 0) throw expired(outages);
+    // No wait passes the code's lifetime, and a code that lapses in it is not polled.
+    await wait(Math.min(waitMs, left));
     if (Date.now() >= started.expiresAt.getTime()) throw expired(outages);
-    await wait(waitMs);
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_DEVICE_CODE, {

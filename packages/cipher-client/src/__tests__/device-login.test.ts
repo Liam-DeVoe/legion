@@ -250,7 +250,7 @@ test("a poll answered 400 authorization_pending, or 429 with no body, is polled 
 });
 
 // RFC 8628 Section 3.5: each `slow_down` grows the interval by 5 s, at whatever status it comes, as
-// x/oauth2 under the Go helper's `pollLogin` and `openid-client`'s own poll grow it.
+// the Go helper's `pollLogin` and `openid-client`'s own poll grow it.
 test.each([429, 408])("a slow_down answered %i polls again 5 s further apart", async (status) => {
   const stub = broker({ polls: ["slow_down", "approve"], oauthErrorStatus: status });
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
@@ -315,7 +315,7 @@ test("a code that lapses after polls the broker did not answer names them", asyn
   ] as const) {
     const stub = broker({ polls });
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-    // The code's lifetime is this row's own, and passes during the wait before the third poll.
+    // The code's lifetime is this row's own, and passes during the wait after the third poll.
     const expiresAt = new Date(started.expiresAt);
     let waited = 0;
     const refusal = await finishDeviceLogin(
@@ -324,7 +324,7 @@ test("a code that lapses after polls the broker did not answer names them", asyn
         path: loginPath(),
         sleep: async () => {
           waited += 1;
-          if (waited === 3) expiresAt.setTime(Date.now() - 1);
+          if (waited === 4) expiresAt.setTime(Date.now() - 1);
         },
       }
     ).then(
@@ -339,6 +339,33 @@ test("a code that lapses after polls the broker did not answer names them", asyn
     if (says === null) expect(refusal?.message, polls.join()).not.toContain("unreachable");
     else expect(refusal?.message, polls.join()).toContain(says);
   }
+});
+
+// A wait never passes the code's lifetime: with 2 s of it left, a 503 that grows the interval to
+// 6 s waits what is left, and a code that lapses during that wait is not polled again, and names
+// the outage before it.
+test("a poll's wait ends at the code's lifetime, and a lapse in it names the outages before", async () => {
+  const stub = broker({ polls: ["unavailable-503", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const expiresAt = new Date(Date.now() + 2000);
+  const waits: number[] = [];
+  const refusal = await finishDeviceLogin(
+    { ...started, expiresAt },
+    {
+      path: loginPath(),
+      sleep: async (ms) => {
+        waits.push(ms);
+        if (waits.length === 2) expiresAt.setTime(Date.now() - 1);
+      },
+    }
+  ).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(waits[0]).toBe(1000);
+  expect(waits[1] ?? 0).toBeLessThanOrEqual(2000);
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain("; the broker was unreachable or busy for the last poll;");
 });
 
 // An outage's `Retry-After` is waited before the next poll, as the broker's own 429 carries one

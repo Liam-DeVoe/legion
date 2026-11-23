@@ -57,9 +57,8 @@ export function refusalCode(error: unknown): string {
  * Whether `error` is a token endpoint's `slow_down` to a device code's poll, in any 4xx answer
  * the library read an OAuth error from (oauth4webapi, under `openid-client`, reads one from every
  * 4xx), a 408 and a 429 included. RFC 8628 Section 3.5 has the interval grow by 5 s "for this and
- * all subsequent requests" on it, and it decides nothing else, so no status gates it: x/oauth2's
- * `DeviceAccessToken`, under the Go helper's `pollLogin`, adds the 5 s before any rule of
- * `oauthrefusal` reads the answer (golang.org/x/oauth2 v0.37.0, deviceauth.go:212-217), and
+ * all subsequent requests" on it, and it decides nothing else, so no status gates it: the Go
+ * helper's `pollLogin` adds the 5 s at whatever status the answer's body names it, and
  * `openid-client`'s own poll adds it at any 4xx too (6.8.7, build/index.js:691-693).
  */
 export function slowsDown(error: unknown): boolean {

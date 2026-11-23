@@ -190,6 +190,9 @@ type fakeBroker struct {
 	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
 	oauthErrorStatus int
 	devicePolls      int
+	// devicePollAnswer, when set, is handed each device code grant with a known code and a valid
+	// proof, by its count among devicePolls, and answers it where it returns true. It runs under mu.
+	devicePollAnswer func(poll int, w http.ResponseWriter) bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -471,6 +474,9 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			}
 			if !dpopProves(r, f.srv.URL+"/v1/oauth/token", f.pendingThumbprint) {
 				oauthError(400, "invalid_dpop_proof")
+				return
+			}
+			if f.devicePollAnswer != nil && f.devicePollAnswer(f.devicePolls, w) {
 				return
 			}
 			switch f.loginOutcome {

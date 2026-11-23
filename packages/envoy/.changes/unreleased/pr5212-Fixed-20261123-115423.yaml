@@ -1,11 +1,15 @@
 kind: Fixed
 body: |-
-    `agent-secrets-helper`'s machine login polls 5 s further apart after each poll the broker did
-    not answer, or answered 408, 429 or 5xx, from then on, as RFC 8628 has a client poll less often
-    after a connection timeout. A login whose code lapses after such polls is still `expired`, and
+    `agent-secrets-helper`'s machine login polls its device code with a loop of its own, one token
+    request per poll, and reads each answer as `dispatch login --device` does. It polls 5 s further
+    apart, from then on, after each `slow_down` at whatever status, and after each poll the broker
+    did not answer or answered 408, 429 or 5xx, as RFC 8628 has it, and it waits out such an
+    answer's `Retry-After`, in seconds or as a date, where it asks longer, though never past the
+    code's lifetime. A login whose code lapses after such polls is still `expired`, and
     `login-status` now carries `login_reason`, which says the broker was unreachable or busy for the
     last ones and how many; `agent-secrets machine login` and `machine login-status` print it.
-    Before, the helper polled again at the same interval. `agent-secrets <NAME> --wait` now keeps
+    Before, the helper polled again at the same interval after an outage, ignored `Retry-After`,
+    and lost a `slow_down`'s 5 s after any other answer. `agent-secrets <NAME> --wait` now keeps
     waiting through a status poll the broker, or a front door before it, answers 408, 500, 501 or
     505 and above, as it did through a 429, 502, 503 or 504. Before, such an answer ended the wait
     with exit 1 as a refusal the same poll would get again.
