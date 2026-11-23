@@ -7,7 +7,8 @@ name: CI job daemon-go
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
-# the race step over those five packages, and the Stage 1 live proof, which builds ./cmd/legion
+# the race step over those five packages, the forced-order step over the daemon's TestForcedOrder
+# tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
 # thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
@@ -18,7 +19,7 @@ name: CI job daemon-go
 # Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
 # and the `test` job's is what its remaining steps read.
 #
-# Everything here is what those three steps need and nothing else:
+# Everything here is what those steps need and nothing else:
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
 #     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's;
@@ -75,14 +76,16 @@ jobs:
     # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
+    # push runs). The forced-order step adds its compile of a hooked nats-server under the
+    # detector, up to 5 minutes, and forced-order.sh's 10-minute -timeout, so 85.
     #
-    # Budget (ci-budgets.md's Budgets note): those 70 minutes, 4200 s, plus its slowest retried
+    # Budget (ci-budgets.md's Budgets note): those 85 minutes, 5100 s, plus its slowest retried
     # step alone — install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the
     # jj release are 3416 + 450 = 3866 s, above the tmux step's 625 + 775 = 1400 s, install-uv's
-    # one call of 1708 s, the Go module download's 1050 s, the ci-ok report's 2460 s and
-    # install-omp's fetch of the release archive at 450 s. 4200 + 3866 = 8066 s -> 135 min.
-    timeout-minutes: 135
+    # one call of 1708 s, the Go module download's and the nats-server pre-fetch's 1050 s each,
+    # the ci-ok report's 2460 s and install-omp's fetch of the release archive at 450 s.
+    # 5100 + 3866 = 8966 s -> 150 min.
+    timeout-minutes: 150
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -96,7 +99,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 135 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 150 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
@@ -297,6 +300,34 @@ jobs:
         run: |
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
+
+      # forced-order.sh downloads the nats-server it hooks with `go mod download -json`, from a
+      # directory with no go.mod, so go asks sum.golang.org for the module even when the module
+      # download above cached its zip. This step makes that read the same way, outside any module,
+      # under the one retry (ci-budgets.md's Retries note), so the script's own download reads no
+      # host; envoy-go-race's step of this name says how it was measured and why the version is
+      # read from the go.mod files (dispatch://INFRA-1545, round 56).
+      - name: Download the nats-server versions forced-order.sh hooks
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          # shellcheck disable=SC2046 # each line is one module@version
+          retry_fetch "the nats-server versions forced-order.sh hooks" 180 -- go -C "$RUNNER_TEMP" mod download \
+            $(awk '$1 == "github.com/nats-io/nats-server/v2" { print $1 "@" $2 }' packages/envoy/go.mod packages/daemon/go.mod | sort -u)
+
+      # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
+      # every TestForcedOrder test of the packages named, built with -tags odatrace and -race
+      # against the nats-server the workspace links, with the hold points
+      # packages/envoy/internal/testnats/hooks.go drives, on the server testnats.StartInProcess
+      # runs in the test process. The step names no version, so when go.mod moves to a version
+      # packages/envoy/internal/testnats/testdata/hooked has no hooks for, the script refuses it
+      # and the step fails until the hooks are ported; it also fails a package that declares no
+      # such test. The daemon refuses nats:2.10's server (envoy's natsversion.Refusal), so it has
+      # no v2.10.29 run here. The step sets no environment variable: check-ci-filters.sh reduces no
+      # go command of a job one of whose steps sets a GO* name.
+      - name: Forced-order tests of the daemon on the hooked nats-server the module links
+        run: packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
       # belongs with the Go steps rather than with the script harnesses: it is the daemon's own
