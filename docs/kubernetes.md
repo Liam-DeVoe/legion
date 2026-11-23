@@ -7153,7 +7153,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
-A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, the claim of its volume and the role Secret of each slot outside Legion's six claim roles, and no pod.
+A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod.
+It also leaves the role Secret of each slot outside Legion's six claim roles.
 Each role's session stays where it was, a row in the session database ([Selecting the store](#selecting-the-store)), and the wake resumes each role in its own session.
 A release moves no issue and ends no phase.
 

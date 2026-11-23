@@ -11,7 +11,7 @@ import "strings"
 // roles are the six roles of the daemon's claim.Roles, in the order the default steps reach them.
 // That list is in the daemon's own module (packages/daemon/internal/claim/token.go), which this
 // module does not import. The fresh agent of acceptance and a role a deployment or a plan defines
-// are not among them, so a title naming one is no Legion session to these readers.
+// are not among them. So a title naming one is no Legion session to these readers.
 var roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // The two shapes a Legion session titles itself (packages/pi-legion/src/session-title.ts): a

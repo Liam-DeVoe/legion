@@ -8,7 +8,7 @@ body: |-
   does a step, its gh acts as the App of the step's role. Legion writes that App into the owner's
   slot only where it is not the owner's own. For every step, the notice waits until the slot's gh
   files hold that App. Where the pod's launcher is too old to tell, a step of the owner's own App
-  is told at once, and a step of another App waits until the pod is replaced. The end of each step
+  is told at once. A step of another App then waits until the pod is replaced. The end of each step
   the owner does writes its own App back, unless its next step has started and needs another App.
   Each later notice to the owner waits for that write. A notice of a run that has ended is not
   delivered. An owner's step that started and has not ended is told to the owner again when the
