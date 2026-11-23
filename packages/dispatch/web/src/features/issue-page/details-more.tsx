@@ -32,6 +32,7 @@ import { useOutlineReads } from "./outline-reads";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
 import { scrollingAncestor } from "./scroll-box";
+import { useFollowing } from "./slots/following";
 import { useIssueSubscribers } from "./useIssueSubscribers";
 
 /** What each of Details' three places below is handed: the issue as the details slot reads it,
@@ -66,7 +67,8 @@ const HISTORY_IN_DETAILS = `aside[${DETAILS_ATTRIBUTE}] ${HISTORY}`;
  * so the People section costs the page one request on any other address: the subscribers' count.
  */
 export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
-  const { key, pathname, search } = useLocation();
+  const { pathname } = useLocation();
+  const following = useFollowing();
   const opensCollaborators = parseIssuePath(pathname)?.kind === "collaborators";
   const subscribers = useIssueSubscribers(issue.key);
   // The session the last Unsubscribe was for: where Dispatch refused it, Retry sends it again.
@@ -78,8 +80,9 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
   // Each arrival at the address opens the list, as it opens Details (`DetailsHistory`), with the
-  // same arrival; closing it again is the reader's until the next, so this only ever opens.
-  const arrival = arrivalAt(key, opensCollaborators ? `${pathname}${search}` : undefined);
+  // same arrival: one following of the address (`useFollowing`). Closing it again is the reader's
+  // until the next, so this only ever opens.
+  const arrival = opensCollaborators ? following : undefined;
   useEffect(() => {
     if (arrival !== undefined) setCollaboratorsOpen(true);
   }, [arrival]);
@@ -266,7 +269,8 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * nearest drawn ancestor and says there that the thread is the agents' alone.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
-  const { hash, key, pathname, search } = useLocation();
+  const { hash, pathname, search } = useLocation();
+  const following = useFollowing();
   const navigate = useNavigate();
   const route = parseIssuePath(pathname);
   const addressed =
@@ -279,9 +283,10 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     outlineItemRoute(route, search, addressed) !== undefined;
   // A comment or message an agent wrote outside every thread a person wrote in is no row of the
   // outline: it is an entry of the history, which Details opens at, with the entry marked. The
-  // entry is the turn `AgentsOnlyTurn` told for this arrival at the address; until it tells, the
-  // one it told for the arrival before - at another address, maybe a row's - is no answer here.
-  const itemArrival = namesItem ? arrivalAt(key, `${pathname}${search}`) : undefined;
+  // entry is the turn `AgentsOnlyTurn` told for this arrival at the address, which is one
+  // following of it (`useFollowing`); until it tells, the one it told for the following before -
+  // at another address, maybe a row's, or at this one under another fragment - is no answer here.
+  const itemArrival = namesItem ? following : undefined;
   const [turn, setTurn] = useState<AgentsTurn | undefined>(undefined);
   const item = turn !== undefined && turn.arrival === itemArrival ? turn.id : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
@@ -291,17 +296,29 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const openDetailsAt = useOpenDetailsAt();
   const holdLandedPlace = useLandedPlaceHold(drawer?.open);
   const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
-  // Details opens once per arrival at such an address (`arrivalAt`), so a link the reader
-  // follows to the address they are on opens it again.
-  const arrival = arrivalAt(key, panelAddress);
+  // Details opens once per arrival at such an address, which is one following of it
+  // (`useFollowing`): a link the reader follows to the address they are on, and a fragment the
+  // browser changes under the one key it gives every entry it makes, are each an arrival of
+  // their own and open it again.
+  const arrival = panelAddress === undefined ? undefined : following;
+  // Details opens for an arrival only where it differs from the last one it opened for, so the
+  // reader's Close stands for the rest of that arrival. While the reader has no arrival, that
+  // last one is kept only where it is the following they are at: an address naming an item,
+  // whose agents' turn opened Details and was then taken back until the outline's reads answer
+  // again, so the turn told again for the same following opens nothing the reader closed. At any
+  // other following with no arrival - an address that opens no Details, a row's address, a turn
+  // not told yet - it is forgotten, so Back to an earlier entry of `/activity` or
+  // `/collaborators`, the same following again, opens Details again. Where Details has no drawer
+  // to open, each arrival is noted as opened all the same.
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (arrival === undefined || openDetails === undefined) {
-      openedFor.current = arrival;
+    if (arrival === undefined) {
+      if (openedFor.current !== following) openedFor.current = undefined;
       return;
     }
     if (openedFor.current === arrival) return;
     openedFor.current = arrival;
+    if (openDetails === undefined) return;
     openDetails(true);
     // At the collaborators' row, its control focused, with the People section that holds it
     // opened if the reader closed it, and the control kept where it lands while the rows above it
@@ -317,7 +334,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
         })
       );
     }
-  }, [arrival, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators]);
+  }, [arrival, following, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators]);
   const drawsHistory = drawer?.open === true || opensHistory;
   // The reader's read mark for this visit, where the history draws the line that says what is
   // new: where it stood when the history first drew for this issue, and lower once it has
@@ -386,7 +403,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
 }
 
 /** The turn of a thread only agents wrote in that one arrival at an address names
- *  (`AgentsOnlyTurn`), with that arrival (`arrivalAt`). */
+ *  (`AgentsOnlyTurn`), with that arrival: one following of the address (`useFollowing`). */
 interface AgentsTurn {
   readonly arrival: string;
   readonly id: string;
@@ -438,17 +455,6 @@ function AgentsOnlyTurn({
     return () => onTurn(undefined);
   }, [arrival, id, onTurn]);
   return null;
-}
-
-/**
- * One arrival at `address`, an address that opens Details, which is one navigation to it: the
- * address with the key react-router gives each navigation (`location.key`), so a link the
- * reader follows to the address they are on, which replaces it with itself (`RowText.tsx`), is
- * an arrival too. The address is part of it because a load, and a history entry the router did
- * not write, all carry the key "default". `undefined` while the reader is at no such address.
- */
-function arrivalAt(locationKey: string, address: string | undefined): string | undefined {
-  return address === undefined ? undefined : `${locationKey} ${address}`;
 }
 
 /**

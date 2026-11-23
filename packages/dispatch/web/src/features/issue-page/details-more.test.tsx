@@ -3,14 +3,26 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
-import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
+import {
+  createPath,
+  MemoryRouter,
+  type NavigateFunction,
+  Router,
+  type Navigator as RouterNavigator,
+  useNavigate,
+} from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
-import { issueResultsQuery, issueStepsQuery, userStateQuery } from "../../api/queries";
+import {
+  issueCoverageQuery,
+  issueResultsQuery,
+  issueStepsQuery,
+  userStateQuery,
+} from "../../api/queries";
 import type {
   Comment,
   CommentDelivery,
@@ -1297,8 +1309,9 @@ function claim(seq: number): DispatchEvent {
 }
 
 /** What opens and shuts Details around the history, and moves the reader's read mark: the
- *  test's hold on `HistoryInDrawer`. */
+ *  test's hold on `HistoryInDrawer`. `isOpen` is whether Details is open, as it was last drawn. */
 interface DrawerHold {
+  isOpen?: boolean;
   open?: (open: boolean) => void;
   read?: (state: UserState) => void;
 }
@@ -1309,6 +1322,7 @@ interface DrawerHold {
 function HistoryInDrawer({ hold, of = issue }: { hold: DrawerHold; of?: IssueDetails }): ReactNode {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState(() => readTo(2));
+  hold.isOpen = open;
   hold.open = setOpen;
   hold.read = setState;
   const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
@@ -1456,6 +1470,312 @@ test("an agents' turn's address opens Details at it once every read the outline 
         document.querySelector(`[data-history-item="${id}"]`)?.getAttribute("aria-current"),
         "the agents' turn's address did not open Details with the turn marked"
       ).toBe("true")
+    );
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, names]) spy.mockRestore();
+  }
+});
+
+/** A navigator that goes nowhere, for a router whose location the case sets itself. */
+const NO_NAVIGATION: RouterNavigator = {
+  createHref: (to) => (typeof to === "string" ? to : createPath(to)),
+  go: () => {},
+  push: () => {},
+  replace: () => {},
+};
+
+/** Draws `children` at `address` under the location the browser makes for it, as a load does or
+ *  a fragment typed in the address bar: its key is "default", the one key the router gives every
+ *  entry it did not make itself. `follow` draws them at another address under that same key, as
+ *  the browser changes the fragment alone, with no load. */
+function renderAtBrowserEntry(address: string, children: ReactNode) {
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={NO_NAVIGATION}>
+      {children}
+    </Router>
+  );
+  const view = render(draw(address));
+  return { ...view, follow: (to: string) => view.rerender(draw(to)) };
+}
+
+/** Whether the history marks the turn `id`, as the address of that turn has it. */
+function turnMarked(id: string): boolean {
+  return (
+    document.querySelector(`[data-history-item="${id}"]`)?.getAttribute("aria-current") === "true"
+  );
+}
+
+/** Takes away the answer `client` holds under `queryKey` and reads it again, as a reset of the
+ *  read does: nothing is held under the key until the read sent again answers. */
+function readAgainFromNothing(client: QueryClient, queryKey: readonly unknown[]): void {
+  act(() => {
+    void client.resetQueries({ queryKey });
+  });
+}
+
+// Every entry the browser makes has the key "default", a load and a fragment typed in the address
+// bar alike, so a fragment typed at `/issues/<key>/activity` is a following of its own though the
+// key stays one (`useFollowing`): Details opens again at it, though the reader closed it. Details
+// counted an arrival by the key and the address without its fragment, took the typed fragment for
+// the arrival it had opened at, and stayed shut.
+test("a fragment typed at the history's address opens Details again, though the reader closed it", async () => {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const hold: DrawerHold = {};
+  const activity = buildIssuePath({ key: KEY, kind: "activity" });
+  const view = renderAtBrowserEntry(
+    activity,
+    <QueryClientProvider client={readsHeld()}>
+      <HistoryInDrawer hold={hold} />
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() =>
+      expect(hold.isOpen, "a load of the history's address left Details shut").toBe(true)
+    );
+    act(() => hold.open?.(false));
+
+    view.follow(`${activity}#history`);
+    await waitFor(() =>
+      expect(
+        hold.isOpen,
+        "a fragment typed at the history's address, under the one key the browser gives its entries, left Details shut after the reader closed it"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    getIssueEvents.mockRestore();
+  }
+});
+
+// The address of an agents' turn opens Details at it once per following, and the reader's Close
+// stands for the rest of that following. The outline's read of the messages going out again with
+// nothing held takes the turn back until it answers, and the turn is then told again for the same
+// following: Details stays shut. Details forgot the arrival it had opened for as the turn was taken
+// back, and opened again at the same arrival when the read answered.
+test("a closed Details stays closed when the outline's reads answer again for the same following of an agents' turn's address", async () => {
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    requirements: [],
+  } as never);
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const messages = Promise.withResolvers<MessageRead[]>();
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
+  const { client, names } = agentsThreadClient();
+  const hold: DrawerHold = {};
+  const id = AGENTS_THREAD.message.id;
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
+      <QueryClientProvider client={client}>
+        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => {
+      expect(turnMarked(id), "the agents' turn's address marked no turn in the history").toBe(true);
+      expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
+    });
+    act(() => hold.open?.(false));
+
+    readAgainFromNothing(client, ["issue-messages", KEY]);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("issue-history"),
+        "the outline's messages read out again with nothing held left the agents' turn told"
+      ).toBeNull()
+    );
+    await act(async () => messages.resolve([AGENTS_THREAD]));
+    await waitFor(() =>
+      expect(
+        turnMarked(id),
+        "the messages read answered again, and the history marked no turn"
+      ).toBe(true)
+    );
+    await nextFrames(2);
+    expect(
+      hold.isOpen,
+      "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
+    ).toBe(false);
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, listIssueMessages, names]) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A fragment typed at an agents' turn's address is a following of its own. Typed while a read the
+// outline lands by is out, the outline lets go of the turn until that read answers, and Details
+// then opens at the turn, once: the reader's Close stands for the rest of that following, and a
+// later answer of the outline's reads, which takes the turn back and tells it again, leaves it
+// shut. Details counted an arrival without the fragment and forgot it as the turn was taken back,
+// so it opened again at each answer.
+test("after a fragment typed at an agents' turn's address while a read the outline lands by is out, Details opens once at the turn, and a later answer of the reads leaves it closed", async () => {
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    requirements: [],
+  } as never);
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const messages = Promise.withResolvers<MessageRead[]>();
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
+  const { client, names } = agentsThreadClient();
+  const hold: DrawerHold = {};
+  const id = AGENTS_THREAD.message.id;
+  const address = buildIssuePath({ id, key: KEY, kind: "message" });
+  const view = renderAtBrowserEntry(
+    address,
+    <QueryClientProvider client={client}>
+      <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => {
+      expect(turnMarked(id), "the agents' turn's address marked no turn in the history").toBe(true);
+      expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
+    });
+    act(() => hold.open?.(false));
+
+    // The outline's coverage goes out again with nothing held, and the fragment is typed while it
+    // is out.
+    const coverage = Promise.withResolvers<IssueCoverage>();
+    getIssueCoverage.mockImplementation(() => coverage.promise);
+    readAgainFromNothing(client, issueCoverageQuery(KEY).queryKey);
+    view.follow(`${address}#reply`);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("issue-history"),
+        "a fragment typed while the outline's coverage was out left the agents' turn told"
+      ).toBeNull()
+    );
+    expect(hold.isOpen, "a fragment typed while a read was out opened Details").toBe(false);
+
+    await act(async () => coverage.resolve({ requirements: [] } as never));
+    await waitFor(() => {
+      expect(turnMarked(id), "the coverage answered, and the history marked no turn").toBe(true);
+      expect(
+        hold.isOpen,
+        "the coverage answered after the fragment typed at the agents' turn's address, and Details stayed shut"
+      ).toBe(true);
+    });
+    act(() => hold.open?.(false));
+    await nextFrames(2);
+    expect(
+      hold.isOpen,
+      "Details opened again at the turn the fragment's following told, after the reader closed it"
+    ).toBe(false);
+
+    readAgainFromNothing(client, ["issue-messages", KEY]);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("issue-history"),
+        "the outline's messages read out again with nothing held left the agents' turn told"
+      ).toBeNull()
+    );
+    await act(async () => messages.resolve([AGENTS_THREAD]));
+    await waitFor(() =>
+      expect(
+        turnMarked(id),
+        "the messages read answered again, and the history marked no turn"
+      ).toBe(true)
+    );
+    await nextFrames(2);
+    expect(
+      hold.isOpen,
+      "a later answer of the outline's reads in the fragment's following opened Details again after the reader closed it"
+    ).toBe(false);
+  } finally {
+    view.unmount();
+    for (const spy of [getIssueCoverage, getIssueEvents, listIssueMessages, names]) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// Back to an earlier entry of `/issues/<key>/activity` is that entry's following again, and the
+// reader left it for the issue's own address, which opens no Details: Details opens again there,
+// though the reader closed it before leaving.
+test("Back to the history's address from the issue's own address opens Details again, though the reader closed it", async () => {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const hold: DrawerHold = {};
+  let navigate: NavigateFunction | undefined;
+  function Navigator(): ReactNode {
+    navigate = useNavigate();
+    return null;
+  }
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
+      <QueryClientProvider client={readsHeld()}>
+        <Navigator />
+        <HistoryInDrawer hold={hold} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() =>
+      expect(hold.isOpen, "a load of the history's address left Details shut").toBe(true)
+    );
+    act(() => hold.open?.(false));
+    act(() => navigate?.(`/issues/${KEY}`));
+    await nextFrames(2);
+    expect(hold.isOpen, "the issue's own address opened Details").toBe(false);
+
+    act(() => navigate?.(-1));
+    await waitFor(() =>
+      expect(
+        hold.isOpen,
+        "Back to the history's address from the issue's own address left Details shut"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    getIssueEvents.mockRestore();
+  }
+});
+
+// The address of a comment that has a row of the outline opens no Details: the outline lands on
+// that row. Back from it to an earlier entry of `/issues/<key>/activity` is that entry's following
+// again, and Details opens again there, though the reader closed it at the comment. An address
+// that names an item keeps the arrival Details last opened for only where that arrival is its own
+// following: kept at every address naming an item, the arrival of the history's address stood at
+// the comment's, and Back to it opened nothing.
+test("Back to the history's address from a comment's address with a row of the outline opens Details again, though the reader closed it there", async () => {
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    requirements: [],
+  } as never);
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
+  const { client, names } = agentsThreadClient();
+  const hold: DrawerHold = {};
+  let navigate: NavigateFunction | undefined;
+  function Navigator(): ReactNode {
+    navigate = useNavigate();
+    return null;
+  }
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
+      <QueryClientProvider client={client}>
+        <Navigator />
+        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() =>
+      expect(hold.isOpen, "a load of the history's address left Details shut").toBe(true)
+    );
+    // The reader follows a link to their own comment, which heads a thread a person wrote and so
+    // is a row of the outline (`OWN_COMMENT`).
+    act(() => navigate?.(buildIssuePath({ id: OWN_COMMENT.id, key: KEY, kind: "comment" })));
+    act(() => hold.open?.(false));
+    await nextFrames(2);
+    expect(hold.isOpen, "the address of a comment with a row of the outline opened Details").toBe(
+      false
+    );
+
+    act(() => navigate?.(-1));
+    await waitFor(() =>
+      expect(
+        hold.isOpen,
+        "Back to the history's address from a comment's address with a row of the outline left Details shut"
+      ).toBe(true)
     );
   } finally {
     view.unmount();
