@@ -257,7 +257,7 @@ const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
  * finished role, one whose completion of the phase it is of was already taken, read from
  * `packages/daemon/internal`. `phase.Of(role, at)` is the phase a completion is of
  * (`completedPhase` mirrors it). Where it is `at`, the role works the issue's phase
- * (`phase.RoleFor(at)`), and the engine takes a completion naming a new record, or for retro and
+ * (`phase.RoleFor(at)`, or at `step` the issue's `stepRole`), and the engine takes a completion naming a new record, or for retro and
  * merging a commit: 200. Otherwise workflow's `leftItsPhase` records a left phase's completion
  * only while the role's phases row holds no completion of it and some role works the issue's
  * phase, so a finished role's is answered `409 HANDOFF_NOT_CURRENT_PHASE`, and so is every one
@@ -368,7 +368,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
 };
 
 /** The role that works each phase, as the daemon's `phase.RoleFor` answers; a phase absent here is
- * one no role works. */
+ * one no role works, or `step`, whose role is the issue's `stepRole`. */
 const WORKER: Readonly<Partial<Record<LegionPhase, LegionRole>>> = {
   planning: "planner",
   implementing: "implementer",

@@ -389,7 +389,7 @@ const (
 const volumeResetAnnotation = "legion.dev/volume-reset"
 
 // secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
-// it deleted the Secrets the Sandbox owns: the provisioning Secret and the six role Secrets
+// it deleted the Secrets the Sandbox owns: the provisioning Secret and each role's Secret
 // (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it once every delete
 // has succeeded, so it is never on a Sandbox that still owns one of them. A launch that keeps the
 // Sandbox removes it before it writes the first Secret (relaunch, annotate). A Sandbox
@@ -440,8 +440,8 @@ const (
 // asked for, its Service's.
 const maxNameLength = 63
 
-// SandboxName is the Sandbox and pod name for an issue, or for the project controller. The six role
-// claims of an issue share it, and its one container; their generations live in each process
+// SandboxName is the Sandbox and pod name for an issue, or for the project controller. Every role
+// claim of an issue shares it, and its one container; their generations live in each process
 // locator instead. A role claim's token is cut at its first four "-" (claim.Token.Cut), so the
 // project and issue token it keeps is the same whatever the role, a role with a "-" included.
 // The controller's token (claim.ControllerToken) ends in no workflow role and names its Sandbox

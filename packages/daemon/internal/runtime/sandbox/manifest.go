@@ -1552,10 +1552,11 @@ const (
 	// (`go help module-auth`) in a directory it then makes read-only, which only `go build
 	// -modcacherw` leaves writable. They are the issue's rather than the tree's because each issue
 	// has a volume of its own; a pair is 751 MiB of build cache and 375 MiB of module cache for this
-	// repository, so the six roles of an issue pod with a pair each would hold five redundant
-	// copies, about 5.5 GiB of the issue's volume spent on nothing. They keep their own place at
-	// `/legion/go`, beside the workspaces rather than under the issue's scratch (scratchRoot),
-	// where they were the issue's one pair before the rest of the scratch became the issue's too.
+	// repository, so roles with a pair each would hold a redundant copy for each role but one, five
+	// for Legion's six roles, about 5.5 GiB of the issue's volume spent on nothing. They keep their
+	// own place at `/legion/go`, beside the workspaces rather than under the issue's scratch
+	// (scratchRoot), where they were the issue's one pair before the rest of the scratch became the
+	// issue's too.
 	// The state home is the one directory of that scratch no two roles share: Oh My Pi's browser
 	// broker takes its lock as an abstract unix socket named from a path under the state home, one
 	// name across every container of the pod, so one state home would block every role's broker

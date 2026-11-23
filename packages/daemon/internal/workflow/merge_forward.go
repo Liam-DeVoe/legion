@@ -19,8 +19,8 @@ import (
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past
 // its review takes no admission slot for the merge, and the implementer is asked, on its own role
 // topic, to merge the base forward onto the head and push (record.MergeForwardAsk). Outside
-// implementing it also tells the worker of that phase, when that is the tester, the reviewer or
-// the merger, to stop writing the workspace the roles share while the merge runs
+// implementing it also tells the worker of that phase, when that is the tester, the reviewer, the
+// merger or, at step, the role of the running step, to stop writing the workspace the roles share while the merge runs
 // (record.MergeForwardHold), and the architect that owns the issue one checks-red notice whose
 // phase is the phase the issue stays in and whose reason names the head, the base, why and that
 // the issue stays in its phase; the outbox routes that notice to the owning architect, as every
@@ -163,7 +163,7 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // shares it.
 //
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
-// reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
+// reviewer, the merger or, at step, the role of the running step (record.MergeForwardReaches) - is told the old head and the new one and
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue in
 // accepting, retro or merging (record.PastReview) stands, in the default steps, on a review of
 // the old head, so the reviewer is asked to read the merge and approve the new head or request

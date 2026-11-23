@@ -10,8 +10,8 @@ import "strings"
 
 // roles are Legion's six worker types, in the order of the default steps. The daemon's
 // claim.Roles is the same list in the daemon's own module (packages/daemon/internal/claim/
-// token.go), which this module does not import; a deployment changes each role's prompt, model
-// and harness, not the roles.
+// token.go), which this module does not import. A role a deployment defines is not among them, so
+// a title naming one is no Legion session to these readers.
 var roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // The two shapes a Legion session titles itself (packages/pi-legion/src/session-title.ts): a
@@ -22,7 +22,7 @@ const (
 	legionControllerTitle = "controller"
 )
 
-// SessionTitle is what a session's title says the session is: one of the six roles working one
+// SessionTitle is what a session's title says the session is: one of Legion's six roles working one
 // issue, or a project's controller.
 type SessionTitle struct {
 	Role string

@@ -9,8 +9,10 @@ import (
 
 // The gate of the read of GitHub's merge state asks for each of two reasons, and for nothing else
 // (dispatch://INFRA-4374 R0, R4): a fact that moves the head of an issue in implementing through
-// merging, and a push to the base of an issue in testing through merging. A head move before
-// implementing, a base push in implementing or before it, and a fact that moves neither the head
+// merging, step among them (record.MergeForwardPhases), and a push to the base of an issue in
+// testing, reviewing, accepting, retro or merging, which step is not among (MergeStateReadOwed).
+// A head move before implementing, a base push in implementing or before it, and a fact that
+// moves neither the head
 // nor the base ask nothing. A held issue is read for as the phase it is held from. The third
 // reason a read is owed, a review round that waits on GitHub's answer whatever the fact, is not
 // the gate's: workflow's askMergeStateFor adds it, so a review in reviewing asks nothing here.

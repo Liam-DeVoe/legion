@@ -224,8 +224,9 @@ that a tester step and a reviewer step name and neither refuses, so your accepta
 gate on it: give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-A tester completion that rejects the implementer's results goes back to the implementer, or to
-the earlier step its completion names; a worker that reports no surface reaches the changed path gets the surface built
+A tester completion that rejects the implementer's results goes back to the first step of the
+type implementation before the tester, the implementer in the default steps, or to the earlier
+step its completion names; a worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
 wakes it when its idle pod was released): once that child
@@ -236,5 +237,5 @@ A merge is never a human to-do: open no `dispatch ask` for it. The merger merges
 itself, at the head it read and under the repository's own rules. Only what no worker can do — a
 repository setting or an App permission a person must change — reaches you, from the merger.
 
-The root architect writes no handoff: unlike a phase worker, it is not a file-backed phase, and
-its root-issue close plus Envoy messaging are the durable record of its work.
+The root architect writes no handoff: unlike Legion's file-backed phase workers, it is not a
+file-backed phase, and its root-issue close plus Envoy messaging are the durable record of its work.

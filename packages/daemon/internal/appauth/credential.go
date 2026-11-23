@@ -132,11 +132,12 @@ func GitHubCredential(source Source, served func(ghrepo.Repository) bool, rename
 // refreshGitHubCredentials and gitHubBundles, tmux's refreshGitHubCredentials).
 //
 // It is worth having because a bundle is a function of two things and no more: the App role the
-// claim role runs as (AppRoleFor) and the repository it is built for. The six roles of an issue
-// pod are therefore two bundles, where each build opens with a live read of every page of its
-// App's installations under a fresh JWT (GitHubCredential) — the walk of a twenty-pod project
-// made 120 of those reads a minute where 40 answer every bundle it needs, and a pod's launch
-// made six serial round trips to GitHub before its first role could start.
+// claim role runs as (AppRoleFor) and the repository it is built for. The roles of an issue pod,
+// Legion's six and each role of the deployment, are therefore two bundles, where each build opens
+// with a live read of every page of its App's installations under a fresh JWT (GitHubCredential) —
+// the walk of a twenty-pod project made 120 of those reads a minute where 40 answer every bundle
+// it needs, and a pod's launch made six serial round trips to GitHub before its first role could
+// start.
 //
 // It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, as
 // INFRA-2543 R2 asks, and what stops is one walk asking the same question four times. A build

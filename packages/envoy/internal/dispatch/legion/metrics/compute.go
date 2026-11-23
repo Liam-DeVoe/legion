@@ -23,8 +23,9 @@ const (
 	ScopeChildren Scope = "children"
 )
 
-// The bars of metric 2: the six roles, each holding the phases that role works, and the seventh
-// for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:
+// The bars of metric 2: Legion's six roles, each holding the phases that role works, and the
+// seventh for the phases no role works; a role of the deployment has no bar of its own, since
+// Dispatch writes its step `in_progress` (timeline.go's statusImplementing). "A seventh bar, 'no role', holds the phases no role works:
 // `awaiting_person` and `held`", and the spec's "Phase boundaries before observations" holds it
 // to those two alone — a handoff starts the next phase, so no hour falls between two phases for
 // it to hold. Time in the queue is on no bar, and neither is an hour the work time leaves out,

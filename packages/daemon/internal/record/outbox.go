@@ -1302,8 +1302,9 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // the save has to happen while that process is there.
 //
 // It stops nothing, so a release cancelled here costs only the save, and it sits before the
-// release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
+// release's boundary (the first `release` row), so a delivery queued while it runs, save a start
+// that waits for its pod, still cancels the whole release and takes the stored bundle with it
+// (outbox.cancelRelease).
 type IssueBundle struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
@@ -1778,7 +1779,8 @@ const (
 	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// tester, the reviewer, the merger or, at step, the role of the running step, to stop writing
+	// the workspace while the merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
@@ -2485,7 +2487,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer, the merger or a role of the deployment, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)

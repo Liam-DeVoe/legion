@@ -603,8 +603,8 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 const answerSkew = 10 * time.Second
 
 // byReviewer says whether review is the reviewer's own review-App session, not merely a review the
-// review App submitted: the controller now holds the review App's token too, so every role's
-// review arrives under the same bot login (Config.ReviewAppLogin). What tells the reviewer's
+// review App submitted: the controller now holds the review App's token too, so every review-App
+// role's review arrives under the same bot login (Config.ReviewAppLogin). What tells the reviewer's
 // review from any other review-App session's - the controller's, an architect's, a sibling tree's
 // role - is the Legion footer every Legion role appends to a pull-request review
 // (intake.PullRequestReview.LegionSession), matched against reviewerSession, the session the
@@ -1212,7 +1212,8 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
 // pr its pull request as the fact left them), and says whether it moved the issue. An ended round
-// moves on, its request for changes back to implementing; a stuck round is told to the architect,
+// moves on, its request for changes back to the first step of the type implementation before the
+// reviewer's; a stuck round is told to the architect,
 // in a notice whose summary is by, the fact that wrote it - unless it was told already. For the
 // two causes a review decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
@@ -1430,8 +1431,9 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // "<from>-<to>" pair, spelled as phase.MovePairs() spells the pairs (phase.Pair): a review
 // that sends the work back and a test that sends it back are two counts and never one. Both rise
 // here, where every backward move passes, rather than beside the review round, which only a
-// review requesting changes opens (recordRound): a hook standing on that count would never see a
-// tester's fail or a worker's own move back.
+// review requesting changes or the fail of a step of the type review whose agent is not the owner
+// opens (recordRound): a hook standing on that count would never see a tester's fail or a
+// worker's own move back.
 //
 // A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
 // sent the work back, so there is no move of a kind for a hook to count, and the pass it still
@@ -1457,8 +1459,9 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
 }
 
-// recordRound counts task one more review round, which only a review that requested changes
-// ends, and tells the architect once for each value review_round_cap holds. The counts are the
+// recordRound counts task one more review round, which a review that requested changes ends, as
+// the fail of a step of the type review whose agent is not the owner does, and tells the architect
+// once for each value review_round_cap holds. The counts are the
 // task's, where recordPass keeps them. The move's own pair and the deployment's hooks are counted
 // where every backward move passes (recordPass), so a round and a move are counted apart: this
 // one is the cap's, and everything it writes it writes in the move's own transaction.

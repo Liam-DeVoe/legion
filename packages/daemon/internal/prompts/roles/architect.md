@@ -166,7 +166,8 @@ session until its issue closes, so an `envoy_publish` to a role that finished it
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
 session and on the pull request, and asks nothing of you. A tester completion that rejects the
-implementer's results goes back to the implementer, or to the earlier step its completion names;
+implementer's results goes back to the first step of the type implementation before the tester,
+the implementer in the default steps, or to the earlier step its completion names;
 a worker that reports
 no surface reaches the changed path gets the surface built in this tree
 (`skill://legion-architect`, wake routing,

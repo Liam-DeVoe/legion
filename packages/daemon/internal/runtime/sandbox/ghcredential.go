@@ -76,7 +76,7 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // that repository's pods the walk holds, and a repository whose mint fails is logged once and
 // left to the next tick, where its pods are tried again. The gh bundles are built once per App
 // role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its two Apps' installations and not its six roles'.
+// reads its two Apps' installations and not each of its roles'.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion

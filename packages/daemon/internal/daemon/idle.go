@@ -82,7 +82,8 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 }
 
 // releaseIdlePods decides each pod of the project in turn. One issue's failure is logged and the
-// rest are decided: a release is a saving, never a correctness step, and nothing waits on it.
+// rest are decided: a release is a saving and never a correctness step, and the one start that
+// waits on it, a start whose pod was built before its role, is served by the update round too.
 func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 	if !w.listenerLive(ctx) {
 		return
@@ -143,8 +144,9 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // releaseUnownedPods decides each pod of the project that no claim of its issue can use: an
 // issue whose every claim is failed, retired or suspended holds a pod of 3 CPU and 19 GiB that
 // no role can take a turn in, and this is the pass that releases it. One issue's failure is
-// logged and the rest are decided, as the idle pass has it: a release is a saving, never a
-// correctness step, and nothing waits on it.
+// logged and the rest are decided, as the idle pass has it: a release is a saving and never a
+// correctness step, and the one start that waits on it, a start whose pod was built before its
+// role, is served by the update round too.
 //
 // It writes one line saying what the whole pass did — how many issues it decided, how many it
 // released and how many it held under each reason — whenever it decided at least one. That line
@@ -278,8 +280,8 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		w.recordKeptPod(ctx, issue, decision.Hold, "", quiet, holding, now)
 		return decision.Hold, false
 	}
-	// The line that ends this release is the teardown's, and it is the one Info line of a
-	// release no role is waiting on; the mark is a Debug line here for that reason.
+	// The line that ends this release is the teardown's, and it is the release's one Info line,
+	// whoever waits on it; the mark is a Debug line here for that reason.
 	w.log.Debug("unowned release: releasing an issue's pod, which no claim of it can use",
 		"issue", issue, "idle", w.idlePeriod.String())
 	w.wakeOutbox(issue, record.OutboxKindSupervise)
@@ -499,7 +501,8 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //  2. the role stops: one `release` supervise row per live role, each stopping that role's
 //     process and keeping its session. The first of them is the release's boundary — the stop of
 //     the first role process of the pod — which is what R4's cancel is read against, so a
-//     delivery queued while the save ran is still below it and cancels the whole release;
+//     delivery queued while the save ran is still below it and cancels the whole release, save a
+//     start that waits for its pod, which the next pod serves;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored. A Sandbox that owns the issue's kept
 //     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).

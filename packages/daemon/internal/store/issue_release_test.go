@@ -234,7 +234,8 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 // mark's first_row and its last_row, so a task, notice, message or start of the issue outside
 // that range — queued by a transaction already in flight when the mark was written, or queued
 // once the mark stood — reached a pod every role of which was still running: it cancels the
-// release at the boundary. A claim started since the mark, or one holding a process, cancels it
+// release at the boundary, a start that waits for its pod excepted.
+// A claim started since the mark, or one holding a process, cancels it
 // at any of the release's role stops. A row no mark holds does nothing.
 //
 // The mark stands through every one of those answers: the cancel is carried out by

@@ -287,7 +287,8 @@ func quotedOrNone(value string) string {
 
 // claimsSpawn creates the claim on --role of --issue, in the tree --tree roots, and launches it.
 // --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
-// and Go-specific parts. --task is its first delivery, sent once the agent is ready.
+// and Go-specific parts, or, for a role of the deployment, its prompt_file with the headless part
+// and worker-common.md. --task is its first delivery, sent once the agent is ready.
 func claimsSpawn(c *claimsCall) action {
 	tree := c.flags.String("tree", "", "issue key of the tree's root (required)")
 	issue := c.flags.String("issue", "", "issue key the claim is on (required)")

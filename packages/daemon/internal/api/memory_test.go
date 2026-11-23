@@ -112,7 +112,9 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the last
-// strict reader before it knows, and the rest of the body as it is. The downgrades this case walks
+// strict reader before it knows, and the rest of the body as it is, save that, being below
+// deploymentRolesContract too, it is served an issue at step as implementing and no claim or wake
+// of a role of the deployment. The downgrades this case walks
 // compose, band by band, as the rows of the table below say, the line-kind value strip
 // (withoutWaitingOnIssue) finding nothing to take here: each pod of this case records one
 // contract, so a word of 85 is admitted or has left with its band, and the fixture stands no
@@ -434,7 +436,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
-			// before it refuses that key empty as surely as filled (withoutWakesWaiting). The
+			// before it refuses that key empty as surely as filled (withoutWakesWaiting), and with
+			// the roles of the deployment taken out where the caller is below
+			// deploymentRolesContract (servedWithoutDeploymentRoles). The
 			// `contract` mark is read apart and taken out of both: it is the one key the
 			// caller's own recorded contract decides rather than the state, and the baseline,
 			// asked from no pod, is told the daemon's number as its caller's where a caller at

@@ -370,8 +370,9 @@ const legionHandoffRecordView = z.object({
 /** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
  * completion reported, the Dispatch handoff record it named), and the three counts the phase
  * carries: `pass`, the passes it has made through its stretch of the workflow, which every
- * backward move counts one of, `rounds`, the review rounds, which only a review that requested
- * changes counts, and `backwardMoves`, the counts of the moves back that made those rounds. */
+ * backward move counts one of, `rounds`, the review rounds, which a review that requested
+ * changes counts, and so does the fail of a step of the type review whose agent is not the
+ * owner, and `backwardMoves`, the counts of the moves back that made those rounds. */
 const legionPhaseView = z.object({
   claim: legionClaimView.optional(),
   handoffCommit: nonEmptyString.optional(),

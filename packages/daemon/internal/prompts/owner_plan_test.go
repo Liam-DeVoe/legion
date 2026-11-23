@@ -237,7 +237,8 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // step at which a task with plan rows was stopped is refused as late (intake's
 // LateReportOfStoppedTask): the answer names no result and no cause, sends the agent to
 // `dispatch steps`, and keeps the handoff record the report named as used, so each phase worker is
-// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own. Each
+// told what TASK_STOPPED means and that a later run of its step writes a handoff of its own, where
+// its phase writes one. Each
 // duty is held by the terms of the clause that states it, in their order, so a rewording that
 // keeps them passes. This shows the text is loaded, never that a worker follows it.
 func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
@@ -269,8 +270,8 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 // sentence that named one of them as if every issue ran it now says where it runs and, where it
 // does not, who holds its duty: the order of the starts is the order of the steps of the issue's
 // plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names an earlier step's phase; a failed step goes back to the implementer or to
-// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
+// the move back names an earlier step's phase; a failed step goes back to the first step of the
+// type implementation before it or to the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
 // of its finished whole from its owner, and each part says so in one sentence where it speaks of a
 // parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
 // the daemon's routes. The words the parts carried before are gone from both, and from the
@@ -292,7 +293,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"A task with no `acceptance:owner` step has no `accepting`",
 		"`to` the phase of an earlier step of the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`.",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the implementer, or to the earlier step its completion names",
+		"goes back to the first step of the type implementation before the tester, the implementer in the default steps, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",

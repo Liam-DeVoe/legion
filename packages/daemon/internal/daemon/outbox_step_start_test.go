@@ -54,7 +54,7 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 // does not say which step it is of. The linter's start of step 3 of `implementer checker linter`
 // was queued, under the transition's lock, while the task stood at step 3. It waited on its row's
 // backoff (an operator's suspension of the claim, or a pod built before the role); meanwhile a
-// conflict sent the work back and the task now stands at the checker's step 2, still at the phase
+// move back sent the work to the checker's step 2, and the task now stands there, still at the phase
 // step, with the linter's row on the same entry, so the generation, the phase and the entry all
 // pass. The outbox's fence holds the start to the role of the step the task stands at
 // (record.Issue.HoldsQueued) and finishes it without acting: no linter claim is created and no task

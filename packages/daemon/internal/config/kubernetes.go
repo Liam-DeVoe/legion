@@ -49,10 +49,11 @@ type Kubernetes struct {
 	// and the image probe run in gVisor whatever it says.
 	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
-	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
-	// controller's, whose pod a daemon under `controller: daemon` launches
-	// (runtime.kubernetes.resources.controller). After load both are filled field by field: the
-	// file's value where it sets one, the daemon's default (DefaultResources) otherwise. CPU and
+	// one container runs Legion's six workflow roles and each role of the deployment
+	// (runtime.kubernetes.resources.issue), and the controller's, whose pod a daemon under
+	// `controller: daemon` launches (runtime.kubernetes.resources.controller). After load both are
+	// filled field by field: the file's value where it sets one, the daemon's default
+	// (DefaultResources) otherwise. CPU and
 	// Memory are the container's limits; CPURequest and MemoryRequest its requests, each equal to
 	// its limit unless the file sets a lower one. With every request equal to its limit, as the
 	// defaults are, every Legion pod is Guaranteed and bursts past nothing; a request below its limit

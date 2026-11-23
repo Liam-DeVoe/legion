@@ -55,7 +55,7 @@ import (
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
 // step names as the one its task returns to, by its place in the task, 1 for its first: only
-// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
+// the completion of a tester or of a role of the deployment with the verdict fail names one (returnToRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {

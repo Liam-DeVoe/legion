@@ -521,12 +521,13 @@ func statusPhase(previous, status string) (phase string, sendBack, named bool) {
 	case statusRetro:
 		return legion.PhaseRetro, false, true
 	case statusImplementing:
-		// The workflow writes `in_progress` twice over: once where it admits an issue out of the
-		// queue or out of parked, and once for every send-back to implementing, whatever phase
-		// the issue comes back from (workflow/table.go's TriggerTesterFailed,
-		// TriggerReviewRejected and TriggerBackward all write it, and before
-		// cybermonklabs/legion#4464 a conflict's move did too). Only the send-back, a move out of
-		// `testing`, `needs_review` or `retro`, names a phase.
+		// The workflow writes `in_progress` three times over: where it admits an issue out of the
+		// queue or out of parked, for every send-back to implementing, whatever phase the issue
+		// comes back from (workflow/table.go's TriggerTesterFailed, TriggerReviewRejected and
+		// TriggerBackward all write it, and before cybermonklabs/legion#4464 a conflict's move did
+		// too), and for every start of a step of a role of the deployment (`step`). Only a move out
+		// of `testing`, `needs_review` or `retro` names a phase here, and it is read as a send-back:
+		// a step of a role of the deployment entered from one of them reads as implementing.
 		if slices.Contains(sentBackStatuses, previous) {
 			return legion.PhaseImplementing, true, true
 		}

@@ -273,7 +273,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
+			Description: "The implement App (the identity of the implementer, the merger and each role of `roles` whose `github_app` is `implement`) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -523,9 +523,9 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "github_apps", Members: []member{
 		{Name: "implement", Default: "none: a file that names no implement App is refused", RequiredBy: "yes",
-			Description: "The App the implementer and the merger work as, whose token clones every pod's workspace and pushes and lands the change; no review ever comes from it."},
+			Description: "The App the implementer, the merger and each role of `roles` whose `github_app` is `implement` work as, whose token clones every pod's workspace and pushes and lands the change; no review of Legion's reviewer comes from it."},
 		{Name: "review", Default: "none: a file that names no review App is refused", RequiredBy: "yes",
-			Description: "The App every other role works as — architect, planner, tester and reviewer — whose token writes the reviews and the check runs the implement App may not."},
+			Description: "The App every other role works as — architect, planner, tester, reviewer and each role of `roles` whose `github_app` is `review` or unset — whose token writes the reviews and the check runs the implement App may not."},
 	}},
 	{Path: "github_apps.<APP>", Members: []member{
 		{Name: "app_id", Default: "none: an App that names no id is refused", RequiredBy: "yes",
