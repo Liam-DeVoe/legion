@@ -2944,6 +2944,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
