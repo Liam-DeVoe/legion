@@ -80,8 +80,11 @@ each of those, stop every listener of the deployment (and every envoy-dispatch, 
 - **A clustered hub restored from a backup** (`nats stream restore`) recreates each bucket from
   its snapshot: scale every listener and envoy-dispatch to zero, run `envoy-infra buckets check`
   with the inventory, restore, run `envoy-infra buckets create` for any bucket the restore did not
-  bring, then start them. Nothing holds the checked state through the restore; that is the
-  "unheld restore" the command warns of.
+  bring, then start them. A restored bucket at other copies than `create` asks for, or with another
+  configuration than its own, stops that `create` with exit 1, a `differs:` line naming each
+  difference, and nothing is created, the missing buckets included: run it again with a `--bucket`
+  for each bucket the restore did not bring, which leaves the restored ones as they are. Nothing
+  holds the checked state through the restore; that is the "unheld restore" the command warns of.
 - **A hub moving from a listener that created its buckets:** such a listener created
   `envoy_known_sessions` the first time it opened it once its NATS user held that bucket's grant,
   which `envoy-infra` 10.33.0 is the first release to render, and a hub without that grant holds
@@ -3442,16 +3445,21 @@ named bucket first, and changes no bucket that is there, so it can run again:
 - a bucket there at those copies with that configuration is present: the run prints
   `<bucket> present at <n> copies with its own configuration: left as it is` and exits 0;
 - a bucket there at other copies, or with another history, age, storage, size limit, compression,
-  discard policy or direct get, refuses the run with exit 1, naming each difference
-  (`differs: KV_<bucket>: replicas 1, want 3`), and nothing is created, the absent buckets
-  included. The session bucket's age is the exception: the listeners set it from
-  `ENVOY_SESSION_MAX_AGE` on the running bucket, so its age is not compared;
+  discard policy, direct get or subjects, or a mirror, a source or a republish, refuses the run
+  with exit 1, naming each difference (`differs: KV_<bucket>: replicas 1, want 3`), and nothing is
+  created, the absent buckets included. It is compared with the stream nats.go's create makes of
+  the bucket's configuration (`bus.CopiedBucketStreamConfig`). The session bucket's age is the
+  exception: the listeners set it from `ENVOY_SESSION_MAX_AGE` on the running bucket, so its age is
+  not compared;
 - a read the server does not answer fails the run with exit 1, and nothing is created.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
-the run prints `created <bucket> (<n> copies)`. The create sends no stream update: it never raises
-or changes a bucket. A bucket another client makes between the read and the create is read again
-and judged as above: present, exit 0, or refused naming each difference, exit 1. That is what lets
+the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
+version: it never raises or changes a bucket, and a create the server answers "stream name already
+in use" is followed by no read or update of that stream, where nats.go's own create follows it with
+an update when the stream differs only in its discard policy and direct get. A bucket another
+client makes between the read and the create is read again and judged as above: present, exit 0,
+or refused naming each difference, exit 1. That is what lets
 a provisioning step that runs on every start, such as the single-node compose file's `buckets`
 service, and a Job that runs on every apply run beside the listeners they provision. `create`
 takes none of the proof's flags below, and refuses each with exit 2: it would check nothing with
@@ -3461,7 +3469,13 @@ A read or a create the server refuses under the run's grant (`Permissions Violat
 is sent again every 5 seconds, for up to 180 seconds from the run's start, and only then fails the
 run with exit 1, naming the request and the refusal. A grant just applied reaches a hub when its
 configuration reloader reloads `auth.conf`, which the apply that made it cannot see, so a run
-right after that apply can be refused for a while; a refused request changes nothing.
+right after that apply can be refused for a while; a refused request changes nothing. The run
+says so once, on standard error, at the first refusal of each request, and its connection logs
+no line for each refused send.
+
+An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 1 with
+`envoy-infra buckets create: stopped: <the signal>; nothing more is created` and sends no create
+after it. A bucket a `created` line above names stays.
 
 `recreate` deletes each `--bucket`, checks again that no writer runs, since one started between
 the check and the delete may have written to the deleted bucket, and only then creates it.
