@@ -1783,13 +1783,16 @@ server's identity.
 What the constraints bound depends on the client, measured on an intermediate of this shape with
 leaves signed by its own key:
 
-- Go's `crypto/tls` and GnuTLS (which git uses) hold every name a leaf carries, its subject's
-  common name included, and refuse a leaf outside the constraints.
+- Go's `crypto/tls` never takes a subject's common name as the server's name, so it refuses every
+  leaf that names a host only there. GnuTLS (which git uses) refused every such leaf too.
 - Clients built on OpenSSL (`openssl verify`, curl, Python's `ssl`, Node) read the subject's
   common name when the leaf has no DNS name. They hold a multi-label common name such as
   `a.evil.example` to the DNS constraints, but not a wildcard common name (`*.evil.example`,
   `*.github.com`) or a single-label one (`localhost`): such a leaf is trusted for any name it
-  matches. Bun trusts the same leaves once they carry any URI or registeredID name.
+  matches.
+- Bun refuses a leaf with no subject alternative name under a constrained issuer. Once the leaf
+  carries any that is not a DNS or IP name (a URI, email or registeredID name), Bun trusts its
+  common name with no constraint at all, a multi-label one included.
 
 So against OpenSSL-based clients and Bun, a leaked pod key is bounded by the intermediate's life,
 at most 7 days and 5 minutes, and not by its names.

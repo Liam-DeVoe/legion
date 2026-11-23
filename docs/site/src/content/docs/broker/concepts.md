@@ -1635,12 +1635,14 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS names alone would leave the
   key free to sign a trusted leaf for any IP address; the exclusion closes that. URI and email
   names are left unconstrained, since no TLS client takes either as a server's identity. What the
-  constraints bound depends on the client. Go's `crypto/tls` and GnuTLS hold every name a leaf
-  carries, its subject's common name included. Clients built on OpenSSL (`openssl verify`, curl,
-  Python's `ssl`, Node) hold a multi-label common name to the DNS constraints but not a wildcard
-  (`*.evil.example`) or single-label (`localhost`) one, and Bun trusts the same leaves once they
-  carry any URI or registeredID name; against those clients a leaked pod key is bounded by the
-  intermediate's life, at most 7 days and 5 minutes, and not by its names. The pod
+  constraints bound depends on the client. Go's `crypto/tls` never takes a subject's common name
+  as the server's name, so it refuses every leaf that names a host only there, and GnuTLS refused
+  every such leaf too. Clients built on OpenSSL (`openssl verify`, curl, Python's `ssl`, Node)
+  hold a multi-label common name to the DNS constraints but not a wildcard (`*.evil.example`) or
+  single-label (`localhost`) one, and Bun trusts any common name once the leaf carries a subject
+  alternative name that is not a DNS or IP name (a URI, email or registeredID name); against
+  those clients a leaked pod key is bounded by the intermediate's life, at most 7 days and 5
+  minutes, and not by its names. The pod
   asks for the next intermediate when the one it holds has less than 2 days left, and goes on
   asking with a backoff
   of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.

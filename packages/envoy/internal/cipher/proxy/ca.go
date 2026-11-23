@@ -239,14 +239,17 @@ const intermediateLifeSlack = 5 * time.Minute
 // DNS names constrain no IP address, so without the exclusion the key would sign a trusted leaf
 // for any address. URI and email names are left unconstrained: no TLS client takes either as the
 // server's identity. What the constraints bound depends on the client, measured on an intermediate
-// of this shape with leaves its own key signed: Go's crypto/tls and GnuTLS hold every name a leaf
-// carries, its subject's common name included, and refuse a leaf outside them. Clients built on
-// OpenSSL (openssl verify, curl, Python's ssl, Node) read the common name when the leaf has no DNS
-// name, and hold a multi-label common name such as a.evil.example to the DNS constraints, but not
-// a wildcard (*.evil.example, *.github.com) or single-label (localhost) one: such a leaf is
-// trusted for any name it matches. Bun trusts the same once the leaf carries any URI or
-// registeredID name. So against those clients a leaked pod key is bounded by the intermediate's
-// life, at most 7 days and intermediateLifeSlack, and not by its names. The constraints are
+// of this shape with leaves its own key signed. Go's crypto/tls never takes a subject's common name
+// as the server's name, so it refuses every leaf that names a host only there; GnuTLS refused
+// every such leaf too. Clients built on OpenSSL (openssl verify, curl, Python's ssl, Node) read the
+// common name when the leaf has no DNS name, and hold a multi-label common name such as
+// a.evil.example to the DNS constraints, but not a wildcard (*.evil.example, *.github.com) or
+// single-label (localhost) one: such a leaf is trusted for any name it matches. Bun refuses a leaf
+// with no subject alternative name under a constrained issuer, but once the leaf carries any that
+// is not a DNS or IP name (a URI, email or registeredID name) it trusts the common name with no
+// constraint at all, a multi-label one included. So against those clients a leaked pod key is
+// bounded by the intermediate's life, at most 7 days and intermediateLifeSlack, and not by its
+// names. The constraints are
 // critical because RFC 5280 says they MUST be, and because a verifier that does not implement them
 // ignores a non-critical extension.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
