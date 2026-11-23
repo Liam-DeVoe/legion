@@ -419,15 +419,19 @@ function summaryReads(gets: readonly string[], issues: readonly { key: string }[
   return gets.filter((get) => paths.has(get)).sort();
 }
 
-/** GETs under `/api/` the first load of the citing page sends: 70 on chromium at the commit
- *  before INFRA-4009 (df87c903eb89) and at INFRA-4009's head before #3125's head 1a40d608c2 was
- *  merged; 69 at 1a40d608c2 (this file's row run over it) and 69 at the merge, one run each -
- *  the 50 summaries and the 19 reads the page and its shell send whatever the message cites. */
+/** GETs under `/api/` the first load of the citing page sends, a poll's own tick left out
+ *  (`tagTimedPolls`): the 50 summaries and the 19 reads the page and its shell send whatever the
+ *  message cites. 69 on chromium at #3125's head 1a40d608c2 (this row run over it) and at this
+ *  branch merged with it; 70 at the commit before INFRA-4009 (df87c903eb89), an earlier head of
+ *  #3125. */
 const FIRST_LOAD_GETS = 69;
 
 // INFRA-4009's R8: the status mark adds no read to a page's first load, since each cited issue's
-// mark comes with the summary its name is read from. The row passes unchanged at the commit
-// before the change, so its count is that commit's as well.
+// mark comes with the summary its name is read from. The row passes unchanged over #3125's head,
+// the commit this branch is built on, so its count is that commit's as well. A tick of the
+// credential list's or the agent registry's 15 s poll is no read of the first load: the page's
+// clock is installed and the polls' reads tagged, as the status writes row does, so a load that
+// takes past 15 s counts the same.
 // SLOW(>=2s): seeding 51 issues, then a page drawing 50 references that each read their target,
 // waited out to half a second of quiet traffic.
 test("first load: a page citing 50 issues sends as many reads as it did before the status mark, one summary of each issue", async ({
@@ -439,6 +443,8 @@ test("first load: a page citing 50 issues sends as many reads as it did before t
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
+    await page.clock.install();
+    await tagTimedPolls(page);
     await page.goto(`/issues/${source.key}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
     // Each reference is named by its issue's title once its summary is read, at either commit:
@@ -448,6 +454,16 @@ test("first load: a page citing 50 issues sends as many reads as it did before t
       turns.getByRole("link", { name: /^CORE-\d+(, Triage,)? Cited issue \d\d$/ })
     ).toHaveCount(50, { timeout: 60_000 });
     await settled(traffic);
+    // The credential poll has started its timer by now; none wrapped would mean a tick's read is
+    // counted, and the row would only fail more often, never less.
+    expect(
+      await page.evaluate(
+        (count) =>
+          (window as unknown as Record<string, { started: number } | undefined>)[count]?.started,
+        TIMED_POLL_COUNT
+      ),
+      "poll intervals the timed-poll tag wrapped"
+    ).toBeGreaterThan(0);
     const firstLoad = [...traffic.gets];
     await writeFile(testInfo.outputPath("first-load-gets.txt"), `${firstLoad.join("\n")}\n`);
     console.log(
