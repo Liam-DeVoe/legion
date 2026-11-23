@@ -435,6 +435,15 @@ func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 // at offsets mapped back to markdown's bytes (startsInMarkdown).
 func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline {
 	var outline Outline
+	// addHeading adds the ATX heading that starts at start in source, which the typed block at
+	// index within of outline.TypedBlocks holds, or none where within is -1, and which a list, a
+	// quote or a footnote definition that ends at containerEnd, past rest, holds, or none where
+	// containerEnd is -1.
+	addHeading := func(start, within, containerEnd int) {
+		outline.Headings = append(outline.Headings, OutlineHeading{
+			LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: containerEnd,
+		})
+	}
 	// held adds each ATX heading node holds, at any depth, which the typed block at index within
 	// of outline.TypedBlocks holds, or none where within is -1, and which a list, a quote or a
 	// footnote definition that ends at containerEnd holds. A block whose first child is no block
@@ -444,9 +453,7 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
 			if _, heading := child.(*ast.Heading); heading {
 				if start := sourceStart(child); start >= 0 && opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{
-						LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: rest + containerEnd,
-					})
+					addHeading(start, within, rest+containerEnd)
 				}
 			} else if first := child.FirstChild(); first != nil && first.Type() == ast.TypeBlock {
 				held(child, within, containerEnd)
@@ -468,9 +475,7 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 			switch block := child.(type) {
 			case *ast.Heading:
 				if opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{
-						LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: -1,
-					})
+					addHeading(start, within, -1)
 				}
 			case *typedDirective:
 				closer := last

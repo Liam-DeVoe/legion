@@ -58,24 +58,25 @@ type decisionCut struct {
 // heading's line to the start of the two line feeds, a line's end and a blank line, ahead of the
 // line of the heading that closes it, or of the one line feed that ends the markdown, so it holds
 // the separator before each empty paragraph that ends the section, as the view's text does. Where
-// fewer line feeds stand there, in markdown the renderer did not write, the text ends where they
-// start. Where that text then ends with the closing line of a typed block that holds its heading,
-// the section's last block stands inside that typed block, so the text ends at the line feed ahead
-// of that closing line, again holding the separator before each empty paragraph that ends the
-// section there; the typed blocks that hold the heading are read so from the outermost in, since
-// the outermost one's closing line comes last. Where an empty paragraph right after that closing
-// line ends the section, the text holds that closing line. Each typed block that opens inside the
-// cut, before the line of the heading that closes it, is a block of the section, so the text runs
-// at least to the end of that block's closing line: a section that a heading inside a typed block
-// closes holds that typed block whole. The outermost list, quote or footnote definition that holds
-// the heading that closes the decision opens inside the cut too, before that heading, so it is a
-// block of the section and the text runs at least to its end: a section that a heading inside a
-// list item, a quote or a footnote definition closes holds that whole list, quote or footnote
-// definition. The outline gives where each typed block's closing line ends
-// (pmdoc.OutlineTypedBlock.End), where the outermost list, quote or footnote definition that
-// holds each heading ends (pmdoc.OutlineHeading.ContainerEnd), the innermost typed block that
-// holds each heading (pmdoc.OutlineHeading.Within), and the innermost one that holds each typed
-// block (pmdoc.OutlineTypedBlock.Within).
+// fewer line feeds stand there (the heading that closes it is a typed block's first block, one line
+// feed after the block's opening line, which the rule below holds whole, or the markdown is not the
+// renderer's), the text ends where they start. Where that text then ends with the closing line of a
+// typed block that holds its heading, the section's last block stands inside that typed block, so
+// the text ends at the line feed ahead of that closing line, again holding the separator before
+// each empty paragraph that ends the section there; the typed blocks that hold the heading are read
+// so from the outermost in, since the outermost one's closing line comes last. Where an empty
+// paragraph right after that closing line ends the section, the text holds that closing line. Each
+// typed block that opens inside the cut, before the line of the heading that closes it, is a block
+// of the section, so the text runs at least to the end of that block's closing line: a section that
+// a heading inside a typed block closes holds that typed block whole. The outermost list, quote or
+// footnote definition that holds the heading that closes the decision opens inside the cut too,
+// before that heading, so it is a block of the section and the text runs at least to its end: a
+// section that a heading inside a list item, a quote or a footnote definition closes holds that
+// whole list, quote or footnote definition. The outline gives where each typed block's closing line
+// ends (pmdoc.OutlineTypedBlock.End), where the outermost list, quote or footnote definition that
+// holds each heading ends (pmdoc.OutlineHeading.ContainerEnd), the innermost typed block that holds
+// each heading (pmdoc.OutlineHeading.Within), and the innermost one that holds each typed block
+// (pmdoc.OutlineTypedBlock.Within).
 //
 // A cut stands alone (decisionCut.alone) unless it runs past the closing line of a typed block
 // that holds its heading, and only a cut that stands alone then and now is read alone
@@ -127,10 +128,14 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 	// next cut starts at the earliest, so no two cuts read one typed block.
 	next := 0
 	// ended is where the open decision's text ends where the line at closing closes the section
-	// and the renderer writes separator line feeds ahead of that line: closing less separator, or,
-	// where fewer line feeds stand there, where they start.
+	// and the renderer writes separator line feeds ahead of that line: closing, backed up over at
+	// most separator line feeds, and so over fewer where fewer stand there.
 	ended := func(closing, separator int) int {
-		return max(open.start+len(strings.TrimRight(markdown[open.start:closing], "\n")), closing-separator)
+		end := closing
+		for end > open.start && closing-end < separator && markdown[end-1] == '\n' {
+			end--
+		}
+		return end
 	}
 	// closeAt closes the open decision at closing, which separator line feeds stand ahead of: the
 	// start of the line of the heading that closes it, after a blank line, or the markdown's end,

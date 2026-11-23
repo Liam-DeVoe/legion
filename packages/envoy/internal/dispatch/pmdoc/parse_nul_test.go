@@ -93,7 +93,7 @@ func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 		{LineStart: at("## C"), Start: at("## C"), Within: -1, ContainerEnd: -1},
 		{LineStart: at("  ## D"), Start: at("## D"), Within: -1, ContainerEnd: at(list) + len(list)},
 	}
-	start := strings.Index(markdown, callout)
+	start := at(callout)
 	if !slices.Equal(outline.Headings, want) ||
 		!slices.Equal(outline.TypedBlocks, []OutlineTypedBlock{{Start: start, End: start + len(callout), Within: -1}}) {
 		t.Fatalf("RenderingOutline(%q) = %+v, want headings %+v and the callout from %d to %d",

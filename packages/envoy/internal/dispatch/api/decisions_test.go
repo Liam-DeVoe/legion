@@ -1115,8 +1115,9 @@ type decisionCutShape struct {
 	decisions []string
 	// emptied is each paragraph, by its text, that an edit of the stored document then replaces
 	// with nothing, which leaves an empty paragraph with its block id in its place, as the browser
-	// editor leaves one where a person presses Enter and types nothing. An upload makes none, since
-	// markdown never parses into an empty paragraph.
+	// editor leaves one where a person presses Enter and types nothing. An upload of these texts
+	// makes none: markdown parses into an empty paragraph only for an empty document or an empty
+	// list item, quote, footnote definition or typed block.
 	emptied []string
 }
 
