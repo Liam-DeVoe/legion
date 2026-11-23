@@ -138,9 +138,8 @@ import (
 // The design news's list (20261119203047) is applied after it and names those kinds and
 // design_changes.
 // This change's kind list with the merge holds change (20261119211852) stands above every other
-// version of this list but dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's
-// 20261120042902, dispatch://INFRA-4729's 20261120055717 and the copy's applied sequence,
-// 20261121170714, and it is the last of them to rewrite outbox_kind_check: it is now that
+// version of this list but main's 20261120012547, 20261120042902 and 20261120055717 and the
+// copy's applied sequence, 20261121170714, and it is the last of them to rewrite outbox_kind_check: it is now that
 // constraint's last word, and it names every kind the design news's list names, step_record,
 // plan_record, conflict_confirm, merge_forward, phase_ended and design_changes among them, and
 // merge_holds_changed. A list there that left out a kind of main's newest lists would fail the
@@ -343,7 +342,7 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // plan_record for each retro that rates its plan, a conflict_confirm for the second read of each
 // head a first read found conflicting, a merge_forward for each message of a merge forward, and a
 // design_changes row for each reconcile of a tree's news of its approved design
-// (dispatch://INFRA-175's 20261119203047).
+// (20261119203047).
 // The upgrade applies this branch's kind list with the merge holds change (20261119211852) over
 // those rows, and `ADD CONSTRAINT … CHECK` validates the rows the table holds, so a list that left
 // any of the five kinds out would fail Migrate (SQLSTATE 23514) and leave the daemon unable to

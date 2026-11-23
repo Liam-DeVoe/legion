@@ -3526,8 +3526,8 @@ package api
 // of all 411 open pull requests, 2026-11-21T18:33:51Z to 18:38:25Z). The merge of main
 // `98987d3f`, which declares 205 (#4573), keeps 215: 206 to 214 are other open pull requests',
 // and no other declares 215 (read at refs/pull/<n>/head of all 420 open pull requests,
-// 2026-11-21T22:30:48Z to 22:33:44Z). The merge of main `83b91235`, which declares 213
-// (INFRA-4036), moves it from 215 to 221: 214 is #4592's and #4918's, 215 is #4596's as well as
+// 2026-11-21T22:30:48Z to 22:33:44Z). The merge of main `83b91235`, which declares 213,
+// moves it from 215 to 221: 214 is #4592's and #4918's, 215 is #4596's as well as
 // this change's own, 216 to 220 are other open pull requests', and no open head declares 221
 // (read at refs/pull/<n>/head of all 444 open pull requests, 2026-11-22T11:23:08Z to
 // 11:25:58Z). The merge of main `b537812f`, which still declares 213, moves it from 221 to 227:

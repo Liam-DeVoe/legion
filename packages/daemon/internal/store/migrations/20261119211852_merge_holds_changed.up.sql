@@ -11,7 +11,7 @@
 --
 -- The check is one list, so this migration names every kind, as 20261119203047 did: its thirty
 -- kinds, in its order, and then this one, thirty-one in all. Its version stands above
--- 20261119203047, the design news's list (dispatch://INFRA-175), 20261119003157, the list with the
+-- 20261119203047, the design news's list, 20261119003157, the list with the
 -- conflict's second read and the merge forward, 20261117023932, the plan record's, and
 -- 20261117000528, the step record's, so on any database this list is the last word: Migrate
 -- applies every unrecorded migration in version order, and at a lower version any of those lists,
