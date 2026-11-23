@@ -68,14 +68,20 @@ test("role_handoff_recorded fails until the role's handoff record is in the daem
 test("role_handoff_recorded fails while the role's record is the one the state showed before the round", () => {
   const before = "rec-1 2";
   const state = (version: number) => ({
-    issues: { "LEGION-208": { workers: { reviewer: { handoffRecord: { id: "rec-1", version } } } } },
+    issues: {
+      "LEGION-208": { workers: { reviewer: { handoffRecord: { id: "rec-1", version } } } },
+    },
   });
   expect(recorded(state(2), before)).not.toBe(0);
   expect(recorded({ issues: { "LEGION-208": { workers: { reviewer: {} } } } }, before)).not.toBe(0);
   expect(recorded(state(3), before)).toBe(0);
   expect(
     recorded(
-      { issues: { "LEGION-208": { workers: { reviewer: { handoffRecord: { id: "rec-2", version: 1 } } } } } },
+      {
+        issues: {
+          "LEGION-208": { workers: { reviewer: { handoffRecord: { id: "rec-2", version: 1 } } } },
+        },
+      },
       before
     )
   ).toBe(0);
