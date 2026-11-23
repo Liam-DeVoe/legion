@@ -130,10 +130,12 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 // -overlay of c.Flags, as the flag package reads one (-overlay or --overlay, with its value after "="
 // or in the next argument); else ENVOY_TEST_GO_OVERLAY of this process; else the value of the last
 // -overlay of GOFLAGS in the build's environment (c.Env, or this process's where c.Env is nil), as
-// the go command splits GOFLAGS into flags (at white space, a flag in single or double quotes taken
-// whole). It is the one reading of the overlay of c's build: runBuild passes it to the build as its
-// last flag, so the build reads it whatever GOFLAGS says, and Source reads each file through it. A
-// relative path is read from c.Dir, as the go command reads it.
+// the go command splits GOFLAGS into flags (at white space: a space, a tab, a line end or a carriage
+// return; a flag that starts with a single or a double quote taken whole, to the same quote). It is the
+// one reading of the overlay of c's build: runBuild passes it to the build as its last flag, so the
+// build reads it whatever GOFLAGS says, and Source reads each file through it. A relative path is read
+// from c.Dir, as the go command reads it. TestSourceIsTheFileThatTheBuildReads holds each form above by a
+// leg.
 func (c Command) overlay() (string, error) {
 	if overlay, set, err := lastFlag(c.Flags, "overlay"); err != nil || set {
 		return overlay, err
@@ -183,8 +185,9 @@ func lastFlag(args []string, name string) (string, bool, error) {
 	return value, set, nil
 }
 
-// goflagsFlags is the flags of GOFLAGS, goflags, as the go command splits them: at white space, with
-// a flag in single or double quotes taken whole, the space within it too.
+// goflagsFlags is the flags of GOFLAGS, goflags, as the go command splits them (cmd/internal/quoted): at
+// white space, a space, a tab, a line end or a carriage return, with a flag that starts with a single or
+// a double quote taken whole, to the same quote, the white space within it too.
 func goflagsFlags(goflags string) ([]string, error) {
 	var flags []string
 	for s := goflags; ; {

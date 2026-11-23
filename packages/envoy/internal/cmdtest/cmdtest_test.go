@@ -162,17 +162,22 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 // file word.go declares the word that it prints, from the files on disk, and through an overlay given
 // each way that one reaches the build: by ENVOY_TEST_GO_OVERLAY naming a file in a folder of its own
 // (conf) whose paths are relative to the build's folder, and naming one whose paths are absolute; by
-// the Command's own Flags, beside ENVOY_TEST_GO_OVERLAY, as -overlay with its value in the next
-// argument and as --overlay=, and naming two, of which the last counts; by GOFLAGS of the Command's own
-// Env, and of the test's environment, as -overlay= and in quotes around a path that holds a space; and
-// by ENVOY_TEST_GO_OVERLAY beside GOFLAGS, in a build of its own. Each overlay puts a word.go of its own
-// in word.go's place, takes not-go.go, a file that is not Go, out of the build, and puts a file in the
+// the Command's own Flags, beside ENVOY_TEST_GO_OVERLAY, as -overlay and as --overlay, each with its
+// value in the next argument and after "=", and naming two, of which the last counts; by GOFLAGS of the
+// Command's own Env, and of the test's environment, as -overlay=; by GOFLAGS of the test's environment
+// in single quotes and in double quotes around a path that holds a space, naming two of which the last
+// counts, and split from the flag before it by each white space but a space that the go command splits
+// GOFLAGS at (a tab, a line end and a carriage return), each in a build of its own; and by
+// ENVOY_TEST_GO_OVERLAY beside GOFLAGS, in a build of its own. Each overlay puts a word.go of its own in
+// word.go's place, takes not-go.go, a file that is not Go, out of the build, and puts a file in the
 // place of the directory gone, under which gone/word.go is on disk. Each binary prints its leg's word,
 // and Source reads that word in word.go; with no overlay Source reads not-go.go and gone/word.go, and
 // under each overlay it gives no file for either. Then, with not-go.go gone from the disk, two builds
 // read no overlay and print the disk's word: a Command whose Env holds no GOFLAGS, while the test's
 // GOFLAGS names an overlay; and a Command built while only go's own environment file (GOENV) names an
-// overlay, through GOFLAGS, which go env reads, so that a build handed no -overlay= would read it.
+// overlay, through GOFLAGS, which go env reads, so that a build handed no -overlay= would read it. So
+// each form that the doc comments of Command.overlay and runBuild state is a leg, which a reading of
+// the overlay that breaks it fails.
 func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, text string) {
@@ -252,15 +257,29 @@ func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 		{"ENVOY_TEST_GO_OVERLAY naming an overlay, and each path in it, by an absolute path", overlay("abs", true), goflags, c, "abs"},
 		{"the Command's Flags naming an overlay, beside ENVOY_TEST_GO_OVERLAY", envOverlay, goflags,
 			Command{Name: "sourceprobe", Dir: dir, Flags: []string{"-overlay", overlay("flags", false)}}, "flags"},
+		{"the Command's Flags naming an overlay by -overlay=, beside ENVOY_TEST_GO_OVERLAY", envOverlay, goflags,
+			Command{Name: "sourceprobe-equals", Dir: dir, Flags: []string{"-overlay=" + overlay("equals", false)}}, "equals"},
 		{"the Command's Flags naming an overlay by --overlay=, beside ENVOY_TEST_GO_OVERLAY", envOverlay, goflags,
 			Command{Name: "sourceprobe-dashes", Dir: dir, Flags: []string{"--overlay=" + overlay("dashes", false)}}, "dashes"},
+		{"the Command's Flags naming an overlay by --overlay and the next argument, beside ENVOY_TEST_GO_OVERLAY", envOverlay, goflags,
+			Command{Name: "sourceprobe-dashes-next", Dir: dir, Flags: []string{"--overlay", overlay("dashesnext", false)}}, "dashesnext"},
 		{"the Command's Flags naming two overlays, of which the last counts", "", goflags,
 			Command{Name: "sourceprobe-last", Dir: dir, Flags: []string{"-overlay=" + envOverlay, "-overlay", overlay("last", false)}}, "last"},
 		{"GOFLAGS of the Command's Env naming an overlay", "", goflags,
 			Command{Name: "sourceprobe", Dir: dir, Env: append(os.Environ(), "GOFLAGS="+goflags+" -overlay="+overlay("goenv", false))}, "goenv"},
 		{"GOFLAGS of the test's environment naming an overlay", "", goflags + " -overlay=" + goflagsOverlay, c, "goflags"},
-		{"GOFLAGS of the test's environment naming, in quotes, an overlay whose path holds a space", "",
+		{"GOFLAGS of the test's environment naming, in single quotes, an overlay whose path holds a space", "",
 			goflags + " '-overlay=" + overlay("in quotes", false) + "'", Command{Name: "sourceprobe-quoted", Dir: dir}, "in quotes"},
+		{"GOFLAGS of the test's environment naming, in double quotes, an overlay whose path holds a space", "",
+			goflags + ` "-overlay=` + overlay("in double quotes", false) + `"`, Command{Name: "sourceprobe-dquoted", Dir: dir}, "in double quotes"},
+		{"GOFLAGS of the test's environment naming two overlays, of which the last counts", "",
+			goflags + " -overlay=" + goflagsOverlay + " -overlay=" + overlay("glast", false), Command{Name: "sourceprobe-glast", Dir: dir}, "glast"},
+		{"GOFLAGS of the test's environment naming an overlay after a tab", "",
+			goflags + " -buildvcs=false\t-overlay=" + overlay("tab", false), Command{Name: "sourceprobe-tab", Dir: dir}, "tab"},
+		{"GOFLAGS of the test's environment naming an overlay after a line end", "",
+			goflags + " -buildvcs=false\n-overlay=" + overlay("newline", false), Command{Name: "sourceprobe-newline", Dir: dir}, "newline"},
+		{"GOFLAGS of the test's environment naming an overlay after a carriage return", "",
+			goflags + " -buildvcs=false\r-overlay=" + overlay("return", false), Command{Name: "sourceprobe-return", Dir: dir}, "return"},
 		{"ENVOY_TEST_GO_OVERLAY beside GOFLAGS of the test's environment", envOverlay, goflags + " -overlay=" + goflagsOverlay,
 			Command{Name: "sourceprobe-both", Dir: dir}, "env"},
 	} {
