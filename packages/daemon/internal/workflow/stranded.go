@@ -97,7 +97,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //     no phase start comes to start it again (reviveArchitect). The daemon starts it again at its
 //     failure, at most OwnerRestarts times in the step's run (restartFailedOwner); once no start of
 //     it is queued (StartFor), the child waits for the operator's retry, which relaunches the claim
-//     and tells it its step again (one more owner-step).
+//     and tells it its step again (one more owner-step, where none is still queued).
 //
 // A retired claim is here for the reason a failed one is, and a queued start is what takes either
 // of them out. The state is not the end of the claim: the outbox's start executor provisions the
