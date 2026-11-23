@@ -1093,7 +1093,7 @@ const CHIP_WIDTH_CSS =
 test("an agent title longer than the chips line draws the agent chip no wider than the line, beside its live link", async () => {
   const title = `Planner of ${"the release train ".repeat(12).trim()}`;
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([fromPlanner]);
+  const listOpenAsks = mockInboxReads([fromPlanner]);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
     ask: fromPlanner,
     answers: [],
@@ -1164,7 +1164,7 @@ test("an agent title longer than the chips line draws the agent chip no wider th
     css.remove();
     listAgents.mockRestore();
     getAsk.mockRestore();
-    getInbox.mockRestore();
+    listOpenAsks.mockRestore();
   }
 });
 
