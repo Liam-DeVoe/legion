@@ -794,10 +794,29 @@ a database holding `search_term_totals.snapshot` (migration `20261101182515_sear
 a database migrated from an older commit, which is what `--no-migrate` seeds for the "before" side of a two-commit measurement, is built by that release's four statements, which write `items` and `refreshed_at` alone.
 Either way the step fails the command when it built fewer projects than the seed wrote.
 
+The seed also delivers the words of a person to agent sessions, so the agents' answers read (`GET /api/v1/agents/{session_id}/answers`, `sessionanswers.List`) has items to list.
+A delivery is an event of one of the five types that this read lists: `ask.answered`, `comment.created`, `message.created`, `message.answered`, and `ask.resolved` for a decline.
+The seed's person writes each delivery, on the comment, message or ask that it carries, at the time of that item.
+Each payload has the shape that Dispatch's own writer gives an event of that type.
+When a delivery answers or declines an ask, the row of the ask holds the same answer or decline.
+Its `published_destinations` holds the topic of its owner and then the topics of one to three sessions, in the order that the outbox records them.
+
+Each delivery is already published, so the outbox has no work to do.
+The seed writes no `comment_deliveries` or `message_deliveries` row.
+At `--scale 1`, about 2,000 deliveries are in the last 72 hours of the seeded year, and they go to 400 sessions.
+One more session, the old one, gets 20 of them, and 10,000 more in the 60 days that end a week before the seeded year ends.
+The answers window has one rule, `answersWindowStartQuery`: the window starts 72 hours before the newest `created_at` of a person's event of the five types whose destinations name a session.
+The seed dates every row in its own year, so a measurement reads that start from the database and binds it as `since`, and never binds `now()` less 72 hours.
+
 The command prints every table's row count;
 every figure the sizes are stated as a distribution rather than a count (the issues per project, the parent chain depths, the issues with three or more blockers, the documents with 28 versions, the markdown size bands, the anchored comments and asks, the open asks, the root messages, the events with a session actor, the rows with an embedding, and the edges of `graph_edges` by kind);
 a rare, a medium and a common word with the number of documents each is in, measured rather than assumed;
 and the subjects a measurement binds — the largest project, the heavily linked issue, the deepest parent chain, the document carrying anchored comments and a table-row anchor, the head of the longest mention chain, one of the large documents, the session ids for the agent activity read, the `model` value on every vector and the row whose embedding is the query vector to bind.
+It also prints the number of person events of each type that the seed delivered to sessions.
+For the answers read, it prints the start of the window and three sessions, each with its deliveries in the window and before it.
+The first session is the old one, which has the most deliveries before the window.
+Of the other sessions, the second has the most deliveries in the window, and the third has the fewest there, but at least one.
+When two sessions have the same count, the session with the lower id is chosen.
 
 Measurements are taken with durability on and memory pinned, and every number is recorded beside those settings:
 `fsync=on`, `synchronous_commit=on`, `full_page_writes=on`, and a `shared_buffers`, `maintenance_work_mem` and `effective_cache_size` the run names.

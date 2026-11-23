@@ -16,14 +16,16 @@ import (
 // that the column holds the types a reader knows rather than one made-up value. No `ask.*` type
 // is among them: a read of an event of one of those decodes its payload as an ask and fails the
 // whole request when it names none (api.attachAskEventFields), so the only ask events the seed
-// writes are the opening events writeAsks writes with their asks, each carrying its own ask.
+// writes are the opening events writeAsks writes with their asks and the answers and declines
+// writeDeliveries writes, each carrying its own ask.
 var eventTypes = []string{
 	"issue.created", "issue.updated", "comment.created", "message.created",
 	"artifact.version.created",
 }
 
-// eventColumns are the columns of `events` the seed writes, shared by the two writers of that
-// table: the filler events here and the opening event each ask is written with.
+// eventColumns are the columns of `events` the seed writes, shared by the three writers of that
+// table: the filler events here, the opening event each ask is written with, and the deliveries
+// (writeDeliveries), which write published_destinations beside them.
 var eventColumns = []string{
 	"id", "issue_key", "artifact_id", "project_key", "seq", "type", "actor",
 	"payload", "notify", "published_at", "created_at",

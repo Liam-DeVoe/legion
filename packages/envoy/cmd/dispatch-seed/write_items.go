@@ -152,32 +152,8 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// created_at)), so a re-index of it would date its parts as this one did.
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
-			// The seed's transaction joins no write phase of anyone's, so it reads the index the
-			// ask holds - none, its row having just been inserted - plans the parts against it
-			// and runs the plan's statements at once, as a batch of their own, the way a writer
-			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
-			// are read through a reader of the ask's own (refs.NewReader), as every other write
-			// of an ask reads them.
-			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
-			if err != nil {
-				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
-			}
-			reader := refs.NewReader(ctx, tx, stored.Author, "ask", stored.ID, serverURL)
-			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
-			if err != nil {
+			if err := indexAskParts(ctx, tx, stored, ask.CreatedAt); err != nil {
 				return err
-			}
-			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-				parts.Queue(b)
-				return nil
-			}); err != nil {
-				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
-			}
-			// The index records the parts and leaves their windows to the block-index tick's
-			// window arm (refs.queueRecordIndexed), so the seed writes them here as that arm
-			// would: a seeded database a server has to window is one it would rewrite.
-			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
-				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
 			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
 			// with the ask is, and it is published (`notify` false, `published_at` set) like
@@ -223,6 +199,39 @@ func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node)
 	return nil
 }
 
+// indexAskParts records the parts of ask as its row stands - its question, each option and the
+// answer it holds - at `at`, with the server's own indexer, in the caller's transaction. The
+// seed's transaction joins no write phase of anyone's, so it reads the index the ask holds - none
+// for an ask whose row was just inserted, the parts it was written with for an ask a delivery
+// answers (writeDeliveries) - plans the parts against it and runs the plan's statements at once,
+// as a batch of their own, the way a writer that queues no write phase indexes an item it wrote
+// (refs.IndexItem). The parts are read through a reader of the ask's own (refs.NewReader), as
+// every other write of an ask reads them.
+func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, at time.Time) error {
+	partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
+	if err != nil {
+		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+	}
+	reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL)
+	parts, err := refs.PlanAskParts(partIndex, reader, ask, at)
+	if err != nil {
+		return err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		parts.Queue(b)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+	}
+	// The index records the parts and leaves their windows to the block-index tick's window arm
+	// (refs.queueRecordIndexed), so the seed writes them here as that arm would: a seeded
+	// database a server has to window is one it would rewrite.
+	if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, ask.ID); err != nil {
+		return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
+	}
+	return nil
+}
+
 // askAnswer is the answer an answered ask holds, in the shape the answer route writes
 // (api/ask_transitions.go): the answerer, the option it chose when the ask offers any, the text
 // it was given and its time. The part index reads the stored answer as a model.AskAnswer, takes
@@ -257,12 +266,9 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 // server wrote does. seedActor's display name is a key no model.Actor carries, so a row holding
 // seedActor would disagree with its own node.
 func (r *seedRun) writeComments(ctx context.Context) error {
-	var hasAnswers bool
-	if err := r.database.Pool.QueryRow(ctx, `select exists (
-		select 1 from information_schema.columns
-		where table_schema = current_schema() and table_name = 'comments' and column_name = 'answers'
-	)`).Scan(&hasAnswers); err != nil {
-		return fmt.Errorf("read whether comments carries answers: %w", err)
+	hasAnswers, err := r.commentsCarryAnswers(ctx)
+	if err != nil {
+		return err
 	}
 	columns := "id, issue_key, artifact_id, author, body, anchor, reply_to, resolved, created_at, ask_id, replies_to_block, edited_at"
 	parameters := "$1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12"
@@ -380,6 +386,20 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 		}
 		return mentions.write(ctx, tx)
 	})
+}
+
+// commentsCarryAnswers reads whether the schema's comments table has the answers column
+// (migration 20261105014808). A database migrated from a release before that column has none,
+// and the seed fills it with --no-migrate, so every writer and reader of a comment row asks first.
+func (r *seedRun) commentsCarryAnswers(ctx context.Context) (bool, error) {
+	var hasAnswers bool
+	if err := r.database.Pool.QueryRow(ctx, `select exists (
+		select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = 'comments' and column_name = 'answers'
+	)`).Scan(&hasAnswers); err != nil {
+		return false, fmt.Errorf("read whether comments carries answers: %w", err)
+	}
+	return hasAnswers, nil
 }
 
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each

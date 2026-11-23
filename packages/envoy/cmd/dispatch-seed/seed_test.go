@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -13,10 +15,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -56,6 +60,12 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
+	})
+	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
+		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
+	})
+	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
+		assertAnswersAndDeclinesNameTheirAsks(t, first)
 	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
 		var unknown int
@@ -422,7 +432,7 @@ var checksums = []struct {
 	{"comment_block_refs", `comment_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"message_block_refs", `message_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"events", `id, issue_key, artifact_id::text, project_key, seq, type, actor::text, payload::text,
-		notify, published_at, created_at`},
+		notify, published_at, created_at, published_destinations::text`},
 	{"embeddings", `kind, id, content_hash, embedded_hash, model, embedded_at, md5(embedding::text)`},
 	{"search_term_stats", `project_key, lexeme, ndoc`},
 	{"search_term_totals", `project_key, items`},
@@ -556,6 +566,177 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	if len(missing) > 0 {
 		t.Errorf("%d of %d asks have no opening event, the first few: %v",
 			len(missing), len(askIDs), missing[:min(5, len(missing))])
+	}
+}
+
+// assertAnswersReadFindsTheDeliveries holds the seed's deliveries to the agents' answers read
+// (sessionanswers.List), over the window's start by its one rule (answersWindowStartQuery).
+// Each of the five types the read lists has a person's event delivered to a session; the read
+// lists at least one item for each of the three sessions the report names, and the three
+// together list every kind of item; and the old session holds at least OldDeliveries of those
+// events before the window, which the read must not read. The report's subjects are logged, as
+// the command prints them.
+func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+deliveredPersonEvent+` group by e.type`)
+	if err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	delivered := map[string]int{}
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err != nil {
+			t.Fatalf("count the deliveries by type: %v", err)
+		}
+		delivered[eventType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	t.Logf("person events delivered to a session, by type: %v", delivered)
+	for _, eventType := range deliveryTypes {
+		if delivered[eventType] == 0 {
+			t.Errorf("no person's %s event names a session among its destinations", eventType)
+		}
+	}
+
+	subjects, err := readAnswersSubjects(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subjects.Since.IsZero() {
+		t.Fatal("the answers window has no start: no event delivers a person's words to a session")
+	}
+	report := *run
+	var printed bytes.Buffer
+	report.out = &printed
+	if err := report.reportSubjects(ctx); err != nil {
+		t.Fatalf("print the subjects: %v", err)
+	}
+	t.Logf("the report's subjects:%s", printed.String())
+
+	kinds := map[string]int{}
+	for _, subject := range []struct {
+		name    string
+		subject answersSubject
+	}{{"old", subjects.Old}, {"most", subjects.Most}, {"fewest", subjects.Fewest}} {
+		if subject.subject.Session == "" {
+			t.Errorf("the seed holds no %s session for the answers read", subject.name)
+			continue
+		}
+		items, err := sessionanswers.List(ctx, database.Pool, subject.subject.Session, subjects.Since)
+		if err != nil {
+			t.Fatalf("list the answers of the %s session %s: %v", subject.name, subject.subject.Session, err)
+		}
+		listed := map[string]int{}
+		for _, item := range items {
+			listed[item.Kind]++
+			kinds[item.Kind]++
+		}
+		t.Logf("the %s session %s: %d deliveries in the window, %d before it; the read lists %v",
+			subject.name, subject.subject.Session, subject.subject.InWindow, subject.subject.BeforeWindow, listed)
+		if len(items) == 0 {
+			t.Errorf("the answers read lists nothing for the %s session %s since %s",
+				subject.name, subject.subject.Session, subjects.Since.Format(time.RFC3339))
+		}
+	}
+	for _, kind := range []string{model.SessionAnswerKindAnswer, model.SessionAnswerKindComment,
+		model.SessionAnswerKindMessage, model.SessionAnswerKindDeclined} {
+		if kinds[kind] == 0 {
+			t.Errorf("the answers read lists no %s item for any of the three sessions", kind)
+		}
+	}
+
+	var before int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events e
+		where `+deliveredPersonEvent+` and e.created_at < $1 and e.published_destinations @> array[$2::text]
+	`, subjects.Since, contracts.LegacyAgentSubject(subjects.Old.Session)).Scan(&before); err != nil {
+		t.Fatalf("count the old session's deliveries before the window: %v", err)
+	}
+	if before < run.sizes.OldDeliveries {
+		t.Errorf("the old session %s holds %d deliveries before the window, want at least %d",
+			subjects.Old.Session, before, run.sizes.OldDeliveries)
+	}
+}
+
+// assertAnswersAndDeclinesNameTheirAsks holds every ask.answered and ask.resolved event to the
+// ask it carries. Its payload decodes as its type's payload, with no field the type does not
+// know: model.AskAnsweredEventPayload for an answer and model.AskEventPayload for a decline,
+// whose resolution is of kind declined. It names an ask the database holds, whose row holds the
+// answer or the resolution the event carries. And its id is above the id of the ask's ask.opened
+// event, so that event stays the lowest of the ask's events, which events.OpenedEventIDs resolves
+// as the ask's identity.
+func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type closing struct {
+		id       int64
+		kind     string
+		payload  []byte
+		opened   *int64
+		heldBy   bool
+		rowAgree bool
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select e.id, e.type, e.payload::text,
+		       (select min(o.id) from events o where o.type = 'ask.opened' and o.payload->>'id' = e.payload->>'id'),
+		       a.id is not null,
+		       coalesce(case e.type when 'ask.answered' then a.answer = e.payload->'answer'
+		                            else a.resolution = e.payload->'resolution' end, false)
+		from events e
+		left join asks a on a.id::text = e.payload->>'id'
+		where e.type in ('ask.answered', 'ask.resolved')
+		order by e.id
+	`)
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	closings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closing, error) {
+		var read closing
+		var payload string
+		err := row.Scan(&read.id, &read.kind, &payload, &read.opened, &read.heldBy, &read.rowAgree)
+		read.payload = []byte(payload)
+		return read, err
+	})
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	written := map[string]int{}
+	for _, read := range closings {
+		written[read.kind]++
+		decoder := json.NewDecoder(bytes.NewReader(read.payload))
+		decoder.DisallowUnknownFields()
+		var ask model.Ask
+		if read.kind == "ask.answered" {
+			var payload model.AskAnsweredEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+		} else {
+			var payload model.AskEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+			if err == nil && (ask.Resolution == nil || ask.Resolution.Kind != model.AskResolutionDeclined) {
+				t.Errorf("ask.resolved event %d carries resolution %+v, not a decline", read.id, ask.Resolution)
+			}
+		}
+		switch {
+		case err != nil:
+			t.Errorf("%s event %d does not decode as its payload: %v\n%s", read.kind, read.id, err, read.payload)
+		case ask.ID == "" || !read.heldBy:
+			t.Errorf("%s event %d names ask %q, which the database does not hold", read.kind, read.id, ask.ID)
+		case !read.rowAgree:
+			t.Errorf("%s event %d carries an answer or a resolution that ask %s's row does not hold", read.kind, read.id, ask.ID)
+		case read.opened == nil || *read.opened >= read.id:
+			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%v)", read.kind, read.id, ask.ID, read.opened)
+		}
+	}
+	for _, kind := range []string{"ask.answered", "ask.resolved"} {
+		if written[kind] == 0 {
+			t.Errorf("the seed wrote no %s event, so this check proves nothing of it", kind)
+		}
 	}
 }
 
