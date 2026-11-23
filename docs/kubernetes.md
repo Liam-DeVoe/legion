@@ -3309,7 +3309,7 @@ A root that waits on a person before its first step is not stopped at boot.
 It is stopped when it moves into that step.
 After the roll forward, the owner of each stopped task gives a new version of its plan.
 Legion takes only a version later than the one in force.
-The same version given again is dropped as a duplicate, and the task stays stopped.
+The same version given again is refused (`409 PLAN_VERSION_OLD`), and the task stays stopped.
 20261117213545_plan_step_agent adds `plan_steps.agent`, the name of each step's agent, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward adds the column again at its default, and a rollback past 20261117034837_issue_plans runs that way back before its own.
 20261117223524_deployment_roles writes the role checks of `claims`, `phases` and `issue_releases` and the checks `issues_phase_check` and `issues_held_from_check` again, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back first ([Rolling back the release whose deployment defines roles](#rolling-back-the-release-whose-deployment-defines-roles)), so that the roll-forward writes the checks again.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
@@ -8700,7 +8700,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The image probe runs every provider key command the agents' models need, at every boot.
   A command that fails is "no working credentials", whether the cause is a revoked token or a network blip:
   the gate cannot tell the two apart, and passing on a failed key is the fallback the gate exists to stop.
-  Nothing restarts the Go daemon on its own: it runs off the cluster, and whoever started it starts it again.
+  The daemon then exits, and whatever started it starts it again: its Deployment in the cluster, or the operator for a daemon off the cluster.
 
 #### The Dispatch identity the broker can issue
 

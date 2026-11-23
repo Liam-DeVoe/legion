@@ -468,8 +468,9 @@ worker_backends:
   implementer: claude
 ```
 
-Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`)
-and each value `omp` or `claude`; a role left out runs on Oh My Pi. What each harness may run is
+Each key is an issue role: one of Legion's (`architect`, `planner`, `implementer`, `tester`,
+`reviewer`, `merger`) or a role `roles` defines. Each value is `omp` or `claude`, and a role left
+out runs on Oh My Pi. What each harness may run is
 one table, `runtime.Backends` (`packages/daemon/internal/runtime/backend.go`): Claude Code runs the
 phase workers alone, since the architect's loop and the controller's are proven only on Oh My Pi,
 and it runs them under either runtime — a tmux
