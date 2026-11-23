@@ -2832,6 +2832,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				brought = fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
 		}
+		// A start the machine answered with no error has not brought the claim back while the pod
+		// that refused the claim's last launch still stands: no path of the machine launches into
+		// that pod (supervise's podStillRefuses), so the answer started nothing, or a refusal came
+		// between the answer and here, at the turn of a launch the wake pacing held. Either way the
+		// row waits for the pod, as a refused launch's row does below, rather than ending: the end
+		// of a start row of a claim its pod refuses asks the workflow for the claim's start again
+		// (startRowEnded), and a start that ended the same way would ask again, at the database's
+		// speed. A launch that ran, or that the pacing parked, dropped the refusal first
+		// (supervise.Machine.RefusalStands), so this holds no such start.
+		if brought == nil {
+			if err := machine.RefusalStands(); err != nil {
+				brought = fmt.Errorf("start claim %s: %w", token, err)
+			}
+		}
 		// A launch refused because the issue's pod cannot run it until that pod's update round or
 		// its release replaces it (runtime.ErrAwaitsPodUpdate) left the claim suspended and running
 		// nothing (supervise's podRefused), and a try while that pod stands launches and writes

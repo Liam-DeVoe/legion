@@ -125,6 +125,42 @@ func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStand
 	h.wantCalls("Spawn", 2)
 }
 
+// RefusalStands answers the refusal of the claim's last launch while the pod that refused it still
+// stands, which the outbox holds a start on (internal/daemon's start), and nil once another pod
+// stands, which drops the refusal, as it answers nil for a claim no launch of which was refused. It
+// launches nothing and writes nothing of the claim.
+func TestRefusalStandsWhileThePodThatRefusedTheLaunchStands(t *testing.T) {
+	h := newHarness(t)
+	issue := h.claim().Issue
+	if err := h.m.RefusalStands(); err != nil {
+		t.Fatalf("a claim no launch of which was refused answered %v, want nil", err)
+	}
+	h.rt.ScriptIssuePod(issue, "pod-1")
+	h.rt.ScriptSpawn(fake.SpawnResult{Err: runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(testToken) + ": the pod pod-1 of " + issue + " was built without checker"}})
+	if err := h.handle(RequestSpawn{Claim: testToken}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the spawn answered %v, want the runtime's refusal", err)
+	}
+	writes := 0
+	h.store.onPut = func(Claim) { writes++ }
+
+	var awaits runtime.AwaitsPodUpdate
+	if err := h.m.RefusalStands(); !errors.As(err, &awaits) || awaits.Pod != "pod-1" {
+		t.Fatalf("while pod-1 stands the refusal answered %v, want pod-1's refusal, which is runtime.AwaitsPodUpdate", err)
+	}
+	h.rt.ScriptIssuePod(issue, "pod-2")
+	if err := h.m.RefusalStands(); err != nil {
+		t.Fatalf("once pod-2 stands the refusal answered %v, want nil", err)
+	}
+	if pod := h.m.RefusedPod(); pod != "" {
+		t.Fatalf("once pod-2 stands the claim is refused by %q, want the refusal dropped", pod)
+	}
+	h.wantCalls("Spawn", 1)
+	h.wantState(StateSuspended)
+	if writes != 0 {
+		t.Fatalf("asking whether the refusal stands wrote the claim %d times, want none", writes)
+	}
+}
+
 // The rule's resume of a claim whose last launch its pod refused is refused by that pod while it
 // stands, before the claim's session is asked about, as the operator's resume is (resume). A claim
 // that records a session it does not hold — another claim recorded it first — is refused the

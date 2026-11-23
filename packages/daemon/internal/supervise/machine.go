@@ -2276,6 +2276,24 @@ func (m *Machine) RefusedPod() string {
 	return m.refusedPod
 }
 
+// RefusalStands is the refusal of the claim's last launch where the issue pod that refused it
+// still stands, or where which pod the issue holds cannot be read (podStillRefuses), and nil where
+// no launch of the claim is refused or another pod stands now, which drops the refusal. It is
+// asked under the decision lock, so it waits out a decision in flight as Claim does, and like every
+// launch refused while that pod stands it tells the issue and the controller at most hourly.
+//
+// The outbox asks it of a start whose decision answered no error (internal/daemon's start): while
+// the pod still refuses the claim, no path of the machine launched into it, so that start brought
+// the claim back by nothing, and it waits for the pod rather than ending, whichever path answered
+// it. The end of a start row of a claim its pod refuses then never comes before that pod goes. A
+// launch that ran, or that the wake pacing parked, dropped the refusal first (launchAfter), so this
+// answers nil for it.
+func (m *Machine) RefusalStands() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.podStillRefuses()
+}
+
 // UnrecordedRefusal is a refused launch's fact the store has not taken (Claim.UnrecordedRefusal):
 // Since is when the first failed try of it failed, Attempts how many tries have failed since, and
 // Error the last failed try's error, kept as a far side's text is (storetext.FarSideError).
