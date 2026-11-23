@@ -17,7 +17,11 @@ import (
 // library error drops an answer's status, or quotes its body, reads the answer from answered
 // instead.
 func Record(ctx context.Context, answered *Recorder) context.Context {
-	wrapped := *oauth2.NewClient(ctx, nil)
+	base, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	if base == nil {
+		base = http.DefaultClient
+	}
+	wrapped := *base
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
