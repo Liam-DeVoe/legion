@@ -25,11 +25,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -200,7 +202,10 @@ type seenRequest struct {
 
 // operatorDaemon is the daemon's HTTP surface as `legion claims` reaches it: the real
 // api.NewServer over real claim machines and a fake runtime, on a loopback port, with every
-// request that reached it recorded.
+// request that reached it recorded. Its record is a migrated database of its own that holds no
+// issue, as a real daemon's holds none of an operator's tree: the spawn and the controller's
+// recoveries read the worker on a role's step from it (api's workerToken), and refuse on a daemon
+// with no record.
 type operatorDaemon struct {
 	t               *testing.T
 	runtime         *fake.Runtime
@@ -231,9 +236,11 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		PluginContract: api.DaemonAPIVersion,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
+	records := testpg.CloneStore(t, "legion_cmd_claims")
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
+		Pool: records.Pool(), Record: record.NewStore(),
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
