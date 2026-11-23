@@ -1724,12 +1724,12 @@ type Machine struct {
 	// after its record (takeBackUnstarted) sets none (dropTake). The delivery id never changes, so
 	// the mark stands under it across the take-back. letGo clears it with the process, and accept
 	// with the task's next take: that take's turn has not run, and a let-go before it starts reads
-	// the take and the view instead (turnMayHaveRunUnseen). It is memory only: a daemon restarted
-	// inside such a park records the end without it, from what the claim still holds, and so does
-	// one restarted between a take-back that keeps the process (takeBack) and the let-go that
-	// follows. The take is gone by then, so that let-go records no turn of the task cut off, and
-	// the next take reads "You were not in a turn then", as every head before 0ec3c031 recorded in
-	// that case.
+	// the take and the view instead (turnMayHaveRunUnseen). It is memory only, and a restored
+	// machine sets it again from the delivery's stored Interrupted flag for a pending task with no
+	// accepted take (NewMachine), so a daemon restarted inside such a park, or between a take-back
+	// that keeps the process (takeBack) and the let-go that follows, still records the task's turn
+	// as cut off. A flag left from an earlier cut sets it too, and that let-go then tells the cut
+	// turn twice, never not at all.
 	cutTurnOf string
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -1948,7 +1948,8 @@ type armed struct {
 // store's, not one this daemon received (seenFromStore), so the first wait's first bound over it
 // writes the value again rather than charging (takeBoundOver).
 // Which records the pending take told is the delivery's own mark, read back with it
-// (Delivery.TakeTold).
+// (Delivery.TakeTold). A pending task with no accepted take whose delivery is marked Interrupted
+// is marked again as the task a take-back sent back as a cut turn (cutTurnOf).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -2030,6 +2031,14 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 				m.armEndFrameBound(p.ID)
 			}
 		}
+	}
+	// The cut-turn mark is memory only, but the take-back that set it wrote the delivery's
+	// Interrupted flag with it (dropTake), so a pending task with no accepted take that holds the
+	// flag is marked again for the let-go that comes before its next take (recordEnd). A flag left
+	// from an earlier cut makes that let-go tell the cut turn twice, never not at all
+	// (dispatch://INFRA-2811, rule one of T3). accept and letGo clear the mark as before.
+	if p != nil && !p.taken() && p.Interrupted {
+		m.cutTurnOf = p.ID
 	}
 	// The take the store holds accepted is anchored where the store shows the daemon before this
 	// one handled no turn start after the one it gave it, for the producer's word that its text
