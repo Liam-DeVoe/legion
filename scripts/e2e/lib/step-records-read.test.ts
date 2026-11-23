@@ -124,7 +124,9 @@ const read = (
 describe("step-records-read.sh", () => {
   test("a whole answer passes, exit 0, read with dispatch steps --issue, then the plan with dispatch plans --project", () => {
     const { code, stdout, calls } = read(`${whole.join("\n")}\n`);
-    expect(calls).toBe(`steps --issue ${key}\nplans --project ${project} --since 1970-01-01T00:00:00Z\n`);
+    expect(calls).toBe(
+      `steps --issue ${key}\nplans --project ${project} --since 1970-01-01T00:00:00Z\n`
+    );
     expect(stdout).toContain(whole[0]);
     // The plan read prints the issue's own line alone, not the other finished issues.
     expect(stdout).toContain(
