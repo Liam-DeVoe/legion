@@ -40,12 +40,12 @@ func (r reasoningRig) writeState(address, state string) nodeStateWritten {
 }
 
 // nodeStateRead is the node state GET /api/v1/references answers for the node address names, as
-// login: the state every read of the node answers.
-func nodeStateRead(t *testing.T, handler http.Handler, address, login string) string {
+// alice: the state every read of the node answers.
+func nodeStateRead(t *testing.T, handler http.Handler, address string) string {
 	t.Helper()
-	response := dispatchReferences(t, handler, address, login)
+	response := dispatchReferences(t, handler, address, "alice")
 	if response.Code != http.StatusOK {
-		t.Fatalf("read %s as %s: status=%d body=%s", address, login, response.Code, response.Body.String())
+		t.Fatalf("read %s as alice: status=%d body=%s", address, response.Code, response.Body.String())
 	}
 	return decodeBody[model.GraphReferences](t, response).Node.State
 }
@@ -53,7 +53,7 @@ func nodeStateRead(t *testing.T, handler http.Handler, address, login string) st
 // requireNodeState fails unless every read of the node address names answers want, as alice reads it.
 func requireNodeState(t *testing.T, handler http.Handler, address, want string) {
 	t.Helper()
-	if got := nodeStateRead(t, handler, address, "alice"); got != want {
+	if got := nodeStateRead(t, handler, address); got != want {
 		t.Fatalf("%s reads node state %q, want %q", address, got, want)
 	}
 }
@@ -110,7 +110,7 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 	lens := rig.invoke(rig.spec, "trade-off", "alice", nil)
 
 	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive, graphstore.StateGone} {
-		before := nodeStateRead(t, rig.handler, lens.Address, "alice")
+		before := nodeStateRead(t, rig.handler, lens.Address)
 		written := rig.writeState(lens.Address, state)
 		if written.Node.State != state || written.Previous != before || written.Node.Kind != graphstore.KindLens {
 			t.Fatalf("the write of %s on the lens answers %+v, want the lens at %s from %s", state, written, state, before)

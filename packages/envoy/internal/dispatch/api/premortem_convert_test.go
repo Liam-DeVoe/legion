@@ -481,15 +481,25 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 	requireRefused(t, "an entry for risk 11", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": withRisk11}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "12", "11")
+	// Every refusal of an entry's shape holds the shape (premortemEntryShape), which names every
+	// member, so each test below reads the member the refusal names outside the shape: a mistyped
+	// member after it, a member left out before it.
 	mistyped := []any{map[string]any{"risk": 0, "checks": []string{}, "reason": "None."}, map[string]any{"risk": "x", "checks": []string{}, "reason": "None."}}
-	requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	wrongType := requireRefused(t, "an entry whose risk is no number", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": mistyped}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "2", "risk")
+	if named, cause, found := strings.Cut(wrongType.Error, premortemEntryShape); !found ||
+		!graphstoretest.NamesAsAWord(named, "2") || !graphstoretest.NamesAsAWord(cause, "risk") {
+		t.Fatalf("an entry whose risk is no number is refused %q, want the entry 2 named before the entry's shape and the member risk after it", wrongType.Error)
+	}
 	// An entry without its checks is refused naming the entry by its position and its risk, and the
 	// member it leaves out.
-	requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
+	missing := requireRefused(t, "an entry without its checks", dispatchRequest(t, rig.handler, http.MethodPost, path,
 		map[string]any{"prevented_by": []any{map[string]any{"risk": 3, "reason": "None."}}}, "alice"),
 		http.StatusBadRequest, "ARTIFACT_INPUT", "prevented_by", "1", "3", "checks")
+	if named, _, found := strings.Cut(missing.Error, premortemEntryShape); !found || !graphstoretest.NamesAsAWord(named, "1", "3", "checks") {
+		t.Fatalf("an entry without its checks is refused %q, want the entry 1, its risk 3 and the member checks named before the entry's shape", missing.Error)
+	}
 	notJSON := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"prevented_by": [`))
 	notJSON.Header.Set("Content-Type", "application/json")
 	notJSON.Header.Set("X-Dispatch-User", "alice")

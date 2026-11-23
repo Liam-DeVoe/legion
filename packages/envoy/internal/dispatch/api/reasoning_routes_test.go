@@ -327,9 +327,15 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		t.Errorf("the store holds %d constrained_by tuples after the refusal, and held %d before", after, constrained)
 	}
 
-	// A body of neither constraint shape, a part_of, a finding under a node that is no lens.
-	requireRefused(t, "a constraint of neither shape", rig.post("/constraints", map[string]any{"standard": "RFC 9110", "value": "41 ms"}, "alice"),
-		http.StatusBadRequest, "CONSTRAINT_INPUT", "both")
+	// A body of neither constraint shape, a part_of, a finding under a node that is no lens. The
+	// constraint body names fields of both shapes, so it is refused with the answer the shape check
+	// gives that body (constraintShape), and not a refusal of another part of the write.
+	bothShapes := map[string]any{"standard": "RFC 9110", "value": "41 ms"}
+	shape := requireRefused(t, "a constraint of neither shape", rig.post("/constraints", bothShapes, "alice"),
+		http.StatusBadRequest, "CONSTRAINT_INPUT")
+	if want := (constraintInput{Standard: "RFC 9110", Value: "41 ms"}).constraintShape(); want == "" || shape.Error != want {
+		t.Fatalf("a constraint naming fields of both shapes is refused %q, want the shape check's answer %q", shape.Error, want)
+	}
 	requireRefused(t, "a part_of through the pointer route", rig.post(nodePath("lens/"+inversion.ID, "pointers"),
 		map[string]any{"kind": graphstore.TuplePartOf, "action": pointerRetarget, "from": rig.spec, "to": rig.requirement}, "alice"),
 		http.StatusBadRequest, "POINTER_INPUT", "part_of")
