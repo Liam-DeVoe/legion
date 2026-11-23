@@ -142,15 +142,15 @@ func TestARequestsStandingIsJudgedUnderTheLockAtItsFirstAct(t *testing.T) {
 }
 
 // A claim that takes another role keeps its session, so the transcript its next generation resumes
-// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub honours
-// for up to an hour. The first prompt the agent takes in its new role says that every such token
-// is void and must not be used, and that its gh and git now act as the new role's App; a later
-// prompt says it no more. A daemon restart between the re-role and that prompt loses none of it.
-// The control is the same claim suspended, restarted and resumed in the role it held: no prompt of
-// its next generation says anything of an earlier role.
-func TestTheFirstPromptAfterARoleChangeSaysTheEarlierRolesTokensAreVoid(t *testing.T) {
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub accepts
+// for up to an hour. The first prompt the agent takes in its new role says that every such token is
+// no longer its to use, though GitHub may accept it until it expires, and that its gh and git now
+// act as the new role's App; a later prompt says it no more. A daemon restart between the re-role
+// and that prompt loses none of it. The control is the same claim suspended, restarted and resumed
+// in the role it held: no prompt of its next generation says anything of an earlier role.
+func TestTheFirstPromptAfterARoleChangeSaysTheEarlierRolesTokensAreNoLongerItsOwn(t *testing.T) {
 	const (
-		void = "Any GitHub token you saw in an earlier role is void: do not use it."
+		void = "Any GitHub token you saw in an earlier role is no longer yours to use, though GitHub may accept it until it expires: do not use it."
 		app  = "Your gh and git now act as the GitHub App of the tester role."
 	)
 	for _, tc := range []struct {

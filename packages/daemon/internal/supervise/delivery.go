@@ -277,8 +277,13 @@ type sentences struct{ abandoned, ended, role bool }
 func (d Delivery) message(c Claim) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
-	if relaunch && c.EndedWork.Tells() {
-		text, carried.ended = RelaunchSentence(c.EndedWork), true
+	if relaunch {
+		// The daemon's own delivery says what the claim's untold records say as they stand now:
+		// the record of the last let-go where it tells, and the role change in front of it.
+		text = ""
+		if c.EndedWork.Tells() {
+			text, carried.ended = RelaunchSentence(c.EndedWork), true
+		}
 	}
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
@@ -309,6 +314,10 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	}
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
+	}
+	if relaunch && text == "" {
+		// The daemon's own delivery that tells the role change alone ends with its sentence.
+		return strings.TrimSuffix(prefix, "\n\n"), carried
 	}
 	return prefix + text, carried
 }
@@ -750,10 +759,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	//
 	// holds is whether the delivery is still the claim's to send. An older daemon's ask of an
 	// update round never is, whichever round it names, and its issue's phase is not asked about.
-	// Nor is the daemon's own delivery of a relaunch's record whose record no longer tells
-	// (spent), whose sentence is all it carries; it names no phase either.
+	// Nor is the daemon's own delivery of a relaunch's record once neither record it tells, the
+	// let-go's or the role change's, tells any more (spent), whose sentences are all it carries; it
+	// names no phase either.
 	round, asks := updateRoundOf(p.ID)
-	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
+	spent := p.Relaunch() && !m.claim.EndedWork.Tells() && !m.claim.RoleChange.Tells()
 	holds := !asks && !spent
 	if holds {
 		var err error
@@ -1527,17 +1537,18 @@ func abandonedTask(c Claim, last bool) string {
 }
 
 // roleChangedTask begins the first prompt the agent of a claim that took another role takes in the
-// role it holds now (RoleChange, Delivery.message). The claim kept its session (Machine.Rerole), so
+// role it holds now (RoleChange, Delivery.message), or is the whole of the daemon's own delivery
+// where the claim holds no task (queueRelaunch). The claim kept its session (Machine.Rerole), so
 // the transcript that session resumes can hold a GitHub token of the earlier role's App that the
-// agent printed, which GitHub honours for up to an hour, and nothing in the transcript says the
+// agent printed, which GitHub accepts for up to an hour, and nothing in the transcript says the
 // token is no longer the agent's to use. The sentence says that every token of an earlier role is
-// void and that the agent's gh and git now act as the App of the role the claim holds, which its
-// next generation's gh files are minted for. It names no earlier role: two changes before the
-// prompt, or one back to the role the claim first held, leave tokens of every role between in the
-// transcript.
+// no longer the agent's to use though GitHub may accept it until it expires, and that the agent's
+// gh and git now act as the App of the role the claim holds, which its next generation's gh files
+// are minted for. It names no earlier role: two changes before the prompt, or one back to the role
+// the claim first held, leave tokens of every role between in the transcript.
 func roleChangedTask(c Claim) string {
 	return fmt.Sprintf("You now work as the %s of %s, and this claim held another role before. "+
-		"Any GitHub token you saw in an earlier role is void: do not use it. "+
+		"Any GitHub token you saw in an earlier role is no longer yours to use, though GitHub may accept it until it expires: do not use it. "+
 		"Your gh and git now act as the GitHub App of the %s role.\n\n", c.Role, c.Issue, c.Role)
 }
 

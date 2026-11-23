@@ -1,16 +1,16 @@
 -- 20261123033101_claim_role_change.up.sql — the record that a claim took another role, for its
--- agent to be told that the GitHub tokens of its earlier role are void.
+-- agent to be told that the GitHub tokens of its earlier role are no longer its to use.
 --
 -- claims.role_change is supervise.Claim.RoleChange: written where a claim takes the role of its
 -- agent's next step (supervise's Rerole), which only a claim that runs nothing does. The claim keeps
 -- its session, so the transcript its next generation resumes can hold a GitHub token of the earlier
--- role's App that the agent printed, which GitHub honours for up to an hour. The first prompt the
--- agent takes in its new role says every such token is void and that its gh and git now act as the
--- new role's App (supervise's roleChangedTask), and the confirmation of that prompt marks the record
--- told (supervise's confirm). It holds the role the claim held before the first change not yet
--- told, whether a later prompt has told it, and the delivery whose confirmation told it. That
--- prompt is a relaunch and can be a daemon restart away, so the record is durable rather than held
--- in the machine's memory.
+-- role's App that the agent printed, which GitHub accepts for up to an hour. The first prompt the
+-- agent takes in its new role says every such token is no longer its to use and that its gh and
+-- git now act as the new role's App (supervise's roleChangedTask), and the confirmation of that
+-- prompt marks the record told (supervise's confirm). It holds the role the claim held before the
+-- first change not yet told, whether a later prompt has told it, and the delivery whose
+-- confirmation told it. That prompt is a relaunch and can be a daemon restart away, so the record
+-- is durable rather than held in the machine's memory.
 --
 -- jsonb on the claim's own row, as the abandoned session and the ended work are, because it is
 -- written in the same decision as the role it records. Every existing row takes null, which is "the
@@ -29,7 +29,7 @@
 -- reports that release's own again, and both are owed to the roll-forward, which then runs this
 -- file again and adds the column, null on every row. What the drop costs is each record not yet
 -- told: the agent of a claim that took another role before the rollback is not told after the
--- roll-forward that the tokens of its earlier role are void.
+-- roll-forward that the tokens of its earlier role are no longer its to use.
 --
 -- begin;
 -- alter table claims drop column if exists role_change;

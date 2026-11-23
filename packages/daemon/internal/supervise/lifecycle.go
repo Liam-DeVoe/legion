@@ -348,7 +348,7 @@ func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
 // its session, and waits for its turn to end. The claim keeps its session, so its next generation
 // resumes it, and that session can hold a GitHub token of the earlier role that the agent printed:
 // the claim records the change (RoleChange), unless one it has not told yet stands, and the first
-// prompt its agent takes says such a token is void (roleChangedTask).
+// prompt its agent takes says such a token is no longer its to use (roleChangedTask).
 //
 // The start read the step from the record before this lock, so it asks with the step's standing
 // (Standing), judged here under the lock: a step its issue has left since, by a move back or a

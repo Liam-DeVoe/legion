@@ -3567,11 +3567,13 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 
 // RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has
 // not yet been told so. The claim keeps its session, so the transcript its next generation resumes
-// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub honours
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub accepts
 // for up to an hour; the first prompt the agent takes in its new role says that every such token
-// is void and that its gh and git now act as the new role's App (roleChangedTask). From is the
-// role the claim held before the first change not yet told, kept for the log: a second change
-// before that prompt leaves it, since the sentence names only the role the claim holds then.
+// is no longer its to use and that its gh and git now act as the new role's App (roleChangedTask),
+// and a claim that holds no task is given a delivery of the daemon's own to say it
+// (queueRelaunch). From is the role the claim held before the first change not yet told, kept for
+// the log: a second change before that prompt leaves it, since the sentence names only the role
+// the claim holds then.
 type RoleChange struct {
 	From claim.Role `json:"from"`
 	// Told is whether a turn of the agent took a prompt that told it, and ToldBy the delivery whose
