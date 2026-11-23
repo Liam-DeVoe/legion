@@ -1,4 +1,4 @@
--- 20261121150941_idle_release_keeps_no_workspace.up.sql — the daemon keeps no saved workspace:
+-- 20261123050533_idle_release_keeps_no_workspace.up.sql — the daemon keeps no saved workspace:
 -- workspace_bundles goes, idle_release_declines records the idle release the daemon last declined
 -- for each issue, so no pass asks the issue's pod again until something it can see has changed,
 -- and issue_releases records the newest turn of the pod's claims when a release is marked.
@@ -49,7 +49,7 @@
 -- create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
 -- drop table public.idle_release_declines;
 -- alter table public.issue_releases drop column if exists turn_start;
--- delete from public.schema_version where version = 20261121150941;
+-- delete from public.schema_version where version = 20261123050533;
 drop table workspace_bundles;
 create table idle_release_declines (
     project     text        not null,

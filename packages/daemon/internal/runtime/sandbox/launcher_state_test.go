@@ -206,7 +206,7 @@ func TestLauncherCommandWriteHonorsItsDeadline(t *testing.T) {
 // default and the state read below finds nothing connected.
 func TestAnEarlierLaunchersRestoreReportIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
-	launchers := newLaunchers(testLeakCheck, nil, nil, nil, slog.New(slog.NewTextHandler(logs, nil)))
+	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, slog.New(slog.NewTextHandler(logs, nil)))
 	session := launchers.accept(workerToken, testTree, shimwire.LauncherHello{PodUID: "pod", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })

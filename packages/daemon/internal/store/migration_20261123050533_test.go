@@ -8,7 +8,7 @@ import (
 
 // keepsNoWorkspaceVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const keepsNoWorkspaceVersion = 20261121150941
+const keepsNoWorkspaceVersion = 20261123050533
 
 // keepsNoWorkspaceRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -35,7 +35,7 @@ const workspaceBundlesShape = `select c.column_name || ' ' || c.data_type || ' '
 	where k.conrelid = 'public.workspace_bundles'::regclass
 	order by 1`
 
-// 20261121150941 drops workspace_bundles, where the release before saved an idle release's
+// 20261123050533 drops workspace_bundles, where the release before saved an idle release's
 // unpushed work, makes idle_release_declines, where this release records the release its check
 // declined, and adds issue_releases.turn_start, the newest turn a release's mark was taken at. The
 // way back, the last paragraph of the migration's header (migrations.WayBack), is what an operator
