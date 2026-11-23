@@ -18,7 +18,7 @@ Read, against the goal, every check and every requirement:
 
 2. `dispatch results --issue <issue>`: whether a pass stands for each check at the last step's head;
 
-3. where the task has a reviewer step, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
+3. where the task has a reviewer step, its last reviewer step's approval of the last step's head, read by the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
 
 4. where the task has a reviewer step, each claim in the review of each reviewer step, against the code at that head;
 
@@ -61,10 +61,13 @@ Then, in one turn:
 
 A child's merge while the parent waits needs no move of its own:
 the last round's forward merge takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below).
-If the pull request merged before its last round, move nothing back. Once the children close:
+If the pull request merged before its last round, move nothing back.
+Once the children close:
 
 1. Have a fresh `task` subagent run each check with no `ci_check` on the default branch and record each result, and `wait` for its report.
+
 2. Read each `ci_check` result in `dispatch results`.
+
 3. Post the results in the acceptance comment, then `sign_off`.
 
 ## After your sign-off

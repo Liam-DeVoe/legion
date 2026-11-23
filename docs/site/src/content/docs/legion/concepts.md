@@ -153,7 +153,8 @@ workflow, at a head that carries their merges.
 ## Phase workers
 
 The daemon starts each phase's worker itself, one phase at a time, in the order below, and runs
-only the phases of the steps the issue's [plan](#the-plan-of-an-issue) names. An agent keeps
+only the phases of the steps the issue's [plan](#the-plan-of-an-issue) names, a phase once for each
+step of its role: `implementer:a reviewer implementer:a` runs `implementing` twice. An agent keeps
 its session between its assignments, across the roles of its steps, while its issue runs and
 after it leaves the workflow, so its next task reaches the same session. Under the Kubernetes
 runtime the pod is shorter-lived than the session: the

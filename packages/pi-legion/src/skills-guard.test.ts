@@ -687,7 +687,7 @@ test("an implementer and owner task is accepted on the evidence its steps give",
     /`acceptance:owner` enters `accepting`/,
     /has a tester step[^.;]*--phase test/,
     /`dispatch results --issue <issue>`[^.;]*the last step's head/,
-    /has a reviewer step[^.;]*approval/,
+    /has a reviewer step, its last reviewer step's approval of the last step's head/,
     /no tester step[^.;]*the implementer's evidence/,
   ]);
   expect(missing).toEqual([]);
