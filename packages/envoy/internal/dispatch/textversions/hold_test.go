@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -118,9 +117,11 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 // the batch in flight commits or rolls back and the hold is released, which notifies the standby
 // through its listener (duty.HoldReleasedChannel on a pglisten.Hub, as the server registers it),
 // so the standby takes the hold and writes the next event. The standby's retry runs on a fake
-// clock the row never moves (Config.standbyClock), so the retry never fires and the take can only
-// be the notification's. That it comes within 2 s is a service level, which
-// TestAStandbyTakesTheReleasedHoldWithinTwoSeconds holds in benchtime's timing lane.
+// clock the row never moves (Config.standbyClock), so the retry never fires; its wake has given up
+// the signal of the hub's LISTEN (releasedWake), and the hub listened once; and nothing wakes the
+// standby's events until it has taken the hold, whose first pass writes what was written while it
+// stood by. So the take can only be the notification's. That it comes within 2 s is a service
+// level, which TestAStandbyTakesTheReleasedHoldWithinTwoSeconds holds in benchtime's timing lane.
 func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	takeReleasedHold(t)
 }
@@ -147,7 +148,7 @@ func takeReleasedHold(t *testing.T) time.Duration {
 	first := startFill(t, storetest.SecondProcess(t, database), nil, nil, true)
 	firstHolder := awaitLiveHolder(t, database)
 	standbyStore := storetest.SecondProcess(t, database)
-	released := releasedWake(t, standbyStore)
+	released, listens := releasedWake(t, standbyStore)
 	// The standby stands by on a fake nothing moves: its retry is armed and never fires, so only
 	// the release's notification can bring the try that takes the hold.
 	second := startFill(t, standbyStore, released, clocktest.New(standbyStart), true)
@@ -166,8 +167,12 @@ func takeReleasedHold(t *testing.T) time.Duration {
 		t.Fatalf("the holder stopped and the hold still names it, %s", firstHolder)
 	}
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	second.Wake()
+	// Nothing wakes the standby's events before its take: a standby that took the hold only once
+	// an event woke it would never write the next event, and the row would fail here by name.
 	second.AwaitLine(t, tookHoldMessage)
+	if n := listens(); n != 1 {
+		t.Fatalf("the standby's listener hub listened %d times; want once, so that what woke the standby is the release's notification", n)
+	}
 	textversionstest.AwaitRows(t, database, []int64{id}, nil)
 	took := time.Since(stopped)
 	t.Logf("the standby wrote the next event %v after the holder stopped", took.Round(time.Millisecond))
@@ -181,7 +186,9 @@ func takeReleasedHold(t *testing.T) time.Duration {
 // signalled, as a standby whose listener is down has: the holder releases its hold and nothing
 // tells the standby, whose retry takes the free hold and writes the next event. The standby's
 // retry runs on a fake clock (Config.standbyClock): the row reads it armed standbyRetry after the
-// standby began to stand by, and moves the fake to it. How soon after the retry fires the standby
+// standby began to stand by, and moves the fake to it. Nothing wakes the standby's events, so a
+// standby that took the hold only once an event woke it would not pass; its first pass under the
+// hold writes what was written while it stood by. How soon after the retry fires the standby
 // writes is a service level, which TestAStandbyRetryTakesAFreeHoldWithinItsRetry holds in
 // benchtime's timing lane.
 func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
@@ -217,7 +224,6 @@ func takeFreeHoldByRetry(t *testing.T) time.Duration {
 
 	first.Stop(t)
 	id := commitComment(t, database, broker, textversionstest.Issue).id
-	second.Wake()
 	// The standby's one timer on its clock is its retry, armed as it began to stand by: the bound
 	// of its first try ended with the refused try its line reports. With no release to wake it,
 	// only the retry's tick can bring the try that takes the free hold, and the row moves the fake
@@ -360,14 +366,22 @@ func startFill(t *testing.T, db *store.Store, released <-chan struct{}, standby 
 var standbyStart = time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
 // releasedWake runs a listener hub on db's listener pool, as the server runs its own, with a wake
-// on duty.HoldReleasedChannel, and answers that wake once the hub listens.
-func releasedWake(t *testing.T, db *store.Store) <-chan struct{} {
+// on duty.HoldReleasedChannel, and answers that wake once the hub listens, with the signal the hub
+// gives every wake after each LISTEN (pglisten.Hub's onConnected, its first LISTEN included)
+// already taken, and how many times the hub has listened. A standby that read that signal would
+// try for the hold once more with nothing released, so while the hub has listened once, a signal
+// on the wake is a release's notification.
+func releasedWake(t *testing.T, db *store.Store) (<-chan struct{}, func() int64) {
 	t.Helper()
 	hub := &pglisten.Hub{Owner: "textversions test", Dial: db.Pool.Listener}
 	wake := hub.Wake(duty.HoldReleasedChannel)
 	listening := make(chan struct{})
-	var once sync.Once
-	hub.OnConnected(func() { once.Do(func() { close(listening) }) })
+	var listens atomic.Int64
+	hub.OnConnected(func() {
+		if listens.Add(1) == 1 {
+			close(listening)
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -379,7 +393,10 @@ func releasedWake(t *testing.T, db *store.Store) <-chan struct{} {
 		testwait.Receive(t, "the standby's listener hub to return", done)
 	})
 	testwait.Receive(t, "the standby's listener hub to listen", listening)
-	return wake
+	// The hub runs its OnConnected callbacks and then signals every wake, on its own goroutine, so
+	// the signal comes once listening has closed, and the row takes it here.
+	testwait.Receive(t, "the signal of the standby's listener hub for its LISTEN", wake)
+	return wake, listens.Load
 }
 
 // bothFillsWhy is why the two-fill row's pauses are spans: the absence of a takeover is no state
