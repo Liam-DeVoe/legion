@@ -45,9 +45,10 @@ const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
 // workerOr is the claim role's phases row of key now names on the step it runs, the claim a real
 // route's grant carries (the step's worker), or fallback where the row runs no step or names no
-// claim: a completion from any other claim of the role is refused (HANDOFF_NOT_THE_STEPS_WORKER).
-// The row now is the role's row with the highest entry (record.PhaseRowOf), since a role that
-// stands at two steps keeps a row for each.
+// claim: a completion from any other claim of the role is refused, HANDOFF_NOT_THE_STEPS_WORKER,
+// or HANDOFF_NOT_CURRENT_PHASE where it is of an entry that claim served on a step the task has
+// left (intake.AnotherAgentsStep). The row now is the role's row with the highest entry
+// (record.PhaseRowOf), since a role that stands at two steps keeps a row for each.
 func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
 	t.Helper()
 	var token string
