@@ -15,9 +15,9 @@
 // mintStatusError and classify), beside their own rate-limit reading.
 //
 // Outage is httpoutage.Is under the name these OAuth readers use; a reader of any other service's
-// status calls httpoutage.Is itself. The package imports only the standard library,
-// golang.org/x/oauth2 and httpoutage, so a command that links no OpenID Connect verifier can use
-// it.
+// status calls httpoutage.Is itself, but for the broker clients httpoutage's doc names, which keep
+// a rule of their own for now. The package imports only the standard library, golang.org/x/oauth2
+// and httpoutage, so a command that links no OpenID Connect verifier can use it.
 package oauthrefusal
 
 import (
