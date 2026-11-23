@@ -144,11 +144,10 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
 // every row it finds. So the design news stays the last word of that check.
-// The roles of a deployment (20261117223524) are named here too: it stands above the update ask
-// mark's cutover (20261117200337) and below the kind list with the conflict's second read
-// (20261119003157). The migration writes the role checks of `claims`, `phases` and
+// The roles of a deployment (20261123181746) are named here too: it stands above every other
+// version of this list. The migration writes the role checks of `claims`, `phases` and
 // `issue_releases` and the phase checks of `issues` again, each wider than the check it replaces,
-// so every row an upgrade finds passes them (migration_20261117223524_test.go), and it touches no
+// so every row an upgrade finds passes them (migration_20261123181746_test.go), and it touches no
 // outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
@@ -160,7 +159,8 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
-	20261117223524, 20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
+	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
+	20261123181746,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
