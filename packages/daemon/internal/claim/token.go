@@ -8,26 +8,25 @@ import (
 	"strings"
 )
 
-// agentGrammar is the name of an agent, the last part of its token: the role grammar of a
-// deployment, at most 32 bytes.
-const agentGrammar = `[a-z][a-z0-9-]{0,31}`
+// roleGrammar is the name of a role a deployment defines, at most 32 bytes: the role grammar of
+// Dispatch's step record (packages/envoy/internal/dispatch/workflowstore/write.go), which each of
+// Legion's six matches. An agent's name, the last part of its token, takes the same grammar, since
+// an agent is named for a role.
+const roleGrammar = `[a-z][a-z0-9-]{0,31}`
 
 var (
 	// issueKey is a Dispatch issue key, the one shape an issue has (legion-roles.ts:30).
 	issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
 	// projectToken is a project as a token spells it (legion-roles.ts:28).
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
-	// agentName is an agent's name alone.
-	agentName = regexp.MustCompile(`^` + agentGrammar + `$`)
+	// roleName is a role's name alone (IsRole), and an agent's (AgentToken).
+	roleName = regexp.MustCompile(`^` + roleGrammar + `$`)
 	// agentToken is a claim token of an issue cut after its fourth "-": the issue's part,
 	// `legion-<project>-<issue project>-<number>`, three parts with no dash in them, then the agent's
 	// name, which can hold dashes of its own.
-	agentToken = regexp.MustCompile(`^(legion-[^-]+-[^-]+-[^-]+)-(` + agentGrammar + `)$`)
+	agentToken = regexp.MustCompile(`^(legion-[^-]+-[^-]+-[^-]+)-(` + roleGrammar + `)$`)
 	// notAlphanumeric is everything ProjectToken drops.
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
-	// roleName is a role a deployment defines: the role grammar of Dispatch's step record
-	// (packages/envoy/internal/dispatch/workflowstore/write.go), which each of Legion's six matches.
-	roleName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
 // Roles are Legion's six roles, in the order the workflow reaches them. A claim can also be on a
@@ -98,7 +97,7 @@ func NewToken(project, issue string, role Role) (Token, error) {
 // AgentToken is the claim token of agent on issue: `legion-<project>-<issue project,
 // lowercased>-<number>-<agent>`. The token is the Envoy role the agent claims, so it has Envoy's
 // role-token shape, and a peer that derives it from the issue and the name in either language
-// reaches the same agent. It refuses a name outside the agent grammar (agentName), and the
+// reaches the same agent. It refuses a name outside the role grammar (roleName), and the
 // controller's name, which names no agent of an issue. project is already a ProjectToken.
 func AgentToken(project, issue string, agent Agent) (Token, error) {
 	if !projectToken.MatchString(project) {
@@ -108,7 +107,7 @@ func AgentToken(project, issue string, agent Agent) (Token, error) {
 	if match == nil {
 		return "", fmt.Errorf("claim token: %q is not an issue key", issue)
 	}
-	if !agentName.MatchString(string(agent)) || agent == Agent(RoleController) {
+	if !roleName.MatchString(string(agent)) || agent == Agent(RoleController) {
 		return "", fmt.Errorf("claim token: %q is not an agent name", agent)
 	}
 	return Token(fmt.Sprintf("legion-%s-%s-%s-%s", project, strings.ToLower(match[1]), match[2], agent)), nil

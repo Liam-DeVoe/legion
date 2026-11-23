@@ -170,7 +170,7 @@ func (s PlanStep) AgentName() claim.Agent {
 	case s.Agent != "":
 		return s.Agent
 	}
-	return claim.Agent(s.Role)
+	return RoleName(s.Role)
 }
 
 // StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in

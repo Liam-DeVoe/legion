@@ -7,10 +7,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// maxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
-// (claim.AgentToken).
-const maxAgentName = 32
-
 // NameAgents is steps, copied, with the name of each step's agent (PlanStep.Agent) given: the one
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write
@@ -30,7 +26,7 @@ const maxAgentName = 32
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, unless pass 2 or an earlier step of this pass gave that name.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
-//     step, cut to maxAgentName bytes, where no agent of steps has that name.
+//     step (RoleName), where no agent of steps has that name.
 //
 // An agent left with no name would share its name with another agent: this release runs one
 // agent of each role for an issue, and the caller refuses such a version before it writes anything
@@ -94,13 +90,10 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 }
 
 // RoleName is the name an agent takes from the role of its first step (NameAgents' pass 4): the
-// role, cut to maxAgentName bytes.
-func RoleName(role string) claim.Agent {
-	if len(role) > maxAgentName {
-		role = role[:maxAgentName]
-	}
-	return claim.Agent(role)
-}
+// role itself. A step's role is a role of the deployment's or one of Legion's (plan.Supported
+// refuses a plan's own role block), and config reads a role of the deployment's in the agent
+// grammar already (its roleWord, at most maxRoleWord bytes), so a role needs no cut to be a name.
+func RoleName(role string) claim.Agent { return claim.Agent(role) }
 
 // UnnamedAgent is an agent of a version that NameAgents gave no name: the agent's first step, and
 // the name it would have taken, which another agent of the version holds.
