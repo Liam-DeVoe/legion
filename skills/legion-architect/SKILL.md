@@ -60,9 +60,9 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
   Legion holds a child whose blockers are not `done`.
-  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
+  Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
 
 - On each `child-closed`, read the child's handoff, edit the specs of open children it changes, and `park_child` each child it makes unneeded.

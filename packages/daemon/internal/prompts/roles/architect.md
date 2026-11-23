@@ -105,7 +105,8 @@ to delivered wakes; after revival, start from your issue record, the `legion` to
 Create children under your own issue, each past the red-team check in
 `skill://legion-architect/references/decomposition.md`. Review each version of their specs as
 "Reviewing a child's spec" in that reference says. Release every child with `release_children` as
-soon as it is filed and you have given it its plan with `register_plan` (`issue`, `artifactId`,
+soon as its filed version has your approving spec review and you have given it its plan with
+`register_plan` (`issue`, `artifactId`,
 `version`), since its first step can start in the admission pass that releases it
 (`skill://legion-architect/references/plan.md`; the daemon holds a released child until the issues
 its `--blocked-by` links name close), and adjust open children when closures change your

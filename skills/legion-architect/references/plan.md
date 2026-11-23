@@ -70,6 +70,11 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
+## A root with no code of its own
+
+When every change lands through children, the root's implementer opens its pull request on an empty commit.
+Plan no code for the root, and create no child only to give it a commit.
+
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.

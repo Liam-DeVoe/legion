@@ -9,7 +9,7 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 
 ## Adopting children
 
-Release a child a person created at once and as it is: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+Release a child a person created as it is, once you have reviewed its spec, as no person did, and given it its plan: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
 The answer names `released`, `started` and `held`, each held child with what it waits on.
 A refused release writes nothing: release the rest again without the child it names.
 
@@ -80,8 +80,8 @@ No person reads a child's spec: review every version of it and of its Verificati
 
 2. Approve or request changes, with a reason either way.
 
-3. Post one `dispatch comment` on the child whose first line is exactly one of these, and whose second line is `Verification document v<m>`;
-   then tell the child's architect with `envoy_publish`:
+3. Post one `dispatch comment` on the child whose first line is exactly one of these, and whose second line is `Verification document v<m>`,
+   then tell the child's architect with `envoy_publish` once it runs:
 
    ```text
    Spec review of <child key> v<n> by <parent key>: approved
@@ -95,8 +95,10 @@ A decision only a person can make goes to the architect above you, never into yo
 ## Across repositories
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
-Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`);
-for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
+Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
+For a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
+Release it before an issue above it is accepted: the daemon then refuses it until that issue closes.
+If that pull request cannot merge in time, ask a person ("Every turn") rather than release late.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
@@ -104,11 +106,6 @@ Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 When an issue must wait on a sibling or on an issue outside this tree, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
 A blocker's close is its Dispatch issue reaching `done`, not a merge or a deploy: pick a blocker whose close is the fact the issue needs.
 Legion starts the issue once its blockers close.
-
-## A root with no code of its own
-
-When every change lands through children, the root's implementer opens its pull request on an empty commit.
-Plan no code for the root, and create no child only to give it a commit.
 
 ## Architecture components
 
