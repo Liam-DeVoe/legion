@@ -16,9 +16,10 @@ body: |-
   merge's combined diff prints such a file as binary whatever `--text` says, so each file a merge's
   combined diff prints so is read again as text from its blobs, the merge's first parent's and the
   merge's own, which the combined diff's index line names; no pathspec is used, so neither the
-  path's bytes nor the pusher's `GIT_*_PATHSPECS` can make the read miss it. A diff that still
-  prints a file as binary, or a read of a merge's blobs that finds nothing, refuses the push as a
-  setup error.
+  path's bytes nor the pusher's `GIT_*_PATHSPECS` can make the read miss it. A file whose blob the
+  merge keeps from its first parent, changing only its mode or making it a symlink, and a
+  submodule's entry publish no new text and are not read. A diff that still prints a file as
+  binary, or a read of two blobs that differ that finds nothing, refuses the push as a setup error.
 
   `legion leak-check pre-push` refuses an update line whose sha is not the 40 or 64 lowercase hex
   digits git writes, without quoting it.

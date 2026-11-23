@@ -390,15 +390,19 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int,
 //
 // A merge's combined diff does not honour --text: for such a file it still prints "Binary files
 // differ" under its "diff --combined <path>" header. With --full-index that header's index line
-// names the file's blob in each parent and in the merge, and each file printed so is read again
+// names the file's blob in each parent and in the merge, and with --raw the lines ahead of the
+// patch name each file's mode in each parent and in the merge. Each file printed so is read again
 // from those blobs, as text (mergeBinaryLines): no pathspec, so neither the path's bytes nor a
 // GIT_*_PATHSPECS variable the pusher's environment carries can make the read miss it. A
-// "Binary files" line under any other diff, or under a combined header whose path or blob ids
-// cannot be read, is an error, so a git that leaves a file unread refuses the push rather than
-// passing it.
+// "Binary files" line under any other diff, or under a combined header whose path, blob ids or
+// modes cannot be read, is an error, so a git that leaves a file unread refuses the push rather
+// than passing it.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
-	binary, err := g.diffLines(ctx, dir, commit, parents > 1, max(parents, 1), emit,
-		diffTree(parents, "--unified=0", "--no-color", "--full-index", "--text", "--no-textconv", "--no-ext-diff", commit)...)
+	args := []string{"--unified=0", "--no-color", "--full-index", "--text", "--no-textconv", "--no-ext-diff"}
+	if parents > 1 {
+		args = append(args, "--raw")
+	}
+	binary, err := g.diffLines(ctx, dir, commit, parents > 1, max(parents, 1), emit, diffTree(parents, append(args, commit)...)...)
 	if err != nil {
 		return err
 	}
@@ -410,26 +414,36 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 	return nil
 }
 
+// gitlinkMode is the mode git gives a submodule's entry, whose id names a commit of another
+// repository rather than a blob of this one.
+const gitlinkMode = "160000"
+
 // binaryFile is a file a merge's combined diff printed as binary: its path, which labels its
-// records and plays no part in reading it, and the blob ids its index line names for the merge's
-// first parent and for the merge itself, all zeros where the file is not there.
+// records and plays no part in reading it, and the blob ids its index line names, and the modes its
+// raw line names, for the merge's first parent and for the merge itself; an id of all zeros where
+// the file is not there.
 type binaryFile struct {
-	path, first, result string
+	path, first, result, firstMode, resultMode string
 }
 
 // mergeBinaryLines hands emit, labelled with the file's path, the lines file gains in the merge
 // against the merge's first parent, read as text from the two blobs. Every line of the merge's
 // own resolution stands in neither parent, so it is a line the file gains against the first
 // parent; the read also takes the lines it gains from the other parents, which is more than the
-// resolution, but only for these files, and each line once. A file the merge deletes publishes
-// nothing and is not read; one new against the first parent is read whole (Guard.blobLines). A
-// read of two blobs that prints no "+++" line, a diff of nothing, is an error: the combined diff
-// lists a file only where the merge's blob differs from every parent's.
+// resolution, but only for these files, and each line once.
+//
+// Three entries publish no text the first parent does not hold and are not read: a file the
+// merge deletes; one whose blob the merge keeps from its first parent, changing only its mode or
+// its type (a file made executable, or a symlink), which the combined diff lists because the mode
+// differs from every parent's; and a submodule's entry, whose id is a commit of another
+// repository. A file new against the first parent, or that was a submodule there, is read whole
+// (Guard.blobLines). A read of two blobs that prints no "+++" line, a diff of nothing, is an error:
+// the two blobs differ.
 func (g *Guard) mergeBinaryLines(ctx context.Context, dir, commit string, file binaryFile, emit func(Record) error) error {
 	switch {
-	case zeroSHA(file.result):
+	case zeroSHA(file.result), file.resultMode == gitlinkMode, file.first == file.result:
 		return nil
-	case zeroSHA(file.first):
+	case zeroSHA(file.first), file.firstMode == gitlinkMode:
 		return g.blobLines(ctx, dir, file, emit)
 	}
 	read, header := false, true
@@ -453,7 +467,7 @@ func (g *Guard) mergeBinaryLines(ctx context.Context, dir, commit string, file b
 			}
 			return nil
 		})
-	}, "diff", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--unified=0", file.first, file.result)
+	}, "diff", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--unified=0", file.first, file.result, "--")
 	if err != nil {
 		return err
 	}
@@ -479,21 +493,34 @@ func (g *Guard) blobLines(ctx context.Context, dir string, file binaryFile, emit
 
 // diffLines runs the diff-tree args name and hands emit each line it marks as added, the first
 // width characters of a line being its marks. Where combined, it answers the files whose combined
-// diff printed "Binary files differ", each with the blob ids of its "index" line, for the caller
-// to read again; anywhere else such a line is an error, and so is one under a header whose path
-// or blob ids cannot be read. The error names the commit and never the path, which is the push's
-// own text.
+// diff printed "Binary files differ", each with the blob ids of its "index" line and the modes of
+// its raw line, for the caller to read again; anywhere else such a line is an error, and so is one
+// under a header whose path, blob ids or modes cannot be read, and a raw line that cannot be read.
+// The error names the commit and never the path, which is the push's own text.
 func (g *Guard) diffLines(ctx context.Context, dir, commit string, combined bool, width int, emit func(Record) error, args ...string) ([]binaryFile, error) {
 	var binary []binaryFile
+	// modes are the first parent's and the merge's mode of each path the raw lines name, which
+	// come ahead of the patch, before its first header.
+	modes := map[string][2]string{}
+	patched := false
 	path, header := "", false
 	var file binaryFile
 	readable, indexed := false, false
+	unread := func() error {
+		return fmt.Errorf("git diff-tree printed a file of commit %s as binary despite --text", short(commit))
+	}
 	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
 		return eachField(out, '\n', func(line []byte) error {
 			line = bytes.TrimRight(line, "\r\n")
 			switch {
+			case combined && !patched && bytes.HasPrefix(line, []byte(":")):
+				raw, first, result, ok := combinedRaw(string(line))
+				if !ok {
+					return fmt.Errorf("git diff-tree printed a raw line of commit %s that could not be read", short(commit))
+				}
+				modes[raw] = [2]string{first, result}
 			case bytes.HasPrefix(line, []byte("diff --")):
-				path, header, indexed = "", true, false
+				path, header, indexed, patched = "", true, false, true
 				if combined {
 					file = binaryFile{}
 					file.path, readable = combinedPath(string(line))
@@ -502,8 +529,13 @@ func (g *Guard) diffLines(ctx context.Context, dir, commit string, combined bool
 				file.first, file.result, indexed = combinedIndex(string(line))
 			case header && bytes.HasPrefix(line, []byte("Binary files ")):
 				if !combined || !readable || !indexed {
-					return fmt.Errorf("git diff-tree printed a file of commit %s as binary despite --text", short(commit))
+					return unread()
 				}
+				mode, ok := modes[file.path]
+				if !ok {
+					return unread()
+				}
+				file.firstMode, file.resultMode = mode[0], mode[1]
 				binary = append(binary, file)
 			case header && bytes.HasPrefix(line, []byte("+++ ")):
 				path = diffPath(string(line[len("+++ "):]))
@@ -519,6 +551,21 @@ func (g *Guard) diffLines(ctx context.Context, dir, commit string, combined bool
 		})
 	}, args...)
 	return binary, err
+}
+
+// combinedRaw is the path a combined diff's raw line names, decoded byte for byte (gitUnquote),
+// and the modes it gives the merge's first parent and the merge, and whether the line is of that
+// shape: one ':' per parent, a mode for each parent and the merge, an id for each, the status,
+// a tab and the path.
+func combinedRaw(line string) (path, first, result string, ok bool) {
+	parents := len(line) - len(strings.TrimLeft(line, ":"))
+	meta, quoted, found := strings.Cut(line[parents:], "\t")
+	fields := strings.Fields(meta)
+	if parents < 2 || !found || len(fields) != 2*(parents+1)+1 {
+		return "", "", "", false
+	}
+	path, ok = gitUnquote(quoted)
+	return path, fields[0], fields[parents], ok && path != ""
 }
 
 // combinedIndex is the blob ids a combined diff's "index <parent>,<parent>..<merge>" line names,

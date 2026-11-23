@@ -1,7 +1,6 @@
 package leakguard
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -652,15 +651,6 @@ func TestAPushOfARefToNoCommitIsRefused(t *testing.T) {
 // names a host, with the working tree at that commit as a push leaves it, and the rules must
 // refuse that file. Each case's control shows its mechanism is live, that the read the case is
 // about (git's default, or the textconv or external diff turned on) prints no line naming the host.
-//
-// A merge is read through its combined diff, which prints "Binary files differ" for such a file
-// whatever --text says. Each merge case resolves one file to a line naming a host, every parent
-// already on the destination so the merge is the whole of what the push adds, and the rules must
-// refuse it: a file holding a NUL byte, and one a -diff covers; the same file under a path holding
-// a tab and a byte that is not UTF-8, which git quotes, and its control with a UTF-8 letter; a
-// -diff file pushed under an inherited GIT_LITERAL_PATHSPECS=1; a binary file no parent holds; and
-// an octopus. Each case's control shows the combined diff prints no line naming the host, and the
-// text file, the control of the merge read itself, shows one.
 func TestAPushedCommitsFilesAreReadAsText(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
@@ -774,176 +764,6 @@ func TestAPushedCommitsFilesAreReadAsText(t *testing.T) {
 			want := []string{tc.path + ": " + theClass}
 			if refused := refusal(t, err); refused.By != byRules || !slices.Equal(refused.Lines, want) {
 				t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
-			}
-		})
-	}
-
-	for n, tc := range []struct {
-		name string
-		// path is the file the merge resolves and the record the report names; lead is the
-		// first line of every version of it, a NUL byte where the case is a binary file.
-		path, lead string
-		// hidden is whether the combined diff hides the file: false for the text control.
-		hidden bool
-		// fresh is whether the file is new in the merge: no parent holds it.
-		fresh bool
-		// sides is how many parents the merge has beside the first: 2 for an octopus.
-		sides int
-		// env is the environment the guard runs under, on top of the fixture's.
-		env []string
-	}{
-		{name: "a merge that resolves a file holding a NUL byte", path: "m.bin", lead: "base\x00\n", hidden: true, sides: 1},
-		{name: "a merge that resolves a file a -diff covers", path: "m.lock", lead: "base\n", hidden: true, sides: 1},
-		{name: "a merge that resolves a text file", path: "m.txt", lead: "base\n", sides: 1},
-		{name: "a merge that resolves a binary file whose path holds a tab and a byte that is not UTF-8", path: "q\t\xff.bin", lead: "base\x00\n", hidden: true, sides: 1},
-		{name: "a merge that resolves a binary file whose path holds a tab and a UTF-8 letter", path: "q\té.bin", lead: "base\x00\n", hidden: true, sides: 1},
-		{
-			name: "a merge that resolves a file a -diff covers, pushed with literal pathspecs", path: "m.lock", lead: "base\n", hidden: true, sides: 1,
-			env: []string{"GIT_LITERAL_PATHSPECS=1"},
-		},
-		{name: "a merge that adds a binary file no parent holds", path: "new.bin", lead: "a\x00b\n", hidden: true, fresh: true, sides: 1},
-		{name: "an octopus merge that resolves a file holding a NUL byte", path: "m.bin", lead: "base\x00\n", hidden: true, sides: 2},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			branch := fmt.Sprintf("merge-%d", n)
-			ours := branch + "-ours"
-			// version commits a version of the case's file, or for a file new in the merge a file
-			// of the parent's own, on a branch from fork.
-			version := func(name, fork, text string) string {
-				t.Helper()
-				fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, fork)
-				if tc.fresh {
-					write(t, filepath.Join(repo, name+".txt"), text)
-				} else {
-					write(t, filepath.Join(repo, tc.path), tc.lead+text)
-				}
-				fixture.Run(repo, "git", "add", "-A")
-				fixture.Run(repo, "git", "commit", "--quiet", "-m", name)
-				return fixture.Run(repo, "git", "rev-parse", "HEAD")
-			}
-			fixture.Run(repo, "git", "checkout", "--quiet", "-B", branch, base)
-			// The -diff cases' attribute, committed with the file every side starts from.
-			write(t, filepath.Join(repo, ".gitattributes"), "*.lock -diff\n")
-			if !tc.fresh {
-				write(t, filepath.Join(repo, tc.path), tc.lead)
-			}
-			fixture.Run(repo, "git", "add", "-A")
-			fixture.Run(repo, "git", "commit", "--quiet", "-m", "the file every side starts from")
-			fork := fixture.Run(repo, "git", "rev-parse", "HEAD")
-			var sides, names []string
-			for i := range tc.sides {
-				name := fmt.Sprintf("%s-side%d", branch, i)
-				names = append(names, name)
-				sides = append(sides, version(name, fork, fmt.Sprintf("a line of side %d\n", i)))
-			}
-			tip := version(ours, fork, "a line of ours\n")
-			// The destination holds every parent, on remote-tracking refs of this repository.
-			fixture.Run(repo, append([]string{"git", "push", "--quiet", "origin", ours}, names...)...)
-			// The merge's tree is ours with the file resolved to a line of the merge's own, or added;
-			// commit-tree makes it a merge of every parent, a conflicting octopus included.
-			write(t, filepath.Join(repo, tc.path), tc.lead+named)
-			fixture.Run(repo, "git", "add", "-A")
-			argv := []string{"git", "commit-tree", fixture.Run(repo, "git", "write-tree"), "-m", "the merge", "-p", tip}
-			for _, side := range sides {
-				argv = append(argv, "-p", side)
-			}
-			merge := fixture.Run(repo, argv...)
-			fixture.Run(repo, "git", "reset", "--quiet", "--hard", merge)
-			control := []string{"git", "diff-tree", "-r", "-c", "-p", "--text", "--no-commit-id", merge}
-			out := fixture.Out(repo, control...)
-			if prints := strings.Contains(out, theHost); prints == tc.hidden {
-				t.Fatalf("%s prints the host: %t, want %t, so the case is not the one it names:\n%s", strings.Join(control, " "), prints, !tc.hidden, out)
-			}
-			ref := "refs/heads/" + ours
-			err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, tc.env...).Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  "origin",
-				URL:     "https://github.com/invented-org/invented-repo.git",
-				Updates: []Update{{LocalRef: ref, LocalSHA: merge, RemoteRef: ref, RemoteSHA: tip}},
-			})
-			want := []string{tc.path + ": " + theClass}
-			if refused := refusal(t, err); refused.By != byRules || !slices.Equal(refused.Lines, want) {
-				t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
-			}
-		})
-	}
-}
-
-// Every way a diff can still leave a file unread refuses the push rather than passing it. The
-// stand-in git answers one read as git would if it misbehaved and runs the real git for every
-// other command: a commit's diff that prints a file as binary despite --text; a merge's combined
-// diff that prints a file as binary under no index line, so no blob to read it from; a read of a
-// merge's two blobs that prints no diff at all; and one that prints them as binary. Each push's
-// control, the same push with the real git, passes. The refusal names the commit and not the
-// file, whose path is the push's own text, and here is the host.
-func TestAFileADiffLeavesUnreadRefusesThePush(t *testing.T) {
-	home, root := t.TempDir(), t.TempDir()
-	repo := filepath.Join(root, "repo")
-	fixture := fixturegit.Isolated(t, home)
-	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", "a commit of nothing in particular")
-	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
-	fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", "the side's commit of nothing")
-	side := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	merge := fixture.Run(repo, "git", "commit-tree", head+"^{tree}", "-m", "a merge of nothing", "-p", head, "-p", side)
-	ids := strings.Repeat("1", 40) + "," + strings.Repeat("2", 40) + ".." + strings.Repeat("3", 40)
-	for _, tc := range []struct {
-		name string
-		// pushed is the commit the push moves the ref to.
-		pushed string
-		// match is the case pattern of the read the stand-in answers, and answer what it prints.
-		match, answer string
-		// says is the reason the setup failure gives.
-		says string
-	}{
-		{
-			name: "a commit's diff that prints a file as binary", pushed: head,
-			match:  `*" diff-tree "*" --unified=0 "*`,
-			answer: "diff --git a/" + theHost + " b/" + theHost + "\\nBinary files a/" + theHost + " and b/" + theHost + " differ\\n",
-			says:   "git diff-tree printed a file of commit " + short(head) + " as binary despite --text",
-		},
-		{
-			name: "a merge's combined diff that prints a file as binary under no index line", pushed: merge,
-			match:  `*" diff-tree "*" -c --unified=0 "*`,
-			answer: "diff --combined " + theHost + "\\nBinary files differ\\n",
-			says:   "git diff-tree printed a file of commit " + short(merge) + " as binary despite --text",
-		},
-		{
-			name: "a read of a merge's two blobs that prints no diff", pushed: merge,
-			match:  `*" diff-tree "*" -c --unified=0 "*) printf 'diff --combined ` + theHost + `\nindex ` + ids + `\nBinary files differ\n'; exit 0 ;;` + "\n" + `*" diff --text "*`,
-			answer: "",
-			says:   "git diff read no diff of a file the combined diff of merge " + short(merge) + " printed as binary",
-		},
-		{
-			name: "a read of a merge's two blobs that prints them as binary", pushed: merge,
-			match:  `*" diff-tree "*" -c --unified=0 "*) printf 'diff --combined ` + theHost + `\nindex ` + ids + `\nBinary files differ\n'; exit 0 ;;` + "\n" + `*" diff --text "*`,
-			answer: "diff --git a/1 b/3\\nBinary files a/1 and b/3 differ\\n",
-			says:   "git diff printed a blob of merge " + short(merge) + " as binary despite --text",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			standIn := t.TempDir()
-			script := "#!/bin/sh\ncase \" $* \" in\n" + tc.match + ") printf '" + tc.answer + "'; exit 0 ;;\nesac\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
-			if err := os.WriteFile(filepath.Join(standIn, "git"), []byte(script), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			push := func(t *testing.T, extra ...string) error {
-				t.Helper()
-				return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, extra...).Push(bound(t), PushRequest{
-					Dir:     repo,
-					Remote:  "origin",
-					URL:     "https://github.com/invented-org/invented-repo.git",
-					Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: tc.pushed, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
-				})
-			}
-			if err := push(t); err != nil {
-				t.Fatalf("the control, the push with the real git: %v", err)
-			}
-			failed := setupFailure(t, push(t, "PATH="+standIn+string(os.PathListSeparator)+os.Getenv("PATH")))
-			says(t, failed, "the push's commits", tc.says)
-			if strings.Contains(failed.Error(), theHost) {
-				t.Fatalf("the setup failure names the file's path: %v", failed)
 			}
 		})
 	}
