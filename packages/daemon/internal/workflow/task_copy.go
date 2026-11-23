@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -104,11 +106,19 @@ func stepOfStart(issue record.Issue, start record.SuperviseRequest, worker claim
 
 // startBranch is the branch start names (record.SuperviseRequest.Branch): the branch of the task of
 // the step it starts (stepOfStart, record.PlanTask.BranchOf), and "" where that branch is the
-// issue's own, where the start starts no running step, and where the issue has no plan rows at its
-// generation, so each such start reads as every start did before tasks had branches of their own.
-// rows is the issue's phases rows. A start that names no claim reads the claim of its role's
-// worker only where a task of the plan holds a branch other than the issue's own: a plan whose
-// every task holds the issue's branch names none at any start, so its starts derive no claim.
+// issue's own and where the issue has no plan rows at its generation, so each such start reads as
+// every start did before tasks had branches of their own. rows is the issue's phases rows. A start
+// that names no claim reads the claim of its role's worker only where a task of the plan holds a
+// branch other than the issue's own: a plan whose every task holds the issue's branch names none at
+// any start, so its starts derive no claim.
+//
+// "" is the issue's own branch, never an unknown one. A start that serves no step names it too, as
+// before: one that names no phase (an architect's, a production check's look, a wake), and the
+// architect's, whose step, the owner's acceptance, works no task's working copy. A phase worker's
+// start whose step the plan does not run, where a task works on a branch of its own, is refused,
+// naming its claim and its phase: its branch is unknown, and the issue's own would be the branch of
+// another task, whose working copy its agent would adopt. So is a running step of a task the plan
+// does not hold, which the record's reading of a running step (record.RunningOf) never answers.
 func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue, start record.SuperviseRequest, rows []record.PhaseRow) (string, error) {
 	stored, err := store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -130,11 +140,16 @@ func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue recor
 	}
 	step, ok := stepOfStart(issue, start, worker)
 	if !ok {
-		return "", nil
+		if start.Phase == "" || start.Role == claim.RoleArchitect {
+			return "", nil
+		}
+		return "", fmt.Errorf("the start of the %s of %s in %s: its claim %s runs no step of the plan, whose tasks work on branches of their own, so the branch of its step is unknown",
+			start.Role, issue.Key, start.Phase, cmp.Or(start.Claim, worker))
 	}
 	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == step.Task })
 	if at < 0 {
-		return "", nil
+		return "", fmt.Errorf("the start of the %s of %s in %s: its claim %s runs a step of task %s, which the plan does not hold, so the branch of its step is unknown",
+			start.Role, issue.Key, start.Phase, cmp.Or(start.Claim, worker), step.Task)
 	}
 	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != own {
 		return branch, nil
