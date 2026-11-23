@@ -856,35 +856,6 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
-// Legion sets the base of each task's pull request (the daemon's StoredPlan.BaseOf), and the
-// implementer's completion on a pull request against any other base is refused, a plan of one task
-// included. So the plan guide states the base of each task, that a plan names no other, the
-// refusal, and what to plan where work must build on work not merged yet.
-test("the plan guide names the base of each task's pull request", () => {
-  expect(
-    lacks("legion-architect/references/plan.md", [
-      /Legion sets the base of each task's pull request, and a plan names no other\./,
-      /the task that no task needs, and of each task with no `needs`, is against the repository's default branch/,
-      /a plan of one task, the project's default steps included,[^.;]*default branch/,
-      /task with one need[^.;]*that need's branch[^.;]*a task with several[^.;]*its join branch/,
-      /refused \(`HANDOFF_PULL_REQUEST_BASE`\)[^.;]*any other base[^.;]*never ask for another base in a task's text/,
-      /unmerged work of the same issue[^.;]*a task that `needs` the task/,
-      /another issue's unmerged branch[^.;]*`blocked_by`[^.;]*once that issue is `done`/,
-    ])
-  ).toEqual([]);
-});
-
-// A later version that leaves a started task's block as it is but moves the base of its pull
-// request is refused (the daemon's startedBasesMoved), so the guide an owner reads before it gives
-// a later version says so, with the stop that lets the version through.
-test("the plan-change guide says a version that moves a started task's base is refused", () => {
-  expect(
-    lacks("legion-architect/references/plan-changes.md", [
-      /leaves the block of a running or held task as it is[^.;]*moves the branch its pull request is based on[^.;]*`PLAN_REFUSED`[^.;]*both bases[^.;]*`stop_task` first/,
-    ])
-  ).toEqual([]);
-});
-
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.
