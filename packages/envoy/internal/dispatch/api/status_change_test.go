@@ -412,12 +412,9 @@ func TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject(t *testing.T) {
 		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, map[string]any{
 			"status": "in_progress", "include_parent": true, "dry_run": dryRun,
 		}))
-		body := refused.Body.Bytes()
-		expectRefusal(t, label, refused, http.StatusForbidden, codeProjectScope, ancestor, "ALPHA", "BETA")
-		var refusal statusChangeRefusal
-		if err := json.Unmarshal(body, &refusal); err != nil || refusal.Changed == nil || len(refusal.Changed) != 0 {
-			t.Fatalf("%s: body=%s, want changed []", label, body)
-		}
+		requireStatusChange(t, label, refused, http.StatusForbidden, wantRefusal(codeProjectScope, fmt.Sprintf(
+			"this request's credential may write project BETA; an issue this status change's include_parent writes, %s, belongs to project ALPHA",
+			ancestor)))
 	}
 	if after := stored(); after != before {
 		t.Fatalf("the refused status changes moved %s to %s, want nothing written", before, after)

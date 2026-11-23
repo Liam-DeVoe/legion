@@ -831,10 +831,10 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The writers of comments are held to the five commentsRowWriters names, each by the function
-// the scan reports its statement in: a sixth function that makes, unmakes or sets a projected
-// column of a comments row fails, even where a store write reaches it, and so does one of the
-// five the scan no longer finds there. The seed's is one of them, the one writer of comments
+// The writers of comments are held to the commentsRowWriters names, each by the function the
+// scan reports its statement in: another function that makes, unmakes or sets a projected column
+// of a comments row fails, even where a store write reaches it, and so does a name of the list
+// the scan no longer finds there. The seed's is one of them, the one writer of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
