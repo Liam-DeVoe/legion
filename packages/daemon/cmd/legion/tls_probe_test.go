@@ -1864,7 +1864,7 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		return "#!/bin/sh\ncase \"$*\" in\n*" + pattern + "*) " + action + " ;;\n" + refusesTheControl + "esac\n" + pastTheChain
 	}
 	held := filepath.Join(t.TempDir(), "held")
-	holds := ": >'" + held + "'; exec sleep 86400"
+	holds := ": >" + shellprefix.Literal(held) + "; exec sleep 86400"
 	atTheChain, atTheIsolation := "emsign-ecc-root-ca-g3*"+tlsEmSignHost, "emsign-ecc-root-ca-g3*"+tlsControlHost
 	previous := tlsPositiveControlSpec.timeout
 	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
@@ -2023,7 +2023,7 @@ func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 			if site.name == "emSign" {
 				return "sh", []string{"-c", "echo certificate verify failed >&2; exit 1"}, nil
 			}
-			return "sh", []string{"-c", ": >'" + started + "'; exec sleep 86400"}, nil
+			return "sh", []string{"-c", ": >" + shellprefix.Literal(started) + "; exec sleep 86400"}, nil
 		},
 	}
 	deadline := newPassedDeadline()
@@ -2345,7 +2345,9 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 		}
 		return path
 	}
-	holds := func(name string) string { return ": >'" + filepath.Join(stubs, name) + ".held'; exec sleep 86400" }
+	holds := func(name string) string {
+		return ": >" + shellprefix.Literal(filepath.Join(stubs, name)+".held") + "; exec sleep 86400"
+	}
 	refusalOf := func(spec tlsClientSpec) string {
 		if spec.kind == tlsChromiumKind {
 			return "Page load failed: net::ERR_CERT_AUTHORITY_INVALID"
@@ -2384,7 +2386,8 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 		killRecordedHelper(t, child, childSeconds)
 		limitOnceHeld(t, func(string, tlsSite) string { return child + ".held" })
 		spec := workerTLSClients[0]
-		spec.program, spec.timeout = standIn("held", "sleep "+childSeconds+" & echo $! >'"+child+".new'; mv '"+child+".new' '"+child+"'; : >'"+child+".held'; wait", refusalOf(spec)), limit
+		hold := "sleep " + childSeconds + " & echo $! >" + shellprefix.Literal(child+".new") + "; mv " + shellprefix.Literal(child+".new") + " " + shellprefix.Literal(child) + "; : >" + shellprefix.Literal(child+".held") + "; wait"
+		spec.program, spec.timeout = standIn("held", hold, refusalOf(spec)), limit
 		outcome := spec.build("omp", nil, stateDir).probe(context.Background(), emSignTLSSite, tlsRunTerms{reached: true})
 		if outcome.status != tlsNoVerdict || !strings.HasPrefix(outcome.detail, "its 300ms limit ended it after ") {
 			t.Errorf("a run whose shell waits on a child holding its output = %+v, want no verdict, its 300ms limit named", outcome)
@@ -2471,7 +2474,7 @@ func TestProbeImagePassesWhenAPublicHostGoesDownAfterItsPositiveControl(t *testi
 	}
 
 	waiting := budgetEndsOnceWaiting(t)
-	cut := shTLSClient("node", t.TempDir(), `[ "$1" != "public emSign" ] || { : >'`+waiting+`'; exec sleep 86400; }; `+tlsAnswers, down)
+	cut := shTLSClient("node", t.TempDir(), `[ "$1" != "public emSign" ] || { : >`+shellprefix.Literal(waiting)+`; exec sleep 86400; }; `+tlsAnswers, down)
 	cut.timeout = tlsDefaultProbeTimeout
 	code, stdout, stderr := probeImageAt(theseTLSClients(cut), passingTLSPositiveControls, askedPublic, img.flags("--probe-budget", shortProbeBudget)...)
 	detail, ok := bootprobe.NoVerdict(stderr)
@@ -2645,7 +2648,8 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	// The run is marked held only once its sleep has started, so the limit's SIGTERM to the group
 	// reaches the sleep too: one sent before it would leave the sleep holding the group past the
 	// stop, until the test binary's deadline, the grace here.
-	stopped := shTLSClient("node", dir, `trap ': >'"'`+termed+`'"'; while [ ! -e '"'`+passed+`'"' ]; do /bin/sleep 0.01; done; exit 1' TERM; /bin/sleep 86400 & : >"$2/$0 $1.held"; wait`, nodeAnswer)
+	trap := ": >" + shellprefix.Literal(termed) + "; while [ ! -e " + shellprefix.Literal(passed) + " ]; do /bin/sleep 0.01; done; exit 1"
+	stopped := shTLSClient("node", dir, "trap "+shellprefix.Literal(trap)+` TERM; /bin/sleep 86400 & : >"$2/$0 $1.held"; wait`, nodeAnswer)
 	deadline := newPassedDeadline()
 	go func() {
 		for deadline.Err() == nil {
@@ -3111,7 +3115,7 @@ func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	waiting := budgetEndsOnceWaiting(t)
-	img.install(t, "curl", "#!/bin/sh\n[ \"$LEGION_TLS_URL\" != '"+aaaTLSSite.url+"' ] || { : >'"+waiting+"'; exec sleep 86400; }\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n")
+	img.install(t, "curl", "#!/bin/sh\n[ \"$LEGION_TLS_URL\" != '"+aaaTLSSite.url+"' ] || { : >"+shellprefix.Literal(waiting)+"; exec sleep 86400; }\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n")
 
 	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", shortProbeBudget)...)
 

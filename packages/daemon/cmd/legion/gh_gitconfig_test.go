@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -38,7 +39,7 @@ func TestAGitReadThatOutlivesItsBoundIsStoppedWithWhatItStarted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds, gitSeconds = "86397", "86396"
-			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >'" + child + ".new'\nmv '" + child + ".new' '" + child + "'\nexec sleep " + gitSeconds + "\n"
+			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >" + shellprefix.Literal(child+".new") + "\nmv " + shellprefix.Literal(child+".new") + " " + shellprefix.Literal(child) + "\nexec sleep " + gitSeconds + "\n"
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -83,7 +84,7 @@ func TestAGitReadCutShortByWhatItStartedIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, child := t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
 			const childSeconds = "86398"
-			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >'" + child + ".new'\nmv '" + child + ".new' '" + child + "'\nexit 0\n"
+			script := "#!/bin/sh\nsleep " + childSeconds + " &\necho $! >" + shellprefix.Literal(child+".new") + "\nmv " + shellprefix.Literal(child+".new") + " " + shellprefix.Literal(child) + "\nexit 0\n"
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}

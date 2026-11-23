@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -52,9 +53,10 @@ func killRecordedHelper(t *testing.T, pidFile, seconds string) {
 // written whole by a rename, and becomes `sleep <seconds>` under that pid, with a command line
 // helperRunning tells from a pid the kernel has reused. Each row gives its stand-in a sleep of its
 // own, of about a day: longer than any test binary's deadline, so that the rows' waits, which the
-// deadline alone bounds, never see the stand-in end by itself and read that as the stop.
+// deadline alone bounds, never see the stand-in end by itself and read that as the stop. Each
+// path is one literal shell word (shellprefix.Literal), whatever the temporary directory holds.
 func holdsStandIn(pidFile, seconds string) string {
-	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
+	return "echo $$ >" + shellprefix.Literal(pidFile+".new") + "\nmv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile) + "\nexec sleep " + seconds + "\n"
 }
 
 // signalWhileHeld starts command, the `legion` command name names, as the leader of a process

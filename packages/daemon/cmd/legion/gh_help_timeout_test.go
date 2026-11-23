@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -200,7 +201,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 	// every other.
 	holdsGit := func(read string) func(pidFile, seconds string) string {
 		return func(pidFile, seconds string) string {
-			return "#!/bin/sh\ncase \" $* \" in\n*' " + read + " '*)\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexec '" + realGit + "' \"$@\"\n"
+			return "#!/bin/sh\ncase \" $* \" in\n*' " + read + " '*)\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexec " + shellprefix.Literal(realGit) + " \"$@\"\n"
 		}
 	}
 	answersHelp := func(string, string) string { return ghStandInPrefix(help) + "exit 0\n" }
