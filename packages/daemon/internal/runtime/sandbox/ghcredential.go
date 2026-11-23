@@ -589,16 +589,17 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // as another App than the slot's gh files may hold: the App of the role the launch's process runs
 // as (runtime.SlotRole) against that of the slot's own name, the role a slot of a pod the release
 // before built ran as, and that of the role the slot's last launch recorded on its Secret
-// (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment
-// defines is another App. It reads the slot's Secret and writes nothing; relaunch asks it only of a
-// launcher that does not wait for a start's credential.
+// (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment or the
+// plan of the claim's issue defines is another App (appauth.RoleApps.Of). It reads the slot's
+// Secret and writes nothing; relaunch asks it only of a launcher that does not wait for a start's
+// credential.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
 	appOf := func(role claim.Role) (appauth.AppRole, error) {
 		acting, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, role)
 		if err != nil {
 			return "", err
 		}
-		return appauth.AppRoleFor(acting, r.deploymentApps)
+		return r.roleApps.Of(ctx, spec.Issue, acting)
 	}
 	app, err := appOf(spec.Role)
 	if err != nil {

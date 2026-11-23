@@ -170,8 +170,8 @@ func TestARefreshLeavesTheSlotOfAKeptPodsLaunchOnTheStartsToken(t *testing.T) {
 			var refreshing, landing atomic.Bool
 			var landedIn claim.Role
 			g = newRig(t, nil, withOptions(func(o *Options) {
-				o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-					appRole, err := appauth.AppRoleFor(role, nil)
+				o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+					appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 					if err != nil {
 						return ghconfig.Bundle{}, err
 					}
@@ -192,7 +192,7 @@ func TestARefreshLeavesTheSlotOfAKeptPodsLaunchOnTheStartsToken(t *testing.T) {
 						"acme": ghconfig.Render(token+"_read", string(appRole), staticCredentialExpiry),
 						owner:  ghconfig.Render(token, string(appRole), staticCredentialExpiry),
 					}}, nil
-				}
+				})
 			}))
 			g.spawn(rootSpec(t))
 			issue := SandboxName(rootToken)
