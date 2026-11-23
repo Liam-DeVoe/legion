@@ -584,6 +584,26 @@ func TestTakeOfAReadyClaimWhoseConnectionClosesHasAWholeReconnectBoundFromTheClo
 	})
 }
 
+// helloFailingOn is the shim's hello on the claim's connection, whose decision the store fails by
+// refusing method while it is made; the store takes that method again after it.
+func (h *harness) helloFailingOn(method string, hello StreamHello) {
+	h.t.Helper()
+	h.store.fail(method, errBoom)
+	h.conns.Register(h.token, h.conn)
+	err := h.m.Handle(h.ctx, hello)
+	h.m.Wait()
+	h.store.fail(method, nil)
+	if err == nil {
+		h.t.Fatalf("the hello's decision succeeded, want it failed on %s", method)
+	}
+}
+
+// identifiedHello is the shim's hello at the claim's generation, saying its backlog is whole and
+// carrying the pod's identity, so a claim with a secrets broker enrolls at it (ensureEnrolled).
+func (h *harness) identifiedHello() StreamHello {
+	return StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true, AgentSecrets: testIdentity}
+}
+
 // Row 34: a reconnect hello bounds the view it opens before any step of its decision that can
 // fail. It reads whether a daemon start's own ask serves it (startAskServes) from the view as the
 // hello found it, then marks the view asked and the hello seen and arms the reconnect deadline
@@ -607,17 +627,6 @@ func TestTakeOfAReadyClaimWhoseConnectionClosesHasAWholeReconnectBoundFromTheClo
 // deadline first, and its failed decision left the view cut with no deadline, so nothing bounded
 // the take while the process lived.
 func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadline(t *testing.T) {
-	failedHello := func(h *harness, method string, hello StreamHello) {
-		h.t.Helper()
-		h.store.fail(method, errBoom)
-		h.conns.Register(h.token, h.conn)
-		err := h.m.Handle(h.ctx, hello)
-		h.m.Wait()
-		h.store.fail(method, nil)
-		if err == nil {
-			h.t.Fatalf("the hello's decision succeeded, want it failed on %s", method)
-		}
-	}
 	wantRelaunchedUncharged := func(h *harness, number uint64) {
 		h.t.Helper()
 		h.wantArmedFromNow(TimerRegistration, deadline, "after the hello's failed decision")
@@ -647,9 +656,6 @@ func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadlin
 			h.t.Fatalf("the claim holds %+v, want task %d taken back with the note of a cut turn", p, number)
 		}
 	}
-	identified := func(h *harness) StreamHello {
-		return StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true, AgentSecrets: testIdentity}
-	}
 	t.Run("a fresh enrollment's claim write, at a ready claim's hello", func(t *testing.T) {
 		h := waitsHarness(t, currentPlugin)
 		h.withSecrets()
@@ -658,7 +664,7 @@ func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadlin
 		number := h.takeOf("implement the plan")
 		h.reconnectLater()
 
-		failedHello(h, "PutClaim", identified(h))
+		h.helloFailingOn("PutClaim", h.identifiedHello())
 
 		wantRelaunchedUncharged(h, number)
 	})
@@ -671,7 +677,7 @@ func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadlin
 		h.reconnectLater()
 		h.conn.SetStreaming(true)
 
-		failedHello(h, "PutClaim", identified(h))
+		h.helloFailingOn("PutClaim", h.identifiedHello())
 
 		wantRelaunchedUncharged(h, number)
 	})
@@ -690,7 +696,7 @@ func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadlin
 		h.store.setHold(sessionID(session), rootToken)
 		h.restart()
 
-		failedHello(h, "PutClaim", identified(h))
+		h.helloFailingOn("PutClaim", h.identifiedHello())
 
 		if e := h.claim().Enrollment; e != nil {
 			t.Fatalf("the claim records enrollment %+v, want it revoked before the claim write failed", *e)
@@ -707,9 +713,156 @@ func TestTakeOverAHelloWhoseDecisionFailsIsRelaunchedUnchargedAtTheHellosDeadlin
 		putBacks := len(h.records.of(notTheTakesTurnLine))
 		h.conn.SetStreaming(true)
 
-		failedHello(h, "PutDelivery", StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true})
+		h.helloFailingOn("PutDelivery", StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true})
 
 		h.wantPutBackBy(number, putBacks, "held")
 		wantRelaunchedUncharged(h, number)
 	})
+}
+
+// Row 34 over a daemon start's own ask: the first hello since a daemon start of a claim restored
+// ready on a stale plugin, holding a take whose relaunch waits for its agent's word on whether it
+// is in a turn (askTurn), is the hello that ask serves (startAskServes), and it dates that ask
+// (askedAt) where it marks its view asked and arms its deadline, before any step of its decision
+// that can fail (helloView). Here the decision fails on the claim write of the fresh enrollment
+// (ensureEnrolled), so the ask itself is never made, and the take's turn then starts on that
+// connection: the turn frame makes the view whole and keeps the deadline, the bound of the daemon
+// start's own ask, which only its answer ends (seeView). At that deadline the stale-plugin lane
+// decides the relaunch, charged nothing (reconnectDeadline, refreshPlugin), and nothing is charged
+// as never reconnected:
+//
+//   - with the take's turn running at the deadline, the lane holds the relaunch for that turn's
+//     end and its report (holdStaleRelaunch), which finishes the task once;
+//   - with the task finished over HTTP before the deadline, the claim holds no task, and the lane
+//     relaunches it onto the current plugin, as it relaunches any stale claim that holds none
+//     (row 29a).
+//
+// The negative control is the head before this change (26aa05dc), which dated the ask only after
+// the steps that can fail (reconnected): the failed hello left askedAt zero, so the deadline read
+// the whole view as that of a shim that never said hello, and retired the live worker with a
+// launch failure charged and the cause never_reconnected, in both cases.
+func TestTakeOfARestoredStaleClaimWhoseFirstHelloFailedIsLeftToTheStalePluginLaneAtItsDeadline(t *testing.T) {
+	failedHelloThenTheTakesTurn := func(t *testing.T) (*harness, uint64) {
+		t.Helper()
+		h := restoreStaleTake(t, func(d *Deps) { d.Secrets = &fakeEnroller{now: d.Clock.Now} })
+		number := h.pending().Number
+		h.helloFailingOn("PutClaim", h.identifiedHello())
+		h.wantArmedFromNow(TimerRegistration, deadline, "after the first hello's failed decision")
+		h.must(StreamTurnStart{Claim: h.token})
+		h.wantTakesTurnStanding(number, "once the take's turn started")
+		h.wantArmedFromNow(TimerRegistration, deadline, "after the take's turn started")
+		return h, number
+	}
+	wantLeftToTheLane := func(h *harness) {
+		h.t.Helper()
+		if budgets, cause := h.budgets(), h.claim().PendingCause; budgets != (Budgets{}) || cause != "" {
+			h.t.Fatalf("the budgets are %+v and the claim is pending cause %q, want nothing charged", budgets, cause)
+		}
+		h.wantCharges()
+		if lines := h.logs.lines("the shim never reconnected"); len(lines) != 0 {
+			h.t.Fatalf("logged %q, want no retirement of a shim that never reconnected", lines)
+		}
+		if lines := h.logs.lines("within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged"); len(lines) != 1 {
+			h.t.Fatalf("logged %q, want the stale-plugin lane's relaunch at the deadline of the hello once", lines)
+		}
+	}
+	t.Run("the take's turn running at the deadline", func(t *testing.T) {
+		h, number := failedHelloThenTheTakesTurn(t)
+		h.advance(deadline - time.Second)
+		h.wantCalls("Suspend", 0)
+
+		h.advance(time.Second)
+
+		wantLeftToTheLane(h)
+		h.wantState(StateWorking)
+		h.wantCalls("Suspend", 0)
+		h.wantTakesTurnStanding(number, "at the deadline")
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.mustReport(nil)
+		h.wantFinishedOnce(finishedByReport)
+		h.wantCalls("Resume", 1)
+		h.wantBudgets(Budgets{})
+	})
+	t.Run("the task finished over HTTP before the deadline", func(t *testing.T) {
+		h, _ := failedHelloThenTheTakesTurn(t)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.mustReport(nil)
+		h.wantFinishedOnce(finishedByReport)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("the claim holds %+v after the report, want no task", p)
+		}
+		h.advance(deadline - time.Second)
+		h.wantCalls("Suspend", 0)
+
+		h.advance(time.Second)
+
+		wantLeftToTheLane(h)
+		h.wantCalls("Resume", 1)
+	})
+}
+
+// Row 34 before the hello's row: the first decision after a daemon start that restored a claim
+// over a provider error's report whose take-back the store refused (ladderOwed) makes that
+// take-back and the ladder's step (settle), before the fence and the row. Here that decision is the
+// shim's hello, and the store refuses the write again: the take-back and the step stand in memory,
+// their write owed to the store (putClaimAndPendingOwed), and the decision goes on to its row, so
+// the hello marks its view asked and arms the reconnect deadline whole from itself (helloView). At
+// that deadline the process is relaunched, charged nothing, as after a hello whose ask went
+// unanswered, and nothing is charged as never reconnected. Once the store takes writes again, the
+// claim's next decision writes the take-back and the step (repair).
+//
+// The negative control is the head before this change (26aa05dc), where settle returned the
+// refused write: the hello's decision failed before its row, the view stayed that of a daemon
+// start with no hello, and at the start's deadline the live worker was retired, charged a launch
+// failure with the cause never_reconnected.
+func TestTakeToTheLadderOwedAtADaemonStartIsMadeAtAFirstHelloWhoseWriteTheStoreRefuses(t *testing.T) {
+	h := refusedTakeBack(t, 529, false, false)
+	h.restart()
+	number := h.pending().Number
+	h.store.fail("PutClaim", errBoom)
+	h.conns.Register(h.token, h.conn)
+	err := h.m.Handle(h.ctx, StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true})
+	h.m.Wait()
+	h.store.fail("PutClaim", nil)
+	if err != nil {
+		t.Errorf("the hello's decision failed with %v, want it decided past the ladder's refused write", err)
+	}
+	h.m.mu.Lock()
+	view, asked := h.m.connSeen, h.m.helloAsked
+	h.m.mu.Unlock()
+	if view != viewAsked || !asked {
+		t.Errorf("after the hello the view is %d and helloAsked %t, want the view the hello asked (%d)", view, asked, viewAsked)
+	}
+	h.wantArmedFromNow(TimerRegistration, deadline, "after the hello")
+	h.wantLadderOwedLine(true)
+	if p := h.pending(); p.Number != number || p.taken() || p.ProviderErrorRetries != 1 || !h.m.waitsForProviderError(p.ID) {
+		t.Fatalf("the claim holds %+v, want task %d taken back with one ladder step and its wait armed", p, number)
+	}
+	if stored, _ := h.store.delivery(h.token); stored.ProviderErrorRetries != 0 {
+		t.Fatalf("the store holds %+v while it refused the write, want no ladder step in it", stored)
+	}
+
+	h.observe(runtime.Alive)
+
+	stored := h.store.load(h.token)
+	if p := stored.Pending; p == nil || p.taken() || p.ProviderErrorRetries != 1 || p.ProviderErrorNote == "" || stored.ProviderErrorRun != 1 {
+		t.Fatalf("once the store takes writes again it holds a run of %d and %+v, want the take-back, one ladder step and a run of one written",
+			stored.ProviderErrorRun, p)
+	}
+	h.advance(deadline - time.Second)
+	h.wantCalls("Resume", 0)
+
+	h.advance(time.Second)
+
+	if budgets, cause := h.budgets(), h.claim().PendingCause; budgets != (Budgets{}) || cause != "" {
+		t.Fatalf("at the hello's deadline the budgets are %+v and the claim is pending cause %q, want nothing charged", budgets, cause)
+	}
+	h.wantCharges()
+	h.wantCalls("Resume", 1)
+	if lines := h.logs.lines("the shim never reconnected"); len(lines) != 0 {
+		t.Fatalf("logged %q, want no retirement of a shim that never reconnected", lines)
+	}
+	if lines := h.logs.lines(viewUnansweredRelaunchLine); len(lines) != 1 {
+		t.Fatalf("the relaunch logged %q, want the line of a hello no answer followed once", lines)
+	}
 }

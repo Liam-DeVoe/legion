@@ -1463,9 +1463,10 @@ type Machine struct {
 	// step unrecorded (Claim.owedReport, NewMachine): the take-back and the ladder's step, or the
 	// claim's failure, that the daemon before this one decided and the store never took. It holds
 	// the error's status alone, which is all that decides between the two (takeToLadder). The
-	// claim's first decision makes them, in settle, and drops it; a claim not ready, idle or
-	// working by then has its take settled by its let-go instead (settle, interrupted). It is
-	// memory only, as finishOwed is.
+	// claim's first decision makes them, in settle, and drops it, a write of them the store
+	// refuses leaving them in memory, owed, with the decision going on to its row; a claim not
+	// ready, idle or working by then has its take settled by its let-go instead (settle,
+	// interrupted). It is memory only, as finishOwed is.
 	ladderOwed *ProviderError
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
@@ -1581,7 +1582,9 @@ type Machine struct {
 	// replay was still to show running as one no turn ran, and take it back with no note
 	// (dispatch://INFRA-2811, T3's rule three). A claim holding no take has no task the order can
 	// run twice, and the boot's pass relaunches it as before. askedAt is when the first hello
-	// asked, the zero time before it, and askTrigger the pass whose relaunch the answer waits for
+	// asked, dated where that hello opens its view, before any step of its decision that can fail
+	// (helloView), so a decision that failed before the ask was made leaves it dated too; it is
+	// the zero time before that hello. askTrigger is the pass whose relaunch the answer waits for
 	// ("boot", "sweep"), for the line the relaunch logs. letGo clears all three with the process;
 	// they are memory only, as askFirst is.
 	askTurn    bool

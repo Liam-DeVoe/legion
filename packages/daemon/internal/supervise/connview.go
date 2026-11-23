@@ -44,17 +44,23 @@ import (
 // of its decision that can fail (helloView): reading the hello (readHello), whose put-back writes
 // the delivery, and the enrollment (ensureEnrolled), which writes the claim. A decision the store
 // fails there leaves the view bounded, and its deadline is that of a hello that asked, an
-// uncharged relaunch, never the path of a shim that never said hello. A later hello is a new
-// connection, which asks once on it and arms the deadline again. A daemon start's own ask — of a
-// claim restored working (askFirst, askTurnOver) or holding a take on a stale plugin (askTurn,
+// uncharged relaunch, never the path of a shim that never said hello. Nor does the step before
+// the row fail it on the store: a provider error's take-back and ladder step that a daemon start
+// owes, made there at the claim's first decision (settle, Machine.ladderOwed), stand in memory
+// when the store refuses their write, which is owed, and the hello's row runs. A later hello is a
+// new connection, which asks once on it and arms the deadline again. A daemon start's own ask — of
+// a claim restored working (askFirst, askTurnOver) or holding a take on a stale plugin (askTurn,
 // askRestoredTurn) — serves only the first hello since that start, the one that makes it
 // (startAskServes), since the stream reads an answer only on the connection that asked: that hello
 // asks no second time and arms the same deadline whole, once, and every later hello over a pending
-// task asks its own, so no connection is asked twice. An answer to any of these asks answers the
-// daemon start's own too, which ends with it (askFirst, askTurn). A hello over no pending task
-// asks nothing of its own: a daemon start's own ask is made at it and again at each sweep until it
-// is answered, as before, the stall backstop bounding a working claim and the deadline
-// askRestoredTurn arms a stale one.
+// task asks its own, so no connection is asked twice. The stale one's ask is dated (askedAt) at
+// that same point, before any step that can fail, though it is made after them: a decision that
+// fails between leaves the deadline that ask's bound, which a turn frame does not end (seeView),
+// and at it the stale-plugin lane decides the relaunch, uncharged. An answer to any of these asks
+// answers the daemon start's own too, which ends with it (askFirst, askTurn). A hello over no
+// pending task asks nothing of its own: a daemon start's own ask is made at it and again at each
+// sweep until it is answered, as before, the stall backstop bounding a working claim and the
+// deadline askRestoredTurn arms a stale one.
 //
 // A close of a live process whose agent has said it is ready and whose claim holds a pending task
 // sets the reconnect deadline to the later of the one standing and the close plus the reconnect
@@ -293,16 +299,25 @@ func (m *Machine) startAskServes() bool {
 // helloView opens the view a reconnect hello reads (reconnected, reconnectedMidTurn), before any
 // step of the hello's decision that can fail (readHello, ensureEnrolled), and answers whether a
 // daemon start's own ask serves this hello (startAskServes), read first, from the view as the
-// hello found it. A claim holding no pending task asks nothing: its view is whole, and the
-// deadline the hello ends goes. One holding a task waits for the agent's answer or a turn frame
-// (viewAsked), its connection is one a hello asked (helloAsked), and the reconnect deadline is
-// armed whole from the hello, here alone on the hello's path: a daemon start's own ask that serves
-// the hello is made under that deadline and arms none of its own (askRestoredTurn, askTurnOver),
-// and the hello's own ask arms nothing (askView). A decision that fails after this leaves the view
-// bounded by that deadline, at which the process is relaunched uncharged, as after a hello whose
-// ask went unanswered, rather than retired as one whose shim never said hello (reconnectDeadline).
+// hello found it. Where that ask is the one of a claim restored holding a take on a stale plugin
+// (askTurn), it is dated here too (askedAt), though it is made only once those steps are done
+// (askRestoredTurn): a decision that fails between leaves it dated, so the deadline below is read
+// as that ask's bound, which a turn frame does not end (seeView), and at it the stale-plugin lane
+// decides the relaunch, uncharged, rather than the path of a shim that never said hello
+// (reconnectDeadline); over no pending task, the next sweep makes the ask (observe). A claim
+// holding no pending task asks nothing: its view is whole, and the deadline the hello ends goes.
+// One holding a task waits for the agent's answer or a turn frame (viewAsked), its connection is
+// one a hello asked (helloAsked), and the reconnect deadline is armed whole from the hello, here
+// alone on the hello's path: a daemon start's own ask that serves the hello is made under that
+// deadline and arms none of its own (askRestoredTurn, askTurnOver), and the hello's own ask arms
+// nothing (askView). A decision that fails after this leaves the view bounded by that deadline, at
+// which the process is relaunched uncharged, as after a hello whose ask went unanswered, rather
+// than retired as one whose shim never said hello (reconnectDeadline).
 func (m *Machine) helloView() (served bool) {
 	served = m.startAskServes()
+	if served && m.askTurn {
+		m.askedAt = m.deps.Clock.Now()
+	}
 	if m.claim.Pending == nil {
 		m.helloAsked = false
 		m.setView(viewWhole)
@@ -459,21 +474,23 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 //
 // A claim whose shim did say hello, and whose agent has not said since whether it is in a turn
 // for the stale-plugin relaunch that waits for the answer (askTurn, askRestoredTurn), reaches the
-// deadline its hello armed again for that ask: a hung agent's turn costs nothing to cut, and the
-// daemon relaunches onto the current plugin a worker it can (R10). That relaunch is the
-// stale-plugin lane's own (refreshPlugin), charged nothing, as the lane's relaunch is: the
-// process did come back, and the relaunch is for its plugin, not for a failure of the claim. A
-// gate the lane finds full leaves it to the next sweep's post, which no answer holds back any
-// more. The deadline then bounds that ask, not a suspension held over the claim, whose shim came
-// back and whose turn's end and take's report reach the machine: a hold over a claim working, or
-// one that waits for the report of its take's turn (heldWaits, reportwait.go), is left to that
-// turn and that wait, as reready leaves it, and the relaunch waits with it (refreshPlugin's own
-// holds). Run here, its stop would cut off the take's own turn, or come before that turn's report,
-// and settle would take back as a cut turn a task whose turn ran whole. A hold neither waits for
-// runs here, as before the hello. And where a hello of the process's generation did not say its
-// shim's backlog is whole, a take still awaiting its turn may have had that turn run unseen, its
-// frames dropped from the replay, so the relaunch takes it back as a cut turn rather than
-// unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
+// deadline its hello armed again for that ask, a hello whose decision failed before it made the
+// ask included, since the hello dated the ask first (askedAt, helloView): a hung agent's turn
+// costs nothing to cut, and the daemon relaunches onto the current plugin a worker it can (R10).
+// That relaunch is the stale-plugin lane's own (refreshPlugin), charged nothing, as the lane's
+// relaunch is: the process did come back, and the relaunch is for its plugin, not for a failure
+// of the claim. A gate the lane finds full leaves it to the next sweep's post, which no answer
+// holds back any more. The deadline then bounds that ask, not a suspension held over the claim,
+// whose shim came back and whose turn's end and take's report reach the machine: a hold over a
+// claim working, or one that waits for the report of its take's turn (heldWaits, reportwait.go),
+// is left to that turn and that wait, as reready leaves it, and the relaunch waits with it
+// (refreshPlugin's own holds). Run here, its stop would cut off the take's own turn, or come
+// before that turn's report, and settle would take back as a cut turn a task whose turn ran
+// whole. A hold neither waits for runs here, as before the hello. And where a hello of the
+// process's generation did not say its shim's backlog is whole, a take still awaiting its turn
+// may have had that turn run unseen, its frames dropped from the replay, so the relaunch takes it
+// back as a cut turn rather than unstarted, as at the agent's answer of no turn
+// (markRestoredTurnUnseen, turnAnswered).
 //
 // Such a claim read in a turn whose end its connection cannot show is no case of the lane's: a
 // replayed start made it working, its connection broke with that turn's end frame in it, and

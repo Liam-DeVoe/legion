@@ -1246,7 +1246,15 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // run of provider-error turns counts the turn, as the report's own decision counted it in memory
 // alone, and the take goes to the ladder as that decision sent it (takeToLadder). The controller
 // is not told again: that decision told it before any write. Only a claim ready, idle or working
-// holds the take for the ladder; any other has it settled by its let-go, below.
+// holds the take for the ladder; any other has it settled by its let-go, below. A write of that
+// step the store refuses fails nothing here: the take-back and the step stand in memory, their
+// write owed (providerErrorClears), and the next decision makes it (repair, and the unsaved
+// delivery above), as it makes every write a step left owed, so the decision goes on to its fence
+// and its row — the claim's first decision after a daemon start can be its shim's hello, which
+// opens its view and arms its deadline there (helloView, connview.go). Only a step that failed the
+// claim, for a status that holds the issue, returns its write's error, as the report's own
+// decision returns it (providerErrored): the failed claim's process is let go, so the event's row
+// has no view to open and no bound to arm over it.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it, its value deleted; the next resume is handed its new phase's task, never that
@@ -1272,7 +1280,10 @@ func (m *Machine) settle(ctx context.Context) error {
 			m.claim.ProviderErrorRun++
 			m.log.Warn(ladderOwedLine, "task", p.Number, "httpStatus", pe.Status, "providerErrorRun", m.claim.ProviderErrorRun)
 			if err := m.takeToLadder(ctx, pe.Status); err != nil {
-				return err
+				if m.claim.State == StateFailed {
+					return err
+				}
+				m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
 			}
 			if p = m.claim.Pending; p == nil {
 				return nil

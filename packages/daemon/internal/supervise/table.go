@@ -1477,14 +1477,16 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error {
 // answer or a turn frame, under the reconnect deadline armed whole from the hello, so a decision
 // that fails after that leaves the claim bounded. A restored claim whose stale-plugin relaunch
 // waits for its agent's word on whether it is in a turn (askTurn) is asked at its first hello
-// since the daemon start (askRestoredTurn): the hello carries no turn, and the shim replays what
-// it held only once this hello is answered. That ask serves that hello alone; a later hello asks
-// on its own connection (askView). The first hello after a daemon start gives a restored take's
-// anchor its connection, where the hello says its shim's backlog is whole (bindRestoredAnchor),
-// before anything else of the hello can fail; a hello that does not say so loses the count of the
-// process's turns and the mark of a start still to come (readBacklog). Neither reads the view the
-// hello opened. A claim holding a pending task then asks its agent whether it is in a turn, once,
-// unless the daemon start's own ask served the hello (askView).
+// since the daemon start (askRestoredTurn), once those steps are done; the ask is dated before
+// them, where the view is opened (askedAt, helloView), so a decision that fails between leaves
+// the deadline the bound of that ask, and a sweep able to make it. The hello carries no turn, and
+// the shim replays what it held only once this hello is answered. That ask serves that hello
+// alone; a later hello asks on its own connection (askView). The first hello after a daemon start
+// gives a restored take's anchor its connection, where the hello says its shim's backlog is whole
+// (bindRestoredAnchor), before anything else of the hello can fail; a hello that does not say so
+// loses the count of the process's turns and the mark of a start still to come (readBacklog).
+// Neither reads the view the hello opened. A claim holding a pending task then asks its agent
+// whether it is in a turn, once, unless the daemon start's own ask served the hello (askView).
 func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	served := m.helloView()
 	if err := m.readHello(ctx, ev.(StreamHello)); err != nil {
@@ -1494,7 +1496,6 @@ func reconnected(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	if m.askTurn && served {
-		m.askedAt = m.deps.Clock.Now()
 		m.askRestoredTurn(ctx)
 	}
 	m.askView(ctx, served)
@@ -1523,11 +1524,16 @@ func (m *Machine) readHello(ctx context.Context, hello StreamHello) error {
 // deadline, counted from its first hello, is relaunched there, uncharged (reconnectDeadline). Over
 // no pending task the next sweep of a claim not busy asks again (observe), under the same bound,
 // counted from the first hello's ask (askedAt), which the first unanswered ask arms and the ones
-// after it keep, or arm again after a close took it (closeView). The ask serves only the hello
-// that made it, since the stream reads an answer only on the connection that asked: a later hello
-// over a pending task arms the reconnect deadline whole from itself (helloView) and asks once on
-// its own connection (askView), and its answer decides the relaunch as this one's would
-// (turnAnswered).
+// after it keep, or arm again after a close took it (closeView). That hello dates the ask where it
+// opens its view, before any step of its decision that can fail (helloView), and makes it here
+// only once those steps are done (reconnected): a hello whose decision failed between, which made
+// no ask, leaves it dated all the same, so over a pending task the deadline that hello armed is
+// this ask's bound, at which the stale-plugin lane decides the relaunch, uncharged, whatever turn
+// frame came first (seeView, reconnectDeadline), and over none the next sweep makes the ask. The
+// ask serves only the hello that made it, since the stream reads an answer only on the connection
+// that asked: a later hello over a pending task arms the reconnect deadline whole from itself
+// (helloView) and asks once on its own connection (askView), and its answer decides the relaunch
+// as this one's would (turnAnswered).
 //
 // A claim with no connection to ask on is held by the same bound. The stream queues a hello and
 // then the close of its connection, and the close can come before the decision that reads the

@@ -14,11 +14,15 @@ import (
 // restoreStaleTake is a daemon start over a claim restored ready on a plugin that names its task's
 // number (TaskTakeContract), which this daemon's later contract makes stale, holding a take the
 // daemon before accepted and whose turn has not started: the boot's pass has posted the claim its
-// relaunch, which waits for the agent's word on whether it is in a turn (askTurn).
-func restoreStaleTake(t *testing.T) *harness {
+// relaunch, which waits for the agent's word on whether it is in a turn (askTurn). set changes the
+// daemon's deps before the start.
+func restoreStaleTake(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
 	h.deps.PluginContract, h.deps.PluginRelaunchable = TaskTakeContract+1, true
+	for _, change := range set {
+		change(&h.deps)
+	}
 	h.manualTakes()
 	c := fixture(StateReady)
 	c.PluginContract = TaskTakeContract
