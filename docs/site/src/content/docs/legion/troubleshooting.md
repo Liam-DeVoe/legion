@@ -1147,7 +1147,8 @@ A search that finds no line for a time before the first line does not show that 
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
-  `inTurn` names the claim whose turn holds it.
+  `inTurn` names the claim whose turn holds it, and `branch` the task branch whose working copy the task adopts (empty for the issue's own).
+  Only a turn in that working copy holds the task, or a turn whose working copy the daemon does not know, such as a message's: a turn in another task's working copy does not.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued, and the refusal counts against the prompt budget of the claim.

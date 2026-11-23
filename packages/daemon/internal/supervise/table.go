@@ -43,11 +43,12 @@ type StreamTurnStart struct {
 type StreamTurnEnd struct{ Claim claim.Token }
 
 // IssueTurnEnded is a turn ending on another claim of this claim's issue, posted by the daemon to
-// every other claim of the issue once that turn's own machine has recorded its end. The roles of
-// an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
-// working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
-// send asks again which claims are in a turn — so one posted for a turn another role began
-// meanwhile simply holds again.
+// every other claim of the issue once that turn's own machine has recorded its end. The roles that
+// work one working copy share one jj workspace, so a phase task this claim is holding rather than
+// adopt a working copy under an open turn there (sendPending) may go now. It carries no fact of
+// its own — the send asks again which claims are in a turn in that working copy — so one posted
+// for a turn another role began meanwhile, or for a turn in another working copy, simply holds
+// again or changes nothing.
 type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
