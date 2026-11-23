@@ -15,8 +15,8 @@ import (
 // default repository of project ACME, so an issue of ACME resolves to it.
 const mergeTimesRepo = "acme/widgets"
 
-// mergedPull is one merged pull request of the fixture. stored is the issue the last reconcile
-// pass wrote to its rows (delivery.SyncAttributions), nil for none. A pull request with texts
+// mergedPull is one merged pull request of the fixture. stored is the issue the last reconcile pass
+// wrote to its rows (delivery.Attributor.SyncAttributions), nil for none. A pull request with texts
 // has a results row and the texts of a read of GitHub that describe its head; messages nil says
 // that read did not read the commit messages. One with no texts has a timeline row alone.
 type mergedPull struct {
@@ -93,12 +93,12 @@ func storeMergedPull(t *testing.T, ctx context.Context, pool *store.Pool, pull m
 }
 
 // TestTheMergeTimesReadEachPullRequestsIssueFromTheStatement: the merge time of an issue is the
-// earliest merge of a pull request that the one statement of a pull request's issue gives to it,
-// as every reader of the timeline reads it (delivery.ListPullRequestsOfIssues), and never the
-// issue a reconcile pass last stored. Each case is a state between two passes: a link made since
-// the last pass, facts read since that name another issue, and facts that decide no issue yet.
-// Control in the same test: a timeline row with no results row keeps its stored issue, which is
-// the statement's answer for it, and a row GitHub proved absent counts for nothing.
+// earliest merge of a pull request that the one statement of a pull request's issue gives to it, as
+// every reader of the timeline reads it (delivery.Attributor.ListPullRequestsOfIssues), and never
+// the issue a reconcile pass last stored. Each case is a state between two passes: a link made
+// since the last pass, facts read since that name another issue, and facts that decide no issue
+// yet. Control in the same test: a timeline row with no results row keeps its stored issue, which
+// is the statement's answer for it, and a row GitHub proved absent counts for nothing.
 func TestTheMergeTimesReadEachPullRequestsIssueFromTheStatement(t *testing.T) {
 	pool, ctx := mergeTimesDatabase(t)
 	// #11: ACME-1 links #11's own URL. The last pass ran before the link, so both rows of #11

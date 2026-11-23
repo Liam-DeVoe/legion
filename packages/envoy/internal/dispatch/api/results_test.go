@@ -149,7 +149,7 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 }
 
 // writeHeadOnBase stores one pull request head row whose base branch the caller names: the
-// row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
+// row delivery.Attributor.BaseBranchMergedFor answers an issue's merged branch from, where the row is
 // merged. The conflict clause writes every column either caller means to write, so a second
 // row for the same pull request leaves none of them as the first write left it.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
@@ -1928,7 +1928,7 @@ func TestAfterMergeResultOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(
 // request's own merge commit stands at the base branch although nothing can be read about
 // that branch any more and the default branch holds only a squash of the work: Dispatch
 // recorded that commit as on its base branch when it recorded the merge, and a yes is kept
-// for good (delivery.UpsertPullRequestHead).
+// for good (delivery.Attributor.UpsertPullRequestHead).
 func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 	handler, database := resultsGitHubWithDeletedBranch(t, map[string]bool{"acme/widgets": true}, nil,
 		"main", "integration/x", func(base, head string) string {
@@ -2042,7 +2042,7 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 // The merged issue of a repository this process has never named a default branch for: the
 // restart whose first `GET /repos/{owner}/{repo}` failed, which delivery.Branches holds for
 // delivery.BranchCommitStaleAfter, and every repository of a deployment holding no App key.
-// The branch the work merged into is read from the database (delivery.BaseBranchMergedFor)
+// The branch the work merged into is read from the database (delivery.Attributor.BaseBranchMergedFor)
 // and costs no call to GitHub, so the check compares with that branch alone and the stored
 // yes at it places the merge commit.
 //
@@ -3668,7 +3668,7 @@ func TestACheckWithOneResultAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 // A closed pull request at the commit holds no read off. Dispatch holds a row for a pull
 // request closed without merging at the result's commit, and a new pull request is then
 // opened from the same head while no event reaches Dispatch. The closed row is no basis and
-// no pass of Dispatch's ever reads it again (delivery.ListStalePullRequestHeads), so counting
+// no pass of Dispatch's ever reads it again (delivery.Attributor.ListStalePullRequestHeads), so counting
 // it as a pull request Dispatch holds would leave the result standing at no basis for good.
 // The read asks GitHub and the result stands at the new head.
 func TestAClosedPullRequestsHeadDoesNotHoldOffTheReadThrough(t *testing.T) {
@@ -3797,7 +3797,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
 	// now, its project's default cleared after the merge — the issue whose project's default
 	// was removed, and the issue whose parent moved. This pins the deep review's finding on
-	// #3530: the merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// #3530: the merged row delivery.Attributor.BaseBranchMergedFor reads by issue key alone goes on naming
 	// `integration/x`, so a branch walk chosen before anything tests the repository reached
 	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
 	// what the surface's own rule says — an issue that resolves to no repository is never

@@ -16,9 +16,9 @@ import (
 // repository; the possible head of a result (possibleHeadAt); and the merges into another branch
 // that leave an `after_merge` result unknown (mergedElsewhere).
 
-// notKnownAnswer is what one read of delivery.PullRequestsNotKnown answered for a repository, and
-// whether it answered at all. A failed read is kept as one, so every result it would decide reads
-// model.ReasonReadFailed, as a failed read of the heads does.
+// notKnownAnswer is what one read of delivery.Attributor.PullRequestsNotKnown answered for a
+// repository, and whether it answered at all. A failed read is kept as one, so every result it
+// would decide reads model.ReasonReadFailed, as a failed read of the heads does.
 type notKnownAnswer struct {
 	pulls []delivery.NotKnownPullRequest
 	read  bool
@@ -46,11 +46,11 @@ func (c *comparisonReader) decides(ctx context.Context, issueKey string) bool {
 	return readable
 }
 
-// notKnownOf is the open and merged pull requests of the repository the check's issue resolves
-// to whose answer is not known (delivery.PullRequestsNotKnown), and whether the read answered,
-// read once per repository per read of the results. An issue with no repository has none. Only
-// answer reads it, after learn, so it holds the pull requests that the same read learned (review
-// 18, note 3).
+// notKnownOf is the open and merged pull requests of the repository the check's issue resolves to
+// whose answer is not known (delivery.Attributor.PullRequestsNotKnown), and whether the read
+// answered, read once per repository per read of the results. An issue with no repository has none.
+// Only answer reads it, after learn, so it holds the pull requests that the same read learned
+// (review 18, note 3).
 func (c *comparisonReader) notKnownOf(ctx context.Context, issueKey string) ([]delivery.NotKnownPullRequest, bool) {
 	repo, answered := c.repositoryOf(ctx, issueKey)
 	if !answered || repo == nil {
@@ -87,11 +87,11 @@ func (c *comparisonReader) possibleHeadAt(ctx context.Context, issueKey, sha str
 	return nil, true
 }
 
-// mergedElsewhere is the numbers of the merged pull requests of the check's repository whose
-// answer is not known and that merged into another base branch than the issue's: the branch
-// delivery.BaseBranchMergedFor answers, or the default branch where it answers none. Such a pull
-// request can be the issue's own, so the issue's work can have reached that other branch. It is
-// nil where decides is false, and for every check that no merge decides.
+// mergedElsewhere is the numbers of the merged pull requests of the check's repository whose answer
+// is not known and that merged into another base branch than the issue's: the branch
+// delivery.Attributor.BaseBranchMergedFor answers, or the default branch where it answers none.
+// Such a pull request can be the issue's own, so the issue's work can have reached that other
+// branch. It is nil where decides is false, and for every check that no merge decides.
 func (c *comparisonReader) mergedElsewhere(ctx context.Context, check model.CheckBlock) []int {
 	if check.When != checkWhenAfterMerge || c.at != noCommitNamed || !c.decides(ctx, check.IssueKey) {
 		return nil

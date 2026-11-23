@@ -3124,7 +3124,7 @@ func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
 // (contracts/normalize.go). This tree writes the head row from the fake's answer, with texts that
 // describe its head and the commit messages that the write pages. So no arm of the delivery
 // reconcile's head pass reads it again: no read is owed for it, the open arm reads only open rows
-// (delivery.ListStalePullRequestHeads), and the facts line reads only rows whose texts or commit
+// (delivery.Attributor.ListStalePullRequestHeads), and the facts line reads only rows whose texts or commit
 // messages it still lacks. A reconcile pass that did read one of these pull requests again would
 // read it through the very call that counts a handling here, and the row would see it as a second
 // handling of a message.

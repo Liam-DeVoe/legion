@@ -48,15 +48,15 @@ const linkedPullRequestReads = 10
 // A result may name a commit of three kinds of repository. The first is repo, the repository the
 // check's issue resolves to, which readResultRequest resolved for this refusal; a nil repo is
 // nothing to ask GitHub about, no refusal and no read-through. A deployment with no App key
-// resolves none, so the key is not checked again here. The second is the repository of each open
-// or merged pull request of the issue that Dispatch holds (delivery.HeadsAttributedTo): a pull
-// request an issue links by its URL is that issue's in any repository (attributionHeldFor, R19
-// of the spec of several open pull requests), so it may be another repository than repo (R17).
-// That covers a link in the `/issues/N` form too, which the statement reads as the pull request
-// and the links below do not. The third is a linked repository in which the external links of
-// the check's issue name a GitHub pull request that is open or merged (linkedRepositories,
-// linkedRepositoryHolds). A closed pull request that did not merge makes no repository count,
-// and neither does a link to a pull request GitHub answers 404 or 410 for
+// resolves none, so the key is not checked again here. The second is the repository of each open or
+// merged pull request of the issue that Dispatch holds (delivery.Attributor.HeadsAttributedTo): a
+// pull request an issue links by its URL is that issue's in any repository (attributionHeldFor, R19
+// of the spec of several open pull requests), so it may be another repository than repo (R17). That
+// covers a link in the `/issues/N` form too, which the statement reads as the pull request and the
+// links below do not. The third is a linked repository in which the external links of the check's
+// issue name a GitHub pull request that is open or merged (linkedRepositories,
+// linkedRepositoryHolds). A closed pull request that did not merge makes no repository count, and
+// neither does a link to a pull request GitHub answers 404 or 410 for
 // (delivery.ErrPullRequestNotFound), nor one whose name no repository GitHub could hold is called
 // (refs.ErrNotGitHubRepo): each is an answer, and no retry changes it.
 //
@@ -79,17 +79,16 @@ const linkedPullRequestReads = 10
 // characters.
 //
 // It refuses in two ways. Where Dispatch's own list of the links could not be read
-// (linkedRepositories), it answers that error, a server error to the caller, and nothing is
-// stored, whatever GitHub said of repo: the record cannot tell whether a linked repository holds
-// the commit. A failed read of Dispatch's rows of the issue's pull requests
-// (delivery.HeadsAttributedTo) refuses nothing by itself: it is logged, and the record asks
-// GitHub as it would with no such row, so a commit repo holds is still stored. And where GitHub
-// proved that repo does not hold the commit and every other
-// repository either does not count or, counting, is proved not to hold it either — which
-// delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
-// commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. A refusal with links left unread
-// for the bound says how many, since a link past it may name the repository that holds the
-// commit.
+// (linkedRepositories), it answers that error, a server error to the caller, and nothing is stored,
+// whatever GitHub said of repo: the record cannot tell whether a linked repository holds the
+// commit. A failed read of Dispatch's rows of the issue's pull requests
+// (delivery.Attributor.HeadsAttributedTo) refuses nothing by itself: it is logged, and the record
+// asks GitHub as it would with no such row, so a commit repo holds is still stored. And where
+// GitHub proved that repo does not hold the commit and every other repository either does not count
+// or, counting, is proved not to hold it either — which delivery.RepositoryHoldsCommit defines as
+// the one 422 whose message says GitHub found no commit for the SHA — it is refused 400
+// RESULT_COMMIT_UNKNOWN. A refusal with links left unread for the bound says how many, since a link
+// past it may name the repository that holds the commit.
 //
 // Where Dispatch cannot read one of the repositories and no repository is shown to hold the
 // commit, it stores the result, taken to be repo's (R17): a read that did not answer — a rate

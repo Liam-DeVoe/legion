@@ -11,9 +11,9 @@ import (
 )
 
 // readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit
-// (delivery.ReadThroughCommitPulls). A row written at another head can be the basis of another
-// result of the same read, and a row of a pull request owed a read settles that read (R5), so
-// the bases are read after learn (answer).
+// (delivery.Attributor.ReadThroughCommitPulls). A row written at another head can be the basis of
+// another result of the same read, and a row of a pull request owed a read settles that read (R5),
+// so the bases are read after learn (answer).
 //
 // It reads a commit that an open or merged pull request Dispatch holds already heads, whatever
 // issue that row is attributed to: GitHub can name a second pull request at the same head,

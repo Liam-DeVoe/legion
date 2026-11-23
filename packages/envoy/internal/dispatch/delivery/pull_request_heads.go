@@ -143,9 +143,10 @@ func PullRequestHeadState(state string, merged bool) string {
 // do update` and a redelivery writes the same pair.
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
-// they all end the same way: a read of Postgres (the repository's canonical name, the stored row
-// recordPullRequestHead compares the event with, and the stored commit messages and the
-// statement's answer that storePullRequestFacts reads), a read of GitHub that failed (a 5xx, a
+// they all end the same way: a read of Postgres (the stored row recordPullRequestHead compares
+// the event with, and the stored commit messages and the statement's answer that
+// storePullRequestFacts reads; the repository's canonical name is no read, since the boot read the
+// rename pairs), a read of GitHub that failed (a 5xx,
 // network failure, a rate limit), and a GitHub answer that holds a value no head row holds
 // (errNoRowHolds). GitHub's refusals are not marked: a pull request it does not know and a
 // repository the App cannot read write no row, are owed a read the reconcile makes, and are
@@ -191,10 +192,10 @@ type headValue struct {
 //
 // A text of free form (the title, and the title, the body and each commit message of the texts)
 // goes through freeText, and the answered row holds the result: such a text fails no write. The
-// repository and the number key the row and the read its triggers owe (pull_request_heads_older_read,
-// pull_request_heads_unread_write), so they must be a pull request GitHub can have
-// (checkPullRequestKey, errNoPullRequestNamed): the repository is a canonical name, which
-// repo_projects gives and no envelope does. Each other value of identity (the head commit and
+// repository and the number key the row and the read its triggers owe
+// (pull_request_heads_older_read, pull_request_heads_unread_write), so they must be a pull request
+// GitHub can have (checkPullRequestKey, errNoPullRequestNamed): the repository is a canonical name,
+// which repo_projects gives and no envelope does. Each other value of identity (the head commit and
 // branch, the base branch, the merge commit, the URL, and the head repository and base branch of
 // the texts) must be UTF-8 that holds no NUL, and each value an index holds must have at most
 // headRefBound bytes. The state must be one the column's check takes. Each of those is

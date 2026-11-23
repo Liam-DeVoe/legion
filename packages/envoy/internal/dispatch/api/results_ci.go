@@ -16,12 +16,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
-// role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
-// either: each read takes the newest pull request head of the issue
-// (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
-// the check's one result from the run its `ci_check` names. The derived result goes through the
-// same comparisonReader a recorded result does, so one rule judges where both kinds stand.
+// results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No role
+// records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it either:
+// each read takes the newest pull request head of the issue
+// (delivery.Attributor.NewestPullRequestHead), reads that commit's check runs from GitHub once, and
+// derives the check's one result from the run its `ci_check` names. The derived result goes through
+// the same comparisonReader a recorded result does, so one rule judges where both kinds stand.
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
@@ -98,11 +98,11 @@ type ciRun struct {
 // case of the answer.
 //
 // Two heads Dispatch does not know stop the read of the check runs, where Dispatch can read the
-// repository (comparisonReader.decides, rule 2). A pull request of the repository whose answer
-// is not known, and which comes before the newest head in the order of
-// delivery.NewestPullRequestHead, or any one where no head is found, can be the issue's newest
-// head: each check answers unread with ciCaseIssueNotKnown (decision D1). Else a newest head that
-// a read of GitHub is owed for may not be the head: each check answers unread with
+// repository (comparisonReader.decides, rule 2). A pull request of the repository whose answer is
+// not known, and which comes before the newest head in the order of
+// delivery.Attributor.NewestPullRequestHead, or any one where no head is found, can be the issue's
+// newest head: each check answers unread with ciCaseIssueNotKnown (decision D1). Else a newest head
+// that a read of GitHub is owed for may not be the head: each check answers unread with
 // ciCaseHeadNotRead. Either way no check run is read, and passStandsOf answers unknown.
 func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
@@ -210,9 +210,9 @@ func (s *server) ciHeadNotKnown(
 		head.Number, head.Repo)}, nil
 }
 
-// newestBefore is whether a pull request in state with number comes before one in otherState
-// with otherNumber in the order of delivery.NewestPullRequestHead: open before merged, then the
-// higher number.
+// newestBefore is whether a pull request in state with number comes before one in otherState with
+// otherNumber in the order of delivery.Attributor.NewestPullRequestHead: open before merged, then
+// the higher number.
 func newestBefore(state string, number int, otherState string, otherNumber int) bool {
 	if (state == "open") != (otherState == "open") {
 		return state == "open"
