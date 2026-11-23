@@ -636,7 +636,8 @@ type PullRequestReview struct {
 	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
 	// the commit_id the event was delivered with, so the workflow lets a person's listed review
 	// decide no round while the same person's webhook review decides as it always has
-	// (workflow's refusesRound).
+	// (workflow's refusesRound). At a review step the owner does, neither decides (workflow's
+	// settleRound).
 	ReadFromList bool
 }
 
@@ -811,9 +812,11 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps), and any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
+// reviewRound). At a review step the owner does, the engine reads no round (workflow's
+// settleRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
@@ -1125,10 +1128,11 @@ type RestartPhase struct {
 
 func (f RestartPhase) namedIssue() (string, bool) { return f.Issue, true }
 
-// SignOff records the architect's post-production-check approval: the claim of the architect, and
-// the issue's generation and the run of the step it stood in (record.Store.OpenStep, the run of
-// accepting) as the route read them (api's signOff), which the workflow judges again under the
-// fact lock (ArchitectRequest, EnteredRequest).
+// SignOff records the owner's acceptance in accepting, of an issue with no plan rows or at a step
+// `acceptance:owner` (`sign_off`, or the owner's pass of that step by complete_step): the claim of
+// the architect, and the issue's generation and the run of the step it stood in
+// (record.Store.OpenStep, the run of accepting) as the route read them (api's signOff), which the
+// workflow judges again under the fact lock (ArchitectRequest, EnteredRequest).
 type SignOff struct {
 	Issue      string
 	By         claim.Token
@@ -2064,10 +2068,11 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // stands on.
 //
 // A completion at admitted is answered so too, whichever role sends it. Admitted is the
-// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's handoff
-// refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at admitted had
-// while no role was named for that phase (dispatch://INFRA-2614, R2), now that a root's architect
-// holds an entry there.
+// architect's own phase (phase.RoleFor), and the architect's own completion is refused (workflow's
+// handoff refuses it ACCEPTANCE_IS_SIGN_OFF; its report of a step of its own comes by
+// complete_step, as that step's role's completion), so the guard keeps the answer a completion at
+// admitted had while no role was named for that phase (dispatch://INFRA-2614, R2), now that a
+// root's architect holds an entry there.
 //
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
