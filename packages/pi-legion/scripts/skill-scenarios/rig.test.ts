@@ -2735,6 +2735,80 @@ describe("heads_fixture", () => {
     ]);
   });
 
+  // Catches: a world of a failed CI check whose GitHub shows k2's job passed where Dispatch reads it
+  // failed (or failed where the case says it passed), a job whose log no read answers, a body that
+  // carries k1's line alone, and an architect's world of the other head with #703 left out.
+  test("heads_routes of the ci-check-fail worlds serve k2's job where it failed, its log, and both checks' lines", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+    const k1Line = (pr: string) => `- Check k1 (before_merge): pass at ${String(heads[pr]).slice(0, 12)} (tester) on #${pr}`;
+    const k2Line = (pr: string, verdict: string) => `- Check k2 (before_merge): ${verdict} at ${String(heads[pr]).slice(0, 12)} (CI run usage-test) on #${pr}`;
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page", lines: { "702": k1Line("702"), "703": k1Line("703") } })
+    );
+    const routes = (scenario: string, scenarioCase: string, k2At: Record<string, string>) => {
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        [
+          "Checks of LWEVAL-9:",
+          "",
+          "- k1 (before_merge). A pass stands: yes.",
+          ...["702", "703"].flatMap((pr) => [`  - #${pr} at ${heads[pr]}: yes, from implementer, tester.`, `    Pull request line: ${k1Line(pr)}`]),
+          "- k2 (before_merge): its CI job's results below.",
+          ...Object.entries(k2At).flatMap(([pr, verdict]) => [
+            `  - #${pr} at ${heads[pr]}: ${verdict === "pass" ? "yes" : "no, as fail f9 counts at this commit."}`,
+            `    Pull request line: ${k2Line(pr, verdict)}`,
+          ]),
+          "",
+        ].join("\n")
+      );
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("pr_line"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes "$2" "$3"',
+        ].join("\n"),
+        [run, scenario, scenarioCase]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown; exit?: number }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      const route = (match: string) => all.find((each) => each.match === match);
+      return { all, route };
+    };
+    const failedJob = RIG_WORLD.ciJobs["ci-check-fail"];
+    const passedJob = RIG_WORLD.ciJobs["ci-check-pass"];
+    const jobLine = (job: { name: string; run: number; checkRun: number }, state: string) =>
+      `${job.name}\t${state}\t10s\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}`;
+    const logOf = (id: number) => `^gh run view (?=.*--job[ =]${id}\\b)(?=.*--log)`;
+
+    const reviewer = routes("reviewer-own-head", "ci-check-fail", { "702": "fail" });
+    expect(String(reviewer.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
+    expect(reviewer.route("^gh pr checks")?.exit).toBe(1);
+    expect(reviewer.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
+    const body = (reviewer.route("^gh pr view")?.stdout as { body: string }).body;
+    expect(body).toContain(`**Checks:**\n${k1Line("702")}\n${k2Line("702", "fail")}\n`);
+
+    const other = routes("reviewer-own-head", "ci-check-fail-other-head", { "702": "pass", "703": "fail" });
+    expect(String(other.route("^gh pr checks")?.stdout)).toContain(jobLine(passedJob, "pass"));
+    expect(other.route("^gh pr checks")?.exit).toBe(0);
+    expect(String(other.route("^gh pr checks .*\\b703\\b")?.stdout)).toContain(jobLine(failedJob, "fail"));
+    expect(other.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
+
+    const architect = routes("architect-pass-and-fail", "ci-check-fail-other-head", { "702": "pass", "703": "fail" });
+    expect((architect.route("^gh pr list")?.stdout as unknown[]).length).toBe(2);
+    expect(architect.route("^gh api .*pulls/702/reviews")?.stdout).toMatchObject([{ state: "APPROVED", commit_id: heads["702"] }]);
+    const alone = routes("architect-pass-and-fail", "ci-check-fail", { "702": "fail" });
+    expect((alone.route("^gh pr list")?.stdout as unknown[]).length).toBe(1);
+    expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
+  });
+
   // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
   // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
   // name. The round's agents named two repositories, since the pane's addressing named another than
