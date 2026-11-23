@@ -1,9 +1,9 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
 // what Legion cannot carry out in any release, and Supported, what this release does not carry
-// out yet. It reads the blocks of one version of the plan document, each need as the task it
-// names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
-// nothing.
+// out yet. It reads the blocks of one version of the plan document, each task block in its place
+// (Places) and each need as the task it names (FromBlocks), and compares two versions
+// (ChangedTasks); it holds no store and calls nothing.
 //
 // It imports internal/phase and internal/claim alone, which import no other package of the daemon
 // but claim, so both the configuration loader, which reads a project's default steps with this
@@ -70,7 +70,8 @@ func (a Agent) Owner() bool { return a.Key == "owner" }
 // project's default steps.
 const DefaultTask = "default"
 
-// Task is one `plan_task` block of a plan, as FromBlocks reads it.
+// Task is one `plan_task` block of a plan that Legion carries out, a task at the top or a part of a
+// task (Places), as FromBlocks reads it.
 type Task struct {
 	// ID is the block's id, which every record of the task's steps names.
 	ID string
@@ -88,8 +89,17 @@ type Task struct {
 	// a document of the plan's issue holds the plan, a task needs only tasks of its own plan, and an
 	// issue waits for another issue by a link between the two issues. Validate refuses each one.
 	OutsideIssue []string
-	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
+	// ElementNeeds are the `needs` words that name an element of the plan (Plan.Elements), in the
+	// block's order, as FromBlocks leaves them. Legion does not carry out an element, so no task
+	// waits for one, and Validate refuses each one.
+	ElementNeeds []string
+	// PartOf is the task this task is a part of, "" for a task at the top (Places). Owner is
+	// `owner` as the block writes it, "" when unset.
 	PartOf, Owner string
+	// MissingParent is the id that the block's `parent` names in the plan's own document, where
+	// no block of the version holds it, or the word whole where its id does not decode. The block
+	// is then a task at the top, and Validate refuses it.
+	MissingParent string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool
 	// Steps are the steps the block names, in order; none where its `steps` has no word or it has
@@ -133,8 +143,12 @@ type RoleDef struct {
 type Plan struct {
 	ArtifactID string
 	Version    int
-	// Tasks are the document's `plan_task` blocks, in its order.
+	// Tasks are the document's `plan_task` blocks that Legion carries out, the tasks at the top
+	// and the parts, in its order.
 	Tasks []Task
+	// Elements are the document's `plan_task` blocks that are elements of a task, in its order.
+	// They are no tasks: Validate reads them, and nothing else does.
+	Elements []Element
 	// RoleBlocks are the names of the roles the plan defines, one for each `plan_role` block, in
 	// the document's order.
 	RoleBlocks []string
@@ -147,6 +161,18 @@ type Deployment struct{ Roles map[string]RoleDef }
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
+
+// Element is a `plan_task` block that stands under a task with no sub-owner, or under an element
+// (Places). A planner writes it as the guide of the steps after it, and Legion does not carry it
+// out, so it names no `steps`, `owner` or `merges` (Validate).
+type Element struct {
+	// ID is the block's id, Of the task it is an element of, and Under the block it stands
+	// directly under: Of, or an element of Of.
+	ID, Of, Under string
+	// Names are the attributes the block names that only a task carries out, in the order
+	// steps, owner, merges.
+	Names []string
+}
 
 // Giver is who gives a version of a plan: "" for the owner of the issue, an architect of its
 // tree, else the id of the task whose sub-owner gives it. Each may change only the tasks it
