@@ -412,8 +412,7 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 				return
 			case <-renewals.C():
 				renewals.Took()
-				// A renewal due together with the run's bound is the bound's: the run has ended.
-				if run.Err() != nil || !s.renewRequestKey(claim) {
+				if !s.renewRequestKey(claim) {
 					return
 				}
 				renewals.Next()

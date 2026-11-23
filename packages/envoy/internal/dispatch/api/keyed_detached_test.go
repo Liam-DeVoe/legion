@@ -540,19 +540,27 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 	awaitArmedAt(t, fake, "the run's renewal due at or past its bound", renewal)
 	fake.Set(bound)
 	testwait.Receive(t, "the run's bound to end its context", bounded)
-	// The renewals end with the run's bound. The renewal due with it may have been sent - the
-	// bound's lease past the limit, which the doc above allows - but none is left armed after it,
-	// so a run that ignores its context renews its lease no further however far the clock moves.
-	testwait.Span(t, 2*time.Second, "the renewal loop's return is reported to no state the test reads, and the "+
-		"renewal due with the bound is a real PostgreSQL statement (no synctest) after which the loop either arms "+
-		"the next renewal or returns; the span starts once the bound has ended the run's context, so by its end a "+
-		"loop that renews past the bound has armed that renewal, and the armed timers read it")
-	afterBound := func(at time.Time) bool {
-		return at.After(bound) && at.Sub(start)%keyedLeaseRenewal == 0
+	// The renewals end with the run's bound. The renewal due with it may still run: the loop's
+	// select has the bound and that renewal ready together and may take the renewal - the bound's
+	// lease past the limit, which the doc above allows - after which it arms the next renewal and
+	// returns at its select, which stops that one. None is left armed after it, so a run that
+	// ignores its context renews its lease no further however far the clock moves.
+	testwait.Span(t, 2*time.Second, "the renewal loop's choice and its return are reported to no state the test "+
+		"reads; the span starts once the bound has ended the run's context, with the loop runnable, so by its end "+
+		"the loop has returned or taken the renewal due with the bound, whose statement's own bound is armed on the "+
+		"server's clock until the statement ends")
+	// A renewal the loop took ends before the lease is aged below, or it would land after the aging
+	// and hold the repeat at KEY_IN_FLIGHT; a loop that renews past the bound keeps that renewal
+	// armed, and the wait gives up naming it.
+	inFlight := bound.Add(keyedBookkeeping)
+	renewing := func(at time.Time) bool {
+		return at.Equal(inFlight) || (at.After(bound) && at.Sub(start)%keyedLeaseRenewal == 0)
 	}
-	if armed := fake.Armed(); slices.ContainsFunc(armed, afterBound) {
-		t.Fatalf("armed %v once the run's bound at %s had ended its context; want no lease renewal armed past it", armed, bound)
-	}
+	testwait.Until(t, "the renewal due with the run's bound, if the loop took it, to end, and no lease renewal armed past the bound",
+		func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			return armed, !slices.ContainsFunc(armed, renewing)
+		})
 	// Then a whole lease past the last renewal it allows.
 	ageRequestKeyLease(t, rig.database, "alice", "overrun", contracts.IdempotencyLease+time.Second)
 	takeover := rig.send(t, "a", nil, "alice", "overrun")

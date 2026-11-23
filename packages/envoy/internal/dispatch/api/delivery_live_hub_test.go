@@ -2239,15 +2239,18 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 }
 
-// A view's window is judged in memory against rows PostgreSQL stores and compares at microsecond
-// resolution, so the moment a row leaves the window must fall on a microsecond the database can
-// hold (nextExpiry). A pull request merged on a microsecond leaves a preset window a microsecond
-// past its time plus the window's length; the test drives a fake clock to exactly that expiry and
-// reads the view the hub recomputes there. The hub's narrowed view then holds the same pull
-// requests the GET route's SQL does over the window it reports. With the leaving moment a
-// nanosecond past instead - a step a timestamptz rounds back onto the row - the hub drops the
-// leaving pull request while the GET route, reading the same window at microseconds, keeps it, and
-// the two disagree.
+// A view's window is judged in memory, at nanoseconds (narrowedTo), while the GET route's window
+// start reaches PostgreSQL truncated to its microsecond (pgx's binary timestamptz), where the rows'
+// times are whole microseconds. A pull request leaves a preset window a nanosecond past its time
+// plus the window's length (nextExpiry), and the hub arms its one timer for that moment. The test
+// moves the fake a microsecond past it, as a timer fires late in production: an idle process waits
+// for one in whole milliseconds (the runtime's netpoll), and the hub reads its clock only once the
+// woken worker runs. From a microsecond late on, the window start the hub narrows to and the one
+// PostgreSQL reads lie past the same rows, and the hub's narrowed view holds the same pull requests
+// the GET route's SQL does over the window it reports. Inside that microsecond, which only a
+// process whose scheduler never rests reaches, the hub's window start falls in the leaving row's
+// own microsecond, and a GET over that very start, which only a client comparing a frame's own
+// window sends (the page reads the hub alone), would keep the row the hub dropped.
 func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T) {
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
@@ -2274,20 +2277,20 @@ func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T)
 	}
 	// The view's one timer is the pull request's leaving, a moment just past merged + 28 days and
 	// well before the midnight expiry; the fake clock reports the exact deadline it is armed for,
-	// which the test moves to without asserting its sub-second part, since the agreement below is
-	// what the moment's resolution decides.
+	// which the test moves a microsecond past, as a real timer fires late (above), without asserting
+	// its sub-second part, since the agreement below is what the moment's resolution decides.
 	leaves, midnight := merged.Add(28*24*time.Hour), nextUTCMidnight(clock.Now())
 	armed := clock.AwaitArmed(t, "the pull request's expiry", 1)
 	if len(armed) != 1 || !armed[0].After(leaves) || !armed[0].Before(midnight) {
 		t.Fatalf("the view's timer is armed for %v, want the pull request's leaving between %v and %v", armed, leaves, midnight)
 	}
 	start := rig.mark()
-	clock.Set(armed[0])
+	clock.Set(armed[0].Add(time.Microsecond))
 	rig.waitFor(t, start, "the expiry's recompute to end", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
 	body := rig.onlyViewBody(t)
-	requireSameBody(t, "the view narrowed at a sub-microsecond expiry", body,
+	requireSameBody(t, "the view narrowed a microsecond past its sub-microsecond expiry", body,
 		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
 }
 

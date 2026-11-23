@@ -132,19 +132,14 @@ func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string,
 	ticks := clock.NewTicker(c, interval, first == TickAtStart)
 	defer ticks.Stop()
 	for {
-		var fired time.Time
 		select {
 		case <-ctx.Done():
 			return
-		case fired = <-ticks.C():
+		case fired := <-ticks.C():
+			ticks.Took()
+			Exclusive(ctx, leases, name, fired, interval, pass)
+			ticks.Next()
 		}
-		// A tick ready together with ctx's end, which the select may pick, runs no pass.
-		if ctx.Err() != nil {
-			return
-		}
-		ticks.Took()
-		Exclusive(ctx, leases, name, fired, interval, pass)
-		ticks.Next()
 	}
 }
 

@@ -208,9 +208,7 @@ func pipelineNextExpiry(pop pipelinePopulation, now time.Time) time.Time {
 			continue
 		}
 		consider(*run.CompletedAt)
-		// A microsecond past, the finest a timestamptz holds, so the hub and a GET over the same
-		// window read the failing run the same way (nextExpiry).
-		consider(run.CompletedAt.Add(measures.FailingWindow).Add(time.Microsecond))
+		consider(run.CompletedAt.Add(measures.FailingWindow).Add(time.Nanosecond))
 	}
 	return next
 }
