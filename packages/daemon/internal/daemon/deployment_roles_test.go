@@ -80,6 +80,7 @@ const (
 // rows are deleted before its gate opens starts a planner, and the walk's assertion fails on it;
 // (3) with checker taken out of the settings, register_plan of B's plan is refused naming checker.
 func TestEachIssueWalksItsOwnStepsWithADeploymentRole(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	r := newDeploymentRolesRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), roles,
 		[]string{"Default walk lands its change", "Checker verifies widget output", "Reviewer precedes tester ordering",
@@ -234,6 +235,7 @@ func (r *deploymentRolesRig) walkImplementerChecker() error {
 // zero place in place of plan_tasks.position, as a store that lost the place the release before
 // stored would answer; the tester's pass then moves nothing, and the assertion of step 3 fails.
 func TestAnIssueOfTheEarlierReleaseGoesOnUnderThisRelease(t *testing.T) {
+	t.Parallel()
 	r := newEarlierReleaseRig(t)
 	r.work(claim.RoleTester, "test", testCompletion, phase.Reviewing)
 	if kind, position := r.taskPlace(); kind != "step" || position != 3 {
@@ -356,8 +358,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	t := r.t
 	t.Helper()
-	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: title, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -372,6 +373,7 @@ func (r *deploymentRolesRig) seedAdmitted(title, rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	ctx := context.Background()
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
