@@ -11,8 +11,9 @@ import (
 // jj's own: the pod's wrapper's reads (packages/daemon/docker/jj's once_only) and the pane's read
 // of the aliases and the step's snapshot (jjOnceOnly). Each prints the warnings jj prints once and
 // drops those jj prints on every command, which the command after it prints itself. The rows of
-// the two forms run through jj_push_test.go's fixture, as a role runs a command; the last test reads
-// jjOnceOnly itself, so this file names what the change adds, as jj_expand_read_test.go does.
+// the two forms run through the shared fixture (jj_push_fixture_test.go), as a role runs a
+// command; the last test reads jjOnceOnly itself, so this file names what the change adds, as
+// jj_expand_read_test.go does.
 
 // rolePushCopiedWarning starts the warning that jj prints for the first command in a copy of a
 // repository that has a configuration of its own, and for no command after it

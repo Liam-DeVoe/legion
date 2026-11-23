@@ -44,8 +44,8 @@ type jjPush struct {
 	// noSnapshot is whether the push takes no snapshot of the working copy: the role's own
 	// --ignore-working-copy, before or after the subcommand pair, as jj takes it. Every command of
 	// the step reads as such a push does, so the step takes no snapshot before it
-	// (jjStep.snapshotDue), and runJJ, which gives the real push --ignore-working-copy only after
-	// the step's snapshot, never gives it that flag twice, which jj 0.38 refuses.
+	// (jjStep.snapshotDue), and the real push never gets that flag twice, as jjStep.snapshotted
+	// says.
 	noSnapshot bool
 	// quiet is whether the push runs with the role's own --quiet, before or after the subcommand
 	// pair, as jj takes it. The step's snapshot carries --quiet then too (jjStep.snapshot), so it

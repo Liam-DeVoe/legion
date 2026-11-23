@@ -12,10 +12,11 @@ import (
 
 // The tests in this file are those of a command that jj expands, through an alias, an alias of an
 // alias or ui.default-command, run as a role runs it through one of the two forms of Legion's jj
-// (jj_push_test.go), on a real jj repository with a local bare remote. The pod's form expands the
-// line in packages/daemon/docker/jj, and the tmux form in `legion jj --after` (jj_expand.go). Like
-// jj_push_test.go, this file names nothing the change adds, so it compiles and runs at the base
-// too; the tests that read the change's own Go names are in jj_expand_read_test.go.
+// (jj_push_test.go, and the fixture in jj_push_fixture_test.go), on a real jj repository with a
+// local bare remote. The pod's form expands the line in packages/daemon/docker/jj, and the tmux
+// form in `legion jj --after` (jj_expand.go). Like jj_push_test.go, this file names nothing the
+// change adds, so it compiles and runs at the base too; the tests that read the change's own Go
+// names are in jj_expand_read_test.go.
 
 // rolePushPodRefusalPrefix starts the line of the pod's wrapper's refusal of a line it cannot read
 // (packages/daemon/docker/jj's refuse), which it prints before it exits 2.
@@ -141,9 +142,9 @@ func rolePushExpandedRows() []rolePushExpandedRow {
 			}
 			return []string{"m"}, want
 		}},
-		// An enabled table-form alias, which jj 0.45.1-sami runs and the pod's wrapper expands from
-		// its definition. jj 0.38.0 alone refuses it, and both forms push it with the step there
-		// too, a limit of the expansion (docs/deployment.md).
+		// An enabled table-form alias, which jj 0.45.1-sami and 0.46.0 run and the pod's wrapper
+		// expands from its definition. jj 0.38.0 alone refuses it, and both forms push it with the
+		// step there too, a limit of the expansion (docs/deployment.md).
 		{name: "jj x -b b, [aliases.x] definition = ['git', 'push']", setup: rolePushExpandsTo("[aliases.x]\ndefinition = [\"git\", \"push\"]", []string{"x", "-b", "b"}, pushB)},
 		{name: "jj q q git push -b b, aliases.q = ['--quiet']", setup: rolePushQuietTwice("[aliases]\nq = [\"--quiet\"]", []string{"q", "q", "git", "push", "-b", "b"})},
 		// v's words hold a command word, q, whose own words are options alone: the second v comes

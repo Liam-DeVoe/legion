@@ -419,10 +419,11 @@ image's wrapper, `/opt/legion/bin/jj`, which expands each command as jj does and
 that it expands into a `jj git push` to `legion jj` itself. In that case the daemon writes no
 `jj` and removes one that an earlier boot wrote.
 `legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included.
-It reads a command as jj 0.45 does (`packages/daemon/cmd/legion/jj_expand.go`): an alias's words
-in place of its command word, an alias of an alias the same way, and `ui.default-command` in front
-of a command that names no command, or that an alias of options alone leaves with none, each read
-from the configuration of the working directory, as jj reads them.
+It reads a command as jj 0.45 and 0.46 do (`packages/daemon/cmd/legion/jj_expand.go`): an
+alias's words in place of its command word, an alias of an alias the same way, and
+`ui.default-command` in front of a command that names no command, or that an alias of options
+alone leaves with none, each read from the configuration of the working directory, as jj reads
+them.
 A command word is a command's first word that is no option and no option's value.
 These commands make no read: one whose command word is a built-in jj command, `jj git push` among
 them; `-h`, `--help`, `-V`, `--version` or a cluster of short flags that starts with `-h` or `-V`,
@@ -452,9 +453,11 @@ In a pod, jj itself prints such a warning twice for each command: the wrapper pu
 The expansion has four limits.
 An alias that a `[[--scope]]` defines for `jj config` alone is expanded as the worker image's
 wrapper expands it, so its push runs with the step where jj alone refuses it.
-A table-form alias with `enabled = false` runs as written, so jj 0.45 pushes it with no step, in a
-pod as in a pane.
-jj 0.38 refuses a table-form alias, which the pane expands, so its push runs with the step there.
+A table-form alias with `enabled = false` runs as written, in a pod as in a pane: jj 0.45.1-sami
+pushes it with no step, and jj 0.46.0, which the worker image pins as 0.46.0-sami, refuses it with
+exit 2 and pushes nothing.
+jj 0.38 refuses every table-form alias, that one included; the pane expands one without
+`enabled = false`, so its push runs with the step there.
 jj 0.38 refuses an alias of options alone used twice, which the pane expands, so the step runs and
 jj 0.38 then refuses the expanded line for its option given twice or, for an option it takes
 twice, pushes it; and it refuses an alias of options alone that leaves no command word, which the
@@ -573,7 +576,7 @@ runs the step.
 Every `jj` command of a pane starts one `legion` process first.
 Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
 took 95 to 161 ms.
-A command whose command word is no built-in jj command, a bare `jj` included, also starts one
+Any command but those that make no read (above), a bare `jj` included, also starts one
 `jj --ignore-working-copy --color=never config list --include-defaults` through the next `jj`, in
 the working directory and with none of the command's own options, which reads every alias and
 `ui.default-command`, takes no snapshot and reads no commit.

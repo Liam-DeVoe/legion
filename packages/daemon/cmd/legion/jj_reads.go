@@ -209,17 +209,28 @@ func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 	return stdout, stderr, nil
 }
 
-// command runs next with args in env and waits for it (runJJCommand).
+// command runs next with args in env and waits for it (runJJCommand). A command that cannot start
+// is a jjStepFailure whose status is execWrapped's for the same failure, 127 where next does not
+// exist and 126 otherwise, and whose output names it as execWrapped does: `legion jj: run <next>:
+// <error>`.
 func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
-	return runJJCommand(s.next, env, args)
+	stdout, stderr, code, err = runJJCommand(s.next, env, args)
+	if err != nil {
+		code = 126
+		if errors.Is(err, syscall.ENOENT) {
+			code = 127
+		}
+		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", s.next, err)}
+	}
+	return stdout, stderr, code, nil
 }
 
 // runJJCommand runs next with args in env and waits for it, as a child in this process's group,
 // with no standard input: each command of the step (jjStep.command) and the read of the aliases
 // (readJJAliases). It answers what the command printed and its status, a death by a signal being
 // 128 and the signal's number, as a shell reads it. A file the kernel refuses to run runs with
-// /bin/sh, as execWrapped runs it. A command that cannot start is a jjStepFailure whose status is
-// execWrapped's for the same failure.
+// /bin/sh, as execWrapped runs it. A command that cannot start is its start error alone, which
+// each caller names in its own words (jjStep.command, readJJAliases).
 func runJJCommand(next string, env, args []string) (stdout, stderr string, code int, err error) {
 	var out, errOut bytes.Buffer
 	run := func(path string, argv []string) error {
@@ -241,11 +252,7 @@ func runJJCommand(next string, env, args []string) (stdout, stderr string, code 
 		}
 		return out.String(), errOut.String(), code, nil
 	case err != nil:
-		code = 126
-		if errors.Is(err, syscall.ENOENT) {
-			code = 127
-		}
-		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", next, err)}
+		return "", "", 0, err
 	}
 	return out.String(), errOut.String(), 0, nil
 }

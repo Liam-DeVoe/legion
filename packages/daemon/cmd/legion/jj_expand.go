@@ -18,15 +18,17 @@ import (
 // itself before it hands legion jj a push.
 //
 // The command word and the built-in names are a port of the pod's wrapper (command_word and its
-// builtins= line). The expansion follows jj 0.45.1-sami, the pod's jj, where the pod's wrapper
+// builtins= line). The expansion follows jj 0.45's resolve_aliases and expand_args, which jj
+// 0.46.0 keeps (the worker image pins jj 0.46.0-sami, worker.Dockerfile), where the pod's wrapper
 // does not: an alias of options alone used twice on one line (`jj q q …`), which the pod's wrapper
 // refuses, expands, and a name is a cycle only where jj finds one (resolveAliases); there is no
 // bound of 32 aliases; any word of help or version with no command word, a cluster such as `-hV`
-// among them, runs as written (jjHelpWord); an alias that leaves no command word gets
-// ui.default-command in front, as both do; a name jj warns is a built-in command is never expanded
-// (jjOverridesBuiltin); and where the pod's wrapper refuses a line, legion jj prints one line and
-// runs it as written (jjUnexpandable), since it refuses nothing. docs/deployment.md's paragraph on
-// the pane's jj states where the expansion and jj still differ, its limits.
+// among them, runs as written (jjHelpWord); a name jj warns is a built-in command is never
+// expanded (jjOverridesBuiltin); and where the pod's wrapper refuses a line, legion jj prints one
+// line and runs it as written (jjUnexpandable), since it refuses nothing. As jj and the pod's
+// wrapper both do, the expansion puts ui.default-command in front of a line that an alias leaves
+// with no command word (expandJJ). docs/deployment.md's paragraph on the pane's jj states where
+// the expansion and jj still differ, its limits.
 
 // jjBuiltins are the commands jj has built in, by clap's names: each command's name and every
 // other name clap gives it, hidden ones included. They are the 51 names of the pod's wrapper's
@@ -144,15 +146,13 @@ func (u jjUnexpandable) Error() string { return "could not expand " + u.what + "
 // a copied repository, prints, and one that every command prints prints as often as jj alone
 // prints it for the command that runs after the read. jj's error is named by the line of a read
 // that fails (jjUnexpandable), which runJJ prints next. A read that cannot start prints nothing of
-// its own, and is jjUnexpandable too.
+// its own, and is jjUnexpandable too, with its start error.
 func readJJAliases(next string, env []string, stderr io.Writer) (jjAliases, error) {
 	stdout, printed, code, err := runJJCommand(next, env, jjAliasRead)
-	var failed jjStepFailure
-	if errors.As(err, &failed) {
-		printed, code = failed.output, failed.code
-	} else {
-		fmt.Fprint(stderr, jjOnceOnly(printed, false))
+	if err != nil {
+		return jjAliases{}, jjUnexpandable{"the command", "jj config list could not start: " + err.Error()}
 	}
+	fmt.Fprint(stderr, jjOnceOnly(printed, false))
 	return parseJJAliases(stdout, printed, code)
 }
 
@@ -219,17 +219,21 @@ func (a jjAliases) defaultCommand() ([]string, error) {
 }
 
 // alias is the definition of the alias that word names, and whether one does. An alias is a list
-// of strings, `aliases.<word> = […]`, or a table whose definition is one, which jj 0.45.1-sami
-// runs and the pod's wrapper expands; a table with no definition names no alias. A value that is
-// no list of strings is jjUnexpandable, as is a table with `enabled = false`, which jj 0.45.1-sami
-// runs and jj 0.46.0 refuses. A word that is no bare name (jjBareName) names no alias unless jj
-// lists one by a quoted name, which legion jj does not read, and which is jjUnexpandable.
+// of strings, `aliases.<word> = […]`, or a table whose definition is one, which jj 0.45.1-sami and
+// 0.46.0 run and the pod's wrapper expands; a table with no definition names no alias. A value
+// that is no list of strings is jjUnexpandable, as is a table with `enabled = false`, which jj
+// 0.45.1-sami runs and jj 0.46.0 refuses. A word that is no bare name (jjBareName) names no alias
+// unless jj lists one by a quoted name, which legion jj does not read, and which is
+// jjUnexpandable.
 //
 // Two limits of the expansion are here. A table with `enabled = false` runs as the role wrote it,
-// so under jj 0.45.1-sami its push goes with no step, on both forms, since the pod's wrapper leaves
-// it to jj too. jj 0.38.0 refuses every table-form alias (`Invalid type or value for
-// aliases.<word>`), and the expansion takes it as jj 0.45.1-sami does, so under jj 0.38.0 its push
-// runs with the step where jj alone refuses it.
+// on both forms, since the pod's wrapper leaves it to jj too. Measured with `jj p`, where the
+// repository's aliases.p is such a table with the definition ["git", "push", "-b", "b"]: jj
+// 0.45.1-sami pushes b, so its push goes with no step; jj 0.46.0, which the worker image pins as
+// 0.46.0-sami, refuses it (`unrecognized subcommand 'p'`, exit 2) and pushes nothing; and jj
+// 0.38.0 refuses it, as it refuses every table-form alias (`Invalid type or value for
+// aliases.<word>`, exit 1). The expansion takes any other table as jj 0.45.1-sami and 0.46.0 do,
+// so under jj 0.38.0 its push runs with the step where jj alone refuses it.
 func (a jjAliases) alias(word string) ([]string, bool, error) {
 	if !jjBareName(word) {
 		if a.quoted {
@@ -272,9 +276,10 @@ type jjExpansion struct {
 // name that went. Where the command word is inside the top's positions, an alias of its name on
 // the chain is a cycle (`Recursive alias definition involving`), which is jjUnexpandable. So an
 // alias of options alone, whose command word comes from outside its own words, leaves the chain,
-// and `jj q q version` with q = ["--quiet"] expands, as jj 0.45.1-sami runs it; jj 0.38.0 refuses
-// any name that comes twice. It ends at a built-in command word, at a word that no alias names,
-// and at a line with no command word, and has no bound of its own: it ends where jj's does.
+// and `jj q q version` with q = ["--quiet"] expands, as jj 0.45.1-sami and 0.46.0 run it; jj
+// 0.38.0 refuses any name that comes twice. It ends at a built-in command word, at a word that no
+// alias names, and at a line with no command word, and has no bound of its own: it ends where jj's
+// does.
 func (a jjAliases) resolveAliases(line []string) ([]string, error) {
 	var chain []jjExpansion
 	for {

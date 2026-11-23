@@ -34,9 +34,9 @@ type jjSent struct {
 }
 
 // word is the commit as a revision argument's words write it: `@` for the working-copy commit, and
-// its full id for any other. Where the step took its snapshot, the real push runs with
-// --ignore-working-copy (runJJ). The working-copy commit is `@` rather than its id because another
-// jj command may rewrite @ between the step's read and the real push: `@` then names the @ that
+// its full id for any other. Where the step took its snapshot, the real push runs as
+// jjStep.snapshotted says. The working-copy commit is `@` rather than its id because another jj
+// command may rewrite @ between the step's read and the real push: `@` then names the @ that
 // command left, where the id would name a hidden commit.
 func (c jjSent) word() string {
 	if c.working {
@@ -420,9 +420,9 @@ func jjNotIn(ids []string, set map[string]bool) []string {
 // the argument with the most ids, their number and the limit (asWritten), and answers
 // errJJAsWritten: setAuthors rewrites nothing, the step takes no snapshot it has not taken, and the
 // push runs with the role's own words, but where the fill of a commit with no author ran a
-// metaedit (jjStep.given), and with --ignore-working-copy where the step took its snapshot
-// (runJJ), a flag that commandSize counts. Else, and for a push with no argument that jj resolves,
-// which no rewrite makes longer, it answers nil.
+// metaedit (jjStep.given), and as jjStep.snapshotted says where the step took its snapshot, with a
+// flag that commandSize counts. Else, and for a push with no argument that jj resolves, which no
+// rewrite makes longer, it answers nil.
 func (s *jjStep) checkArgMax() error {
 	s.revisionSets()
 	written := make([]jjGiven, len(s.push.revisions))
@@ -459,9 +459,10 @@ func (s *jjStep) givenSize(i int, g jjGiven) int {
 // commandSize is the bytes that Linux counts against jjArgMax (jjSize) for the push with each
 // revision argument as given gives it. The arguments are next and the push's words, with the dry
 // run's own (jjDryRunFlags, jjDryRunQuiet), which its dry run has beside the same words and which
-// hold the --ignore-working-copy that the real push has after the step's snapshot (runJJ), and the
-// environment is the step's (env) with wrappedJJStepped set to a digest (jjStepped), which the
-// real push has beside it; so each of the two commands counts that many bytes or fewer.
+// hold the --ignore-working-copy that the real push has after the step's snapshot
+// (jjStep.snapshotted), and the environment is the step's (env) with wrappedJJStepped set to a
+// digest (jjStepped), which the real push has beside it; so each of the two commands counts that
+// many bytes or fewer.
 func (s *jjStep) commandSize(given []jjGiven) int {
 	return jjSize(s.words(given, false)...) + jjSize(jjDryRunFlags...) + jjSize(jjDryRunQuiet...) + jjSize(s.env...) +
 		jjSize(s.next, wrappedJJStepped+"=") + hex.EncodedLen(sha256.Size)

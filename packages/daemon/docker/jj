@@ -21,9 +21,9 @@
 #   - it hands a line it read as a `jj git push` to `legion jj --real /usr/local/bin/jj`, which
 #     runs the push step and then the real jj with that line, but for a revision argument whose
 #     meaning the step's rewrite changed, which then names the commits it named before the step,
-#     as the step left them, and with --ignore-working-copy where the step took its snapshot of the
-#     working copy, which is then the push's one snapshot: the step sets the author of each commit
-#     the push sends from that commit's Legion-Role trailer (packages/daemon/cmd/legion/jj.go).
+#     as the step left them, and with --ignore-working-copy after the step's snapshot (legion
+#     jj's jjStep.snapshotted): the step sets the author of each commit the push sends from that
+#     commit's Legion-Role trailer (packages/daemon/cmd/legion/jj.go).
 # This wrapper itself reads no ref, no commit and no other text: jj hands git exact refspecs, and
 # the git wrapper does the whole job of the leak guard from there.
 #
