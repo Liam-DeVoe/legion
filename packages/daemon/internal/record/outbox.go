@@ -688,6 +688,15 @@ type Notice struct {
 	CountedFrom      time.Time `json:"counted_from,omitzero"`
 	CountedFromEvent string    `json:"counted_from_event,omitempty"`
 	PauseID          int64     `json:"pause_id,omitempty"`
+	// A process of the controller's pod stopped for memory (memory-guard-kill): what stopped it
+	// in Cause above (a texts.Kill word), the process by its executable, its pid, how much it held,
+	// the pod's memory reading and the pod's limit (texts.MemoryGuardKillRecord). Process is a
+	// pointer so an executable the launcher sent empty stays on the wire as `process: ""`.
+	Process   *string `json:"process,omitempty"`
+	PID       int     `json:"pid,omitempty"`
+	Size      string  `json:"size,omitempty"`
+	PodMemory string  `json:"pod_memory,omitempty"`
+	Limit     string  `json:"limit,omitempty"`
 	// Words names each field of the notice that holds another author's words, by its path
 	// (texts.WordsPaths), with that author and the time.
 	Words map[string]texts.WordsMeta `json:"words,omitempty"`
@@ -1061,6 +1070,17 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
+// A memory-guard-kill notice names one of the controller's own programs that the memory guard of
+// the controller's pod ended with SIGKILL because the pod was near its memory limit, or that the
+// controller's microVM pod's own kernel stopped because the pod ran out of memory. Its issue is
+// the project key, as a tick's is, its Role is the controller, and the fields of its record
+// (texts.MemoryGuardKillRecord) name what stopped the process, the process by its executable,
+// with none of its arguments, its pid, its size, the pod's reading and the limit
+// (workflow's controllerMemoryGuardKill); a row an older daemon queued names them in Reason, with
+// what to run instead. Each kill is a row of its own, written by the workflow in the kill's own
+// fact and never through admit.Admission.wakeController, whose rule keeps one unsent notice per
+// kind: two kills are two programs ended, and the second must not be dropped behind the first.
+//
 // A project-paused notice tells the controller that the operator paused its project, and a
 // project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
@@ -1081,6 +1101,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = texts.ProviderErrors
 	TreeStalledNotice      NoticeKind = texts.TreeStalled
 	ArchitectStalledNotice NoticeKind = texts.ArchitectStalled
+	MemoryGuardKillNotice  NoticeKind = texts.MemoryGuardKill
 	ProjectPausedNotice    NoticeKind = texts.ProjectPaused
 	ProjectResumedNotice   NoticeKind = texts.ProjectResumed
 )
@@ -1174,8 +1195,10 @@ type ArchitectStall struct {
 // as the first tree's waited in the outbox, and no pass could tell the controller of it until
 // that first notice was published.
 //
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
+// Every other kind that wakeController queues says something about the project — a free slot, a
+// todo issue, the day's tick — which one wake carries however many facts find it pending. A
+// memory-guard-kill notice never passes through that rule: the workflow writes one row for each
+// kill.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }

@@ -78,7 +78,8 @@ type ApprovedRoundStuckRecord struct {
 	ListPassed        string            `json:"list_passed"`
 }
 
-// The words of what stopped a process for memory (MemoryKillRecord.Cause).
+// The words of what stopped a process for memory (MemoryKillRecord.Cause,
+// MemoryGuardKillRecord.Cause).
 const (
 	KillGuard           = "guard"
 	KillKernel          = "kernel"

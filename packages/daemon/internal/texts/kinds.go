@@ -71,6 +71,7 @@ const (
 	ProviderErrors   Kind = "provider-errors"
 	TreeStalled      Kind = "tree-stalled"
 	ArchitectStalled Kind = "architect-stalled"
+	MemoryGuardKill  Kind = "memory-guard-kill"
 	ProjectPaused    Kind = "project-paused"
 	ProjectResumed   Kind = "project-resumed"
 )
@@ -147,6 +148,7 @@ var list = []Entry{
 	{Kind: ProviderErrors, Form: ControllerNotice, Record: ProviderErrorsRecord{}, Readers: toController},
 	{Kind: TreeStalled, Form: ControllerNotice, Record: TreeStalledRecord{}, Readers: toController},
 	{Kind: ArchitectStalled, Form: ControllerNotice, Record: ArchitectStalledRecord{}, Readers: toController},
+	{Kind: MemoryGuardKill, Form: ControllerNotice, Record: MemoryGuardKillRecord{}, Readers: toController},
 	{Kind: ProjectPaused, Form: ControllerNotice, Record: ProjectPausedRecord{}, Readers: toController},
 	{Kind: ProjectResumed, Form: ControllerNotice, Record: ProjectResumedRecord{}, Readers: toController},
 

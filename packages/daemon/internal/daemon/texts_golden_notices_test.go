@@ -593,6 +593,24 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 				"counted_from", r.at(-100-r.n), "counted_from_event", texts.CountedFromEntryConfirmed, "entry", 6+int64(r.n)))
 	}
 
+	// memory-guard-kill, under the project key: the guard's kill of one of the controller's
+	// processes, the kernel's kill of a command in a microVM controller pod, and the kernel's kill
+	// of one of the processes that run the controller's session.
+	for _, cause := range []shimwire.MemoryKillCause{shimwire.MemoryKillCauseGuard, shimwire.MemoryKillCauseKernel, shimwire.MemoryKillCauseKernelProtected} {
+		report := shimwire.LauncherMemoryKill{PID: 5000 + r.n, Executable: "python-" + r.words("controller-kill/exe", 5), SizeBytes: uint64(1+r.n) << 30,
+			ReadingBytes: uint64(5+r.n) << 30, CounterBytes: uint64(6+r.n) << 30, LimitBytes: uint64(6+2*r.n) << 30, Cause: cause}
+		variant, word, pod := "guard", texts.KillGuard, 5+r.n
+		switch cause {
+		case shimwire.MemoryKillCauseKernel:
+			variant, word, pod = "kernel", texts.KillKernel, 6+r.n
+		case shimwire.MemoryKillCauseKernelProtected:
+			variant, word, pod = "kernel-protected", texts.KillKernelProtected, 6+r.n
+		}
+		b.notice(r, variant, ctl, workflow.ControllerMemoryGuardKillNotice(r.prefix, report),
+			goldenWant("issue", r.prefix, "role", ctl, "cause", word, "process", report.Executable, "pid", report.PID,
+				"size", fmt.Sprintf("%d.00 GiB", 1+r.n), "pod_memory", fmt.Sprintf("%d.00 GiB", pod), "limit", fmt.Sprintf("%d.00 GiB", 6+2*r.n)))
+	}
+
 	// project-paused, with a reason past the bound in the first rendering, and project-resumed:
 	// the operator's pause and its resume, which tell the controller (the controller's own tell it
 	// nothing).

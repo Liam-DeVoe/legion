@@ -286,6 +286,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionStoreFault(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
+	case intake.ControllerMemoryGuardKill:
+		return e.controllerMemoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -1703,21 +1705,108 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 // texts.Kill word), the process by its executable as the launcher sent it (the base name escaped
 // and cut to shimwire.MemoryKillExecutableBytes there, with none of its arguments, which the role
 // that started it already has), its pid, how much it held, and the pod's memory against its
-// limit: the anonymous memory reading for the guard, the memory counter for the kernel. The sizes
-// are binary units a reader can compare at a glance (binarySize). Every cause says where heavy work
-// runs (texts.MemoryKillHeavyWork), as main's note ended every cause with it and
-// dispatch://INFRA-3557's W4 has the guard's note say it.
+// limit: the anonymous memory reading for the guard, the memory counter for the kernel
+// (memoryKillCause). The sizes are binary units a reader can compare at a glance (binarySize).
+// Every cause says where heavy work runs (texts.MemoryKillHeavyWork), as main's note ended every
+// cause with it and dispatch://INFRA-3557's W4 has the guard's note say it.
 func MemoryKillMessage(issue string, report shimwire.LauncherMemoryKill) texts.MemoryKillRecord {
-	cause, pod := texts.KillGuard, report.ReadingBytes
-	switch report.Cause {
-	case shimwire.MemoryKillCauseKernel:
-		cause, pod = texts.KillKernel, report.CounterBytes
-	case shimwire.MemoryKillCauseKernelProtected:
-		cause, pod = texts.KillKernelProtected, report.CounterBytes
-	}
+	cause, pod := memoryKillCause(report)
 	return texts.MemoryKillRecord{RoleHead: texts.RoleHead{Kind: texts.MemoryKill, Issue: issue}, Cause: cause, Process: report.Executable,
 		PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod), Limit: binarySize(report.LimitBytes),
 		HeavyWorkRuns: texts.MemoryKillHeavyWork}
+}
+
+// memoryKillCause is what stopped the process of report, as a texts.Kill word, and the pod's
+// memory reading that cause names in bytes: the kernel's (texts.KillKernel) for
+// shimwire.MemoryKillCauseKernel, a command, and the kernel's for one of the processes that run
+// the session (texts.KillKernelProtected) for shimwire.MemoryKillCauseKernelProtected, each with
+// the pod's memory counter; and the guard's (texts.KillGuard) for shimwire.MemoryKillCauseGuard,
+// the only other cause the launcher session lets through (shimwire.LauncherMemoryKill.Validate),
+// with the pod's anonymous memory reading.
+func memoryKillCause(report shimwire.LauncherMemoryKill) (string, uint64) {
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		return texts.KillKernel, report.CounterBytes
+	case shimwire.MemoryKillCauseKernelProtected:
+		return texts.KillKernelProtected, report.CounterBytes
+	}
+	return texts.KillGuard, report.ReadingBytes
+}
+
+// controllerMemoryGuardKill tells the project's controller which of its own programs the memory
+// guard of the controller's pod ended, or the pod's own kernel stopped, and why
+// (intake.ControllerMemoryGuardKill): one controller notice of kind memory-guard-kill
+// (ControllerMemoryGuardKillNotice), filed under the project key as a tick is, and enqueued in the
+// fact's transaction, so a fact that rolls back tells nobody and the outbox carries the telling
+// across a restart. No architect is told: the controller's pod is of no issue, and the program
+// was the controller's.
+//
+// The report's cause chooses the notice's cause and the pod's reading it names, as
+// memoryGuardKill's does (memoryKillCause). The controller's pod in gVisor runs the guard, whose
+// reports carry no cause; the controller's pod in a microVM runs the guest watch over the
+// launcher's controllerClassifier in its place, and reports the kernel's kills with their causes,
+// where the daemon's acknowledgement carried KernelKills (runtime/sandbox's launcherHelloAck sets
+// it on the controller's). So texts.KillKernel answers shimwire.MemoryKillCauseKernel, a command
+// of the controller's; texts.KillKernelProtected answers shimwire.MemoryKillCauseKernelProtected,
+// one of the processes that run the controller's session; and texts.KillGuard answers
+// shimwire.MemoryKillCauseGuard. The line logged names the cause.
+//
+// Each kill is a row of its own, written here and never through admission's wakeController,
+// whose rule keeps one unsent notice per kind and project: a second kill while the first one's
+// notice waits is a second program ended, and the controller must hear of each. What keeps one
+// kill to one row however often its report arrives is the fact's event id (the daemon's
+// memoryGuardKillEventID), which ApplyFact applies once.
+//
+// The token is the session's, the claim the launcher's connection authenticated for. A token that
+// is not this project's controller's (claim.ControllerToken of the project as every token spells
+// it, claim.ProjectToken, which is how the sandbox names the controller pod's claim) is no kill of
+// this controller's program: the runtime hands only the controller's pod a session of no issue, so
+// it is logged and dropped rather than told to a reader whose program it was not.
+func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.ControllerMemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if fact.Token != claim.ControllerToken(project) {
+		e.logOnCommit(ctx, "workflow: a controller memory guard kill names a token that is not this project's controller, so nobody is told",
+			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
+		return intake.Result{}, nil
+	}
+	rec := ControllerMemoryGuardKillNotice(e.cfg.Project, report)
+	told := "workflow: the controller whose program the memory guard ended is told why"
+	switch rec.Cause {
+	case texts.KillKernel:
+		told = "workflow: the controller whose program the pod's kernel stopped is told why"
+	case texts.KillKernelProtected:
+		told = "workflow: the controller is told why the pod's kernel stopped one of the processes that run its session"
+	}
+	notice, err := record.ControllerNoticeOf(rec)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.enqueue(ctx, tx, e.cfg.Project, notice); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, told,
+		"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// ControllerMemoryGuardKillNotice is the memory-guard-kill notice of project for report, a kill of
+// one of the controller's own processes: the controller's role, what stopped the process and the
+// pod's memory reading that cause names (memoryKillCause), the process by its executable as the
+// launcher sent it, with none of its arguments, its pid, how much it held and the pod's limit,
+// each size in binary units (binarySize), as MemoryKillMessage writes them for a role. What main's
+// notice said beside them, which differs by cause, is the controller's prompt's
+// (roles/controller-root.md, texts.MemoryGuardKillRecord).
+func ControllerMemoryGuardKillNotice(project string, report shimwire.LauncherMemoryKill) texts.MemoryGuardKillRecord {
+	cause, pod := memoryKillCause(report)
+	return texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: project}, Role: claim.RoleController,
+		Cause: cause, Process: report.Executable, PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod),
+		Limit: binarySize(report.LimitBytes)}
 }
 
 // binaryUnits are the units binarySize writes a size of a KiB or more in, smallest first.

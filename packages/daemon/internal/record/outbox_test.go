@@ -112,6 +112,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice(mustNotice(t, texts.ArchitectStalledRecord{NoticeHead: head(texts.ArchitectStalled), Role: claim.RoleArchitect,
 			Arm: string(ArchitectTookNothing), Phase: phase.Implementing, Entry: 1, QueuedAt: now.Add(-time.Hour), Interrupted: true,
 			Since: now.Add(-30 * time.Minute), Bound: "30m0s"})),
+		ControllerNotice(mustNotice(t, texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: "LEGION"},
+			Role: claim.RoleController, Cause: texts.KillGuard, Process: "python3", PID: 4242, Size: "812.40 MiB", PodMemory: "3.13 GiB",
+			Limit: "4.00 GiB"})),
 		ControllerNotice(mustNotice(t, texts.ParkedDecisionRecord{NoticeHead: head(texts.ParkedDecision), Decision: string(DecisionAskAnswered),
 			Root: "LEGION-1", Ref: "dispatch://LEGION-208/ask/a1", Actor: "user:alice", At: now, Answer: "Ship it.", Options: []string{"ship"},
 			Words: map[string]texts.WordsMeta{"answer": {By: "user:alice", At: now}}})),
@@ -1415,12 +1418,12 @@ func TestAnOutboxRowOfAKindOffTheListIsRefused(t *testing.T) {
 }
 
 // Each row below is the payload main's daemon queued, as its JSON stands in the outbox: a
-// phase-finished notice whose reason holds the move back's prose, a worker-stalled notice and an
-// architect-stalled wake whose facts are a sentence in the reason, a catch-up with the text of
-// the decisions it kept, a held notice with the architect's words, the tick's lists, a role
-// message of no kind with its body, an update ask with its text, a merge forward's ask and its
-// landed, and a start with the decisions it kept. This daemon decodes and validates each, for one
-// release, into the payload main wrote.
+// phase-finished notice whose reason holds the move back's prose, a worker-stalled notice, an
+// architect-stalled wake and a memory-guard-kill notice whose facts are a sentence in the reason,
+// a catch-up with the text of the decisions it kept, a held notice with the architect's words,
+// the tick's lists, a role message of no kind with its body, an update ask with its text, a merge
+// forward's ask and its landed, and a start with the decisions it kept. This daemon decodes and
+// validates each, for one release, into the payload main wrote.
 func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	kept := &KeptDecisions{Decisions: []DecisionMark{{Ref: "dispatch://LEGION-208/ask/a1", At: at, Issue: "LEGION-208", Decision: DecisionAskAnswered, Actor: "user:alice"}}}
@@ -1460,6 +1463,10 @@ func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 		{"an architect-stalled wake", OutboxKindControllerNotice,
 			`{"kind":"architect-stalled","role":"architect","reason":"the architect took nothing: the task of phase entry 3 was first queued to the architect's claim of LEGION-208 at 2026-11-08T08:00:00Z"}`,
 			ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: "the architect took nothing: the task of phase entry 3 was first queued to the architect's claim of LEGION-208 at 2026-11-08T08:00:00Z"}},
+		{"a memory-guard-kill notice", OutboxKindControllerNotice,
+			"{\"kind\":\"memory-guard-kill\",\"role\":\"controller\",\"reason\":\"The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)\"}",
+			ControllerNotice{Kind: MemoryGuardKillNotice, Role: claim.RoleController,
+				Reason: "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)"}},
 		{"an update-stalled notice", OutboxKindControllerNotice,
 			`{"kind":"update-stalled","reason":"the round has waited 4h0m0s","update":{"round":"pod:9d3f0c7a","pod":"9d3f0c7a","reasons":"image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2","waiting":[{"claim":"legion-LEGION-208-implementer","role":"implementer","state":"failed"}]}}`,
 			ControllerNotice{Kind: UpdateStalledNotice, Reason: "the round has waited 4h0m0s", Update: &UpdateStalled{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a",

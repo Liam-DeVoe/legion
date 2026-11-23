@@ -15,11 +15,11 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f or 2f7ee6dc for a
-// sentence main wrote since (a format verb, %s, %[1]s or %d, and … stand for any text), the
-// readers, and the passage of the readers' prompt (packages/daemon/internal/prompts) that gives
-// each of them its own rule for the step, quoted word for word from the one line of the file that
-// holds it.
+// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc or
+// 054cd5ca for a sentence main wrote since (a format verb, %s, %[1]s or %d, and … stand for any
+// text), the readers, and the passage of the readers' prompt (packages/daemon/internal/prompts)
+// that gives each of them its own rule for the step, quoted word for word from the one line of the
+// file that holds it.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -617,6 +617,24 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "and the outbox only runs that start again on its backoff"},
 	{texts.ArchitectStalled, " The root waits on a person, and the daemon queues the next start of its architect when that wait is answered.", "controller",
 		rolePrompts + "controller-root.md", "`awaits_person: true` means that the root waits on a person, and the daemon queues the next start of its architect when that wait is answered."},
+	{texts.MemoryGuardKill, "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: ", "controller",
+		rolePrompts + "controller-root.md", "`cause: guard` is the launcher's memory guard, which stopped the process with SIGKILL because your pod was near its memory limit"},
+	{texts.MemoryGuardKill, "%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. ", "controller",
+		rolePrompts + "controller-root.md", "both sizes are then anonymous memory, `size` the anonymous memory that the process held and `pod_memory` the pod's anonymous memory when the guard stopped it."},
+	{texts.MemoryGuardKill, "The pod's kernel stopped one of your processes because the pod ran out of memory: ", "controller",
+		rolePrompts + "controller-root.md", "`cause: kernel` and `cause: kernel-protected` are the pod's own kernel, which stopped the process because the pod ran out of memory"},
+	{texts.MemoryGuardKill, "%s (pid %d) held %s when the pod's memory read %s of its %s limit. ", "controller",
+		rolePrompts + "controller-root.md", "`pod_memory` is then the pod's memory counter when the kernel stopped it."},
+	{texts.MemoryGuardKill, "Your session and the pod's other processes go on. ", "controller",
+		rolePrompts + "controller-root.md", "With `cause: guard` or `cause: kernel`, your session and the pod's other processes go on"},
+	{texts.MemoryGuardKill, "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say.", "controller",
+		rolePrompts + "controller-root.md", "do not run the same program again unchanged, but bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say."},
+	{texts.MemoryGuardKill, "It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. " +
+		"The daemon then starts the same session again, as it does after any exit of your session's process. ", "controller",
+		rolePrompts + "controller-root.md", "With `cause: kernel-protected`, the process was one of the processes that run your session, not a command you ran: if it was your agent, your turn ended with it, " +
+			"and so did every command it was running, and the daemon then starts the same session again, as it does after any exit of your session's process."},
+	{texts.MemoryGuardKill, "Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say.", "controller",
+		rolePrompts + "controller-root.md", "After a `cause: kernel-protected` notice, bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say."},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "implementer",
 		goPrompts + "implementer.md", "That message is yours to act on while the issue is still in a phase you work: re-run a check that failed on itself rather than on your code"},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "planner, tester, reviewer, merger",

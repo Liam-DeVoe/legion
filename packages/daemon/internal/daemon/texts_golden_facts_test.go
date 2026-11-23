@@ -349,6 +349,9 @@ var goldenMainFacts = []goldenFactsOf{
 	{kind: texts.ArchitectStalled, variants: []string{"slow-confirmed"}, from: "admit/architect_stall.go:architectSlowBeforeGate at c7e1cbd5 " +
 		"(when a turn of its architect first confirmed a task of phase entry <n>, and that entry)",
 		keys: []string{"since", "counted_from", "counted_from_event", "entry"}},
+	{kind: texts.MemoryGuardKill, from: "workflow/engine.go:controllerMemoryGuardKill, controllerMemoryGuardNote, controllerKernelKillNote, " +
+		"controllerKernelProtectedKillNote at 054cd5ca (the process, its pid, its size, the pod's reading, the limit, under the project key)",
+		keys: []string{"issue", "role", "cause", "process", "pid", "size", "pod_memory", "limit"}},
 	{kind: texts.ProjectPaused, from: "pause/pause.go:pausedNotice at c7e1cbd5 (the pause, who paused, when, why)",
 		keys: []string{"issue", "pause.id", "pause.by.kind", "pause.at", "pause.reason"}},
 	{kind: texts.ProjectResumed, from: "pause/pause.go:resumedNotice at c7e1cbd5 (the pause ended, who resumed, when)",

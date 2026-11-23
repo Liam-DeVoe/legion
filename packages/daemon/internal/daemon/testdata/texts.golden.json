@@ -10702,6 +10702,132 @@
       }
     },
     {
+      "kind": "memory-guard-kill",
+      "variant": "guard",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "memory-guard-kill on ALPHA",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "ALPHA",
+        "cause": "guard",
+        "process": "python-spjtb",
+        "pid": 5001,
+        "size": "2.00 GiB",
+        "pod_memory": "6.00 GiB",
+        "limit": "8.00 GiB"
+      }
+    },
+    {
+      "kind": "memory-guard-kill",
+      "variant": "guard",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "memory-guard-kill on BRAVO",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "BRAVO",
+        "cause": "guard",
+        "process": "python-kcyti",
+        "pid": 5002,
+        "size": "3.00 GiB",
+        "pod_memory": "7.00 GiB",
+        "limit": "10.00 GiB"
+      }
+    },
+    {
+      "kind": "memory-guard-kill",
+      "variant": "kernel",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "memory-guard-kill on ALPHA",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "ALPHA",
+        "cause": "kernel",
+        "process": "python-spjtb",
+        "pid": 5001,
+        "size": "2.00 GiB",
+        "pod_memory": "7.00 GiB",
+        "limit": "8.00 GiB"
+      }
+    },
+    {
+      "kind": "memory-guard-kill",
+      "variant": "kernel",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "memory-guard-kill on BRAVO",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "BRAVO",
+        "cause": "kernel",
+        "process": "python-kcyti",
+        "pid": 5002,
+        "size": "3.00 GiB",
+        "pod_memory": "8.00 GiB",
+        "limit": "10.00 GiB"
+      }
+    },
+    {
+      "kind": "memory-guard-kill",
+      "variant": "kernel-protected",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "memory-guard-kill on ALPHA",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "ALPHA",
+        "cause": "kernel-protected",
+        "process": "python-spjtb",
+        "pid": 5001,
+        "size": "2.00 GiB",
+        "pod_memory": "7.00 GiB",
+        "limit": "8.00 GiB"
+      }
+    },
+    {
+      "kind": "memory-guard-kill",
+      "variant": "kernel-protected",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "memory-guard-kill on BRAVO",
+      "payload": {
+        "kind": "memory-guard-kill",
+        "role": "controller",
+        "issue": "BRAVO",
+        "cause": "kernel-protected",
+        "process": "python-kcyti",
+        "pid": 5002,
+        "size": "3.00 GiB",
+        "pod_memory": "8.00 GiB",
+        "limit": "10.00 GiB"
+      }
+    },
+    {
       "kind": "project-paused",
       "variant": "paused",
       "sample": 1,

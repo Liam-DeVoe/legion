@@ -245,6 +245,9 @@ internal/daemon/texts_steps_test.go holds to the steps taken out of the daemon's
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the five pages of skills/ this filter names, each
 named alone, are all this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's

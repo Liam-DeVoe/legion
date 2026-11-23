@@ -106,6 +106,11 @@ body: |-
   (`\n`, `\\`) rather than joining lines with ` / `, so every character is kept; and a
   tree-stalled notice tells the controller to read the tree first (`first: read_tree`) and names
   what it decides among (`decide: ask_role_what_it_waits_on,move_issue_back_a_phase,park_tree`). A
+  `memory-guard-kill` notice of one of the controller's own processes is a record of its own kind
+  on the list, which names what stopped the process (`cause: guard`, `kernel` or
+  `kernel-protected`), the process by its executable (`process`), its `pid`, its `size`, the pod's
+  reading (`pod_memory`) and the pod's `limit`, and no `reason`; the controller's prompt says what
+  each cause means for its session and what to run in place of the same program. A
   root's start task of a gate
   that stands part way takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`).
   A woken role's task of

@@ -18,10 +18,11 @@
 // next suite to use it need not empty it first, so each test empties it again at its end, once its
 // own cleanups have run: a test leaves the server as it found it. The reset holds the server for
 // one test of one test binary at a time, waits for every client connection to it to end, and
-// empties each stream before it deletes it, so the server is the tests' alone and the packages
-// using it run one after another (go test -p 1). The leak check at the end of each test depends on
-// that rule too: with one binary on the server, every connection it holds is this binary's, so one
-// that appeared while a test held the server is that test's own.
+// deletes each stream's consumers and empties the stream before it deletes it, so the server is
+// the tests' alone and the packages using it run one after another (go test -p 1). The leak check
+// at the end of each test depends on that rule too: with one binary on the server, every
+// connection it holds is this binary's, so one that appeared while a test held the server is that
+// test's own.
 package testnats
 
 import (
@@ -118,14 +119,16 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset then purges each stream and deletes it (emptyStreams), so a test creates its own there
-// and finds it empty with CreateStream: a deleted stream's store can outlive the delete that
-// answered, and a purged one carries no message into the next test, though it does carry its
-// sequence. The purge, in emptyStreams, states the mechanism and names the source lines; the
-// comments elsewhere in this package point to it rather than stating it again. An external server
-// outlives the binary, so on one the same reset runs again when t ends, once t's own cleanups and
-// its leak check have run (emptyAtTheEnd). Last, the reset arms the leak check (leakcheck.go),
-// which fails t at its end for a client connection t left open on the server.
+// The reset then deletes each stream's consumers, purges it and deletes it (emptyStreams), so a
+// test creates its own there and finds it empty with CreateStream, and a durable it creates there
+// starts where its own configuration says. A deleted stream's store can outlive the delete that
+// answered; a purged one carries no message into the next test, though it does carry its
+// sequence, and one whose consumers were deleted first carries no consumer's position. The purge
+// and the consumer deletes, in emptyStreams, state the mechanism and name the source lines; the
+// comments elsewhere in this package point to them rather than stating it again. An external
+// server outlives the binary, so on one the same reset runs again when t ends, once t's own
+// cleanups and its leak check have run (emptyAtTheEnd). Last, the reset arms the leak check
+// (leakcheck.go), which fails t at its end for a client connection t left open on the server.
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
@@ -168,13 +171,13 @@ func URL(t testing.TB) string {
 
 // emptyAtTheEnd empties the external server again at the end of t, exactly as URL's reset
 // empties it when t takes it: it waits for the server to report no client connection (drained),
-// then purges and deletes each stream (emptyStreams). It runs once t's own cleanups have run and
-// its leak check has closed every client the fixture opened for t; a connection that check could
-// not close fails t here at once, as it would fail the next take. Nothing removes an external
-// server when the binary ends, unlike the package's container (Main), and the next suite to use
-// it need not empty it first, so without this the streams the binary's last test made stay on
-// the server for that suite to meet. t's context is done by the time a cleanup runs, so the
-// calls take a context of their own.
+// then deletes each stream's consumers, purges the stream and deletes it (emptyStreams). It runs
+// once t's own cleanups have run and its leak check has closed every client the fixture opened for
+// t; a connection that check could not close fails t here at once, as it would fail the next take.
+// Nothing removes an external server when the binary ends, unlike the package's container (Main),
+// and the next suite to use it need not empty it first, so without this the streams the binary's
+// last test made stay on the server for that suite to meet. t's context is done by the time a
+// cleanup runs, so the calls take a context of their own.
 func emptyAtTheEnd(t testing.TB) {
 	t.Helper()
 	ctx := context.Background()
@@ -184,8 +187,8 @@ func emptyAtTheEnd(t testing.TB) {
 	emptyStreams(ctx, t, js)
 }
 
-// emptyStreams purges each stream of the server js is a client of and deletes it, and fails t
-// unless the server's account then holds no stream.
+// emptyStreams deletes the consumers of each stream of the server js is a client of, purges the
+// stream and deletes it, and fails t unless the server's account then holds no stream.
 func emptyStreams(ctx context.Context, t testing.TB, js jetstream.JetStream) {
 	t.Helper()
 	names := js.StreamNames(ctx)
@@ -232,6 +235,47 @@ func emptyStreams(ctx context.Context, t testing.TB, js jetstream.JetStream) {
 		stream, err := js.Stream(ctx, name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
+		}
+		// Delete the stream's consumers before the purge and the delete, so the store the delete
+		// can leave behind (the purge, above, says how) holds no consumer's state either.
+		//
+		// A durable on this one server writes its position to a state file in the stream's
+		// directory when it is created, unless it or its stream asks for memory storage (v2.15.1:
+		// consumer.go:6481-6488, SetStarting, under selectStartingSeqNo, for a consumer on one
+		// replica; filestore.go:13513-13521), and a consumer deleted with its stream leaves that
+		// file for the stream's own removal (filestore.go:14607-14612). When the rename that
+		// removal starts with fails, the file stays in streams/<name>/obs/<consumer>, and a
+		// durable of the same name created on the next stream of that name finds it: a consumer
+		// whose store has a state file restores it rather than selecting its start
+		// (consumer.go:1350-1353, the else of :1399-1402; filestore.go:13819-13828). It starts
+		// where the earlier test's durable stood, which for one created on a stream that never
+		// held a message is sequence 1, whatever deliver policy the test gave it, and delivers
+		// every message the test published before creating it: the "1 messages of history
+		// pending, want 0" of intake's TestAFreshConsumerStartsAtTheNextMessage, run after a test
+		// that made the same durables. nats-server 2.10.29 does the same (consumer.go:962-965,
+		// 4945-4947, 5280-5281).
+		//
+		// A consumer delete removes the consumer's directory before it answers (jetstream_api.go:
+		// 5835 answers after obs.delete(), which reaches consumer.go:6887's store.Delete(),
+		// filestore.go:14582-14583, whose removal at :14607-14611 runs inline), so once these
+		// deletes have answered, nothing of a consumer is left for the stream's delete to leave.
+		// They come before the purge because a purge updates each consumer's position
+		// (consumer.go:6691), which starts a write of its state file the delete would then race.
+		// A consumer the server removed itself after the list, an ephemeral one past its
+		// inactivity threshold, is gone or going already, and its generated name is not one a
+		// later test's durable takes.
+		var consumers []string
+		listed := stream.ConsumerNames(ctx)
+		for consumer := range listed.Name() {
+			consumers = append(consumers, consumer)
+		}
+		if err := listed.Err(); err != nil {
+			t.Fatalf("list the consumers of the NATS server's stream %s: %v", name, err)
+		}
+		for _, consumer := range consumers {
+			if err := stream.DeleteConsumer(ctx, consumer); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+				t.Fatalf("delete consumer %s of the NATS server's stream %s: %v", consumer, name, err)
+			}
 		}
 		if err := stream.Purge(ctx); err != nil {
 			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
