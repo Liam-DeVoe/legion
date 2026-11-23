@@ -811,14 +811,15 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // counts, its children and its own backlink count, every one of them a connection taken and
 // given back in turn (store.sharedPoolSize says what that costs a loaded server).
 //
-// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, its
-// artifacts, its open asks, its children and its backlink count. A key no issue carries is what
-// the issue row's callback records, answered as that row's pgx.ErrNoRows - 404 NOT_FOUND - once
-// the batch has closed: a callback that returned the error would close the batch on it, and pgx
-// invalidates every statement of a batch whose Close answers an error in the connection's
-// statement and description caches (invalidateCachesOnBatchResultsError), so one 404 would cost
-// that connection the whole read's prepared statements. The other callbacks run against an issue
-// with no row, answer empty lists, and readIssue drops them with the rest of the read.
+// Batch 1 is everything keyed on the issue key alone: the issue row, its external links, the
+// issues it blocks, its artifacts, its open asks, its children and its backlink count. A key no
+// issue carries is what the issue row's callback records, answered as that row's pgx.ErrNoRows -
+// 404 NOT_FOUND - once the batch has closed: a callback that returned the error would close the
+// batch on it, and pgx invalidates every statement of a batch whose Close answers an error in the
+// connection's statement and description caches (invalidateCachesOnBatchResultsError), so one 404
+// would cost that connection the whole read's prepared statements. The other callbacks run
+// against an issue with no row, answer empty lists, and readIssue drops them with the rest of the
+// read.
 //
 // Batch 2 is what only batch 1's answers name: every artifact's versions in one statement, the
 // documents' latest reviews and open approval requests, and the open asks' identity events and
@@ -857,6 +858,15 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 // encoding all three answer.
 type issueDetail struct {
 	model.Issue
+	// Blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none: the
+	// issue_links rows blocked_by reads, read by their target (issueBlocksStatement). It is this
+	// read's alone. model.Issue is also an issue event's payload and a write's answer, which a
+	// write of another issue never updates, and a listing row (model.IssueSummary) carries none.
+	// It comes before the lists below, so a reader that keeps only the start of a long read - the
+	// command bar's agent among them - still has it. readIssue always sets it, so the read always
+	// writes it; omitzero leaves out only a nil list, and makes the field optional in the
+	// generated types, so a value typed before the field still type-checks.
+	Blocks []string `json:"blocks,omitzero"`
 	model.IssueRouteReach
 	// IssueClaimLiveness sits beside the issue rather than inside its claim: model.IssueClaim
 	// is the payload of issue.claimed and issue.released, and a state read at this moment
@@ -886,8 +896,8 @@ type issueDetail struct {
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
-// loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
-// issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
+// loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
+// issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
 // refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
 // for (wantsDisplayTrees): the display trees of the documents' approval reasons and of the open
 // asks' texts, which only the dashboard reads.
@@ -914,6 +924,9 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		scanned, err := scanExternalLinks(rows)
 		links = scanned
 		return err
+	})
+	first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&read.Blocks)
 	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
@@ -1044,6 +1057,14 @@ var issueRowStatement = `
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
 const issueExternalLinksStatement = `select url, kind from issue_external_links where issue_key = $1 order by url`
+
+// issueBlocksStatement reads the keys of the issues an issue blocks, $1 its key: those whose
+// blocked_by names it, sorted as blocked_by is. It answers one row for any key, '{}' for none. Its
+// filter is the one issue_links_target (target_key, kind) indexes.
+const issueBlocksStatement = `
+		select coalesce(array_agg(issue_key order by issue_key), '{}')
+		from issue_links where target_key = $1 and kind = 'blocked_by'
+	`
 
 // issueCommentCountStatement counts an issue's comments, $1 its key: every comment its comment
 // list answers (loadOwnerComments with no ?artifact=), a reply to an ask and a comment on one of

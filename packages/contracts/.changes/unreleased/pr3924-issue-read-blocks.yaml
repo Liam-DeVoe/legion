@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `IssueDetails` carries `blocks`, the keys of the issues whose `blocked_by` names the issue, in
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`. It is optional, so a value
+  typed before it still type-checks.

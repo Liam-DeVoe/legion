@@ -30,8 +30,8 @@ type fullIssueRead struct {
 // buildFullIssueRead writes, through the API alone, an issue with two documents of several
 // versions each - one approved at its latest version, one with an open approval request - a
 // file, an open ask with a reply and one without, an answered ask, a child with a grandchild and
-// a link of its own, an external link and a blocker, and another issue's mention of both the
-// issue and one of its asks, so its backlink counts are not zero.
+// a link of its own, an external link, a blocker and an issue it blocks, and another issue's
+// mention of both the issue and one of its asks, so its backlink counts are not zero.
 func buildFullIssueRead(t *testing.T, handler http.Handler) fullIssueRead {
 	t.Helper()
 	createReferenceAPIProject(t, handler, "BATCH")
@@ -51,6 +51,12 @@ func buildFullIssueRead(t *testing.T, handler http.Handler) fullIssueRead {
 		"external_links": []map[string]string{{"url": "https://example.com/batched-issue-read"}},
 	}, "alice"); patched.Code != http.StatusOK {
 		t.Fatalf("block and link the issue: status=%d body=%s", patched.Code, patched.Body.String())
+	}
+	blocked := createOutcomeIssue(t, handler, "BATCH", "Waits on the batched issue read")
+	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+blocked, map[string]any{
+		"blocked_by": []string{issue.Key},
+	}, "alice"); patched.Code != http.StatusOK {
+		t.Fatalf("block another issue on the issue: status=%d body=%s", patched.Code, patched.Body.String())
 	}
 
 	approved := uploadIssueDocument(t, handler, issue.Key, "Design notes.md", "# Design\n\nFirst.\n")
@@ -144,6 +150,10 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the issue: %v", err)
 	}
+	var blocks []string
+	if err := pool.QueryRow(ctx, issueBlocksStatement, issue.Key).Scan(&blocks); err != nil {
+		t.Fatalf("read the issues it blocks: %v", err)
+	}
 	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
@@ -181,6 +191,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	recorder := httptest.NewRecorder()
 	WriteJSON(recorder, http.StatusOK, issueDetail{
 		Issue:             issue,
+		Blocks:            blocks,
 		Progress:          progress,
 		CommentCount:      comments,
 		Artifacts:         artifactReads(artifacts, nil),
@@ -217,6 +228,7 @@ func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
 		}
 	}
 	read := decodeBody[struct {
+		Blocks    []string `json:"blocks"`
 		Artifacts []struct {
 			Kind     string `json:"kind"`
 			Versions []struct {
@@ -236,6 +248,9 @@ func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
 	}
 	if len(read.Children) != 1 {
 		t.Fatalf("children = %d, want the one child", len(read.Children))
+	}
+	if len(read.Blocks) != 1 {
+		t.Fatalf("blocks = %v, want the one issue blocked by it", read.Blocks)
 	}
 	if len(read.Artifacts) != 4 {
 		t.Fatalf("artifacts = %d, want the spec, two documents and the file", len(read.Artifacts))
@@ -301,6 +316,69 @@ func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
 	}
 	if count, held := read(quietKey)["comment_count"]; held {
 		t.Errorf("the read of %s, which holds no comment, carries comment_count %v, want none", quietKey, count)
+	}
+}
+
+// An issue's read names the issues it blocks: those whose blocked_by names it, the same
+// issue_links rows read by their target. Asked what DEMO-30 blocks, the command bar's agent read
+// DEMO-30, whose read named nothing that waits on it, so it could find DEMO-31 only by scanning a
+// whole project's listing. A link removed leaves blocks empty, never absent. blocks comes before
+// the read's lists, so a reader that keeps only the start of a long read still has it, and the
+// listing's rows carry none.
+func TestIssueReadNamesTheIssuesItBlocks(t *testing.T) {
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "WAIT")
+	blocker := createOutcomeIssue(t, handler, "WAIT", "API: rate limit headers")
+	waiting := createOutcomeIssue(t, handler, "WAIT", "API: client retries on 429")
+	blockWaiting := func(keys []string) {
+		t.Helper()
+		if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+waiting, map[string]any{
+			"blocked_by": keys,
+		}, "alice"); patched.Code != http.StatusOK {
+			t.Fatalf("set %s's blocked_by to %v: status=%d body=%s", waiting, keys, patched.Code, patched.Body.String())
+		}
+	}
+	// read answers the body of the blocker's read and its blocks, and whether it carries them.
+	read := func() (string, []any, bool) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+blocker, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", blocker, response.Code, response.Body.String())
+		}
+		blocks, held := decodeBody[map[string]any](t, response)["blocks"].([]any)
+		return response.Body.String(), blocks, held
+	}
+
+	if _, blocks, held := read(); !held || len(blocks) != 0 {
+		t.Fatalf("the read of %s, which blocks nothing, carries blocks %v (held %t), want []", blocker, blocks, held)
+	}
+
+	blockWaiting([]string{blocker})
+	body, blocks, held := read()
+	if !held || !slices.Equal(blocks, []any{waiting}) {
+		t.Fatalf("after %s was blocked by %s, the read of %s carries blocks %v (held %t), want [%s]",
+			waiting, blocker, blocker, blocks, held, waiting)
+	}
+	if at, lists := strings.Index(body, `"blocks":`), strings.Index(body, `"artifacts":`); at < 0 || lists < 0 || at > lists {
+		t.Errorf("the read of %s writes blocks at byte %d and artifacts at byte %d, want blocks before the lists: %s", blocker, at, lists, body)
+	}
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=WAIT", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list WAIT: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, listed)
+	at := slices.IndexFunc(rows, func(row map[string]any) bool { return row["key"] == blocker })
+	if at < 0 {
+		t.Fatalf("the listing of WAIT holds no row for %s: %s", blocker, listed.Body.String())
+	}
+	if blocks, held := rows[at]["blocks"]; held {
+		t.Errorf("the listing row of %s carries blocks %v, want none: only the issue's own read names them", blocker, blocks)
+	}
+
+	blockWaiting([]string{})
+	if _, blocks, held := read(); !held || len(blocks) != 0 {
+		t.Fatalf("after %s's link to %s was removed, the read of %s carries blocks %v (held %t), want []",
+			waiting, blocker, blocker, blocks, held)
 	}
 }
 

@@ -1552,7 +1552,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
+    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
     get: operations["getApiV1IssuesByKey"];
     put?: never;
     post?: never;
@@ -5909,6 +5909,7 @@ export interface components {
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
+      blocks?: string[];
       children: components["schemas"]["IssueChild"][] | null;
       claim: components["schemas"]["IssueClaim"] | null;
       /** Format: date-time */
