@@ -115,10 +115,10 @@ func (r *ownerHoldRig) published() []string {
 // A stale owner-step is not delivered: the notice names the run it tells, and once that run has
 // ended it finishes unpublished with the log line of a step that no longer runs, asking the runtime
 // nothing. The owner's retro of `implementer:owner`: its notice while the retro runs is published,
-// once the slot's gh files hold the owner's own App, which no write changes; the same notice once
-// the retro ended is not. A role at two steps, `implementer:owner reviewer implementer:owner`
-// standing at step 3: the notice of step 1, whose run ended, is not delivered, and the notice of
-// step 3 is.
+// once the slot's gh files hold the implement App, the App of the owner's implementer step, which
+// the retro is done as; the same notice once the retro ended is not. A role at two steps,
+// `implementer:owner reviewer implementer:owner` standing at step 3: the notice of step 1, whose
+// run ended, is not delivered, and the notice of step 3 is.
 //
 // The control: the hold that judged the App alone published the retro's notice after the retro
 // ended (the architect's App is what the slot holds wherever the owner does no step), and the
@@ -151,8 +151,8 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 		if lines := strings.Count(r.logged.String(), "outbox owner-step finished undelivered: its step no longer runs"); lines != 1 {
 			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", lines, r.logged.String())
 		}
-		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "SlotHoldsCredential architect" {
-			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want the running retro's one ask whether it holds the owner's own App, and no write", calls)
+		if got, want := slotCalls(r.rt, r.owner), []string{"WriteSlotCredential", "SlotHoldsCredential implementer"}; strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want the running retro's %q, and nothing of the ended retro's", got, want)
 		}
 	})
 
@@ -258,11 +258,11 @@ func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
 }
 
 // The end of an owner's step writes the owner's slot back to its own App once, and the next notice
-// to the owner waits for that write. At the owner's retro of `implementer:owner`, a notice queued
-// after the slot_credential row the step's end queued waits as a notice held for its architect and
-// publishes nothing; the row asks one write of the slot, which the runtime makes for the App it
-// judges, the architect's; then the notice
-// publishes. Where the owner's next step of another App runs already (step 3 of
+// to the owner waits for that write. At the reviewer's step of `implementer:owner reviewer`, once
+// the owner's implementer step ended, a notice queued after the slot_credential row that end queued
+// waits as a notice held for its architect and publishes nothing; the row asks one write of the
+// slot, which the runtime makes for the App it judges, the architect's; then the notice publishes.
+// Where the owner's next step of another App runs already (step 3 of
 // `implementer:owner reviewer implementer:owner`), the row writes nothing: that step's owner-step
 // writes its App, so the slot is written once at that end too.
 //
@@ -285,8 +285,8 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 	}
 
 	t.Run("the notice after the write-back", func(t *testing.T) {
-		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer:owner")
-		r.started(t, "retro", 0, false)
+		r := newOwnerHoldRig(t, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "reviewer")
+		r.started(t, "step", 1, true)
 		slot := slotRow(t, r)
 		notice := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer,
 			Phase: phase.Reviewing, Summary: "approved"}, r.now))
@@ -323,5 +323,130 @@ func TestTheNextNoticeToTheOwnerWaitsForItsSlotWrittenBack(t *testing.T) {
 		if calls := slotCalls(r.rt, r.owner); len(calls) != 2 || calls[0] != "WriteSlotCredential" || calls[1] != "SlotHoldsCredential implementer" {
 			t.Fatalf("step 3's owner-step asked the runtime %q, want one write and the check of the implementer's App", calls)
 		}
+	})
+}
+
+// stands moves LEGION-1 to at, its task a running at place, as a move of the walk writes the two
+// (record.Store.MoveTask, PutIssue).
+func (r *ownerHoldRig) stands(t *testing.T, at phase.Phase, place record.TaskPlace) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		issue, err := r.records.Issue(ctx, tx, "LEGION-1")
+		if err != nil {
+			return err
+		}
+		if err := r.records.MoveTask(ctx, tx, "LEGION-1", 1, "a", place, record.TaskRunning); err != nil {
+			return err
+		}
+		issue.Phase = at
+		return r.records.PutIssue(ctx, tx, *issue)
+	}); err != nil {
+		t.Fatalf("move LEGION-1 to %s at %+v: %v", at, place, err)
+	}
+}
+
+// writtenBack runs one supervise slot_credential of the owner's claim, the write of its slot back
+// to its own App that the end of a run the owner did queues, and deletes the row once the executor
+// finished it, as the runner does.
+func (r *ownerHoldRig) writtenBack(t *testing.T) {
+	t.Helper()
+	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", record.SuperviseRequest{Op: "slot_credential", Tree: "LEGION-1",
+		Role: claim.RoleArchitect, Claim: r.owner, Generation: 1}, r.now))
+	if err := r.runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the slot_credential row = %v", err)
+	}
+	if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
+		t.Fatalf("finish the slot_credential row: %v", err)
+	}
+}
+
+// The owner's retro of a task whose last step of the type implementation is the owner's is done as
+// that step's role (record.OwnerActsAs), so through its retro the owner's gh acts as the App that
+// opened the pull request: the one App GitHub lets resolve the pull request's review threads, which
+// the retro resolves where a reviewer accepted a bot's thread and named it to the owner. On
+// `implementer:owner reviewer` at the retro, the retro's owner-step has the runtime write the
+// owner's slot, and while the slot's gh files do not hold the implement App it publishes nothing
+// and waits as a notice held for its architect; once they hold it, it is published. A write-back of
+// the owner's own App queued at the end of step 1 that runs only now, during the retro, writes
+// nothing, so it does not undo the App the owner was told its retro holds; once the retro has ended
+// and the issue stands in merging, the write-back the retro's end queues writes the slot, for the
+// App the runtime judges then, the owner's own.
+//
+// The controls: the retro of `acceptance:owner` alone, a task with no step of the type
+// implementation, which the owner does as itself, asks whether the slot holds the owner's own App
+// and writes nothing; and at the retro of `implementer reviewer`, which its implementer does, a
+// write-back of the owner's slot writes it, as wherever the owner does no step.
+func TestTheOwnersRetroOfItsOwnImplementationIsDoneAsTheImplementApp(t *testing.T) {
+	ctx := context.Background()
+	retro := record.NoticeStep{Task: "a", Kind: "retro", Place: 0, Starts: 1}
+	notice := record.Notice{Kind: record.OwnerStepNotice, Phase: phase.Retro, Reason: "LEGION-1 retro. Task: a.", OwnerStep: &retro}
+	asked := func(t *testing.T, r *ownerHoldRig, want []string, while string) {
+		t.Helper()
+		if got := slotCalls(r.rt, r.owner); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s the runtime was asked %q of the owner's slot, want %q", while, got, want)
+		}
+	}
+
+	t.Run("implementer:owner reviewer", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer:owner", "reviewer")
+		r.started(t, "step", 1, true)
+		r.started(t, "retro", 0, false)
+		r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
+		row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
+		if err := r.runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) || !errors.Is(err, runtime.ErrSlotCredentialPending) {
+			t.Fatalf("the retro's owner-step while the slot does not hold the implement App = %v, want a notice held for its architect", err)
+		}
+		if got := r.published(); len(got) != 0 {
+			t.Fatalf("the retro's owner-step published %v while the slot does not hold the implement App, want nothing", got)
+		}
+		want := []string{"WriteSlotCredential", "SlotHoldsCredential implementer"}
+		asked(t, r, want, "while the slot does not hold the implement App,")
+
+		r.rt.ScriptSlotHolds(nil)
+		row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
+		if err := r.runner.execute(ctx, row); err != nil {
+			t.Fatalf("the retro's owner-step once the slot holds the implement App = %v", err)
+		}
+		if _, err := r.pool.Exec(ctx, "delete from outbox where id = $1", row.ID); err != nil {
+			t.Fatalf("finish the published row: %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the retro's owner-step published %v once the slot holds the implement App, want one", got)
+		}
+		want = append(want, "WriteSlotCredential", "SlotHoldsCredential implementer")
+		asked(t, r, want, "once the slot holds the implement App,")
+
+		r.writtenBack(t)
+		asked(t, r, want, "after a write-back of step 1's end ran during the retro, which must write nothing,")
+
+		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", retro.StepPlace())
+			return err
+		}); err != nil {
+			t.Fatalf("end the retro: %v", err)
+		}
+		r.stands(t, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
+		r.writtenBack(t)
+		asked(t, r, append(want, "WriteSlotCredential"), "after the retro's write-back ran in merging,")
+	})
+
+	t.Run("control: acceptance:owner alone", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "acceptance:owner")
+		r.started(t, "step", 1, true)
+		r.started(t, "retro", 0, false)
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retro's owner-step = %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the retro's owner-step published %v, want one", got)
+		}
+		asked(t, r, []string{"SlotHoldsCredential architect"}, "for the retro the owner does as itself,")
+	})
+
+	t.Run("control: the retro of a fresh implementer", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer", "reviewer")
+		r.writtenBack(t)
+		asked(t, r, []string{"WriteSlotCredential"}, "for a write-back of the owner's slot at its implementer's retro,")
 	})
 }

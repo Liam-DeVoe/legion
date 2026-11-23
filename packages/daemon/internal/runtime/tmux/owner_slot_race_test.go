@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -221,5 +225,109 @@ func TestATmuxPaneHoldingAnotherAppIsNotSaidToHoldTheStepsApp(t *testing.T) {
 	g.acting.Store(claim.RoleImplementer)
 	if err := g.stepTold(ctx, t); err != nil {
 		t.Fatalf("SlotHoldsCredential(the architect, implementer) once its pane is written for its step = %v, want nil", err)
+	}
+}
+
+// retroSteps is the plan rows of task a written as words (`role` or `role:key`), each of its
+// built-in role's type.
+func retroSteps(words ...string) []record.PlanStep {
+	roles := plan.BuiltinRoles()
+	steps := make([]record.PlanStep, 0, len(words))
+	for i, word := range words {
+		role, key, _ := strings.Cut(word, ":")
+		steps = append(steps, record.PlanStep{Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: key})
+	}
+	return steps
+}
+
+// The owner's retro of a task whose last step of the type implementation is the owner's is done as
+// that step's role, and every write of the owner's pane judges that under the launch lock: the rig's
+// ActsAs is the daemon's rule (record.OwnerActsAs) over the issue as the record would read it, the
+// task's plan rows `implementer:owner reviewer`. While the issue stands at the reviewer's step the
+// owner's pane holds the review App, its own. At the retro the owner-step's ask whether the pane
+// holds the implement App is a wait until the outbox's write lands, and then nil; a refresh and a
+// relaunch during the retro leave the pane on the implement App the owner was told of; once the
+// retro ended and the issue stands in merging, the retro's write-back puts the review App back.
+//
+// The controls: at the retro of `acceptance:owner` alone, which the owner does as itself, and at the
+// retro of `implementer reviewer`, which its implementer does, the same writes, refresh and
+// relaunch leave the owner's pane on the review App.
+func TestTheOwnersRetroOfItsOwnImplementationHoldsTheImplementAppUnderTmux(t *testing.T) {
+	implement, review := staticCredentialToken(claim.RoleImplementer), staticCredentialToken(claim.RoleArchitect)
+	for _, tc := range []struct {
+		name  string
+		steps []record.PlanStep
+		// placeRole is the role of the claim that works the retro (record.Issue.PlaceRole).
+		placeRole claim.Role
+		want      string
+	}{
+		{name: "implementer:owner reviewer", steps: retroSteps("implementer:owner", "reviewer"), placeRole: claim.RoleArchitect, want: implement},
+		{name: "control: acceptance:owner alone", steps: retroSteps("acceptance:owner"), placeRole: claim.RoleArchitect, want: review},
+		{name: "control: the retro of a fresh implementer", steps: retroSteps("implementer", "reviewer"), placeRole: claim.RoleImplementer, want: review},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var issue atomic.Pointer[record.Issue]
+			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Reviewing, PlaceRole: claim.RoleReviewer, StepRole: claim.RoleReviewer})
+			var owner atomic.Value
+			owner.Store(claim.Token(""))
+			f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+				o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
+					if token != owner.Load().(claim.Token) {
+						return "", false, nil
+					}
+					role, acting := record.OwnerActsAs(*issue.Load(), tc.steps)
+					return role, acting, nil
+				}
+			})
+			spec := f.spec(t, claim.RoleArchitect)
+			owner.Store(spec.Claim)
+			held := func() string {
+				t.Helper()
+				return readHostsToken(t, ghconfig.Dir(runtime.GHConfigDir(f.stateDir, spec.Claim), "acme"))
+			}
+			if _, err := f.Spawn(ctx, spec); err != nil {
+				t.Fatalf("Spawn of the architect: %v", err)
+			}
+			if got := held(); got != review {
+				t.Fatalf("the owner's pane holds %q at the reviewer's step, want %q", got, review)
+			}
+
+			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Retro, PlaceRole: tc.placeRole})
+			role := claim.RoleArchitect
+			if tc.want == implement {
+				role = claim.RoleImplementer
+				if err := f.SlotHoldsCredential(ctx, spec.Claim, role); !errors.Is(err, runtime.ErrSlotCredentialPending) {
+					t.Fatalf("the retro's ask before the outbox's write = %v, want runtime.ErrSlotCredentialPending", err)
+				}
+			}
+			if err := f.WriteSlotCredential(ctx, spec.Claim); err != nil {
+				t.Fatalf("WriteSlotCredential of the owner's pane at the retro = %v", err)
+			}
+			if err := f.SlotHoldsCredential(ctx, spec.Claim, role); err != nil {
+				t.Fatalf("the retro's ask whether the pane holds the App of %s once written = %v, want nil", role, err)
+			}
+			if got := held(); got != tc.want {
+				t.Fatalf("the owner's pane holds %q at the retro once written, want %q", got, tc.want)
+			}
+			f.refreshGitHubCredentials(ctx)
+			if got := held(); got != tc.want {
+				t.Fatalf("the owner's pane holds %q after a refresh during the retro, want %q", got, tc.want)
+			}
+			if _, err := f.Spawn(ctx, spec); err != nil {
+				t.Fatalf("the relaunch of the architect during the retro: %v", err)
+			}
+			if got := held(); got != tc.want {
+				t.Fatalf("the owner's pane holds %q after a relaunch during the retro, want %q", got, tc.want)
+			}
+
+			issue.Store(&record.Issue{Key: "LEGION-1", Phase: phase.Merging})
+			if err := f.WriteSlotCredential(ctx, spec.Claim); err != nil {
+				t.Fatalf("the retro's write-back of the owner's pane = %v", err)
+			}
+			if got := held(); got != review {
+				t.Fatalf("the owner's pane holds %q after the retro's write-back in merging, want %q", got, review)
+			}
+		})
 	}
 }

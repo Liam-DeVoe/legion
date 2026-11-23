@@ -539,7 +539,7 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // the helper is the clone's own configuration. Every launcher slot, the controller's included,
 // reads at GHConfigDir the gh bundle its Secret holds — the App of the role the slot works as
 // (slotAppRole: the role its process was launched as, or the step's role while the architect in it
-// does a step of its own) — so this is appended once for every kind.
+// does a step of its own or the retro of one) — so this is appended once for every kind.
 func ghAgentEnv(l launch) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "GH_CONFIG_DIR", Value: ghconfig.Dir(GHConfigDir, l.gitHubDefault)},

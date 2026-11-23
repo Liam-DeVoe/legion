@@ -1116,11 +1116,12 @@ func NoticePerClaim(kind NoticeKind) bool {
 // one live claim (store's Pause), which stops its process and keeps its session, phase and task as
 // an idle release's stop does, and is its own op because it is bound to its pause (Pause below)
 // and does nothing once that pause has ended; "slot_credential" writes the slot of the owner of
-// the issue's task back to the App of the owner's own role, which the end of every step whose
-// start named an architect queues (workflow's ownerSlotCredential), and stops nothing: it writes
-// only where the slot holds that App as the record stands when the row runs (runtime.SlotRole),
-// and nothing where the owner's next step of another App runs already, whose owner-step writes
-// the slot for that App (the daemon's slotCredential). The runtime judges the App again as it
+// the issue's task back to the App of the owner's own role, which the end of every step and retro
+// whose start named an architect queues (workflow's ownerSlotCredential), and stops nothing: it
+// writes only where the slot holds that App as the record stands when the row runs
+// (runtime.SlotRole), and nothing where the owner's next step of another App, or its retro of its
+// own implementation step, runs already, whose owner-step writes the slot for that App (the
+// daemon's slotCredential). The runtime judges the App again as it
 // writes, in the one order of the slot's writes (runtime.SlotCredentials), so a step begun since
 // the row read the record gets its own App. A daemon of a release before it refuses the op, and
 // its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back below the release
