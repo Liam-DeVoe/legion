@@ -1925,6 +1925,64 @@
       "repeat": { "part": "amp", "count": 4095 },
       "readable": false,
       "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-name-31-letters",
+      "category": "html-reference",
+      "field": "&amp;amp;amp;amp;ampCounterClockwiseContourInteg;",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-31-letters-quoted",
+      "category": "html-reference",
+      "field": "\"&amp;amp;amp;amp;ampCounterClockwiseContourInteg;\"",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-32-letters",
+      "category": "html-reference",
+      "field": "&amp;amp;amp;amp;ampCounterClockwiseContourIntegr;",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-32-letters-quoted",
+      "category": "html-reference",
+      "field": "\"&amp;amp;amp;amp;ampCounterClockwiseContourIntegr;\"",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-32-letters-at-bound",
+      "category": "html-reference",
+      "field": "&amp;amp;amp;ampCounterClockwiseContourIntegr;",
+      "readable": true,
+      "printed": "&amp;amp;amp;ampCounterClockwiseContourIntegr;",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-32-letters-at-bound-quoted",
+      "category": "html-reference",
+      "field": "\"&amp;amp;amp;ampCounterClockwiseContourIntegr;\"",
+      "readable": true,
+      "printed": "\"&amp;amp;amp;ampCounterClockwiseContourIntegr;\"",
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-33-letters",
+      "category": "html-reference",
+      "field": "&amp;amp;amp;amp;ampCounterClockwiseContourIntegra;",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "html-ref-name-33-letters-quoted",
+      "category": "html-reference",
+      "field": "\"&amp;amp;amp;amp;ampCounterClockwiseContourIntegra;\"",
+      "readable": false,
+      "secrets": []
     }
   ]
 }

@@ -547,8 +547,14 @@ func braceEscape(lower string) bool {
 }
 
 // characterReference is an HTML character reference as a page's reader takes it: hexadecimal,
-// decimal or named, its ';' optional.
-var characterReference = regexp.MustCompile(`&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?`)
+// decimal or named, its ';' optional. A name is at most 32 letters: HTML's longest named reference
+// has 31 letters and its ';'. A longer run of letters is no one reference: the match takes its
+// first 32 letters as the name and the rest is copied as it came, so the run reads as it would
+// whole: one that begins with amp loses those three letters (separatorReference), and any other
+// stays as it is. The cap keeps each match short: each pass of decodeSeparators matches a name
+// twice (here and in separatorReference), and over one name 256 KiB long its passes took 117 ms
+// with no cap and 2.2 ms with it (TestALongReferenceNameIsReadInBoundedTime).
+var characterReference = regexp.MustCompile(`&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]{1,32}));?`)
 
 // namedSeparators are the named character references of separators.
 var namedSeparators = map[string]byte{

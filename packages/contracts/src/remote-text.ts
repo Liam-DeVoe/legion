@@ -43,8 +43,12 @@ function braceEscape(lower: string): boolean {
 }
 
 /** An HTML character reference as a page's reader takes it: hexadecimal, decimal or named, its
- *  `;` optional. Go's `characterReference`. */
-const CHARACTER_REFERENCE = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?/g;
+ *  `;` optional. A name is at most 32 letters: HTML's longest named reference has 31 letters and
+ *  its `;`. A longer run of letters is no one reference: the match takes its first 32 letters as
+ *  the name and the rest is copied as it came, so the run reads as it would whole: one that
+ *  begins with amp loses those three letters ({@link separatorReference}), and any other stays as
+ *  it is. The cap keeps each match short, as Go's does. Go's `characterReference`. */
+const CHARACTER_REFERENCE = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]{1,32}));?/g;
 
 /** The named character references of {@link SEPARATORS}. Go's `namedSeparators`. */
 const NAMED_SEPARATORS: Readonly<Record<string, string>> = {

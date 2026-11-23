@@ -3927,6 +3927,41 @@
       "production": "redact.Remote step 0 (decodeSeparators), redact.UnescapeHTML: at most redact.ReferencePasses+1 passes"
     },
     {
+      "id": "reference-name-31-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-31-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 31-letter name that begins with amp is read as a reference, a pass past redact.ReferencePasses"
+    },
+    {
+      "id": "reference-name-32-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-32-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 32-letter name, characterReference's longest, that begins with amp is read as a reference, a pass past redact.ReferencePasses"
+    },
+    {
+      "id": "reference-name-32-letters-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-32-letters-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a 32-letter name read in the last pass redact.ReferencePasses allows prints as it came"
+    },
+    {
+      "id": "reference-name-33-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-33-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 33-letter run is no one reference; its first 32 letters are read as the name, so it reads as the whole run would"
+    },
+    {
+      "id": "reference-name-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestALongReferenceNameIsReadInBoundedTime",
+      "production": "redact decodeSeparators (Remote's step 0), characterReference: a name of at most 32 letters, so no pass matches a name as long as the field"
+    },
+    {
       "id": "tokens-request",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
@@ -7679,6 +7714,41 @@
       "file": "packages/contracts/src/remote-text-timing.test.ts",
       "test": "readRemoteText of a 1 MiB field nested as &ampampamp…; reads it as not readable within the bound",
       "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
+    },
+    {
+      "id": "reference-name-31-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-31-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 31-letter name that begins with amp is read as a reference, a pass past REFERENCE_PASSES"
+    },
+    {
+      "id": "reference-name-32-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-32-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 32-letter name, CHARACTER_REFERENCE's longest, that begins with amp is read as a reference, a pass past REFERENCE_PASSES"
+    },
+    {
+      "id": "reference-name-32-letters-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-32-letters-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 32-letter name read in the last pass REFERENCE_PASSES allows prints as it came"
+    },
+    {
+      "id": "reference-name-33-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-33-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 33-letter run is no one reference; its first 32 letters are read as the name, so it reads as the whole run would"
+    },
+    {
+      "id": "reference-name-bounded-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 256 KiB field that is one long reference (&ampampamp…;) reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators, CHARACTER_REFERENCE: a name of at most 32 letters; the read stays linear in the field"
     },
     {
       "id": "tokens-shared-table-ts",
