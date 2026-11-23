@@ -75,7 +75,8 @@
               "change": {},
               "data_since": "2026-10-01",
               "via_repository": 0,
-              "days": []
+              "days": [],
+              "compare_days": []
             }
           ],
           "verdict": null
@@ -142,7 +143,8 @@
               "change": {},
               "data_since": "2026-10-01",
               "via_repository": 0,
-              "days": []
+              "days": [],
+              "compare_days": []
             }
           ],
           "verdict": null
@@ -156,8 +158,8 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/lead-time": "bb14e40ddffa0eb2",
-        "ACME/pr-size": "3f3df7524fc099d4"
+        "ACME/lead-time": "33442e3f9df58d7f",
+        "ACME/pr-size": "a9eae54ea5e5effd"
       }
     },
     "fields": {

@@ -1001,7 +1001,7 @@ func liveEval(slug string, version int, mean float64) evalListItem {
 			Listed: true, Agg: evals.AggSum, Links: []evals.Link{}, CreatedAt: liveFrom,
 		},
 		Window: evals.Statistics{"mean": &mean}, Compare: evals.Statistics{}, Change: evals.Statistics{},
-		DataSince: new(liveFrom.Format(time.DateOnly)), Days: []evals.DayPoint{},
+		DataSince: new(liveFrom.Format(time.DateOnly)), Days: []evals.DayPoint{}, CompareDays: []evals.DayPoint{},
 	}
 	return evalListItem{ID: id, evalItem: evalItem{
 		Definition: definition, Owner: evalOwnerOf(definition), Series: []evals.SeriesValues{series},

@@ -67,7 +67,8 @@
             "change": {},
             "data_since": "2026-10-01",
             "via_repository": 0,
-            "days": []
+            "days": [],
+            "compare_days": []
           }
         ],
         "verdict": null
@@ -134,7 +135,8 @@
             "change": {},
             "data_since": "2026-10-01",
             "via_repository": 0,
-            "days": []
+            "days": [],
+            "compare_days": []
           }
         ],
         "verdict": null
@@ -201,7 +203,8 @@
             "change": {},
             "data_since": "2026-10-01",
             "via_repository": 0,
-            "days": []
+            "days": [],
+            "compare_days": []
           }
         ],
         "verdict": null
@@ -228,9 +231,9 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/deploy-frequency": "97e4190d2b190542",
-        "ACME/pr-size": "433ef08d8f82231e",
-        "ACME/review-time": "917ad59fc0f58941"
+        "ACME/deploy-frequency": "8e92d2e50215128f",
+        "ACME/pr-size": "0b45782a8d7bf253",
+        "ACME/review-time": "87dc45ca84dcdb24"
       }
     },
     "maps": {},

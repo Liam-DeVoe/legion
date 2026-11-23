@@ -58,11 +58,12 @@ type storedDay struct {
 
 // StoredFigures is what a read of the stored figures read for one window, compare range and
 // repository (ReadStoredFigures): how far each project's figures are built, each eval's stored row
-// of the window and of the compare range, and each eval's stored day rows of the window.
+// of the window and of the compare range, and each eval's stored day rows of the window and of the
+// compare range.
 type StoredFigures struct {
-	built           map[string]time.Time
-	window, compare map[string]storedRange
-	days            map[string][]storedDay
+	built             map[string]time.Time
+	window, compare   map[string]storedRange
+	days, compareDays map[string][]storedDay
 }
 
 // ReadStoredFigures is ReadStoredFiguresIn on the pool, each of its statements reading the rows
@@ -77,14 +78,17 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 // by the deploy repository the fold of that repository's rows, and of every other the fold of the
 // rows of none (DeployRepoOf). It reads, one after the other: the range rows of the window and of
 // the compare range, the `union all` of two ranges of eval_range_figures' primary key; how far
-// each project's figures are built (figuresThrough); and the day rows of the window of the evals
-// with a headline series, one range of eval_day_figures' primary key for each project. A
-// refresher pass rewrites the three in one transaction, so in one answer's snapshot
-// (BeginSnapshot), as the eval list reads them, an eval's window figures are the fold of the days
-// read beside them; on the pool each statement reads the rows that stand when it runs. The read
-// is FiguresOffered's to make.
+// each project's figures are built (figuresThrough); and the day rows of the window and of the
+// compare range of the evals with a headline series, the `union all` of one range of
+// eval_day_figures' primary key for each project and range, each row tagged with the range it is
+// of. A refresher pass rewrites the three in one transaction, so in one answer's snapshot
+// (BeginSnapshot), as the eval list reads them, an eval's figures are the fold of the days read
+// beside them; on the pool each statement reads the rows that stand when it runs. The read is
+// FiguresOffered's to make.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
-	read := StoredFigures{window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}}
+	read := StoredFigures{
+		window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}, compareDays: map[string][]storedDay{},
+	}
 	evalIDs := make([]string, len(entries))
 	var headlined []string
 	for index, entry := range entries {
@@ -133,23 +137,33 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 	if len(headlined) == 0 {
 		return read, nil
 	}
-	days, err := q.Query(ctx, `
-		select eval_id, day, fold_key, figures from eval_day_figures
-		where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
-			and `+deployRepoCase("deploy_repo", "$6", "$7")+`
-	`, projects, repo, window.From, window.To, headlined, keyed, deployRepo)
+	dayRows := `select %s, eval_id, day, fold_key, figures from eval_day_figures
+		where project_key = any($1::text[]) and repo = $2 and day >= $%d::date and day < $%d::date and eval_id = any($3::text[])
+			and ` + deployRepoCase("deploy_repo", "$4", "$5")
+	query = fmt.Sprintf(dayRows, "true", 6, 7)
+	args = []any{projects, repo, headlined, keyed, deployRepo, window.From, window.To}
+	if compare != nil {
+		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(dayRows, "false", 8, 9)
+		args = append(args, compare.From, compare.To)
+	}
+	days, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
 	}
 	defer days.Close()
 	for days.Next() {
+		var inWindow bool
 		var evalID string
 		var row storedDay
-		if err := days.Scan(&evalID, &row.day, &row.key, &row.figures); err != nil {
+		if err := days.Scan(&inWindow, &evalID, &row.day, &row.key, &row.figures); err != nil {
 			return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
 		}
 		row.day = row.day.UTC()
-		read.days[evalID] = append(read.days[evalID], row)
+		if inWindow {
+			read.days[evalID] = append(read.days[evalID], row)
+		} else {
+			read.compareDays[evalID] = append(read.compareDays[evalID], row)
+		}
 	}
 	if err := days.Err(); err != nil {
 		return StoredFigures{}, fmt.Errorf("read the stored day figures of %v: %w", projects, err)
@@ -202,17 +216,33 @@ func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, wi
 			return nil, nil, false
 		}
 	}
-	stored := slices.SortedFunc(slices.Values(f.days[definition.EvalID]), func(a, b storedDay) int { return a.day.Compare(b.day) })
-	daily := make([]dayFold, len(stored))
-	for index, day := range stored {
-		if day.key != key {
+	daily, ok := storedDailyOf(f.days[definition.EvalID], key)
+	if !ok {
+		return nil, nil, false
+	}
+	var compareDaily []dayFold
+	if compare != nil {
+		if compareDaily, ok = storedDailyOf(f.compareDays[definition.EvalID], key); !ok {
 			return nil, nil, false
+		}
+	}
+	return valuesOf(listed, windowed, via, compared, daily, compareDaily, firsts, window, compare), oldest, true
+}
+
+// storedDailyOf is stored, an eval's stored day rows of one range, as the day folds they hold, in
+// day order; false where one was folded under another fold key than key, or does not decode.
+func storedDailyOf(stored []storedDay, key int64) ([]dayFold, bool) {
+	sorted := slices.SortedFunc(slices.Values(stored), func(a, b storedDay) int { return a.day.Compare(b.day) })
+	daily := make([]dayFold, len(sorted))
+	for index, day := range sorted {
+		if day.key != key {
+			return nil, false
 		}
 		folded, _, err := decodeFigures(day.figures)
 		if err != nil {
-			return nil, nil, false
+			return nil, false
 		}
 		daily[index] = dayFold{day: day.day, folded: folded}
 	}
-	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare), oldest, true
+	return daily, true
 }

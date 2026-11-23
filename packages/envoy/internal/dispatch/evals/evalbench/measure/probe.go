@@ -15,12 +15,13 @@ import (
 // (evals.Store.ReadStoredFigures, as the server ran them) spend their time on the loaded database,
 // so the next change to them is chosen from a measurement. The list answers an offered range with
 // two of them: the range-figures read, the `union all` of the window's and the compare range's rows
-// of eval_range_figures, one row an eval each, and the day-figures read, the window's rows of
-// eval_day_figures of the evals with a headline series. The probe finds each among the read's
-// captured statements by the text the statement log holds of it, `from eval_range_figures` and
-// `from eval_day_figures`. A read that ran neither fails the probe: its list no longer reads the
-// stored figures, and the probe would measure nothing. A read that ran one of them has the other
-// printed as skipped (the server skips the day-figures read where no eval has a headline series).
+// of eval_range_figures, one row an eval each, and the day-figures read, the `union all` of the
+// window's and the compare range's rows of eval_day_figures of the evals with a headline series.
+// The probe finds each among the read's captured statements by the text the statement log holds
+// of it, `from eval_range_figures` and `from eval_day_figures`. A read that ran neither fails the
+// probe: its list no longer reads the stored figures, and the probe would measure nothing. A read
+// that ran one of them has the other printed as skipped (the server skips the day-figures read
+// where no eval has a headline series).
 //
 // Each variant of a statement is run probeRuns times under `explain (analyze, buffers, serialize
 // binary)`, which executes it and serialises its rows as the server sends them without sending
@@ -38,10 +39,10 @@ import (
 //     the time and the bytes it saves are what reading and serialising the figures cost.
 //
 // The day-row read's other variants are dropped with that read. Its window and compare branches:
-// the range-figures read's `union all` is of two lookups of the same shape, so a branch alone would
-// measure half of one lookup. Its headline filter: the day-figures read already reads the evals
-// with a headline series alone. Its narrow list over eval_days is rewritten as the narrow variant
-// above.
+// the range-figures read's `union all` is of two lookups of the same shape, and so is the
+// day-figures read's, so a branch alone would measure half of one read. Its headline filter: the
+// day-figures read already reads the evals with a headline series alone. Its narrow list over
+// eval_days is rewritten as the narrow variant above.
 //
 // It then prints eval_days' size on disk and its average row width, split by whether a row holds a
 // sample, over the whole table and over the paint's project's listed rows; and the size on disk of

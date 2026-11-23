@@ -22983,6 +22983,15 @@
               }
             ]
           },
+          "compare_days": {
+            "items": {
+              "$ref": "#/components/schemas/EvalDayPoint"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -23069,7 +23078,8 @@
           "change",
           "data_since",
           "via_repository",
-          "days"
+          "days",
+          "compare_days"
         ],
         "type": "object"
       },

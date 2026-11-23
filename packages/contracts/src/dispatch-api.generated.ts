@@ -5410,6 +5410,7 @@ export interface components {
       agg: string;
       change: components["schemas"]["EvalStatistics"] | null;
       compare: components["schemas"]["EvalStatistics"] | null;
+      compare_days: components["schemas"]["EvalDayPoint"][] | null;
       /** Format: date-time */
       created_at: string;
       data_since: null | string;
