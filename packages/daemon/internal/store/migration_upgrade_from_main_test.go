@@ -101,7 +101,7 @@ import (
 // is still queued.
 // The name of each step's agent (20261117213545) stands above 20261117200337 and below
 // 20261119003157, so an upgrade applies it between those two: it adds `plan_steps.agent` to the
-// plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
+// plan's step table and touches no outbox_kind_check, and it names the agent of every row it finds
 // (migration_20261117213545_test.go).
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
 // (20261119003157) stands above every other version of this list but dispatch://INFRA-4108's
