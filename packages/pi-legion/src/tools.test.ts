@@ -1481,7 +1481,11 @@ test("register_plan takes the document reference the Dispatch tools take and ans
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       dispatch: () =>
-        new DispatchClient("http://dispatch.test", bearerCredential(DISPATCH_TOKEN), board.fetchImpl),
+        new DispatchClient(
+          "http://dispatch.test",
+          bearerCredential(DISPATCH_TOKEN),
+          board.fetchImpl
+        ),
       session: () => claimSession("architect", sessionIssue),
     }).execute("", { op: "register_plan", ...parameters }, undefined, undefined, context());
 
