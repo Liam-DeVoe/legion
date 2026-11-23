@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -47,29 +48,41 @@ type selectors struct {
 
 // ghNamed is one thing a command's selectors name, keyed as the bundle routes it: a repository,
 // its lowercased owner and its name keyed as gh reads a name of it (ghconfig.RepositoryName), or
-// an owner named with no repository of it, whose name is "". what is the argument that first
-// named it, which a refusal names.
+// an owner named with no repository of it, whose name is "". kind is the slot that first named it
+// ("a -R value", "a repository argument", "the working directory's remote …"), never the value
+// as the person wrote it, which a refusal names with the owner and the name read from it.
 type ghNamed struct {
-	owner, name, what string
+	owner, name, kind string
 }
 
-// add records owner and name as named by what, unless a selector already named them.
-func (s *selectors) add(owner, name, what string) {
+// shown is the named thing as a refusal names it: its slot, and the owner and the name read from
+// the value, which have a login's and a repository name's strict form (checkedOwner,
+// repositoryTarget) before anything is named.
+func (n ghNamed) shown() string {
+	if n.name == "" {
+		return n.kind + " naming " + n.owner
+	}
+	return n.kind + " naming " + n.owner + "/" + n.name
+}
+
+// add records owner and name as named by the slot kind, unless a selector already named them.
+func (s *selectors) add(owner, name, kind string) {
 	if !slices.ContainsFunc(s.named, func(named ghNamed) bool { return named.owner == owner && named.name == name }) {
-		s.named = append(s.named, ghNamed{owner: owner, name: name, what: what})
+		s.named = append(s.named, ghNamed{owner: owner, name: name, kind: kind})
 	}
 }
 
 // repository records the owner and the repository value names: a selector naming one repository
-// of one owner. The owner is lowercased, as a bundle's directory names an owner, and the
-// repository is keyed as gh reads a name of it (ghconfig.RepositoryName), so two spellings of
-// one repository — `Legion-Smoke` in a pull request's URL beside `-R sjawhar/legion-smoke`, or
-// a remote's `widgets.git` beside `widgets` — are the one repository the command names rather
-// than two, which would leave the call's record naming no repository at all (onlyRepository).
-func (s *selectors) repository(value, what string) error {
-	owner, repo, err := repositoryTarget(value, what, s.api)
+// of one owner, from the slot kind. The owner is lowercased, as a bundle's directory names an
+// owner, and the repository is keyed as gh reads a name of it (ghconfig.RepositoryName), so two
+// spellings of one repository — `Legion-Smoke` in a pull request's URL beside `-R
+// sjawhar/legion-smoke`, or a remote's `widgets.git` beside `widgets` — are the one repository
+// the command names rather than two, which would leave the call's record naming no repository at
+// all (onlyRepository).
+func (s *selectors) repository(value, kind string) error {
+	owner, repo, err := repositoryTarget(value, kind, s.api)
 	if err == nil {
-		s.add(owner, ghconfig.RepositoryName(repo), what)
+		s.add(owner, ghconfig.RepositoryName(repo), kind)
 	}
 	return err
 }
@@ -77,26 +90,26 @@ func (s *selectors) repository(value, what string) error {
 // ownerAlone records owner as named with no repository of it, the one recording both owner and
 // pairOwner make: the command reaches whatever of that owner's gh resolves, so the directory it
 // needs for that owner is the owner's own.
-func (s *selectors) ownerAlone(owner, what string) {
-	s.add(owner, "", what)
+func (s *selectors) ownerAlone(owner, kind string) {
+	s.add(owner, "", kind)
 }
 
-// owner records the owner value names and no repository.
-func (s *selectors) owner(value, what string) error {
-	owner, err := checkedOwner(value, what, s.api)
+// owner records the owner value names, from the slot kind, and no repository.
+func (s *selectors) owner(value, kind string) error {
+	owner, err := checkedOwner(value, kind, s.api)
 	if err == nil {
-		s.ownerAlone(owner, what)
+		s.ownerAlone(owner, kind)
 	}
 	return err
 }
 
-// pairOwner records the owner of value, OWNER/TEAM or OWNER/NUMBER, and no repository: a team and
-// a project are none of the owner's repositories. The pair is read as a repository's name only
-// to take the owner out of it.
-func (s *selectors) pairOwner(value, what string) error {
-	owner, _, err := repositoryTarget(value, what, s.api)
+// pairOwner records the owner of value, OWNER/TEAM or OWNER/NUMBER, from the slot kind, and no
+// repository: a team and a project are none of the owner's repositories. The pair is read as a
+// repository's name only to take the owner out of it.
+func (s *selectors) pairOwner(value, kind string) error {
+	owner, _, err := repositoryTarget(value, kind, s.api)
 	if err == nil {
-		s.ownerAlone(owner, what)
+		s.ownerAlone(owner, kind)
 	}
 	return err
 }
@@ -174,7 +187,7 @@ func (s *selectors) dir(dirFor func(owner, name string) (string, error), fallbac
 		if _, seen := routed[dir]; !seen {
 			dirs = append(dirs, dir)
 		}
-		routed[dir] = append(routed[dir], named.what)
+		routed[dir] = append(routed[dir], named.shown())
 	}
 	if refusal != nil {
 		// Every item is an owner the bundle holds no directory for.
@@ -215,24 +228,24 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 	} else {
 		placed, ok := cmd.slotsFor(len(parsed.positionals))
 		if !ok {
-			return cannotPlaceNamed(ordinalArgument(len(cmd.slots)+1), "has no place in "+leaf+"'s usage", false)
+			return cannotPlace(ordinalArgument(len(cmd.slots)+1), "has no place in "+leaf+"'s usage", false)
 		}
 		var query []string
 		for i, arg := range parsed.positionals {
 			kind, unknown := placed[i].kind()
 			if unknown != "" {
-				return cannotPlaceNamed(ordinalArgument(i+1), fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
+				return cannotPlace(ordinalArgument(i+1), fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
 			}
 			switch kind {
 			case "repository":
-				if err := s.repository(arg, "the repository "+arg); err != nil {
+				if err := s.repository(arg, "a repository argument"); err != nil {
 					return err
 				}
 				s.targeted = true
 			case "new-repository":
 				// OWNER/NAME names the new repository's owner; a name alone, none.
 				if strings.Contains(arg, "/") {
-					if err := s.repository(arg, "the repository "+arg); err != nil {
+					if err := s.repository(arg, "a repository argument"); err != nil {
 						return err
 					}
 					s.targeted = true
@@ -240,17 +253,17 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 			case "second-repository":
 				// Another repository the command acts on beside its own, which gh resolves
 				// (fromOwnRepository).
-				if err := s.repository(arg, "the repository "+arg); err != nil {
+				if err := s.repository(arg, "a repository argument"); err != nil {
 					return err
 				}
 			case "owner":
-				if err := s.owner(arg, "the owner "+arg); err != nil {
+				if err := s.owner(arg, "an owner argument"); err != nil {
 					return err
 				}
 				s.targeted = true
 			case "url":
 				if isWebURL(arg) {
-					if err := s.repository(arg, "the URL "+arg); err != nil {
+					if err := s.repository(arg, "a URL argument"); err != nil {
 						return err
 					}
 					// gh's pr finder acts on the URL's repository only for a pull request's
@@ -291,7 +304,7 @@ func (s *selectors) fromOwnRepository(cmd *ghCommand, parsed ghArgs, env map[str
 		return nil
 	}
 	if repo := env["GH_REPO"]; repo != "" && (cmd.readsGHRepo() || (s.api && s.readsBase)) {
-		return s.repository(repo, "GH_REPO "+repo)
+		return s.repository(repo, "the GH_REPO value")
 	}
 	return s.fromWorkingDirectory(remotes, cmd.honoursDefaultMarker(parsed))
 }
@@ -303,7 +316,7 @@ func (s *selectors) fromOwnRepository(cmd *ghCommand, parsed ghArgs, env map[str
 // does not, sets readsBase. Any other GraphQL query names no repository gh could resolve.
 func (s *selectors) fromAPI(parsed ghArgs) error {
 	if len(parsed.positionals) > 1 {
-		return cannotPlaceNamed(ordinalArgument(2), "has no place in `gh api`'s usage", true)
+		return cannotPlace(ordinalArgument(2), "has no place in `gh api`'s usage", true)
 	}
 	search, graphql := false, false
 	if len(parsed.positionals) == 1 {
@@ -323,12 +336,12 @@ func (s *selectors) fromAPI(parsed ghArgs) error {
 			}
 			switch {
 			case graphql && (key == "owner" || key == "org" || key == "organization" || key == "login") && !ghPlaceholder.MatchString(value):
-				if err := s.owner(value, "the field "+field); err != nil {
+				if err := s.owner(value, "a GraphQL owner field"); err != nil {
 					return err
 				}
 			case search && key == "q":
 				if option == "field" && strings.HasPrefix(value, "@") {
-					return cannotPlace(field, "reads the search query from a file", true)
+					return cannotPlace(ghShown(field, "the q field"), "reads the search query from a file", true)
 				}
 				if err := s.query(strings.Fields(value)); err != nil {
 					return err
@@ -354,35 +367,38 @@ func (s *selectors) fromOptions(cmd *ghCommand, parsed ghArgs) error {
 		for _, value := range parsed.values[name] {
 			switch flag.selects {
 			case "unknown":
-				return cannotPlace("--"+name, "is an option whose help names a repository, an owner, a team or a URL in a way this does not know", s.api)
+				return cannotPlace(strconv.Quote("--"+name), "is an option whose help names a repository, an owner, a team or a URL in a way this does not know", s.api)
 			case "", "nothing":
 				continue
 			}
 			for _, item := range strings.Split(value, ",") {
-				what := "--" + name + " " + item
+				kind := "a --" + name + " value"
+				if name == "repo" {
+					kind = "a -R value"
+				}
 				var err error
 				switch flag.selects {
 				case "host":
 					if !strings.EqualFold(item, "github.com") {
-						err = cannotPlace("--"+name, "names another host than github.com", s.api)
+						err = cannotPlace(kind, "names another host than github.com", s.api)
 					}
 				case "owner":
-					err = s.owner(item, what)
+					err = s.owner(item, kind)
 				case "org-repositories":
 					// gh reads a name alone as a repository of the --org, whose owner that is.
 					switch {
 					case strings.Contains(item, "/"):
-						err = s.repository(item, what)
+						err = s.repository(item, kind)
 					case len(orgs) == 0:
-						err = cannotPlace(what, "names a repository by its name alone, and no --org says whose", s.api)
+						err = cannotPlace(ghShown(item, "a repository named by its name alone"), "is given to --"+name+", and no --org says whose", s.api)
 					}
 				case "repository":
-					err = s.repository(item, what)
+					err = s.repository(item, kind)
 				case "owner/name":
-					err = s.pairOwner(item, what)
+					err = s.pairOwner(item, kind)
 				case "url":
 					if isWebURL(item) {
-						err = s.repository(item, what)
+						err = s.repository(item, kind)
 					}
 				}
 				if err != nil {
@@ -404,8 +420,10 @@ var ghQualifier = regexp.MustCompile(`^(-?)([A-Za-z][A-Za-z-]*):([^\s"'()\\]+)$`
 // that is no plain qualifier is refused, since gh quotes a word holding a space and GitHub reads a
 // quoted or grouped qualifier otherwise. So is a query naming an owner whose scope is not that
 // owner's: one excluding an owner (`-repo:`), or joining its words with OR, NOT or parentheses.
+// Each word it refuses is named by its place: a search word's slot takes no identifier.
 func (s *selectors) query(words []string) error {
-	var named, joined string
+	var named bool
+	joined := ""
 	for _, word := range words {
 		if !strings.Contains(word, ":") {
 			if joined == "" && (strings.EqualFold(word, "OR") || strings.EqualFold(word, "NOT") || strings.ContainsAny(word, "()")) {
@@ -415,27 +433,25 @@ func (s *selectors) query(words []string) error {
 		}
 		qualifier := ghQualifier.FindStringSubmatch(word)
 		if qualifier == nil {
-			return cannotPlace(word, "is a search qualifier this cannot read for certain, since gh and GitHub read a quoted, spaced or grouped one otherwise", s.api)
+			return cannotPlace(ghShown(word, "a word of the search query"), "is a search qualifier this cannot read for certain, since gh and GitHub read a quoted, spaced or grouped one otherwise", s.api)
 		}
-		switch strings.ToLower(qualifier[2]) {
+		switch name := strings.ToLower(qualifier[2]); name {
 		case "repo", "owner", "user", "org":
 			if qualifier[1] == "-" {
-				return cannotPlace(word, "excludes an owner, so the search's scope is no one owner's", s.api)
+				return cannotPlace(ghShown(word, "a -repo:, -owner:, -user: or -org: qualifier of the search query"), "excludes an owner, so the search's scope is no one owner's", s.api)
 			}
-			if strings.EqualFold(qualifier[2], "repo") {
-				if err := s.repository(qualifier[3], "the qualifier "+word); err != nil {
+			if name == "repo" {
+				if err := s.repository(qualifier[3], "a repo: qualifier"); err != nil {
 					return err
 				}
-			} else if err := s.owner(qualifier[3], "the qualifier "+word); err != nil {
+			} else if err := s.owner(qualifier[3], "an "+name+": qualifier"); err != nil {
 				return err
 			}
-			if named == "" {
-				named = word
-			}
+			named = true
 		}
 	}
-	if named != "" && joined != "" {
-		return cannotPlace(joined, "joins the query's repo:/owner: qualifiers with others, so the search's scope is no one owner's ("+named+" and more)", s.api)
+	if named && joined != "" {
+		return cannotPlace(ghShown(joined, "an OR, a NOT or a parenthesis of the search query"), "joins the query's repo:/owner: qualifiers with others, so the search's scope is no one owner's", s.api)
 	}
 	return nil
 }
@@ -447,13 +463,15 @@ func (s *selectors) query(words []string) error {
 // the working directory's, fills it), and one in the repository's names the owner alone, since
 // what fills it is read where gh reads it (fromOwnRepository); a repository named by id
 // (repositories/<id>) and another host are errors. gh reads an endpoint holding "://" as a whole
-// URL.
+// URL. An endpoint it refuses is named by its place: its slot takes no identifier, and a token
+// stands in its query (`repositories/1?access_token=<token>`) as readily as in its host's user
+// info.
 func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	path := endpoint
 	if strings.Contains(endpoint, "://") {
 		parsed, err := url.Parse(endpoint)
 		if err != nil || !strings.EqualFold(parsed.Host, "api.github.com") {
-			return false, cannotPlace(endpoint, "names another host than api.github.com", true)
+			return false, cannotPlace(ghShown(endpoint, "the endpoint's host"), "is another host than api.github.com", true)
 		}
 		path = parsed.Path
 		if parsed.RawQuery != "" {
@@ -464,19 +482,19 @@ func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	segments := strings.Split(path, "/")
 	switch first := strings.ToLower(segments[0]); {
 	case first == "repositories":
-		return false, cannotPlace(endpoint, "names a repository by its id", true)
+		return false, cannotPlace(ghShown(endpoint, "the endpoint's repositories/<id> path"), "names a repository by its id", true)
 	case (first == "repos" || first == "orgs" || first == "users") && len(segments) > 1:
 		if ghPlaceholder.MatchString(segments[1]) {
 			return false, nil
 		}
 		if first == "repos" && len(segments) > 2 && segments[2] != "" && !ghPlaceholder.MatchString(segments[2]) {
-			return false, s.repository(segments[1]+"/"+segments[2], "the endpoint "+endpoint)
+			return false, s.repository(segments[1]+"/"+segments[2], "the endpoint")
 		}
-		return false, s.owner(segments[1], "the endpoint "+endpoint)
+		return false, s.owner(segments[1], "the endpoint")
 	case first == "search":
 		query, err := url.ParseQuery(rawQuery)
 		if err != nil {
-			return true, cannotPlace(endpoint, "has a query string this cannot read", true)
+			return true, cannotPlace(ghShown(endpoint, "the endpoint's query string"), "is one this cannot read", true)
 		}
 		for _, q := range query["q"] {
 			if err := s.query(strings.Fields(q)); err != nil {
@@ -517,71 +535,56 @@ func isGitHubHost(host string) bool {
 
 // repositoryTarget is the lowercased owner and the name of a repository named as gh names one —
 // OWNER/REPO, HOST/OWNER/REPO, or a github.com URL, its host github.com or a subdomain as gh
-// normalizes it (isGitHubHost) — refused when it names no owner, another host, or an owner that
-// is no GitHub login. The name is the second segment as gh reads it, whatever follows it (a pull
-// request's number, a tree's path), as the argument spells it. The caller that records it keys
-// it as gh reads a name of it (selectors.repository, ghconfig.RepositoryName), so two spellings
-// of one repository are one selector.
+// normalizes it (isGitHubHost) — given in the slot kind ("a -R value", "a repository argument"),
+// refused when it names no owner, another host, an owner that is no GitHub login, or a name of a
+// character no GitHub repository's name holds. The name is the second segment as gh reads it,
+// whatever follows it (a pull request's number, a tree's path), as the argument spells it. The
+// caller that records it keys it as gh reads a name of it (selectors.repository,
+// ghconfig.RepositoryName), so two spellings of one repository are one selector.
 //
-// A value with no scheme whose first segment holds an "@" or a ":", or which holds a "?" or a "#",
-// is refused by its kind alone (selectorKind), never by its text, on a github.com host or another:
-// there a user name, a password or a query stands (`x-access-token:<token>@ghe.example/o/r`,
-// `<token>@github.com:o/r`, `ghe.example/o/r?t=<token>`), and the URL rule printGhRefusal writes
-// refusals through masks only a URL with a "://". No owner, host or repository name holds one.
-func repositoryTarget(value, what string, api bool) (owner, repo string, err error) {
+// A refusal names the value by its slot alone (ghShown, with the repository's strict form, which
+// no value it refuses has): a URL holding a user name or a password, a value with no scheme
+// holding an "@", a ":", a "?" or a "#" in any segment, on a github.com host or another, where a
+// user name, a password or a query stands (`x-access-token:<token>@ghe.example/o/r`,
+// `<token>@github.com:o/r`, `ghe.example/x:<token>@ghe.example/o/r`, `ghe.example/o/r?t=<token>`),
+// and a URL whose owner segment holds the user info a person put there
+// (`https://github.com/x-access-token:<token>@github.com/o/r`), named an owner that is no login.
+func repositoryTarget(value, kind string, api bool) (owner, repo string, err error) {
+	shown := ghShown(value, kind, ghRepository)
 	host, rest := "", value
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if parsed.User != nil {
+			return "", "", cannotPlace(shown, "holds a user name or a password, which no GitHub repository's URL does, and is not printed", api)
+		}
 		host, rest = parsed.Hostname(), strings.Trim(parsed.Path, "/")
 	} else {
-		first, _, _ := strings.Cut(strings.Trim(value, "/"), "/")
-		if strings.ContainsAny(first, "@:") || strings.ContainsAny(value, "?#") {
-			return "", "", cannotPlaceNamed(selectorKind(what), "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none, and is not printed, since a credential stands there", api)
+		if strings.ContainsAny(value, "@:?#") {
+			return "", "", cannotPlace(shown, "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none, and is not printed, since a credential stands there", api)
 		}
 		if parts := strings.Split(strings.Trim(value, "/"), "/"); len(parts) >= 3 {
 			host, rest = parts[0], strings.Join(parts[1:], "/")
 		}
 	}
 	if host != "" && !isGitHubHost(host) {
-		return "", "", cannotPlace(value, "names another host than github.com", api)
+		return "", "", cannotPlace(shown, "names another host than github.com", api)
 	}
 	parts := strings.Split(rest, "/")
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", cannotPlace(value, "names no owner", api)
+		return "", "", cannotPlace(shown, "names no owner", api)
 	}
-	owner, err = checkedOwner(parts[0], what, api)
+	if !ghRepositoryNameShape.MatchString(parts[1]) {
+		return "", "", cannotPlace(shown, "names a repository whose name holds a character no GitHub repository's name does", api)
+	}
+	owner, err = checkedOwner(parts[0], kind, api)
 	return owner, parts[1], err
 }
 
-// selectorKind names a repository value by where it came from, as what (the description its
-// caller records) begins, never by the value: "the GH_REPO value", "a -R value", "a --<name>
-// value", "a repository argument", "a URL argument", "a repo: qualifier", "the endpoint's
-// repository".
-func selectorKind(what string) string {
-	switch {
-	case strings.HasPrefix(what, "GH_REPO "):
-		return "the GH_REPO value"
-	case strings.HasPrefix(what, "--repo "):
-		return "a -R value"
-	case strings.HasPrefix(what, "--"):
-		name, _, _ := strings.Cut(what, " ")
-		return "a " + name + " value"
-	case strings.HasPrefix(what, "the repository "):
-		return "a repository argument"
-	case strings.HasPrefix(what, "the URL "):
-		return "a URL argument"
-	case strings.HasPrefix(what, "the qualifier "):
-		return "a repo: qualifier"
-	case strings.HasPrefix(what, "the endpoint "):
-		return "the endpoint's repository"
-	}
-	return "a repository value"
-}
-
-// checkedOwner is owner lowercased, refused when it is no GitHub login.
-func checkedOwner(owner, what string, api bool) (string, error) {
+// checkedOwner is owner lowercased, given in the slot kind, refused when it is no GitHub login and
+// then named by its place alone: an owner's slot quotes a login only, and owner is none.
+func checkedOwner(owner, kind string, api bool) (string, error) {
 	lower := strings.ToLower(owner)
 	if !ghconfig.IsOwner(lower) {
-		return "", cannotPlace(what, fmt.Sprintf("names the owner %q, which is no GitHub login", owner), api)
+		return "", cannotPlace(kind, "names "+ghShown(owner, "an owner that is not a GitHub login", ghLogin), api)
 	}
 	return lower, nil
 }

@@ -22,11 +22,12 @@ func ghPrinted(err error) string {
 // A token in a URL a person puts where legion gh reads a repository - GH_REPO, -R, a remote's
 // gh-resolved marker - reaches the refusal that names that value, and legion gh writes the refusal
 // through the URL rule, as every other command's (printRefusal): the line holds no part of the
-// token, and still says what was refused. A value with no scheme, which the URL rule cannot read,
-// is named by its kind (repositoryTarget): a user name and password before its host, a token as
-// its user, a token in its query, on another host or on a github.com one, which is refused, not
-// admitted. A marker with no scheme, in scp form, or with a space before its "@" prints through
-// remoteShown.
+// token, and still says what was refused. A selector is named by its kind alone
+// (repositoryTarget): a URL with a user name or a password, on github.com or another host, and on
+// another host with a token in its path; a value with no scheme, which the URL rule cannot read
+// (a user name and password before its host, a token as its user, a token in its query, on another
+// host or on a github.com one), which is refused, not admitted. A marker with no scheme, in scp
+// form, or with a space before its "@" prints through remoteShown.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	at := "@"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -67,9 +68,12 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 		names   string
 	}
 	rows := map[string]row{
-		"GH_REPO on another host":    {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": tokenURL("ghe.example.com")}), noGitRepository, "names another host than github.com"},
-		"-R on another host":         {[]string{"pr", "list", "-R", tokenURL("ghe.example.com")}, with(nil), noGitRepository, "names another host than github.com"},
-		"a gh-resolved marker's URL": {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), "remote.origin.gh-resolved https://[a URL with credentials]/acme/widgets"},
+		"GH_REPO with user info":      {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": tokenURL("ghe.example.com")}), noGitRepository, "the GH_REPO value holds a user name or a password"},
+		"-R with user info":           {[]string{"pr", "list", "-R", tokenURL("ghe.example.com")}, with(nil), noGitRepository, "a -R value holds a user name or a password"},
+		"-R with user info on github": {[]string{"pr", "list", "-R", tokenURL("github.com")}, with(nil), noGitRepository, "a -R value holds a user name or a password"},
+		"-R on another host":          {[]string{"pr", "list", "-R", "https://ghe.example.com/" + madeUpGhToken + "/widgets"}, with(nil), noGitRepository, "a -R value names another host than github.com"},
+		"GH_REPO on another host":     {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": "ghe.example.com/" + madeUpGhToken + "/widgets"}), noGitRepository, "the GH_REPO value names another host than github.com"},
+		"a gh-resolved marker's URL":  {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), "remote.origin.gh-resolved https://[a URL with credentials]/acme/widgets"},
 		"an scp-form marker": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com:acme/widgets"),
 			"remote.origin.gh-resolved (a URL that is not printed)"},
 		"a marker with no scheme": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets"),
@@ -101,9 +105,10 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 }
 
 // A value a person gives where the command has no place for it is named by its position or, an
-// option, by its name, never by its value: a secret given to `gh secret set` without --body, a
-// misspelt option holding one (`--bdy=<secret>`, a short `-Z<secret>`), and a header given to gh
-// api without -H. Real gh, refusing each, prints none of it.
+// option the help does not list, by its place, never by its value or its name: a secret given to
+// `gh secret set` without --body, a misspelt option holding one (`--bdy=<secret>`, a short
+// `-Z<secret>`, `--body <secret>` as one argument), and a header given to gh api without -H. Real
+// gh, refusing each, prints none of it.
 func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
 	const secret = "ghp_zqtoken0123"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -111,10 +116,11 @@ func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
 		argv  []string
 		names string
 	}{
-		"a secret without --body": {[]string{"secret", "set", "DEPLOY_TOKEN", secret, "-R", "acme/widgets"}, "the 2nd argument has no place in `gh secret set`'s usage"},
-		"a misspelt long option":  {[]string{"secret", "set", "DEPLOY_TOKEN", "--bdy=" + secret, "-R", "acme/widgets"}, `"--bdy" is no option`},
-		"a misspelt short option": {[]string{"secret", "set", "DEPLOY_TOKEN", "-Z" + secret, "-R", "acme/widgets"}, `"-Z" is no option`},
-		"a header without -H":     {[]string{"api", "repos/acme/widgets", "Authorization: token " + secret}, "the 2nd argument has no place in `gh api`'s usage"},
+		"a secret without --body":                 {[]string{"secret", "set", "DEPLOY_TOKEN", secret, "-R", "acme/widgets"}, "the 2nd argument has no place in `gh secret set`'s usage"},
+		"a misspelt long option":                  {[]string{"secret", "set", "DEPLOY_TOKEN", "--bdy=" + secret, "-R", "acme/widgets"}, "an option the command's help does not list is given to `gh secret set`"},
+		"a misspelt short option":                 {[]string{"secret", "set", "DEPLOY_TOKEN", "-Z" + secret, "-R", "acme/widgets"}, "a short option the command's help does not list is given to `gh secret set`"},
+		"an option and its value as one argument": {[]string{"secret", "set", "DEPLOY_TOKEN", "--body " + secret, "-R", "acme/widgets"}, "an option the command's help does not list is given to `gh secret set`"},
+		"a header without -H":                     {[]string{"api", "repos/acme/widgets", "Authorization: token " + secret}, "the 2nd argument has no place in `gh api`'s usage"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ghTargetOfKept(t, tc.argv, pane, savedGhHelp, noGitRepository, ownersOwnDirectories)
