@@ -69,6 +69,10 @@
       "types": "./src/git-lock.ts",
       "bun": "./src/git-lock.ts"
     },
+    "./legion-phase-op-declarations": {
+      "types": "./src/legion-phase-op-declarations.ts",
+      "bun": "./src/legion-phase-op-declarations.ts"
+    },
     "./legion-phase-ops": {
       "types": "./src/legion-phase-ops.ts",
       "bun": "./src/legion-phase-ops.ts"

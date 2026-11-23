@@ -3,13 +3,15 @@ import type { LegionPhase } from "@legion/contracts/legion-api"
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { HandoffReport } from "@legion/pi-shared/handoff-record"
 import {
-  type ClaimCapability,
-  executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
   phaseOpsOf,
+} from "@legion/pi-shared/legion-phase-op-declarations"
+import {
+  type ClaimCapability,
+  executePhaseOp,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
@@ -26,11 +28,11 @@ const BUILD = pluginBuildOf(pkg)
 export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
- * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`), the list pi-legion's `legion` tool serves
- * too. The server builds its tool list once, before the pane's claim registers, so the role it
- * offers the phase ops of (`phaseOpsOf`) is the pane's `LEGION_ROLE`, which the runtime sets on
- * every pane: review_verdict is listed to a review step's agent alone. An environment that names
- * no Legion role lists every phase op, and the shared executor refuses review_verdict to every
+ * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-op-declarations`), the list pi-legion's `legion`
+ * tool serves too. The server builds its tool list once, before the pane's claim registers, so the
+ * role it offers the phase ops of (`phaseOpsOf`) is the pane's `LEGION_ROLE`, which the runtime
+ * sets on every pane: review_verdict is listed to a review step's agent alone. An environment that
+ * names no Legion role lists every phase op, and the shared executor refuses review_verdict to every
  * claim whose role runs no review step, by the role the claim registered
  * (`ClaimCapability.role`). */
 export function legionToolDefinition(

@@ -17,14 +17,13 @@ import {
   type LatestHandoff,
 } from "@legion/pi-shared/handoff-record";
 import {
-  executePhaseOp,
   isPhaseOp,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
   phaseOpsOf,
-  pluginBuildOf,
-} from "@legion/pi-shared/legion-phase-ops";
+} from "@legion/pi-shared/legion-phase-op-declarations";
+import { executePhaseOp, pluginBuildOf } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -186,7 +185,8 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
 }
 
 /** The static text of the description before `stop_task`: the shared template
- * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
+ * (`legionToolDescription` in `@legion/pi-shared/legion-phase-op-declarations`) must reproduce it
+ * exactly. */
 const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
   PHASE_OP_SENTENCES.readRecord +

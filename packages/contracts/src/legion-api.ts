@@ -43,8 +43,8 @@ const timestamp = z.iso.datetime({ offset: true });
  * field against it would send a body the daemon answers with its generic invalid-body error rather
  * than the field's own guidance. The plugin reads this same schema for both fields a session
  * sends — `wake_at` and `read_release_records`' `since`
- * (`packages/pi-shared/src/legion-phase-ops.ts`). Only a field a session sends reads it: every
- * other field here is the daemon's own output, which Go always writes with seconds. */
+ * (`packages/pi-shared/src/legion-phase-op-declarations.ts`). Only a field a session sends reads
+ * it: every other field here is the daemon's own output, which Go always writes with seconds. */
 export const LegionInstant = timestamp.regex(
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/,
   { error: "an RFC 3339 time with seconds, as 2026-11-02T09:00:00Z is" }

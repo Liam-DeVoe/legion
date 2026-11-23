@@ -1260,8 +1260,9 @@ test("a check report is a completion without a commit", () => {
 
 // What `z.iso.datetime({ offset: true })` alone would take and Go's `time.Time` decode refuses:
 // a time with no seconds. The plugin's `wake_at` validates against this same schema
-// (`packages/pi-shared/src/legion-phase-ops.ts`), so both sides refuse the same strings and the
-// agent is told which field is wrong rather than reading the daemon's generic invalid-body error.
+// (`packages/pi-shared/src/legion-phase-op-declarations.ts`), so both sides refuse the same
+// strings and the agent is told which field is wrong rather than reading the daemon's generic
+// invalid-body error.
 test("wakeAt refuses a time with no seconds, as the daemon's decode does", () => {
   const report = {
     grantId: "grant-207",

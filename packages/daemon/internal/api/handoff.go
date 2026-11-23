@@ -773,10 +773,11 @@ const staleEntryCode = "HANDOFF_STALE_ENTRY"
 
 // staleEntryInstruction is what staleEntry tells the worker to do, after the clause that names the
 // entries. It is one text with the sentence the `legion` tool's description gives for
-// staleEntryCode (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`), so a
-// worker reads the same words in the refusal and in its tool: TestStaleEntryInstructionGolden
-// writes both values to `packages/contracts/fixtures/daemon-api/stale-entry.json`, and
-// pi-shared's own test holds the description to that file.
+// staleEntryCode (STALE_ENTRY_INSTRUCTION in
+// `packages/pi-shared/src/legion-phase-op-declarations.ts`), so a worker reads the same words in the
+// refusal and in its tool: TestStaleEntryInstructionGolden writes both values to
+// `packages/contracts/fixtures/daemon-api/stale-entry.json`, and pi-shared's own test holds the
+// description to that file.
 const staleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record or commit"
 
 // behindEntryClause decides a completion of a phase entry the issue has moved past, one the entry

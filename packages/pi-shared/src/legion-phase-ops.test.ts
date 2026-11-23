@@ -13,17 +13,15 @@ import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
 import {
-  type ClaimCapability,
-  executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
-  type PhaseOpRuntime,
   phaseOpParameters,
   phaseOpsOf,
   STALE_ENTRY_INSTRUCTION,
-} from "./legion-phase-ops";
+} from "./legion-phase-op-declarations";
+import { type ClaimCapability, executePhaseOp, type PhaseOpRuntime } from "./legion-phase-ops";
 
 /** The contract the build under test speaks, which its client states on every request. */
 const CONTRACT = 60;

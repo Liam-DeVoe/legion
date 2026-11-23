@@ -17,18 +17,20 @@ import {
 } from "@legion/pi-shared/daemon-client";
 import type { HandoffReport } from "@legion/pi-shared/handoff-record";
 import {
-  type ClaimCapability,
-  executePhaseOp,
   isPhaseOp,
   legionToolDescription,
-  mintClaimGrant,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
   phaseOpsOf,
+  unknownFieldsRefusal,
+} from "@legion/pi-shared/legion-phase-op-declarations";
+import {
+  type ClaimCapability,
+  executePhaseOp,
+  mintClaimGrant,
   pluginBuildOf,
   readBuild,
-  unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -59,12 +61,12 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-ops`) are an architect's too, as claude-envoy's
- * MCP tool serves them; a claim's session is held to the phase ops of its role (`operationsOf`,
- * `phaseOpsOf`), so review_verdict is a review step's agent's alone, and the shared executor
- * refuses a root architect's completion. `read_build` is every session's: the controller holds a
- * claim like any other role and reads its own build the same way. An operation two kinds hold is
- * one `op` value, listed once (`toolSchema`). */
+ * (`PHASE_OPS` of `@legion/pi-shared/legion-phase-op-declarations`) are an architect's too, as
+ * claude-envoy's MCP tool serves them; a claim's session is held to the phase ops of its role
+ * (`operationsOf`, `phaseOpsOf`), so review_verdict is a review step's agent's alone, and the
+ * shared executor refuses a root architect's completion. `read_build` is every session's: the
+ * controller holds a claim like any other role and reads its own build the same way. An operation
+ * two kinds hold is one `op` value, listed once (`toolSchema`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",

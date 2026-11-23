@@ -5,11 +5,11 @@ import { LEGION_ROLES, type LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import {
-  type ClaimCapability,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpsOf,
-} from "@legion/pi-shared/legion-phase-ops"
+} from "@legion/pi-shared/legion-phase-op-declarations"
+import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import { legion, name, version } from "../package.json" with { type: "json" }

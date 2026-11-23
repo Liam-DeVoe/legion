@@ -24,9 +24,9 @@ export const GO_SPACE = String.raw`\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2
  * lines that turn on it read it or cite this comment rather than repeating it. Its readers:
  * `dispatch artifact` (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the
  * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
- * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
- * and the Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`), which
- * trims a role's name as the Envoy listener trims a claim's.
+ * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-op-declarations.ts`), against the
+ * daemon's; and the Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`),
+ * which trims a role's name as the Envoy listener trims a claim's.
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
