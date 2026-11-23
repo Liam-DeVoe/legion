@@ -24,6 +24,8 @@ import type { EvalKind } from "../../api/queries";
 import type {
   DeliveryLiveDelta,
   EvalDetailResponse,
+  EvalItemRow,
+  EvalItemsResponse,
   EvalListItem,
   EvalListResponse,
   LegionSetting,
@@ -32,6 +34,8 @@ import type {
 } from "../../api/types";
 import { applyRevs } from "../delivery/lib/applyDelta";
 import * as timeline from "../delivery/Timeline";
+import bandReadings from "./charts/__fixtures__/band-readings.json";
+import xyReadings from "./charts/__fixtures__/xy-readings.json";
 import * as sections from "./EvalsSection";
 import { EvalsTab } from "./EvalsTab";
 
@@ -881,6 +885,113 @@ const stateRows: [string, () => Promise<void>][] = [
       ).toEqual(["painted", "painted", "painted", "painted", "closed", "painted"]);
     },
   ],
+  [
+    "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",
+    async () => {
+      const declared = (version: number, said: string): EvalListItem => {
+        const item = evalItem("convergence", "experiment");
+        return { ...item, definition: { ...item.definition, answer: said, version } };
+      };
+      const detail = (version: number, chart: object, said: string): EvalDetailResponse => {
+        const { definition, owner } = declared(version, said);
+        return {
+          ...detailOf(null),
+          items: [{ charts: [chart], definition, owner, series: [], verdict: null }],
+        };
+      };
+      /** Dispatch answers the eval's items view of `series` with its rows in `fixture`. */
+      const serveItems = async (series: string, fixture: { items: unknown[] }) => {
+        const frame = await waitFor(() => {
+          const sent = socket
+            .subscribes()
+            .filter(
+              (one) =>
+                one.view.kind === "items" &&
+                new URLSearchParams(one.view.query).get("series") === series
+            )
+            .at(-1);
+          if (sent === undefined) throw new Error(`no items view of ${series} was subscribed`);
+          return sent;
+        });
+        const rows = (fixture.items as EvalItemRow[]).filter((row) => row.cols?.series === series);
+        const body: EvalItemsResponse = {
+          compare: COMPARE,
+          items: rows,
+          limit: 200,
+          offset: 0,
+          total: rows.length,
+          window: WINDOW,
+        };
+        serve(socket, snapshotFrame(frame.sub, body));
+      };
+      const { getEval } = renderTab();
+      // Each detail read, held until the row answers it.
+      const reads: ((detail: EvalDetailResponse) => void)[] = [];
+      getEval.mockImplementation(() => {
+        const read = Promise.withResolvers<EvalDetailResponse>();
+        reads.push(read.resolve);
+        return read.promise;
+      });
+      const socket = await openSocket();
+      for (const kind of ["delivery", "legion", "ci"] as const) await answerView(socket, kind);
+      const first = "Arm A converges in fewer tokens.";
+      const sub = await answerView(socket, "experiment", answer([declared(1, first)]));
+      await waitFor(() => expect(reads).toHaveLength(1));
+      act(() =>
+        reads[0]?.(
+          detail(
+            1,
+            {
+              group: "col",
+              id: "tokens-over-time",
+              kind: "xy",
+              title: "Tokens to converge",
+              y: { series: "tokens" },
+            },
+            first
+          )
+        )
+      );
+      await serveItems("tokens", xyReadings);
+      const logged = region("Logged");
+      await waitFor(() => within(logged).getByRole("figure", { name: "Tokens to converge" }));
+      const eval_ = () => {
+        const found = logged.querySelector('[data-declared="convergence"]');
+        if (!(found instanceof HTMLElement)) throw new Error("no declared eval is drawn");
+        return found;
+      };
+      expect(eval_().querySelector("[data-answer]")?.textContent).toBe(first);
+
+      // A register write changed the charts and the answer: the view's delta carries version 2.
+      const next = "Arm A converges sooner, and its latency spread narrows.";
+      serve(socket, deltaFrame(sub, [declared(2, next)]));
+      await waitFor(() => expect(reads).toHaveLength(2));
+      expect(within(eval_()).getByRole("status").textContent).toBe("Reading the charts…");
+      act(() =>
+        reads[1]?.(
+          detail(
+            2,
+            {
+              group: "col",
+              id: "latency-band",
+              kind: "band",
+              title: "Latency",
+              y: { series: "latency" },
+            },
+            next
+          )
+        )
+      );
+      await serveItems("latency", bandReadings);
+      const band = await waitFor(() => within(eval_()).getByRole("figure", { name: "Latency" }));
+      expect(band).toHaveAttribute("data-chart-kind", "band");
+      expect(within(eval_()).queryByRole("figure", { name: "Tokens to converge" })).toBeNull();
+      expect(eval_().querySelector("[data-answer]")?.textContent).toBe(next);
+      expect(within(eval_()).queryByRole("status")).toBeNull();
+      // The one view it had: no view was subscribed again.
+      expect(heldViews(socket).filter((frame) => frame.sub === sub)).toHaveLength(1);
+    },
+  ],
 ];
 
 bunTest.each(stateRows)("%s", async (_row, run) => {
@@ -901,10 +1012,6 @@ const laterRows: [string, string][] = [
   [
     'subscribed | sources answer "no settings row" | hidden (delivery, CI); the header\'s "Delivery: not set up" line with its link',
     "T24",
-  ],
-  [
-    "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",
-    "T20",
   ],
 ];
 

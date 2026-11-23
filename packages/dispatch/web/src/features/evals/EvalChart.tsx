@@ -255,23 +255,31 @@ function ChartTable({
  * compare (`pending`, the merge timeline) has no such control. Both modes keep the reader's
  * compare choice. Each series' window figures stand above, with what the series says of its input
  * and of the rows it counts by default repository beside them, in a section as on a card. On the
- * Evals tab the title opens the number's panel of the eval `opensPanel` names (`EvalTitle`).
+ * Evals tab the title opens the number's panel of the eval `opensPanel` names (`EvalTitle`). A
+ * declared chart's own words stand under its title (`subtitle`) and after its graph or table
+ * (`footer`), in both modes.
  */
 export function EvalChart({
   beside,
+  footer,
   model,
   opensPanel,
   renderer: Renderer,
   rowLink,
+  subtitle,
 }: {
   /** What stands beside the chart's title: a card's verdict. */
   beside?: ReactNode;
+  /** What stands after the graph or the table: a declared chart's footnote and notes. */
+  footer?: ReactNode;
   model: ChartModel;
   /** The eval whose panel the title opens, where the chart draws one eval. */
   opensPanel?: string;
   renderer: ChartRenderer;
   /** What each row of the table holds after its values, where the chart's rows link anywhere. */
   rowLink?: RowLink;
+  /** What stands under the title: a declared chart's subtitle. */
+  subtitle?: ReactNode;
 }): ReactNode {
   const titleId = useId();
   const [mode, setMode] = useState<ChartMode>("graph");
@@ -312,6 +320,7 @@ export function EvalChart({
           </label>
         ) : null}
       </div>
+      {subtitle}
       {model.series.map((series) => (
         <SeriesFigures compare={compare} key={series.name} series={series} />
       ))}
@@ -331,6 +340,7 @@ export function EvalChart({
           rowLink={rowLink}
         />
       )}
+      {footer}
     </figure>
   );
 }

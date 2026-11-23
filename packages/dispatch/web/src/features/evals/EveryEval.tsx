@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { type EvalKind, evalDetailQuery } from "../../api/queries";
@@ -67,7 +67,7 @@ export function keepLogged(answer: EvalListResponse): EvalListResponse {
  * unit and its target; and, where `rows`, the rows behind it (the items view). An eval whose
  * detail declares charts draws them in place of the line (`DeclaredEval`, plan D10): the detail is
  * read at the version the evals view answers, so a register write that declares charts reads it
- * again (D11a).
+ * again (D11a), the box drawing what the version before declared until the new detail lands.
  */
 function EvalBox({
   answer,
@@ -81,7 +81,10 @@ function EvalBox({
   scope: EvalsScope;
 }): ReactNode {
   const { slug, unit, version } = item.definition;
-  const detail = useQuery(evalDetailQuery(scope.project, slug, version));
+  const detail = useQuery({
+    ...evalDetailQuery(scope.project, slug, version),
+    placeholderData: keepPreviousData,
+  });
   const model = useMemo(() => everyEvalModel(answer, item, Date.now()), [answer, item]);
   const target = useMemo(() => targetOf(item.verdict), [item.verdict]);
   const name = evalName(item);
@@ -92,7 +95,7 @@ function EvalBox({
       data-eval={slug}
     >
       {declaredCharts(detail.data).length > 0 ? (
-        <DeclaredEval item={item} scope={scope} />
+        <DeclaredEval answer={answer} item={item} scope={scope} />
       ) : model === null ? (
         <>
           <span className={`text-xs ${textMutedOnSurface}`}>
