@@ -272,7 +272,8 @@ func reviewsAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, id int64, state
 }
 
 // agentHolds fails the test, going on, unless each of agent's rows of role on LEGION-208 holds want
-// as the commit its reviews read: the rows of one agent never differ.
+// as the commit its reviews read: the rows of one agent never differ. Each caller's agent runs two
+// steps of role, so fewer than two rows of it fail too: a check over fewer compares nothing.
 func agentHolds(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, agent claim.Token, want, when string) {
 	t.Helper()
 	held := map[int]string{}
@@ -280,6 +281,10 @@ func agentHolds(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Rol
 		if row.Claim == agent {
 			held[place] = row.ReviewedHead
 		}
+	}
+	if len(held) < 2 {
+		t.Errorf("%s, the %s rows of %s are %v; want one at each of its two steps", when, role, agent, held)
+		return
 	}
 	for place, commit := range held {
 		if commit != want {
