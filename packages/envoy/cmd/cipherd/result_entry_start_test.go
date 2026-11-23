@@ -49,8 +49,9 @@ func resultsProfilesBinding(hosts string, extra ...string) string {
 // dpop beside it, B refuses to start, naming BROKER_PROFILES_FILE and the setting or profile at
 // fault, and not BROKER_EXCHANGE_RESULT_WORKFLOWS or the removed BROKER_AIRLOCK_RULES_FILE, and the
 // stand-in of evil.ci-results.test, which B could resolve and dial, receives nothing. Control: B
-// with the profile of resultsBoundHost and the destination of that host starts, takes A's run
-// placeholder, and its write reaches the stand-in of Dispatch, stored.
+// with A's own profile, whose proxy block binds resultsBoundHost, and the destination of that host
+// starts, takes A's run placeholder (a grant serves only on a broker of its own results entry), and
+// its write reaches the stand-in of Dispatch, stored.
 func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(t *testing.T) {
 	e := newResultsEnvironment(t)
 	// The stand-in listens on 127.0.0.2: BROKER_AIRLOCK_TEST_RESOLVE refuses one address given two
@@ -104,8 +105,8 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 		})
 	}
 
-	// Control: the profile of the destination's one host starts, and B serves A's grant to Dispatch.
-	env := append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, resultsProfilesBinding(`"`+resultsBoundHost+`"`)), resultsUpstream)
+	// Control: A's own profile and destination start, and B serves A's grant to Dispatch.
+	env := append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, resultsProfiles), resultsUpstream)
 	process := startBroker(t, brokerOptions{Binary: binary, Env: env})
 	thumbprint, _ := process.AwaitRecord(t, dpopKeyLine, nil)["thumbprint"].(string)
 	b := &resultsBroker{brokerProcess: process, proxyAddr: airlockProxyAddr(t, process), thumbprint: thumbprint}

@@ -783,6 +783,9 @@ func main() {
 		fatal(err)
 		slog.Info("broker: the airlock's DPoP key", "thumbprint", podThumbprint)
 		reqMachine.ResultGrants, reqMachine.ResultTokens, reqMachine.ResultKey = oauthStore, provider, podThumbprint
+		// The results entry the token endpoint records in each grant: this pod serves a grant
+		// only when the grant's is its own (requests.Machine.ResultEntryDigest).
+		reqMachine.ResultEntryDigest = entryDigest
 		proxyServer = proxy.New(proxy.Options{
 			Rules:   proxyRules,
 			Grants:  reqMachine,

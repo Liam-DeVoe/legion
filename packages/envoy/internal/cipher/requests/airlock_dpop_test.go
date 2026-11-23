@@ -61,7 +61,7 @@ func resultGrant(t *testing.T, m *Machine, checkRunID string, expires time.Time)
 // withResultGrants is m answering result placeholders from the broker's result_grants table on
 // its own database, minting through tokens with the pod key podThumbprint names.
 func withResultGrants(m *Machine, tokens *mintedTokens) *Machine {
-	m.ResultGrants, m.ResultTokens, m.ResultKey = oauthstore.New(m.Store.Pool), tokens, podThumbprint
+	m.ResultGrants, m.ResultTokens, m.ResultKey, m.ResultEntryDigest = oauthstore.New(m.Store.Pool), tokens, podThumbprint, resultEntryDigest
 	return m
 }
 
