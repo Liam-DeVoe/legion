@@ -72,10 +72,12 @@ func writeUnder(t *testing.T, root, path, body string) {
 // functions as a value, and a dot import of os. It leaves out a mode with no execute bit, a mode
 // masked so it cannot hold one (mode&^0o111, mode&0o644), a Chmod with none or of a path no open
 // of the function names, a test file of a package whose tests do not run beside each other, a
-// write by testexec.WriteFile, another module below root, and programfile's own Write. The code a
-// deployment runs is planted in daemonish: the shapes the daemon's own program files had before
-// programfile.Write, the git helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a
-// Chmod of the file to 0o700, and a copy that keeps a file's mode.
+// write by testexec.WriteFile, another module below root, and programfile.Write itself, the Write
+// function of github.com/sjawhar/envoy/programfile: another function of that package is named,
+// and so is a Write of a package of that name elsewhere. The code a deployment runs is planted in
+// daemonish: the shapes the daemon's own program files had before programfile.Write, the git
+// helper's os.WriteFile at 0o700 and workerbin's os.CreateTemp with a Chmod of the file to 0o700,
+// and a copy that keeps a file's mode.
 func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -84,7 +86,7 @@ func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 		writeUnder(t, root, path, body)
 	}
 	const parallel = "func TestParallel(t *testing.T) { t.Parallel() }\n"
-	write("go.mod", "module example.com/checked\n")
+	write("go.mod", "module github.com/sjawhar/envoy\n")
 	write("beside/beside.go", "package beside\n")
 	write("beside/a_test.go", `package beside
 
@@ -147,6 +149,14 @@ func Write(name string, flag int, perm os.FileMode) error {
 	}
 	return file.Close()
 }
+
+func Other(name string) error { return os.WriteFile(name, nil, 0o755) }
+`)
+	write("daemonish/programfile/programfile.go", `package programfile
+
+import "os"
+
+func Write(name string, perm os.FileMode) error { return os.WriteFile(name, nil, perm) }
 `)
 	write("daemonish/install.go", `package daemonish
 
@@ -299,7 +309,9 @@ func held(t *testing.T, dir string) {
 		"daemonish/install.go:17", "daemonish/install.go:27", "daemonish/install.go:29",
 		"daemonish/install.go:34", "daemonish/install.go:35",
 		"daemonish/install.go:5", "daemonish/install.go:8",
+		"daemonish/programfile/programfile.go:5",
 		"fakestest/fakestest.go:5",
+		"programfile/programfile.go:13",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
