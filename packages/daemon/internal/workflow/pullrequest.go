@@ -214,8 +214,9 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
 // (classify.AdvancePullRequestHead). It reads no CI result: a settlement moves nothing, in any
 // phase, and the roles that work the issue were told what it said when it arrived (checks,
-// dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
-// any push may change code, so an approval of the previous head does not approve the new one
+// dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound,
+// which settles nothing at a review step the owner does): any push may change code, so an
+// approval of the previous head does not approve the new one
 // (classify.ApprovalStands), whether the push that left it is known yet or not. The push's own
 // handler re-asks it again when it arrives, and a round stuck the same way at the same head is
 // told once (stuckAs). A synchronize that moves nothing - a redelivery, or one carrying no head -
@@ -386,8 +387,10 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
-// issue to accepting, since a merged pull request leaves the round nothing to wait on
-// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// issue on to its task's next step (accepting on the default steps), since a merged pull request
+// leaves the round nothing to wait on (reviewRound); a review step the owner does is settled by no
+// review, and ends by its report. Without this, an approval that came before the merge would hold
+// the issue in
 // reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other

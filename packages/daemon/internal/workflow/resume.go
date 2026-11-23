@@ -138,8 +138,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
-// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role of the claim
+// that works the task's place, and none where the owner does that step or retro) on an issue in
+// the workflow whose tree is
 // running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
@@ -154,8 +155,10 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
-// either is given one. On a root it is the root's own architect, which admission starts with the
+// The owner of admitted, and of a place the owner works (an acceptance it does, a step of the key
+// owner, its retro), is an architect and no phase worker, so no issue there is given one; the
+// fresh agent of a step acceptance with no key is accepting's worker like any other. On a root it
+// is the root's own architect, which admission starts with the
 // tree. On a child it is the architect that owns it: its own while that claim holds its role,
 // else the one above. At admitted that is the one above, since the child's own has not started
 // yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
