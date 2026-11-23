@@ -4801,6 +4801,10 @@ record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and 
 # The proof counts only messages the architect sent after the reviewer's completion. An architect acting on
 # the notice unprompted, as it must where no driver holds it, is not what this checkpoint proves
 # (LEGION-413).
+# The reviewer's record before its round, which the round's completion replaces: none, at the
+# reviewer's first round, and the completion below is the round's one, since the decision the
+# architect asks for writes no second handoff.
+before_review=$(role_handoff_record "$tree1" reviewer)
 send_agent "$tree1" reviewer "Stage 4b proof review operation: review pull request #$pr_number in $repo as your role requires, running the deep and code-quality review passes your instructions name as task subagents. This round deliberately proves what the daemon does with a round no review decides: submit your review as $review_app as a COMMENT review with no inline comment, never APPROVE or REQUEST_CHANGES, take the round's other steps in the order your role gives, and complete the reviewer handoff. Submit no other review until you are asked for the round's decision; when you are, your decision is REQUEST_CHANGES with exactly one inline comment, on the last line of $smoke_file, asking for the line \`$(round_line 1)\` to be appended below the lines already there. The spec permits that correction. Your completion is already recorded: submit that decision on the completed handoff's head without writing another handoff or calling handoff_complete again. This exact smoke instruction takes precedence over your own review."
 pair_session=$(claim_session_file "$tree1" reviewer) || fail "the reviewer on $tree1 has no session file"
 on_tree "$tree1" until_true 1800 "the reviewer's two thermonuclear dispatches to reach an outcome" pair_settled
@@ -4843,7 +4847,7 @@ on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
 # The request for changes ends the round whether or not the reviewer has completed (workflow's
 # roundRejected), so the reviewer's handoff record is waited for, within a turn's budget, first.
-on_tree "$tree1" until_true "$phase_seconds" "the reviewer's round 1 handoff record on $tree1" role_handoff_recorded "$tree1" reviewer
+on_tree "$tree1" until_true "$phase_seconds" "the reviewer's round 1 handoff record on $tree1" role_handoff_recorded "$tree1" reviewer "$before_review"
 assert_handoff_record "$tree1" reviewer reviewing 1
 assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||

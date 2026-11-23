@@ -1064,12 +1064,19 @@ handoff_word() {
 role_handoff_record() {
   daemon_state | jq -r --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].handoffRecord // empty | "\(.id) \(.version)"'
 }
-# role_handoff_recorded ISSUE ROLE: ROLE's completion of its current file-backed phase has named a
-# Dispatch handoff record (role_handoff_record prints one). A review round ends on the reviewer's
-# decision, whether or not the reviewer has completed (the daemon's roundRejected and
+# role_handoff_recorded ISSUE ROLE [BEFORE]: ROLE's completion of its current file-backed phase has
+# named a Dispatch handoff record (role_handoff_record prints one) other than BEFORE, the
+# `<id> <version>` role_handoff_record printed before the round began. A review round ends on the
+# reviewer's decision, whether or not the reviewer has completed (the daemon's roundRejected and
 # roundApproved, workflow/review.go), so a check of the reviewer's record first waits for it with
-# this, bounded (until_true), rather than reading it at the move the decision made.
-role_handoff_recorded() { [ -n "$(role_handoff_record "$1" "$2")" ]; }
+# this, bounded (until_true), rather than reading it at the move the decision made; and until the
+# round's completion names its record, the daemon's state shows the record the round before named,
+# which BEFORE is, so the wait is for the record to change.
+role_handoff_recorded() {
+  local now
+  now=$(role_handoff_record "$1" "$2")
+  [ -n "$now" ] && [ "$now" != "${3:-}" ]
+}
 # assert_handoff_record ISSUE ROLE PHASE ROUND: ROLE's completion of that phase round named a
 # Dispatch handoff record, and Dispatch holds that record (GET /api/v1/handoffs/<id>) as ISSUE's
 # handoff of the phase's word at the version the completion reported, written by the session ROLE's
