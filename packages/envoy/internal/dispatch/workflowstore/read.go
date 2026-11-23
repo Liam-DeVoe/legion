@@ -178,8 +178,8 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	return finished, nil
 }
 
-// MadePlan is a plan with the moment its node was made, which is when the run's work started and
-// which picks between two plans of one generation.
+// MadePlan is a plan with a moment: when its node was made in ProjectPlans, and when its version
+// was written in IssuesPlans. The moment picks between two plans of one generation (compare).
 type MadePlan struct {
 	Plan Plan
 	Made time.Time

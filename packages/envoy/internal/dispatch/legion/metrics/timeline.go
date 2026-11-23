@@ -97,8 +97,8 @@ var stepPhase = map[string]string{
 
 // phaseLine is the order of the phases a fallback timeline names at the moment at: design, then
 // the phase of each step of the task the issue's plan names, in the task's order, then retro and
-// merging. The plan is the one of the newest run whose node was made at or before at, or the
-// first run's where at falls before every plan, since a run's design comes before its plan is
+// merging. The plan is the newest version written at or before at, of any run of the issue, or
+// the oldest where at falls before every version, since a run's design comes before its plan is
 // written. An issue with no plan, or a plan whose steps this reading cannot place, reads the
 // default steps' order (phaseOrder). Two rules read it: which phase a handoff starts
 // (handoffStart) and the rank that keeps a role's first event from starting a phase the issue
