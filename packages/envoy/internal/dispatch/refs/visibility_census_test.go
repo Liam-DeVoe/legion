@@ -181,6 +181,7 @@ var readsWithoutAViewer = map[string]string{
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -196,6 +197,7 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StillOwed":          serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
