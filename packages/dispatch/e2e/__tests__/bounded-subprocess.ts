@@ -95,28 +95,38 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
+ * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
+ *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
+ *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
+ *   was left: the seven rows that run such a driver, 5 runs each, on 3 CPUs (`taskset`) with 9
+ *   busy loops on them, on a dev box of 288 CPUs at a 1-minute load of 1,233 to 1,466 on
+ *   2026-11-21. The others took 6.15 s to 15.92 s. Three times 28.24 s, rounded up to the next
+ *   half minute, is 90 s. That driver counted what was left with one `find` over every process's
+ *   `/proc/<pid>/cwd`, which took 1.3 to 11.5 s alone on that box; the driver since walks its own
+ *   tree instead, and its 35 runs on 8 CPUs (`taskset`, under a CPU quota of 8) with 16 busy loops
+ *   on them, on that box at a load of about 400 the same day, took 0.28 s to 2.81 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a whole-index sweep after 5 minutes, a listing
- * after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9 minutes, and
- * the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads from the bounds of
- * what the row waits for, plus 30 s for its own work, so the child's bound fires before the row's
- * limit and the failure names the child. The lane runs in the `dispatch-ui` job of
- * `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green in 158 s (job
- * 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of those the lane
- * started about 2 minutes in. A stuck listing therefore fails about 8 minutes into the job, and a
- * stuck run of the edge check about 11: more than twice as long as a green run of the job, and
- * inside its limit, so the job reports the failure rather than losing it to a kill from outside.
- * The largest row limit below the two-stack row's is 1 110 000 ms, on the edge check's host-name
- * row, which runs the check twice; a hung run of it fails at its own 540 s bound, and the row's
- * limit fires only when the row itself stalls outside its children. Each row that runs the edge
- * check once states 570 000 ms, and the two rows that start seven `short` children one after
- * another state 450 000 ms (the first rows of `harness-signin.test.ts` and of the
- * `DISPATCH_E2E_PROCESSES` block of `round-robin-proxy.test.ts`, each read from its lists through
- * a spread the guard does not total): a hung child of either fails at its own 60 s bound. The
- * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips unless
- * `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names
- * either.
+ * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
+ * whole-index sweep after 5 minutes, a listing after 6 minutes, the generation after 6.5 minutes,
+ * a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
+ * its own work, so the child's bound fires before the row's limit and the failure names the child.
+ * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
+ * minutes. That job ran green in 158 s (job 130837751961) and in 188 s (job 130834905422) on
+ * 2026-11-11, and in the first of those the lane started about 2 minutes in. A stuck listing
+ * therefore fails about 8 minutes into the job, and a stuck run of the edge check about 11: more
+ * than twice as long as a green run of the job, and inside its limit, so the job reports the
+ * failure rather than losing it to a kill from outside. The largest row limit below the two-stack
+ * row's is 1 110 000 ms, on the edge check's host-name row, which runs the check twice; a hung run
+ * of it fails at its own 540 s bound, and the row's limit fires only when the row itself stalls
+ * outside its children. Each row that runs the edge check once states 570 000 ms, and the two rows
+ * that start seven `short` children one after another state 450 000 ms (the first rows of
+ * `harness-signin.test.ts` and of the `DISPATCH_E2E_PROCESSES` block of
+ * `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does not
+ * total): a hung child of either fails at its own 60 s bound. The two-stack row's 1 830 000 ms is
+ * longer than the job and never fires there: that row skips unless `DISPATCH_E2E_PG_BIN` or
+ * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names either.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -140,6 +150,9 @@ export const bounds = Object.freeze({
   wholeIndexSweep: 300_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
+  /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
+   *  stop or kill the row sends, and its names runs. */
+  stoppedLeg: 90_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

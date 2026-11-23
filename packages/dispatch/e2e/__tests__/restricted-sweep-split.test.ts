@@ -12,13 +12,16 @@ import { rowLimit } from "./bounded-subprocess";
 import {
   appInstallation,
   at,
+  type FeedShape,
   failures,
   fullCookie,
   fullToken,
+  issueMode,
   type Leak,
   literally,
   memberCookie,
   memberLogin,
+  ownIssue,
   passed,
   routesFileOf,
   stopFakes,
@@ -47,15 +50,23 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
 
   /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
    *  browser's person alone, so its reads can fail only with the full member's cookie, which the
-   *  run is given unless `withoutCookie`. Its live socket is served, for the agent view's full
-   *  half. `omit` leaves kinds out of its lookup; `createdAt` is when its fake's OWN was created. */
+   *  run is given unless `withoutCookie`; `full` plants answers for the full member's requests.
+   *  Its live socket is served, for the agent view's full half, which the full
+   *  member's token reads. `omit` leaves kinds out of its lookup; `createdAt` is when its fake's
+   *  OWN was created. */
   async function fills(
     leaks: readonly Leak[] = [],
     {
       withoutCookie = false,
+      full,
       omit,
       createdAt,
-    }: { withoutCookie?: boolean; omit?: ReadonlySet<string>; createdAt?: string | null } = {},
+    }: {
+      withoutCookie?: boolean;
+      full?: readonly Leak[];
+      omit?: ReadonlySet<string>;
+      createdAt?: string | null;
+    } = {},
     file = join(fillsDirectories(), "fills.tsv")
   ) {
     const run = await sweep(leaks, {
@@ -72,6 +83,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       ...(omit === undefined ? {} : { omit }),
       ...(createdAt === undefined ? {} : { createdAt }),
       proxyReadsCookies: true,
+      ...(full === undefined ? {} : { full }),
       rows: someRows,
     });
     return { ...run, file };
@@ -80,7 +92,8 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   /** A runner's run with FILE and no full member's credential, over `rows` (`someRows` unless
    *  given), its document socket served, and its live feed served unless `live` is false: a run
    *  that a leak decides, or that stops before its feed, need not wait out a live window.
-   *  `createdAt` is when its fake's OWN was created. */
+   *  `createdAt` is when its fake's OWN was created; `env` changes its inputs, and `feed` its
+   *  fake's sockets. */
   function runner(
     file: string,
     leaks: readonly Leak[] = [],
@@ -88,7 +101,15 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       live = true,
       rows = someRows,
       createdAt,
-    }: { live?: boolean; rows?: readonly string[]; createdAt?: string | null } = {}
+      env = {},
+      feed = {},
+    }: {
+      live?: boolean;
+      rows?: readonly string[];
+      createdAt?: string | null;
+      env?: Readonly<Record<string, string | undefined>>;
+      feed?: FeedShape;
+    } = {}
   ) {
     return sweep(leaks, {
       env: {
@@ -97,21 +118,21 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         SWEEP_CONVERSATION_FILE: undefined,
         SWEEP_WRITE_ISSUE: undefined,
         SWEEP_LIVE_SECONDS: String(runnerLiveSeconds),
+        ...env,
       },
       ...(createdAt === undefined ? {} : { createdAt }),
-      feed: { doc: true, live },
+      feed: { doc: true, live, ...feed },
       rows,
     });
   }
 
   /** A writer's run with FILE's fills, writing every WRITE_EVERY seconds (1 unless given) for
-   *  WRITE_SECONDS, with the full member's cookie for its direct messages. */
+   *  WRITE_SECONDS, with the full member's token alone, which writes its direct messages. */
   function writer(file: string, writeSeconds: string, noise?: string, writeEvery = "1") {
     return sweep([], {
       env: {
         SWEEP_MODE: "writer",
         SWEEP_FILLS_FILE: file,
-        SWEEP_FULL_COOKIE: fullCookie,
         SWEEP_WRITE_SECONDS: writeSeconds,
         SWEEP_WRITE_EVERY: writeEvery,
         SWEEP_RESTRICTED_COOKIE: undefined,
@@ -292,18 +313,59 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     rowLimit("short", "short")
   );
 
-  // A proxy read the full member's half could not make fail leaves no fills, and a runner whose
-  // fills say a proxy read cannot fail is UNKNOWN: neither is a pass of a read that could not fail.
+  // Without the full member's cookie no proxy read can fail: fills mode keeps each with no
+  // can_fail line, so the rest of the split still runs, and a runner reads each UNKNOWN, never a
+  // pass of a read that could not fail. The agent view's half is the full member's token's.
   test(
-    "fills mode whose proxy reads cannot fail, with no full member's cookie, writes no file, and names them",
+    "fills mode with no full member's cookie writes the fills, no proxy read among the rows that can fail, and a runner reads each UNKNOWN",
     async () => {
       const { code, file, stdout } = await fills([], { withoutCookie: true });
-      expect(verdictOf(stdout)).toStartWith("UNKNOWN: no fills were written");
+      expect(verdictOf(stdout)).toStartWith("FILLS: ");
+      expect(code, stdout).toBe(0);
+      const lines = readFileSync(file, "utf8").trimEnd().split("\n");
       for (const shape of proxyReads()) {
+        const label = `GET /api/github/rest/repos/{owner}/{repo}/${shape}`;
         expect(stdout).toContain(
-          `\n  GET /api/github/rest/repos/{owner}/{repo}/${shape}: the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+          `\nfill    ${label} (cannot fail: SWEEP_FULL_COOKIE is not given, and the proxy reads the browser's person alone, so the full member's read of it was not made)\n`
+        );
+        expect(lines).not.toContain(`can_fail\t${label}`);
+        expect(lines).toContain(`full_status\tnone ${label}`);
+      }
+      expect(lines).toContain("can_fail\t/ws/live agent view of {session_id}");
+      const run = await runner(file);
+      for (const shape of proxyReads()) {
+        expect(run.stdout).toContain(
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but SWEEP_FILLS_FILE holds no full member's read of it that could fail\n`
         );
       }
+      expect(run.stdout).toContain(
+        "\nok      /ws/live agent view of {session_id}: no one answers for it (could fail when the fills were made)\n"
+      );
+      expect(run.stdout).toMatch(/^live window \S+ \S+$/m);
+      expect(verdictOf(run.stdout)).toBe(
+        `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads().length} reasons above`
+      );
+      expect(run.code).toBe(2);
+    },
+    rowLimit("short", "short")
+  );
+
+  // With the cookie, a proxy read the full member's half could not make fail still leaves no
+  // fills: the proxy answers the full member TGT's repository as one the App is not installed on.
+  test(
+    "fills mode with the full member's cookie, where a proxy read cannot fail, writes no file, and names it",
+    async () => {
+      const notInstalled = {
+        code: "GITHUB_TOKEN_UNAVAILABLE",
+        error: `the GitHub App is not installed on ${tgt.repository}`,
+      };
+      const { code, file, stdout } = await fills([], {
+        full: [at(`/api/github/rest/repos/${tgt.repository}/pulls/1`, 503, notInstalled)],
+      });
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: no fills were written");
+      expect(stdout).toContain(
+        "\n  GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail\n"
+      );
       expect(code).toBe(2);
       expect(await Bun.file(file).exists()).toBe(false);
     },
@@ -483,6 +545,60 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     rowLimit("short", "short")
   );
 
+  // The browser leg's runner: its person holds no session, so the member's own control is their
+  // comment and message on an issue of their own project, in place of a direct message to a
+  // session, and the runner makes those two writes alone.
+  test(
+    "a runner whose member's control is their own issue passes, writes on that issue alone, and prints a live window",
+    async () => {
+      const { file } = await fills();
+      const { code, fullRequests, memberWrites, stdout } = await runner(file, [], {
+        env: issueMode,
+      });
+      expect(fullRequests).toBe(0);
+      expect(memberWrites).toEqual([
+        `POST /api/v1/issues/${ownIssue}/comments`,
+        `POST /api/v1/issues/${ownIssue}/messages`,
+      ]);
+      expect(stdout).toMatch(
+        new RegExp(
+          `^ok {6}/ws/live: the member is sent 2 events in ${runnerLiveSeconds} s, none of TGT, and their own comment and message on ${ownIssue}; its control is a writer's write delivered inside the live window$`,
+          "m"
+        )
+      );
+      expect(stdout).toContain(
+        `\nok      GET /api/v1/messages/{id} (the member's own message on ${ownIssue}): 200 (control)\n`
+      );
+      expect(stdout).toMatch(/^live window \S+ \S+$/m);
+      expect(verdictOf(stdout)).toMatch(
+        new RegExp(
+          `^${literally(passed)}; the live check holds once a writer's delivered write falls inside the live window \\S+ \\S+, which the tailnet leg joins$`
+        )
+      );
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short", "short")
+  );
+
+  // The control of the row above: the same runner, its member's own writes cut from their feed.
+  test(
+    "the same runner, its member's feed sent neither of their own writes on the issue, is UNKNOWN",
+    async () => {
+      const { file } = await fills();
+      const { code, stdout } = await runner(file, [], {
+        env: issueMode,
+        feed: { ownIssueLost: ["comment", "message"] },
+      });
+      expect(stdout).toContain(
+        `\nUNKNOWN /ws/live: the control did not hold: the member was not sent their own comment and message on ${ownIssue}\n`
+      );
+      expect(stdout).not.toMatch(/^live window /m);
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short", "short")
+  );
+
   // Each write is a comment on the write issue and a direct message to the fills' session of the
   // project, and is delivered once the full member's own feed is sent both, within the delivery
   // bound a runner's window leaves. Its line names when it began, before its comment was asked
@@ -493,9 +609,11 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     "a writer prints each write, from before its comment to after its direct message, delivered to the full member's own feed, and exits 0",
     async () => {
       const { file } = await fills();
-      const { code, stdout } = await writer(file, "3");
+      const { code, directBy, stdout } = await writer(file, "3");
       const writes = stdout.split("\n").filter((line) => line.startsWith("write "));
       expect(writes.length, stdout).toBeGreaterThan(0);
+      // Its direct messages are the full member's token's: the writer is given no cookie.
+      expect(directBy).toEqual(writes.map(() => "token"));
       for (const line of writes) {
         expect(line).toMatch(new RegExp(`^${writeLine} delivered$`));
         const [, began = "", ended = ""] = line.split(" ");

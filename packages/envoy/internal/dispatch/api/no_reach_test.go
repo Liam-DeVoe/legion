@@ -731,6 +731,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/access/person":                      "a service account DISPATCH_ACCESS_ACCOUNTS names",
 	"GET /api/v1/access/private-projects":            "a service account DISPATCH_ACCESS_ACCOUNTS names",
 	"GET /api/v1/access/projects/{key}/repositories": "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/artifacts/{id}/changes":             "two stored versions of one document",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the

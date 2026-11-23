@@ -264,17 +264,11 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"messages_replies_to_block",
 		"events_person_words_with_declines",
 		"comment_deliveries_session",
-		"comment_deliveries_reply_id",
 		"message_deliveries_session_taken",
 		"embeddings_window_owner",
 		"asks_issue_key",
-		"asks_handed_back_reply_id",
 		"messages_issue_roots",
 		"document_search_vector",
-		"related_checks_source_block",
-		"related_checks_source_issue",
-		"graph_erasures_block_document",
-		"comments_proved_session_owner",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select indexname
@@ -350,6 +344,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"people_pkey",
 		"projects_pkey",
 		"projects_key_check",
+		"projects_default_repo_check",
 		"repo_projects_pkey",
 		"repo_projects_project_fkey",
 		"issues_pkey",
