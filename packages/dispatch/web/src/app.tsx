@@ -1060,10 +1060,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). `data-document-scroll` states that the document scrolls main's content:
-            on a page that does not fill the screen, outside the new issue page's frame. The
-            foot's hook reads it as it finds the scroller under a float (`scrollerUnder` in
-            `hooks/useFootInset.ts`). */}
+            hover (R6). `data-document-scroll` states that the document scrolls the content of
+            the element that carries it: `main` on a page that does not fill the screen, outside
+            the new issue page's frame. In the frame the page states it itself, on the column
+            beside its Contents pane (`IssueOutlinePage.tsx`): the pane is stuck in the row that
+            holds both, and end room in `main`, below that row, carried the pane off its place at
+            the end of the scroll. The foot's hook reads it as it finds the scroller under a float
+            (`scrollerUnder` in `hooks/useFootInset.ts`). */}
         <main
           className={
             issueFrame

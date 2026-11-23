@@ -42,7 +42,6 @@ var goingMutatingRoutesWithNoTool = []string{
 	// and the loop that proposes operations on Dispatch's graph must never propose that. Keep
 	// both here; never give either a row.
 	"DELETE /api/v1/projects/{key}/proven-sessions",
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
@@ -102,12 +101,12 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/me/threads/{id}/read",
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
+	"PUT /api/v1/projects/{key}/default-repository",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
 	// The proven-sessions setting's other route, kept here for the reason its DELETE above is.
 	"PUT /api/v1/projects/{key}/proven-sessions",
 	"PUT /api/v1/settings/delivery",
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }
 
 // withThrowawayToolRoutes gives one tool a set of rows for the length of a test, so a build is

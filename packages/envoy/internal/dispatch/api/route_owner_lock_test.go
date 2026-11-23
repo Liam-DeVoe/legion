@@ -85,6 +85,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
 	{name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)", ready: readyProjectProvenSessionsOn},
 	{name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)", ready: readyProjectProvenSessionsOff},
+	{name: "the project default repository route", route: "PUT /api/v1/projects/{key}/default-repository (putProjectDefaultRepository)", ready: readyProjectDefaultRepository},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
 	{name: "the ask follow route", route: "PUT /api/v1/asks/{id}/followers/{session_id} (changeAskFollower)", ready: readyAskFollow},
 }
@@ -653,6 +654,31 @@ func readyProjectProvenSessionsOff(t *testing.T, base routeFixture) lockedItemWr
 			}
 			if on := fixture.rowCount(t, `select count(*) from projects where key = $1 and proven_sessions`, "LOCK"); on != 0 {
 				t.Fatal("the project's setting is on after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
+}
+
+// readyProjectDefaultRepository drives PUT /api/v1/projects/{key}/default-repository with a
+// repository the project does not default to yet, which updates the project's row under the
+// project's owner lock it takes before the update (putProjectDefaultRepository), as every writer
+// of a projects row takes it.
+func readyProjectDefaultRepository(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Default repository")
+	write := fixture.routeWrite(t, "the project's default repository",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/default-repository",
+				map[string]any{"repo": "acme/widgets"}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("set the default repository once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if set := fixture.rowCount(t, `select count(*) from projects where key = $1 and default_repo = 'acme/widgets'`, "LOCK"); set != 1 {
+				t.Fatal("the project names no default repository after the route answered 200")
 			}
 		})
 	write.owner = store.ProjectOwner("LOCK")

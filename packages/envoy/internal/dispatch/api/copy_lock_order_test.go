@@ -53,14 +53,13 @@ var (
 // (parentStatusFixPass.run) holds no transaction and no ledger across its steps: its planning
 // transaction rolls back before the first step, each step commits its own in writeIssue, and its
 // record is a statement of its own, so the pass holds nothing when it returns and a later try of
-// the lease is not ordered after it; and the three boot one-shots that main runs before that fix
+// the lease is not ordered after it; and the two boot one-shots that main runs before that fix
 // (api.RunParentStatusFixAtBoot) and that take a pending row or append an event hold nothing when
 // they return, so main holds neither when the fix runs: restoreDecidedWordings runs
 // docs.Service.RestoreDecidedWordings, which begins one transaction and commits it or rolls it
-// back before it returns; repairIssueAsks runs api.RepairIssueAsks, which repairs each issue in a
-// transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred rollback
-// ends; and SeedRepoProjects seeds each repository in a transaction of its own that it commits or
-// rolls back.
+// back before it returns; and repairIssueAsks runs api.RepairIssueAsks, which repairs each issue
+// in a transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred rollback
+// ends.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"api.server.settleIssueBeforeClose",
@@ -69,7 +68,6 @@ var ownTransactionFunctions = []string{
 	"api.parentStatusFixPass.run",
 	"main.restoreDecidedWordings",
 	"main.repairIssueAsks",
-	"api.SeedRepoProjects",
 }
 
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock

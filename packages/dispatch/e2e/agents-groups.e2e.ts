@@ -587,7 +587,7 @@ test("an agent row stands at the height recorded for its width @phone", async ({
 // half of a short window, with room under it. At each of four such windows the panel's box and
 // the composer's must not meet: the panel's corner then lay over the composer's message box, its
 // mode and Send, or its recipients.
-test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet", async ({
+test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet @foot", async ({
   browser,
 }) => {
   const titles = Array.from(
