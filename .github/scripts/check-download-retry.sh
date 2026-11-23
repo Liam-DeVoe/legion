@@ -239,9 +239,10 @@
 #      where x.sh fetches, is named once. A Dockerfile RUN is read for no pattern, so for none of
 #      these. Until round 41 `shopt -s nocaseglob` and then `cd .github/scripts &&
 #      ./R38-FE[T]CH.SH` passed r38-fetch.sh's 1050 s under a 17-minute key. Measured at
-#      de0334a3, this refused two lines of the tree, each a `shopt -s nullglob`:
-#      go-tagged-tests.sh:51 and release-envoy-listener.yaml:480, in `Create the image index`,
-#      each rewritten to test the first name its glob gives with `[ -e … ]`, which runs as it did;
+#      de0334a3, this refused two lines of the tree, each a `shopt -s nullglob`: the one
+#      go-tagged-tests.sh set below its `set -euo pipefail` for its loop over `"$dir"/*_test.go`,
+#      and the one in release-envoy-listener.yaml's `Create the image index`, each rewritten to
+#      test the first name its glob gives with `[ -e … ]`, which runs as it did;
 #      the tree's 14 `shopt -s inherit_errexit` and its `set -euo pipefail` and `set -o pipefail`
 #      are outside the class. ROUND 42 CLOSES FOUR ROUTES TO SUCH A SETTING AS ROUTES, NOT AS
 #      SPELLINGS, each measured on the tree at 96dde7f1 before its refusal was written
@@ -327,12 +328,13 @@
 #      where a fetch is in its reach, as the list below says. Its lines run from its definition
 #      to its body's last command, so a command after a `}` that starts its line is the text's
 #      own; and a parameter expansion is one word to its closing `}`, as bash reads
-#      `${name##* }`, which this tree writes at ci-tools-proof.sh:1205, 1221 and 1783 and
-#      release-push.sh:1304. Until round 37 the function's lines ran to its `}`'s line, and the
-#      expansion was split at its blank and its `}` read as the function's own, which ended
-#      ci-tools-proof.sh's `probe` at the first of those three lines and `ladder_report` at the
-#      third; no fetch or call this check charges sat after either, so no figure moved
-#      (dispatch://INFRA-1545, round 37).
+#      `${name##* }`, which this tree writes in ci-tools-proof.sh's `probe` (`${reading##* }`,
+#      twice) and `ladder_report` (`${names# }`) and in release-push.sh's `fold-check`
+#      (`${changie_output//$'\n'/ }`). Until round 37 the function's lines ran to its `}`'s
+#      line, and the expansion was split at its blank and its `}` read as the function's own,
+#      which ended ci-tools-proof.sh's `probe` at its first `${reading##* }` and `ladder_report`
+#      at its `${names# }`; no fetch or call this check charges sat after either, so no figure
+#      moved (dispatch://INFRA-1545, round 37).
 #   3. A LIBRARY'S FUNCTIONS: a library is a script a body sources, and a call of one of its
 #      fetching functions is read as a call of a function is, with the same words before it.
 #      This tree sources three, ci-retry.sh, ci-tools.sh and runner-shutdown.sh, and calls into
@@ -867,8 +869,8 @@
 #      `proof` job takes its limits from the rows of .github/e2e-scripts.json: those rows are
 #      derived by hand, each against the slowest retried step its own flags select, and that
 #      file says so where they are written. .github/workflows/dispatch-unit-repeat.yaml's
-#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}` (:129), and each matrix
-#      row (:156-180) writes its figure's arithmetic beside it, the job's first term plus
+#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}`, and each row of its
+#      matrix's `include:` writes its figure's arithmetic beside it, the job's first term plus
 #      `retry_seconds`, the setup-bun step's two `ci_tools_fetch` calls, 3416 s: web
 #      4080 + 74 + 3416 = 7570 s under 127 minutes, web-cold 480 + 88 + 3416 = 3984 s under 67,
 #      and harness 7920 + 458 + 3416 = 11794 s under 197, which
@@ -877,7 +879,7 @@
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
 #      is read the same way, as writing none, which refuses it where it holds a retried call:
 #      the same file's `Run the lane under one seed with --reruns ${{ matrix.reruns }}` step
-#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:269), and e2e.yaml's `Run the
+#      writes `timeout-minutes: ${{ matrix.step_minutes }}`, and e2e.yaml's `Run the
 #      proof` step writes `timeout-minutes: ${{ matrix.run_timeout_minutes }}`, each row's figure
 #      derived by hand in .github/e2e-scripts.json and .github/ci-notes/e2e.md, which
 #      select-e2e-proofs.sh holds strictly below the row's job key. Both pass because neither
@@ -1223,7 +1225,7 @@
 #      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
 #      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
 #      does not hold it: 'Check every workflow file with actionlint' in ci-job-ci-filters.yaml's
-#      `ci-filters` job (:63) and in workflow-files.yaml's `workflow-files` job (:40). EXEMPTIONS
+#      `ci-filters` job and in workflow-files.yaml's `workflow-files` job. EXEMPTIONS
 #      names neither, since neither is a site here (dispatch://INFRA-1545, round 47). A STATED
 #      LIMIT: this check reads no `docker run` and no `docker create` as a fetch, so an own-image
 #      pull made that way is read by no rule and is named only in this text; a `docker pull` is
@@ -1234,9 +1236,9 @@
 #      lake is one of THE VERBS. The tree's two such fetches are each a `retry_fetch "the Lean
 #      toolchain $toolchain" 120 -- elan toolchain install "$toolchain"` in a step of its own,
 #      keyed by hand at 5 x 120 + 150 = 750 s -> 13 min, before a `lake build` that then
-#      downloads nothing: ci-job-airlock-lean.yaml's `airlock-lean` job (:82) and
-#      ci-caches.yaml's `elan` job (:738). No rule holds a new one to the floor or charges it to
-#      a key.
+#      downloads nothing: the `Install the Lean toolchain lean-toolchain names` step of
+#      ci-job-airlock-lean.yaml's `airlock-lean` job and of ci-caches.yaml's `elan` job. No rule
+#      holds a new one to the floor or charges it to a key.
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
 #      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
@@ -1328,11 +1330,11 @@
 #     copy, and five attempts there would sleep 150 s for every row the package lacks, which are
 #     exactly the rows the copy after it then writes. The copy itself, and the digest read that
 #     confirms it, do retry.
-#   * `docker buildx imagetools create` and `docker buildx imagetools inspect` in
-#     release-envoy-listener.yaml's `image_index` job (:471, :479) are a release's write to its
-#     registry and its read of what it wrote: they join the platform images the docker legs pushed
-#     into the `envoy:<sha>` index and print that index, and bring no tool and no dependency into
-#     the job. `docker buildx` is none of THE VERBS, so no rule reads them. Exception (d) does
+#   * `docker buildx imagetools create` and `docker buildx imagetools inspect` in the `Create the
+#     image index` step of release-envoy-listener.yaml's `image_index` job are a release's write
+#     to its registry and its read of what it wrote: they join the platform images the docker legs
+#     pushed into the `envoy:<sha>` index and print that index, and bring no tool and no dependency
+#     into the job. `docker buildx` is none of THE VERBS, so no rule reads them. Exception (d) does
 #     not reach the job either: its `packages: write` is no scope of check-release-credentials.sh's
 #     WRITE_SCOPES (`contents`, `id-token`, `attestations`, `actions`), so the job is no
 #     credentialed one by that check's definition, and this scoping is what leaves it unretried.
@@ -10426,10 +10428,11 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
 #     budget, part by part" states the construction, `114 was the 104 this construction gives
 #     with ten minutes added` and, at the staging step's 207 minutes, 207 + 18 = 225 and 235 with
-#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:17-19,
-#     since the merge of main's #3675) also writes the Budgets note's sum, `1727 + 12383 =
-#     14110 s -> 236 min` since review round 36 of dispatch://INFRA-1545 counted every staged
-#     row, which this clause reads and which the key's 14160 s strictly exceeds.
+#     the ten, and the comment above its key (the `tool-fallback` job's `timeout-minutes: 236`
+#     in .github/workflows/ci-job-tool-fallback.yaml, since the merge of main's #3675) also
+#     writes the Budgets note's sum, `1727 + 12383 = 14110 s -> 236 min` since review round 36
+#     of dispatch://INFRA-1545 counted every staged row, which this clause reads and which the
+#     key's 14160 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
 # of them is one a reader sees in the harness rather than in the tree.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer

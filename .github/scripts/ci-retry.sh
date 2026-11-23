@@ -147,19 +147,27 @@ fi
 # calls review round 54 of dispatch://INFRA-1545 changed), or runs a command that prints nothing
 # on standard output when it succeeds (`go mod download`, `go install`, `gh api --silent`,
 # `gh cache delete`, `crane copy`, `curl --silent --output`). Second, a caller that captures an
-# answer and prints a value out of it prints it outside any block: check-pr-text.sh:316, :328,
-# :497 (in the refusals of `whole`, :283 and :291), :501, :524 and :526 (the base branch's name,
-# GitHub's GraphQL baseRefName since main's #4956), :578 (the release read's status line), :589
-# and :596 (a release's published_at) and :605 (the pull request's createdAt);
-# ci-ok-reconcile.sh:139, :143, :149, :157 and :160 (a ci-ok check run's status, conclusion and
-# external_id);
-# ci-ok-report.sh:165 (the tip of the queue's branch, main's #4983); ci-ok-hold.sh:125 (this run's
-# creation time), :153 (the group branch's commit) and :157 (the tip of the queue's branch, main's
-# #5186); dequeued.yaml:168 (the
-# removal's createdAt and reason) and :185 (the group head's runs, as jq's compact JSON);
-# mirror-ci-images.sh:165 and :168 (the GOLANG_VERSION an image's config holds) and :215 (the
-# digest crane read); post-check-run.sh:106 (the check run's html_url); browser-image.yaml:255
-# (the recipe label an image's config carries); and main-bypass-check.yaml:134
+# answer and prints a value out of it prints it outside any block: check-pr-text.sh's lines that
+# print the base branch's name, `$base_ref` (GitHub's GraphQL baseRefName since main's #4956):
+# the refusal `answered no page $broken of the commits from $base_ref`, the notice `GraphQL
+# comparison of $base_ref with $head`, `whole history "commits on $base_ref …"` (in the two
+# refusals of `whole`), the notice `no commit on $base_ref adds $cutoff_file` and the two
+# `unknown`s on `$base_ref's history`; its `unknown` `no 200 status line` (the release read's
+# status line); its `unknown` `$tag was published at $published` and its notice `active since
+# $first_tag, published $first_published` (a release's published_at); and its notice `#$number
+# was opened at $opened` (the pull request's createdAt); ci-ok-reconcile.sh's lines in its
+# `while read -r id status was marker` loop that print `$status`, `$was` or `$marker` (a ci-ok
+# check run's status, conclusion and external_id); ci-ok-report.sh's notice `its base $BASE_SHA
+# is not $tip` (the tip of the queue's branch, main's #4983); ci-ok-hold.sh's notices `This run
+# was created at $created` (this run's creation time), `$HEAD_REF is ${group:-gone}` (the group
+# branch's commit) and `its base $BASE_SHA is not $tip` (the tip of the queue's branch, main's
+# #5186); dequeued.yaml's `left the queue at … for reason '$reason'` (the removal's createdAt and
+# reason) and `What that commit's runs are` (the group head's runs, as jq's compact JSON);
+# mirror-ci-images.sh's check_go, in its refusal and its `go` notice (the GOLANG_VERSION an
+# image's config holds), and its refusal `landed at $have` (the digest crane read);
+# post-check-run.sh's notice `posted $CHECK_NAME …` (the check run's html_url);
+# browser-image.yaml's `publish=$publish: $why` in `Decide whether to publish` (the recipe label
+# an image's config carries); and main-bypass-check.yaml's `cat "$RUNNER_TEMP/reasoning" >&2`
 # (main-bypass-check.sh's lines, which name the conclusions of the runs and check runs it read,
 # escaped by jq's @tsv). Those lines are the callers' own, outside
 # this function: the boundary of the INFRA-3862 lane (dispatch://INFRA-5224). Third, the callers'

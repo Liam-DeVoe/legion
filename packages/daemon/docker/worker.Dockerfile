@@ -313,8 +313,8 @@ COPY packages/proof-editor/package.json packages/proof-editor/package.json
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 # What the glob costs, and the line that pays it. BuildKit builds every COPY source with
 # AllowWildcard and AllowEmptyWildcard (buildkit v0.26.1
-# frontend/dockerfile/dockerfile2llb/convert.go:1669-1670), and a wildcard matching nothing
-# copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where a COPY of
+# frontend/dockerfile/dockerfile2llb/convert.go's dispatchCopy), and a wildcard matching nothing
+# copies nothing and returns no error (solver/llbsolver/file/backend.go's docopy), where a COPY of
 # an exact name the context does not hold fails at the cache key with `not found`. So the context
 # is held to exactly one tarball here: without this the build would reach `bun install` and spend
 # five attempts and 150 s of sleeps on a `file:` dependency no attempt can resolve. The tree's own

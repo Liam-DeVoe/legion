@@ -90,8 +90,8 @@ CI_LOG_GUARD = ".github/scripts/ci-log-guard.sh"
 def ci_retry(why):
     """The reads of a site that reads CI_RETRY, for `why`: the helper, and CI_LOG_GUARD with it."""
     return ((CI_RETRY, why),
-            (CI_LOG_GUARD, f"{CI_RETRY}:57 sources it, or a caller under sh just before it: retry_fetch "
-                           "runs each attempt inside its stop-commands block"))
+            (CI_LOG_GUARD, f"{CI_RETRY} sources it from its own directory where ci_log_block_open is not yet defined, "
+                           "or a caller under sh just before it: retry_fetch runs each attempt inside its stop-commands block"))
 
 
 # The step every ci.yaml job that runs a go command carries, after its Go module cache restore
@@ -348,15 +348,15 @@ def setup_bun(job, workflow=""):
     sessions-script, whose test and the script it spawns import node: builtins and bun alone."""
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:92 reads it into the bun cache key, :172 "
-                         "bun-version-file: .bun-version, and :150 and :203 read the version it pins to tell a Bun "
-                         "of that version from any other"),
-        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:186-199 chooses the bun row of this runner's "
-                                  "build variant, :242 fetches that row's second source where no Bun of the pinned "
-                                  "version is installed, and :296 holds the bun on PATH to that row's digest"),
-        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:181,282 source it: ci_tools_source_name "
-                                        "reads the word for the source that served the bytes, ci_tools_fetch_fallback "
-                                        "installs the npm copy and ci_tools_verify checks the installed binary"),
+        (".bun-version", ".github/actions/setup-bun/action.yml's bun-pin step reads it into the bun cache key, its setup-bun "
+                         "step passes `bun-version-file: .bun-version`, and its bun-already-here and bun-second-source steps "
+                         "read the version it pins to tell a Bun of that version from any other"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml's bun-second-source step chooses the bun row of this "
+                                  "runner's build variant and fetches that row's second source where no Bun of the pinned version "
+                                  "is installed, and its `Check the installed Bun is the pinned binary` step holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml's bun-second-source and `Check the installed Bun is "
+                                        "the pinned binary` steps source it: ci_tools_source_name reads the word for the source that "
+                                        "served the bytes, ci_tools_fetch_fallback installs the npm copy and ci_tools_verify checks the installed binary"),
     )
 
 
@@ -393,15 +393,15 @@ def biome(where):
 def install_jj(job):
     return reads(
         (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:67 reads ARG JJ_TOOL, the tool spec mise installs"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml's `Install the worker image's jj` step reads ARG JJ_TOOL, the tool spec mise installs"),
         (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:47-48 installs the archive of the mise row, or of "
-                                  "mise-aarch64 on an arm64 runner, and :112,121 hold the jj binary to the digest of the jj "
-                                  "row or of jj-aarch64, whichever source served it"),
+                                  "mise-aarch64 on an arm64 runner, and its two `ci_tools_verify \"$jj_row\"` calls hold the jj "
+                                  "binary to the digest of the jj row or of jj-aarch64, whichever source served it"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:44,63 source it: ci_tools_fetch installs "
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
-        *ci_retry(".github/actions/install-jj/action.yml:65 sources it: :103 retries `mise install` in front of that "
-                  "second source, since a release asset that fails one fetch is a flap and not the outage a copy answers"),
+        *ci_retry(".github/actions/install-jj/action.yml's `Install the worker image's jj` step sources it and retries `mise install` "
+                  "through it in front of that second source, since a release asset that fails one fetch is a flap and not the outage a copy answers"),
     )
 
 
@@ -2502,11 +2502,11 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
 SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "release-push.sh:1031,1088,1176 source it for restart's, release's and "
-                                  "release-section's gh calls, which the stub gh answers"),
-        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:961 runs it for `version`, and the version cases read its refusals"),
-        (f"{SCRIPTS}/npm-published-version.sh", "release-push.sh:949 runs it for `version --first-npm`, and the version cases drive it against a stub npm"),
-        *ci_retry("release-push.sh:947 sources it for `version --first-npm`, and the version cases read its retries"),
+        (f"{SCRIPTS}/gh-read.sh", "release-push.sh's `restart`, `release` and `release-section` each source it for their gh "
+                                  "calls, which the stub gh answers"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh's `version` runs it, and the version cases read its refusals"),
+        (f"{SCRIPTS}/npm-published-version.sh", "release-push.sh's `version` runs it for `--first-npm`, and the version cases drive it against a stub npm"),
+        *ci_retry("release-push.sh's `version` sources it for `--first-npm`, and the version cases read its retries"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
         (".github/workflows/release-envoy-listener.yaml",
          "release-push.test.sh's Determine latest case reads release_publish's step out of it and runs its image read"),
@@ -2569,7 +2569,7 @@ SCRIPT_TEST_GATES = [
     # tool-fallback job (main's #3576 gave that rig a harness of its own).
     harness("ci_tools_test", "Test the tool fetch helper", f"{SCRIPTS}/ci-tools.test.sh", [
         (f"{SCRIPTS}/ci-tools.sh", "the script under test"),
-        (".github/ci-tools.yaml", "ci-tools.test.sh:1556-1565 reads every row of this repository's own manifest"),
+        (".github/ci-tools.yaml", "ci-tools.test.sh's `the repository's own .github/ci-tools.yaml` case reads every row of this repository's own manifest"),
     ]),
     harness("mirror_ci_tools_test", "Test the tool copy filler", f"{SCRIPTS}/mirror-ci-tools.test.sh", [
         (f"{SCRIPTS}/mirror-ci-tools.sh", "the script under test"),
@@ -2584,7 +2584,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_tools_proof_test", "Test the tool fallback rig", f"{SCRIPTS}/ci-tools-proof.test.sh", [
         (f"{SCRIPTS}/ci-tools-proof.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:429 sources the fetch helper, so every case of the harness reads it"),
+        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh sources the fetch helper at its top level, before its first function, so every case of the harness reads it"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -2599,22 +2599,22 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:466 runs it too: the pull request's text is the guard's other surface"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh's run_pr_text runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh sources it from its own directory for every gh read"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:466 runs it, over a pull request's text naming a term"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh's run_pr_text runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh sources it from its own directory for every gh read"),
     ], lib=False),
     harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:26 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:466 runs it, over a pull request's new text"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh's run_pr_text runs it, over a pull request's new text"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh sources it from its own directory for every gh read"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2660,38 +2660,40 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok.sh:119 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
-        *ci_retry("runner-shutdown.sh:114 sources it for the retry its gh reads go through"),
-        (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:116 sources it for the wait for a rate limit its "
+        *ci_retry("runner-shutdown.sh sources it from its own directory for the retry its gh reads go through"),
+        (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh sources it from its own directory for the wait for a rate limit its "
                                   "composed reads run through"),
     ]),
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
         (f"{SCRIPTS}/ci-ok-hold.sh", "the ci-ok job's hold step, the other script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:317 posts with it, and ci-ok-report.test.sh:475,491 runs it on its own"),
-        *ci_retry("ci-ok-report.sh:128 and ci-ok-hold.sh:98 source it for the retry their gh and git reads go through"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:130, ci-ok-hold.sh:100, post-check-run.sh:58 and "
-                                  "runner-shutdown.sh:116 source it for the wait for a rate limit their "
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh's last command posts with it, and ci-ok-report.test.sh's cases "
+                                         "`post-check-run.sh called with no marker` and `post-check-run.sh posts the marker it "
+                                         "was given` run it on its own"),
+        *ci_retry("ci-ok-report.sh and ci-ok-hold.sh source it from their own directory for the retry their gh and git reads go through"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh, ci-ok-hold.sh, post-check-run.sh and runner-shutdown.sh source it from "
+                                  "their own directory for the wait for a rate limit their "
                                   "composed calls run through, which the cases whose tip, run or refs GitHub "
                                   "refuses run through"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok-report.sh:132 sources it, and no early ci-ok is posted for a failure it reads as "
+         "ci-ok-report.sh sources it from its own directory, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:293 reaches its verdict with it, and ci-ok-report.test.sh's "
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh reaches its `verdict` with it, and ci-ok-report.test.sh's "
                                 "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-reconcile.test.sh", [
         (f"{SCRIPTS}/ci-ok-reconcile.sh", "the script under test"),
-        *ci_retry("ci-ok-reconcile.sh:83 sources it for the retry its gh reads go through"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-reconcile.sh:85 sources it for the wait for a rate limit its "
+        *ci_retry("ci-ok-reconcile.sh sources it from its own directory for the retry its gh reads go through"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-reconcile.sh sources it from its own directory for the wait for a rate limit its "
                                   "composed read and PATCH run through"),
     ]),
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
         (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:40 sources it for its gh read"),
+        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh sources it from its own directory for its gh read"),
     ]),
     harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
         (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
@@ -3661,28 +3663,29 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:70, :135 and :161 run it"),
+         ".github/actions/architecture-check/action.yml's `Check the Go on PATH is the release packages/envoy/go.mod "
+         "names`, `Build the architecture-check command` and `Check the architecture notes` steps run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:23), which check.sh:75 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:87 reads"),
+         "(the `path` input's default in .github/actions/architecture-check/action.yml), which check.sh's `run` "
+         "resolves against GITHUB_WORKSPACE and the command it runs, `\"$binary\" \"$@\"`, reads"),
         (".github/actions/spec-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
         (".github/actions/spec-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/spec-check/action.yml:92 and :117 run it"),
+         ".github/actions/spec-check/action.yml's `Build the spec-check command` and `Check the spec files` steps run it"),
         (".github/scripts/build-envoy-command.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/architecture-check/check.sh:69 and .github/actions/spec-check/check.sh:63 run it"),
+         "the `build` functions of .github/actions/architecture-check/check.sh and .github/actions/spec-check/check.sh run it"),
         (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
         # The step judges the action's default path, .dispatch/spec, which holds no file on main;
         # the read names .dispatch whole because a read that matches no file is refused, and the
         # envoy_go_checks filter names .dispatch whole too.
         (".dispatch/**",
          f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
-         "(.github/actions/spec-check/action.yml:17), which check.sh:71 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:81 reads"),
+         "(the `path` input's default in .github/actions/spec-check/action.yml), which check.sh's `run` resolves "
+         "against GITHUB_WORKSPACE and the command it runs, `\"$binary\" \"$@\"`, reads"),
         *[(glob, f"{at('envoy-go-checks', 'Check that no CI file of this repository compares the spec files')}: "
                  "spec-check guard reads every file under it")
           for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
@@ -3958,16 +3961,25 @@ GATES = [
         ("packages/pi-legion/package.json", "packages/envoy/docker/Dockerfile:35"),
         ("packages/pi-shared/package.json", "packages/envoy/docker/Dockerfile:36"),
         ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:37"),
-        ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile:44"),
-        ("docs/site/package.json", "packages/envoy/docker/Dockerfile:57; :77 RUN, whose bun install --frozen-lockfile at :80 reads every manifest above"),
-        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:31 and :86 COPY packages/contracts packages/contracts, which :96 runs gen:go in"),
-        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :87 COPY packages/dispatch packages/dispatch, which :98 runs build:web in"),
-        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :43 and :88 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
-        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:92 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:115 COPY, run by :122 and :148"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:115 COPY, run by :150"),
-        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:136
-        # COPY packages/envoy ./), and the held-port image's build copies it whole with the
+        ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile's `COPY packages/test-fixtures/package.json …`"),
+        ("docs/site/package.json", "packages/envoy/docker/Dockerfile's `COPY docs/site/package.json …`; the web stage's "
+                                   "`retry 600 \"bun install\"` RUN, whose bun install --frozen-lockfile reads every manifest above"),
+        ("packages/contracts/**", "packages/envoy/docker/Dockerfile's `COPY packages/contracts/package.json …` and "
+                                  "`COPY packages/contracts packages/contracts`, the directory its `RUN bun run gen:go` runs in"),
+        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile's `COPY packages/dispatch/package.json …` and "
+                                 "`COPY packages/dispatch packages/dispatch`, the directory its `RUN bun run build:web` runs in"),
+        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile's `COPY packages/proof-editor/package.json …`, "
+                                     "`COPY packages/proof-editor/proof-sdk-*.tgz …` and `COPY packages/proof-editor "
+                                     "packages/proof-editor`, which the SPA build aliases"),
+        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile's `COPY scripts/third-party-notices.ts …`, which the SPA build writes its notices with"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile's `COPY scripts/go-third-party-notices.sh "
+                                              "scripts/assemble-third-party-notices.sh /usr/local/bin/`, run by "
+                                              "`go-third-party-notices.sh --install` and `go-third-party-notices.sh /tmp/go-notices`"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile's `COPY scripts/go-third-party-notices.sh "
+                                                    "scripts/assemble-third-party-notices.sh /usr/local/bin/`, run by "
+                                                    "`assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES`"),
+        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile's
+        # `COPY packages/envoy ./`), and the held-port image's build copies it whole with the
         # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
         # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
         # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
@@ -3976,8 +3988,9 @@ GATES = [
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
         # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
-        # among them, which the Go stage then replaces with the web stage's fresh generation (:140).
-        *[(path, "packages/envoy/docker/Dockerfile:136 COPY packages/envoy ./, and "
+        # among them, which the Go stage then replaces with the web stage's fresh generation
+        # (`COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go …`).
+        *[(path, "packages/envoy/docker/Dockerfile's `COPY packages/envoy ./`, and "
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
@@ -4170,8 +4183,8 @@ GATES = [
                                               "own"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
-        *ci_retry(".github/actions/install-jj/action.yml:65 sources it, and :103 retries `mise install` through "
-                  "it, in each of this job's install-jj steps"),
+        *ci_retry(".github/actions/install-jj/action.yml's `Install the worker image's jj` step sources it and retries "
+                  "`mise install` through it, in each of this job's install-jj steps"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} and "
                                                f"{at('tool-fallback', TOOL_BLOB_ARM_STEP)} refuse a row that script has "
                                                "not filled, and state the rule that is the opposite of its own"),
