@@ -46,14 +46,14 @@ type testingJudgement struct {
 // job's case (ci_case) there.
 //
 // leaveCI leaves out each check a CI job runs, the one whose held state names its job's case,
-// whatever that state is. That is the testing move of the work whose CI checks the end of a task
-// holds: a failure of such a check reaches the implementer at once by a message of its own
-// (tellCIFailure), and the review, the acceptance and the end of the task read it. The testing
-// move passes Config.TestingLeavesCI, which the daemon wires false until the end of a task holds
-// them, since a task whose steps after testing hold no review and no acceptance would otherwise
-// end with no gate on its CI checks. Reading every check, one with no result while its CI run goes
-// on waits as well, since that is no state the check ends at, and a fail or a pass and a fail is a
-// fail whatever its CI run says.
+// whatever that state is. That is the testing move once INFRA-5392's end hold makes the end of a
+// task hold its CI checks: a failure of such a check reaches the implementer at once by a message of
+// its own (tellCIFailure), and the review, the acceptance and the end of the task read it. The
+// testing move passes Config.TestingLeavesCI, which the daemon wires false until INFRA-5392 turns
+// it on with that hold, since a task whose steps after testing hold no review and no acceptance
+// would otherwise end with no gate on its CI checks. Reading every check, one with no result while
+// its CI run goes on waits as well, since that is no state the check ends at, and a fail or a pass
+// and a fail is a fail whatever its CI run says.
 //
 // Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
 // and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
@@ -114,12 +114,13 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // results caused has a serial at or below it: below that fence the states held may be the ones from
 // before those results. At the fence it decides only once every check it reads holds a conclusive
 // state there (judgeStates with Config.TestingLeavesCI: every check, those a CI job runs among
-// them, as the daemon wires it, until the end of a task holds the checks a CI job runs; only the
-// checks that no CI job runs, once it does): a head with no set held, or a check the judgement
-// waits for, a check with no state among them, moves nothing, whatever the other checks read,
-// since a later state of the waiting check changes what the task must name. Then every check it
-// reads passing moves the issue to reviewing, and otherwise it goes back to implementing, the task
-// naming each check it reads that does not pass with its state and its reason. atCompletion is
+// them, as the daemon wires it, until INFRA-5392's end hold makes the end of a task hold the checks
+// a CI job runs; only the checks that no CI job runs, once INFRA-5392 turns it on): a head with no
+// set held, or a check the judgement waits for, a check with no state among them, moves nothing,
+// whatever the other checks read, since a later state of the waiting check changes what the task
+// must name. Then every check it reads passing moves the issue to reviewing, and otherwise it goes
+// back to implementing, the task naming each check it reads that does not pass with its state and
+// its reason. atCompletion is
 // whether the tester's completion is the fact deciding: only that one tells the architect of a
 // wait, in one phase-finished notice that names what the move waits for, so each later state event
 // that leaves the move waiting tells nothing more.

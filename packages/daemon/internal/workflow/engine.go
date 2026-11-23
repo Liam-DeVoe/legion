@@ -154,9 +154,10 @@ type Config struct {
 	// whose state names its job's case (judgeStates' leaveCI, which decideTesting reads from here
 	// alone): true, the move reads only the checks that no CI job runs, and a failure of one a CI
 	// job runs reaches the implementer by its own message (tellCIFailure) while the later steps go
-	// on. The daemon wires it false (engineConfig) until the end of a task holds its checks that a
-	// CI job runs: before then a task whose steps after testing hold no review and no acceptance
-	// would end with no gate on those checks. The zero value reads every check.
+	// on. The daemon wires it false (engineConfig) until INFRA-5392's end hold makes the end of a
+	// task hold its checks that a CI job runs, and INFRA-5392 turns it on with that hold: before
+	// then a task whose steps after testing hold no review and no acceptance would end with no gate
+	// on those checks. The zero value reads every check.
 	TestingLeavesCI bool
 }
 

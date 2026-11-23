@@ -989,9 +989,9 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Experiments: cfg.ExperimentsDeclared(),
 		// The testing move reads every check, those a CI job runs among them, until the end of a
 		// task holds the checks a CI job runs: a task whose steps after testing hold no review and
-		// no acceptance would otherwise end with no gate on them. The change that makes the end of
-		// a task hold them turns this on with that hold. TestTheDaemonWiresTheTestingMoveToReadEveryCheck
-		// holds it so.
+		// no acceptance would otherwise end with no gate on them. INFRA-5392 (INFRA-3570's fix
+		// beside the review) turns this on with its end hold, which makes the end of a task hold
+		// them. TestTheDaemonWiresTheTestingMoveToReadEveryCheck holds it false until then.
 		TestingLeavesCI: false,
 	}
 }
