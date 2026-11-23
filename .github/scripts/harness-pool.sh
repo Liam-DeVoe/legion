@@ -96,28 +96,24 @@ alive() {
   [[ ! -e $1.exit ]] && read -r pid want < "$1.pid" && proc_start "$pid" && [[ $pstart == "$want" ]]
 }
 
-# end_lost <base>: for an entry whose recorder is gone without a status, ends the session its
-# harness runs in, which the recorder left running, once: a harness on a core no slot counts would
-# let one more run than the slots. Forks only the once per such entry.
-end_lost() {
-  [[ -e $1.exit || -e $1.ended ]] && return 0
-  if [[ -e $1.session ]]; then
-    local session tries=0
-    session=$(< "$1.session")
-    pkill -KILL -s "$session" 2> /dev/null || true
-    # Until the kernel has taken them away, at most 5 s, so the slot frees once they are gone.
-    while pgrep -s "$session" > /dev/null && ((tries < 50)); do
-      sleep 0.1
-      tries=$((tries + 1))
-    done
+# lost_running <base>: for an entry whose recorder is gone without a status, true while any
+# process of its harness's session is still there. The first to find the entry lost claims it
+# (mkdir, which one caller alone wins) and ends that session. The harness publishes its session
+# itself and then looks for the claim before it runs (see run), so whichever of the two comes
+# first, no harness runs on past a claim: a harness on a core no slot counts would let one more
+# run than the slots. Forks only for a lost entry.
+lost_running() {
+  [[ -e $1.exit ]] && return 1
+  if mkdir "$1.lost" 2> /dev/null && [[ -e $1.session ]]; then
+    pkill -KILL -s "$(< "$1.session")" 2> /dev/null || true
   fi
-  : > "$1.ended"
+  [[ -e $1.session ]] && pgrep -s "$(< "$1.session")" > /dev/null
 }
 
 # count [<base>]: sets `running` to the number of harnesses that hold a slot (started and not
-# ended), `waiting` to those still queued for one, and `ahead` to those queued before <base> that
-# have not started. It forks nothing but to end a lost recorder's harness (end_lost), since every
-# queued harness and the wait ask it twice a second.
+# ended, or lost with a process of their session still there), `waiting` to those still queued
+# for one, and `ahead` to those queued before <base> that have not started. It forks nothing but
+# for a lost entry, since every queued harness and the wait ask it twice a second.
 count() {
   local entry other mine=${1:-}
   mine=${mine##*/}
@@ -126,7 +122,9 @@ count() {
     [[ -e $entry ]] || continue
     other=${entry%.name}
     if ! alive "$other"; then
-      end_lost "$other"
+      if lost_running "$other"; then
+        running=$((running + 1))
+      fi
       continue
     fi
     if [[ -e $other.started ]]; then
@@ -208,11 +206,14 @@ start() {
 # that interrupts what it tests with an INT would find the trap it tests doing nothing.
 # `env --default-signal` puts them back for the command and all it starts.
 #
-# The command runs in the background of this recorder only so that its pid, which setsid makes the
-# id of the command's session, can be written down: the wait ends that session when the recorder
-# was killed and the command left behind.
+# The command's session is published by the command's own first process, before it runs the
+# command: it writes its pid, which setsid made the session's id, and then runs nothing if the
+# entry was already claimed as lost (lost_running), so a recorder killed at any moment leaves no
+# harness that the pool cannot see and end.
+# shellcheck disable=SC2016 # the harness's first process, not this shell, expands these
+publish_then_run='printf "%s\n" "$$" > "$1.session"; if [[ -e $1.lost ]]; then exit 125; fi; shift; exec "$@"'
 run() {
-  local base=$1 minutes=$2 queued started frac start_ms ended status=0 cpu_before cpu bound command
+  local base=$1 minutes=$2 queued started frac start_ms ended status=0 cpu_before cpu bound
   shift 2
   queued=$(date +%s.%N)
   export GITHUB_STEP_SUMMARY="$base.step-summary" GITHUB_OUTPUT="$base.github-output" \
@@ -233,13 +234,12 @@ run() {
     # timeout runs in the harness's session, so its signal at the bound reaches the harness and
     # every process it started; the kill 30 s later reaches one that ignored it.
     HARNESS_POOL_DEADLINE_MS=$((start_ms + (bound - 30) * 1000)) \
-      env --default-signal=INT,QUIT setsid --wait timeout --kill-after=30 "$bound" "$@" > "$base.log" 2>&1 < /dev/null &
+      env --default-signal=INT,QUIT setsid --wait bash -c "$publish_then_run" harness-pool "$base" \
+      timeout --kill-after=30 "$bound" "$@" > "$base.log" 2>&1 < /dev/null || status=$?
   else
-    env --default-signal=INT,QUIT setsid --wait "$@" > "$base.log" 2>&1 < /dev/null &
+    env --default-signal=INT,QUIT setsid --wait bash -c "$publish_then_run" harness-pool "$base" \
+      "$@" > "$base.log" 2>&1 < /dev/null || status=$?
   fi
-  command=$!
-  echo "$command" > "$base.session"
-  wait "$command" || status=$?
   ended=$(date +%s.%N)
   # The CPU the harness and everything it started used, user plus system: the second line of
   # `times` is this shell's children. Beside the wall seconds it says how much of the harness was
@@ -330,7 +330,7 @@ wait_all() {
     status=$(cat "$base.exit" 2> /dev/null || echo 'none: its recorder ended without writing one')
     # A recorder killed before its harness ended left the harness running in its own session:
     # end it, if no count has yet (a --now report counts nothing).
-    end_lost "$base"
+    lost_running "$base" || true
     read -r wall cpu waited 2> /dev/null < "$base.seconds" || { wall='?'; cpu='?'; waited='?'; }
     echo "::group::$name: exit $status, $wall s, $cpu s of CPU, after $waited s waiting for a slot"
     cat "$base.log" 2> /dev/null || echo "harness-pool: $name left no log"

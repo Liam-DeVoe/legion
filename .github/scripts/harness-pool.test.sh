@@ -29,8 +29,8 @@ source "$script_dir/test-lib.sh"
 
 pool="$script_dir/harness-pool.sh"
 work=$(mktemp -d)
-# What a failed case left running: each harness's session, by the id its recorder wrote, and each
-# recorder, whose command line names its entry under $work.
+# What a failed case left running: each harness's session, by the id the harness published, and
+# each recorder, whose command line names its entry under $work.
 cleanup() {
   local session
   for session in "$work"/*/pool/*.session; do
@@ -226,7 +226,7 @@ echo "case: a recorder killed before the harness ended is a failure, the wait do
 fresh killed
 "$pool" start orphan bash -c "touch '$m/orphan-started'; sleep 300"
 check "the harness started" "$(appears "$m/orphan-started")"
-check "its recorder wrote the harness's session" "$(appears "$HARNESS_POOL_DIR/000.session")"
+check "the harness published its session" "$(appears "$HARNESS_POOL_DIR/000.session")"
 read -r recorder _ < "$HARNESS_POOL_DIR/000.pid"
 kill -KILL "$recorder"
 run_wait
@@ -239,7 +239,7 @@ fresh orphan-slot
 export HARNESS_POOL_SLOTS=1
 "$pool" start stray bash -c "touch '$m/stray-started'; until [[ -e '$m/never' ]]; do sleep 0.05; done"
 check "the first harness started" "$(appears "$m/stray-started")"
-check "its recorder wrote its session" "$(appears "$HARNESS_POOL_DIR/000.session")"
+check "it published its session" "$(appears "$HARNESS_POOL_DIR/000.session")"
 stray_session=$(< "$HARNESS_POOL_DIR/000.session")
 # The next harness reads, as it starts, whether any process of the first's session is left.
 "$pool" start next bash -c "if pgrep -s '$stray_session' > /dev/null; then touch '$m/overlap'; fi; touch '$m/next-started'"
@@ -266,6 +266,22 @@ run_wait
 check "the wait fails" "$(is "$status" 1)"
 check "naming the killed one" "$(contains "$out" '^::error title=doomed::exited none: its recorder ended ')"
 check "which never ran" "$(is "$([[ -e $m/doomed-started ]] && echo ran || echo never)" never)"
+export HARNESS_POOL_SLOTS=2
+
+echo "case: a harness whose entry was claimed as lost before it began runs nothing"
+fresh claimed
+export HARNESS_POOL_SLOTS=1
+"$pool" start gate bash -c "touch '$m/gate-started'; until [[ -e '$m/release' ]]; do sleep 0.05; done"
+check "the first holds the one slot" "$(appears "$m/gate-started")"
+"$pool" start claimed bash -c "touch '$m/claimed-ran'"
+# As a count does for an entry whose recorder it found gone, while the harness had not yet
+# published its session: the harness must then find the claim and not run.
+mkdir "$HARNESS_POOL_DIR/001.lost"
+touch "$m/release"
+check "the claimed entry ended" "$(appears "$HARNESS_POOL_DIR/001.exit")"
+check "without running its command" "$(is "$([[ -e $m/claimed-ran ]] && echo ran || echo never)" never)"
+check "with the status the harness gives a claimed entry" "$(is "$(< "$HARNESS_POOL_DIR/001.exit")" 125)"
+run_wait
 export HARNESS_POOL_SLOTS=2
 
 echo "case: an entry's pid that names another process is not its recorder"
