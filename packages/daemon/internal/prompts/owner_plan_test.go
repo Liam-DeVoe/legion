@@ -178,13 +178,18 @@ func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
 }
 
 // Under an owner's plan whose steps name the planner, the planner's plan stands below the owner's
-// task blocks in `plan.md`, and the owner can give a version that changes only a block's text while
-// the task runs. That version is the owner's decision, which the worker's start task holds: no
-// revision of the planner's plan, and no message to the planner. The worker tells the two apart by
-// reading the approved version and the newest with `dispatch doc-read --version`. A change outside
-// the `plan_task` blocks keeps the old rule: build from the approved version and tell the planner.
-// Each rule is held by the terms of the clause that states it, in their order, in each composition
-// that builds from a planner's plan. This shows the text is loaded, never that a worker follows it.
+// task block in `plan.md`, and the owner can give a version that changes only that block's text
+// while the task runs. That version is the owner's decision: no revision of the planner's plan,
+// and no message to the planner. Legion gives the new text to each start of the task after it took
+// the version, and the owner's message reaches the step at work, so the worker's start task need not
+// hold it. The rule covers only the block whose id the worker's `Task:` line names. On the default
+// steps the planner writes its plan as `plan_task` blocks, and a change of one of them is the
+// planner's revision: the old rule holds, build from the approved version and tell the planner. The
+// worker tells the cases apart by reading the approved version and the newest with `dispatch
+// doc-read --version`. Each rule is held by the terms of the clause that states it, in their order,
+// in each composition that builds from a planner's plan. The rule's earlier words, which took a
+// change of any `plan_task` block's text for the owner's and said the start task held it, are gone.
+// This shows the text is loaded, never that a worker follows it.
 func TestAWorkerTakesAnOwnersTextOnlyVersionAsNoPlanRevision(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -192,17 +197,30 @@ func TestAWorkerTakesAnOwnersTextOnlyVersionAsNoPlanRevision(t *testing.T) {
 	}
 	rules := [][]string{
 		{"`Approval:` line does not name the newest version", "`dispatch doc-read --issue <issue> --artifact plan-md --version <approved>`", "`--version <newest>`"},
-		{"differ only in the text of `plan_task` blocks", "newer version is the owner's decision"},
-		{"start task already holds it", "no revision of the plan"},
-		{"approved version and your start task", "send the planner nothing"},
-		{"anything outside those blocks differs", "revision the plan review has not approved"},
+		{"task's own block", "`plan_task` block of `plan.md` whose id your `Task:` line names"},
+		{"differ only in the text of your task's own block", "newer version is the owner's decision"},
+		{"no revision of the planner's plan"},
+		{"Legion gives that text to each start of your task after it took the version"},
+		{"owner sends it by message", "step at work"},
+		{"approved version", "that block's newer text", "send the planner nothing"},
+		{"Any other difference", "revision that the plan review has not approved"},
+		{"text of a `plan_task` block that the planner wrote", "project's default steps"},
 		{"Tell the planner what the newer version means", "`envoy_publish`"},
+	}
+	retired := []string{
+		"differ only in the text of `plan_task` blocks",
+		"start task already holds it",
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
 		composed := composedText(t, composer, role, false)
 		for _, terms := range rules {
 			if !clauseHolds(composed, terms...) {
 				t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
+			}
+		}
+		for _, words := range retired {
+			if strings.Contains(foldWhitespace(composed), words) {
+				t.Errorf("the composed %s prompt still holds the retired words %q", role, words)
 			}
 		}
 	}
