@@ -96,6 +96,10 @@ func (g *rolledGrants) AirlockAccessPlaceholder(ctx context.Context, grantID, na
 	return g.machine.Load().AirlockAccessPlaceholder(ctx, grantID, name, slot)
 }
 
+func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID string) ([]requests.AirlockConnection, error) {
+	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID)
+}
+
 // profileRig is the rig with a broker behind its proxy: the store, the stored App key, the GitHub
 // stand-in and the plain service its minter reaches it at, the grant source the proxy reads, and
 // one live session of profileOperator, which asks for the profile.

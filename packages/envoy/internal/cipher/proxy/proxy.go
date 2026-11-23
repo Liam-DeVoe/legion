@@ -102,6 +102,13 @@ type GrantSource interface {
 	// name and slot and answered again after, so a command that asks for one scope twice - and
 	// a second pod that exchanges that scope for itself - reads back the same string.
 	AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error)
+	// ProxyGrantsOfEnrollment is every live grant of one enrollment, each as AirlockConnection
+	// answers a connection opened with one of its placeholders, in grant id order: a command
+	// holds the placeholders of every grant its session has, so a host any of them binds is read
+	// (sessionBinds) and a placeholder of any of them is swapped on one connection (handledFor).
+	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
+	// (grantRefusal).
+	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID string) ([]requests.AirlockConnection, error)
 }
 
 // Options is what a Server is built from.
@@ -295,6 +302,11 @@ type connInfo struct {
 	// from it - each request is decided from the grant it read for itself - and what it is
 	// here for is the line a request logs before that read answers.
 	grant requests.AirlockConnection
+	// handledBy is a placeholder of the grant one request on this connection is handled for,
+	// when that is another live grant of the connection's enrollment than the one password
+	// proves (handledFor), and "" otherwise: the watcher of the call reads that grant again by it
+	// (carryRefusal). It is set on the copy of this one request, never on the connection's own.
+	handledBy string
 	// cut is the connection under this one's TLS, which the cut of a joined connection
 	// stops before it writes close_notify (cutJoined). It travels here so that the watcher
 	// of a join reaches it as it reaches everything else it was opened with, rather than
@@ -499,22 +511,7 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, err := s.grants.AirlockConnection(r.Context(), placeholder)
 	if err != nil {
-		status, code, why := s.grantRefusal("connection", err)
-		switch status {
-		case http.StatusProxyAuthRequired:
-			// The broker's own words for why this credential opens nothing - an unknown or
-			// ended grant, an enrollment whose lease lapsed, a grant every one of whose
-			// names is withheld - and never the placeholder itself, which a command's own
-			// proxy error line would otherwise print and keep.
-			s.refuseCredential(w, r, call{host: requestHost(r)}, code, why)
-		case http.StatusServiceUnavailable:
-			// A read that did not happen, which grantRefusal has logged: a failure of the
-			// broker's, and no refusal of the caller.
-			fail(w, http.StatusServiceUnavailable, code, why)
-		default:
-			// The broker's own refusal of this grant, in its own words (grantRefusal).
-			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
-		}
+		s.refuseRead(w, r, call{host: requestHost(r)}, "connection", err)
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -555,6 +552,25 @@ func proxyPassword(r *http.Request) (string, string) {
 func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call, code, why string) {
 	w.Header().Set("Proxy-Authenticate", `Basic realm="airlock"`)
 	s.refuse(w, r, c, http.StatusProxyAuthRequired, code, why)
+}
+
+// refuseRead answers a proxy request whose grant read failed, by the one rule for a failed read
+// (grantRefusal). A 407 is the broker's own words for why this credential opens nothing - an
+// unknown or ended grant, an enrollment whose lease lapsed, a grant every one of whose names is
+// withheld - and never the placeholder itself, which a command's own proxy error line would
+// otherwise print and keep. A 503 is a read that did not happen, which grantRefusal has logged: a
+// failure of the broker's, and no refusal of the caller. Any other status is the broker's own
+// refusal of this grant, in its own words.
+func (s *Server) refuseRead(w http.ResponseWriter, r *http.Request, c call, read string, err error) {
+	status, code, why := s.grantRefusal(read, err)
+	switch status {
+	case http.StatusProxyAuthRequired:
+		s.refuseCredential(w, r, c, code, why)
+	case http.StatusServiceUnavailable:
+		fail(w, http.StatusServiceUnavailable, code, why)
+	default:
+		s.refuse(w, r, c, status, code, why)
+	}
 }
 
 // requestHost is the host a request of the outer server asks for, as a refusal's line names it
@@ -668,9 +684,9 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
 }
 
-// serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted
-// and read, any other host is a tunnel. Both are refused before any dial when the host resolves
-// somewhere this proxy never goes.
+// serveConnect answers one CONNECT: a host a name of the grant, or of another live grant of its
+// enrollment, is bound to is decrypted and read, any other host is a tunnel. Both are refused
+// before any dial when the host resolves somewhere this proxy never goes.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholder string, grant requests.AirlockConnection) {
 	target := r.Host
 	if _, _, err := net.SplitHostPort(target); err != nil {
@@ -712,19 +728,27 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		fail(w, http.StatusInternalServerError, codeNotHijackable, "this connection cannot be taken over")
 		return
 	}
-	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
-	// whose entry binds this host on the port the CONNECT named. One answer from the one
-	// function that says what is bound (candidates), so a change to what is bound is made in
-	// one place.
+	// Whether this CONNECT may be decrypted and read: whether a (name, slot) pair of the grant,
+	// or of another live grant of its enrollment, has an entry that binds this host on the port
+	// the CONNECT named. One answer from the one function that says what is bound for a
+	// session (sessionBinds, over candidates), so a change to what is bound is made in one place.
+	// The command holds the placeholders of every grant its session has - a role's own GitHub
+	// grant beside the one an agent-secrets run inside it asked for - and its password names one
+	// of them, so a host only another of them binds is read all the same.
 	//
-	// An empty answer is a tunnel rather than a refusal, whether it is a host no name binds or
+	// A false answer is a tunnel rather than a refusal, whether it is a host no name binds or
 	// another port of a bound name: the airlock blocks nothing it does not bind (R3), the
 	// proxy reads nothing on such a connection and puts nothing into it, and the command
 	// reaches that service exactly as it reaches every host the rules say nothing about. The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	if len(s.candidates(grant, host, connectPort)) > 0 {
+	bound, err := s.sessionBinds(r.Context(), grant, host, connectPort)
+	if err != nil {
+		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
+		return
+	}
+	if bound {
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}
@@ -746,12 +770,13 @@ func portNumber(port string) (uint16, bool) {
 	return uint16(number), true
 }
 
-// connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
-// the proxy opens the TLS itself, with a certificate of its own authority, and hands the
-// decrypted connection to the inner server. What travels with the connection is the target and
-// the password it was opened with: each request on it reads the grant again with that password
-// and builds its own candidates from what that read answers (serveBound), so a grant that ends
-// or a name that is withheld between two requests stops at the second one.
+// connectBound answers a CONNECT to a host a name of the grant, or of another live grant of its
+// enrollment, is bound to, on port 443: the proxy opens the TLS itself, with a certificate of its
+// own authority, and hands the decrypted connection to the inner server. What travels with the
+// connection is the target and the password it was opened with: each request on it reads the
+// grant again with that password and builds its own candidates from what that read answers
+// (serveBound), so a grant that ends or a name that is withheld between two requests stops at
+// the second one.
 func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, placeholder string, grant requests.AirlockConnection, target, host string, port uint16) {
 	client, err := hijack(hijacker)
 	if err != nil {
@@ -896,11 +921,17 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	forwarded := *r.URL
 	forwarded.Host = net.JoinHostPort(host, port)
 	r.URL = &forwarded
-	// Whether any name of this grant may carry a secret to this host, from the one function
-	// that says what is bound (candidates). It is asked about 443 because that is the only
-	// port an entry's hosts speak about, while the refusal below is about no port at all: a
-	// value may not cross in the clear whatever port it was asked for on.
-	if len(s.candidates(grant, host, 443)) > 0 {
+	// Whether any name of this grant, or of another live grant of its enrollment, may carry a
+	// secret to this host, from the one function that says what is bound for a session
+	// (sessionBinds). It is asked about 443 because that is the only port an entry's hosts speak
+	// about, while the refusal below is about no port at all: a value may not cross in the clear
+	// whatever port it was asked for on.
+	bound, err := s.sessionBinds(r.Context(), grant, host, 443)
+	if err != nil {
+		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
+		return
+	}
+	if bound {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.
@@ -915,9 +946,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
-	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
-	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
-	// is the tunnel's (Server.forward).
+	// A host no name of a live grant of the session is bound to: the proxy forwards it and puts
+	// nothing into it, exactly as the tunnel above carries what it cannot read, on a socket of
+	// its own whose line is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
 		Transport:     s.forward,
 		FlushInterval: -1,

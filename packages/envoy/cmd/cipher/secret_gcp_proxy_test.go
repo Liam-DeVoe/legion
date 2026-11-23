@@ -74,6 +74,12 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 	return "", fmt.Errorf("this grant has no Azure exchange")
 }
 
+// ProxyGrantsOfEnrollment answers no grant beside the one above, which is its enrollment's only
+// one and the one every connection of the test opens.
+func (gcpAirlockGrant) ProxyGrantsOfEnrollment(context.Context, string) ([]requests.AirlockConnection, error) {
+	return nil, nil
+}
+
 // TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC: `agent-secrets secret list`,
 // built from this package and run as its own process, with the grant's placeholder in
 // CLOUDSDK_AUTH_ACCESS_TOKEN and HTTPS_PROXY naming the proxy with that placeholder as its

@@ -263,13 +263,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(pair{}), status, code, why)
 		return
 	}
-	// Everything below reads the grant this request was decided for: the names it still
-	// carries, the placeholders behind them, and the ids its line logs. Every dial made for it -
-	// an Azure exchange's as well as the call's own - runs under that grant too (withCaller), so
-	// its line names the caller the request's own line names, and not the one the CONNECT read,
-	// which a grant that moved since no longer is.
+	// Everything below reads the grant this request is handled for (handledFor): the
+	// connection's own, read again above, or another live grant of its enrollment whose
+	// placeholder the request carries - the names it still carries, the placeholders behind
+	// them, and the ids its line logs. Every dial made for it - an Azure exchange's as well as
+	// the call's own - runs under that grant too (withCaller), so its line names the caller the
+	// request's own line names, and not the one the CONNECT read, which a grant that moved since
+	// no longer is.
 	info.grant = connection
-	r = r.WithContext(withCaller(r.Context(), connection))
 	request := &proxyrules.Request{
 		ConnectHost: info.host,
 		// The port the CONNECT named, which is 443 for every connection the proxy decrypts
@@ -295,19 +296,34 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		Body: "",
 	}
 
-	// The (name, slot) pairs this request may be handled for, from the grant as it is now: a
-	// name the operator has withheld since the CONNECT is not among them, and its placeholder
-	// stops at this request while the grant's other names go on.
-	candidates := s.candidates(info.grant, info.host, info.port)
-	if len(candidates) == 0 {
-		// The host was bound for this connection and no name of the grant binds it now: every
-		// name that did has been withheld or has ended since the CONNECT. Refused rather than
-		// forwarded, since a connection to a bound host that carries no name has no business
-		// on it.
+	// The grant and the (name, slot) pair this request is handled for, from the grants as they
+	// are now: a name the operator has withheld since the CONNECT is not among them, and its
+	// placeholder stops at this request while the grant's other names go on.
+	handled, found, err := s.handledFor(r.Context(), connection, info.host, info.port, request)
+	if err != nil {
+		// The same rule as the connection read above (grantRefusal): a read of the
+		// enrollment's other grants that did not happen is 503, since nothing says which of
+		// them the request is for.
+		status, code, why := s.grantRefusal("enrollment", err)
+		s.refuse(w, r, info.callFor(pair{}), status, code, why)
+		return
+	}
+	if !found {
+		// The host was bound for this connection and no name of a live grant of the
+		// enrollment binds it now: every name that did has been withheld or has ended since the
+		// CONNECT. Refused rather than forwarded, since a connection to a bound host that
+		// carries no name has no business on it.
 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeNoBoundName, "no name of this grant is bound to "+info.host)
 		return
 	}
-	chosen, holdsPlaceholder := choosePair(candidates, info.grant, request)
+	if handled.grant.GrantID != connection.GrantID {
+		// Another grant of the enrollment than the one the password proves, which the call's
+		// watcher reads again by a placeholder of its own (carryRefusal).
+		info.handledBy = firstPlaceholder(handled.grant)
+	}
+	info.grant = handled.grant
+	r = r.WithContext(withCaller(r.Context(), info.grant))
+	chosen, holdsPlaceholder := handled.chosen, handled.carried
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
@@ -344,6 +360,15 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
+	if holdsPlaceholder && !exchange && strings.HasPrefix(chosen.slot, requests.SlotGitHubPrefix) {
+		// Which account's token a GitHub call gets: the account its path names, where the
+		// name holds an installation on it, whichever account's placeholder the command sent
+		// (accountSlot). The placeholder in the request stays the one swapped out, and the
+		// value swapped in for it is that account's token.
+		if slot, held := accountSlot(info.host, r.URL.Path, info.grant.Names[chosen.name].Slots); held {
+			chosen.slot = slot
+		}
+	}
 	values, err := s.valuesFor(r.Context(), info.grant.GrantID)
 	if err != nil {
 		// The same rule as the connection read above (grantRefusal), so that one answer does
@@ -736,10 +761,13 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // it answers from what this pod holds unless the live policy version has moved or the name has
 // been reread, which is a pointer read, so it costs a carried call nothing on the common path and
 // reads the grant again exactly when a policy change could have ended it - a retag, a raised tier,
-// a narrowed requesters list - which the connection read never sees. Any error of either read
-// that is no refusal of this grant leaves the call alone, with the error logged where
-// grantRefusal logs one: a read that failed says nothing about the grant, and a database failover
-// must cut no WebSocket and no stream the airlock carries.
+// a narrowed requesters list - which the connection read never sees. A call handled for another
+// live grant of the connection's enrollment (connInfo.handledBy) is held to both grants: the
+// connection's own, whose password every request on it is read by, and the one whose value it
+// carries, whose names and values the checks after the reads are about. Any error of a read that
+// is no refusal of this grant leaves the call alone, with the error logged where grantRefusal logs
+// one: a read that failed says nothing about the grant, and a database failover must cut no
+// WebSocket and no stream the airlock carries.
 func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
 		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
@@ -747,6 +775,11 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	grant, err := s.grants.AirlockConnection(ctx, info.password)
 	if err != nil {
 		return s.carryRead("connection", err)
+	}
+	if info.handledBy != "" {
+		if grant, err = s.grants.AirlockConnection(ctx, info.handledBy); err != nil {
+			return s.carryRead("connection", err)
+		}
 	}
 	if _, carried := grant.Names[chosen.name]; !carried {
 		return &cutCall{http.StatusForbidden, codeNoBoundName, chosen.name + " is no longer a name of this grant"}
@@ -994,6 +1027,134 @@ func choosePair(candidates []pair, grant requests.AirlockConnection, request *pr
 		}
 	}
 	return candidates[0], false
+}
+
+// handling is what one request on a decrypted connection is handled for: the grant, the (name,
+// slot) pair of it (choosePair), and whether the request carries that pair's placeholder.
+type handling struct {
+	grant   requests.AirlockConnection
+	chosen  pair
+	carried bool
+}
+
+// handledFor is the grant and the (name, slot) pair one request on a decrypted connection is
+// handled for. own is the grant the connection's password proves, as this request read it. A
+// command holds the placeholders of every grant its session has - a role's own GitHub grant
+// beside the one an agent-secrets run inside it asked for, mailbox's write grant beside the read
+// grant whose run it is - and its password names one of them, so the proxy swaps a placeholder of
+// any live grant of the enrollment on one connection:
+//
+//   - a request that carries a placeholder of own is handled for own, as choosePair chooses, and
+//     reads nothing more, which is the common path;
+//   - otherwise every live grant of own's enrollment is read (ProxyGrantsOfEnrollment), and the
+//     request is handled for the first of them, in grant id order, that binds the host and whose
+//     placeholder it carries;
+//   - a request that carries none is decided for own's first candidate, or, where own binds
+//     nothing here, for the first candidate of the first other grant that binds the host, and
+//     forwarded with nothing swapped, so the entry's rules bound it as they bound any request.
+//
+// One request is still handled for one (name, slot) pair of one grant: a request that carries
+// placeholders of two grants is handled for own, or for the first of the others. The second
+// answer is false when no live grant of the enrollment binds the host.
+func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection, host string, port uint16, request *proxyrules.Request) (handling, bool, error) {
+	var fallback handling
+	found := false
+	if candidates := s.candidates(own, host, port); len(candidates) > 0 {
+		chosen, carried := choosePair(candidates, own, request)
+		if carried {
+			return handling{grant: own, chosen: chosen, carried: true}, true, nil
+		}
+		fallback, found = handling{grant: own, chosen: chosen}, true
+	}
+	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID)
+	if err != nil {
+		return handling{}, false, err
+	}
+	for _, other := range others {
+		if other.GrantID == own.GrantID {
+			continue
+		}
+		candidates := s.candidates(other, host, port)
+		if len(candidates) == 0 {
+			continue
+		}
+		chosen, carried := choosePair(candidates, other, request)
+		if carried {
+			return handling{grant: other, chosen: chosen, carried: true}, true, nil
+		}
+		if !found {
+			fallback, found = handling{grant: other, chosen: chosen}, true
+		}
+	}
+	return fallback, found, nil
+}
+
+// sessionBinds is whether a proxy request to host is to a bound host: whether a name of grant, the
+// grant the proxy password proves, or of another live grant of its enrollment binds host on port
+// (candidates). It is the one answer serveConnect reads to decrypt a CONNECT rather than tunnel
+// it, and servePlain to refuse plain HTTP: a host only another grant of the session binds is read,
+// and a request on it is handled for the grant whose placeholder it carries (handledFor). The
+// enrollment's other grants are read only where grant binds nothing and the port is 443, the one
+// port an entry binds.
+func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnection, host string, port uint16) (bool, error) {
+	if len(s.candidates(grant, host, port)) > 0 {
+		return true, nil
+	}
+	if port != 443 {
+		return false, nil
+	}
+	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID)
+	if err != nil {
+		return false, err
+	}
+	for _, other := range others {
+		if other.GrantID != grant.GrantID && len(s.candidates(other, host, port)) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// firstPlaceholder is a placeholder of grant, the first in (name, slot) order: any of them proves
+// the grant, and the first is the one the release names as its proxy password.
+func firstPlaceholder(grant requests.AirlockConnection) string {
+	for _, name := range slices.Sorted(maps.Keys(grant.Names)) {
+		slots := grant.Names[name].Slots
+		for _, slot := range slices.Sorted(maps.Keys(slots)) {
+			return slots[slot]
+		}
+	}
+	return ""
+}
+
+// gitHubGitHost is the host GitHub serves a repository's git transport on, at /{owner}/{repo}.
+const gitHubGitHost = "github.com"
+
+// accountSlot is the slot of the account a GitHub request's path names, and whether slots - the
+// slots of the github-app name the request is handled for, one per installation - hold it:
+// /repos/{owner}/..., /orgs/{owner} and /users/{owner} on an API host, and git's /{owner}/{repo}
+// on github.com. GitHub reads a login without regard to case, and a slot names its account
+// lower-cased (requests.SlotGitHubPrefix), so the account is compared lower-cased. A path that
+// names no account - GraphQL, search, /user - or names one the name holds no installation on
+// answers false, and the request is handled for the account whose placeholder it carries, which
+// is the account its gh configuration names.
+func accountSlot(host, path string, slots map[string]string) (string, bool) {
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+		return "", false
+	}
+	account := ""
+	switch {
+	case host == gitHubGitHost:
+		account = segments[0]
+	case segments[0] == "repos" || segments[0] == "orgs" || segments[0] == "users":
+		account = segments[1]
+	default:
+		return "", false
+	}
+	slot := requests.SlotGitHubPrefix + fold.ASCII(account)
+	_, held := slots[slot]
+	return slot, held
 }
 
 // sniOf is the name the command asked for in its TLS handshake, "" for a client that sent none.

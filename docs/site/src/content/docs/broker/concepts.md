@@ -1525,10 +1525,23 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the entry decides each
-request (`packages/envoy/internal/cipher/proxy`). A host no entry of that grant binds is
-tunnelled unread, to a public address alone. A bound host is read with a certificate of the
-proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+request (`packages/envoy/internal/cipher/proxy`). A command can hold the placeholders of several
+grants of its session at once — one `agent-secrets` run nested in another, or a Legion role's own
+GitHub grant beside the grant a run inside the role asked for — and its password names one of
+them, so a host is bound when an entry of any live grant of the password's enrollment binds it. A
+host no such entry binds is tunnelled unread, to a public address alone. A bound host is read with
+a certificate of the proxy's own authority, and the request must name that same host in its TLS
+name and in its `Host` header; then the entry's hosts, headers, methods and paths decide whether
+the swap happens. A request is handled for one name of one grant: the password's own grant when
+the request carries one of its placeholders, and otherwise the first live grant of the
+enrollment, in grant id order, whose placeholder it carries, so a placeholder of another grant of
+the session is swapped on the same connection. A request that carries placeholders of two grants
+is handled for the password's own. A `github-app` or `github-installations` name holds one
+placeholder for each account its App is installed on, and the token swapped in is the one of the
+account the request's path names, when the grant holds that account: `/repos/{owner}/…`,
+`/orgs/{owner}` and `/users/{owner}` on an API host, and git's `/{owner}/{repo}` on `github.com`.
+Otherwise it is the token of the account whose placeholder the request carries, so a GraphQL,
+search or `/user` call gets the token of the account the command's gh configuration names. That
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
