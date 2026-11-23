@@ -198,9 +198,9 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 // an exchange audience (exchangeOwned).
 func (r *Runtime) specOwned() map[string]bool {
 	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
-		return runtimeOwnedComposedOrExchange
+		return r.specOwnedWithProxy(runtimeOwnedComposedOrExchange)
 	}
-	return runtimeOwnedOrComposed
+	return r.specOwnedWithProxy(runtimeOwnedOrComposed)
 }
 
 // slackChannelsVariable is the project's slack_channels as the runtime tells the controller it
@@ -391,6 +391,12 @@ type launch struct {
 	// claude is what a Claude Code launch needs beyond an Oh My Pi one, resolved once in prepare
 	// and zero for every other backend (claudeInputs).
 	claude claudeInputs
+	// proxied is the GitHub proxy decision (Runtime.proxiesGitHubIn) for the pod this launch
+	// builds, and proxyDefault the account directory its role is told as GH_CONFIG_DIR where its
+	// GitHub is behind the proxy (Runtime.proxyDefault), both decided once in prepare; a launch
+	// that keeps a pod reads the pod's own decision instead (launch.proxiesGitHub).
+	proxied      bool
+	proxyDefault string
 	// kept is what the live pod this launch keeps rather than replaces already carries for its
 	// role, read from that pod's stored template (relaunch's keptBy). Nil is a launch that builds
 	// the pod itself — every replacing launch, and every caller that only builds a manifest — whose
@@ -445,6 +451,10 @@ type keptPod struct {
 	// served tarball for the reconnected session, then tells that digest to the role.
 	checker  string
 	recorded bool
+	// proxied is the GitHub proxy decision (Runtime.proxiesGitHubIn) read of this pod when the
+	// launch began: the pod's gh volume for the role projects nothing of its Secret, the
+	// deployment names the role's secrets, and the pod is enrolled.
+	proxied bool
 }
 
 // leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
@@ -727,6 +737,10 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		secrets[dispatchTokenKey] = r.dispatchToken
 	}
 	l.secrets, l.prompt = secrets, prompt
+	l.proxied = r.proxiesGitHubIn(nil, spec.Role)
+	if l.proxied {
+		l.proxyDefault = r.proxyDefault(spec)
+	}
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
 	// (checkStartFrame), so a prompt that would overrun it is refused now, before anything of the
 	// pod is touched; relaunch checks the start it sends again.
@@ -1050,7 +1064,9 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 			corev1.Volume{Name: roleVolume(stateVolume, role), VolumeSource: memory},
 		)
 		gh := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
-		if len(ghItems) > 0 {
+		// A role behind the proxy reads its gh bundle from its forwarder's own directory, so its
+		// gh volume projects nothing of its Secret, which holds no token (writeLauncherSecrets).
+		if len(ghItems) > 0 && !r.proxiesGitHubIn(nil, role) {
 			gh = corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName:  roleSecretName(l.name, role),
 				Items:       slices.Clone(ghItems),

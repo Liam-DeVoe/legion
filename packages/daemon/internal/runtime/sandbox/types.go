@@ -490,11 +490,17 @@ type PodResources struct {
 // pod carries for it. Nil enrolls none, and no pod carries the token, the key volume, the
 // variables, or the shim flags. ExchangeAudience, when set, is the audience of a second projected
 // token every enrolled pod carries, the identity the broker's exchange trades for a broker token
-// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one.
+// (runtime.kubernetes.agent_secrets.exchange_audience); empty, no pod carries one. GitHub is
+// runtime.kubernetes.agent_secrets.github: by role, the secret names whose grant the role's
+// GitHub access goes through, by way of its forwarder (proxiesGitHubIn); a role it names gets no
+// App token. GitHubRenames are the deployment's configured renames (repository_renames), which a
+// forwarder's bundle routes a moved repository by.
 type AgentSecrets struct {
 	URL, Audience    string
 	TokenExpiry      time.Duration
 	ExchangeAudience string
+	GitHub           map[claim.Role][]string
+	GitHubRenames    []ghrepo.Rename
 }
 
 // InstallRef names the pieces of Agent Sandbox a cluster must have: the Sandbox CRD, and the

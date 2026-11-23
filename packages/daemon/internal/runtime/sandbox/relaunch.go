@@ -530,7 +530,7 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 	kind, _, _ := heldSessionStore(spec)
 	checker, recorded := recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, podUID)
 	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
-		checker: checker, recorded: recorded}, true
+		checker: checker, recorded: recorded, proxied: r.proxiesGitHubIn(&spec, l.spec.Role)}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
@@ -1251,6 +1251,10 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 		}); err != nil {
 			return err
 		}
+		if r.proxiesGitHubIn(nil, role) {
+			r.log.Info("sandbox runtime: the role reaches GitHub through its forwarder; no GitHub token written", "sandbox", s.Name, "role", role)
+			continue
+		}
 		if bundle.Default == "" {
 			r.log.Info("sandbox runtime: no GitHub owner to act for; the role's gh acts as nobody", "sandbox", s.Name, "role", role)
 			continue
@@ -1305,7 +1309,13 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
 	memo := appauth.NewBundles(r.gitHubCredential)
-	for i, role := range l.roles {
+	for _, role := range l.roles {
+		// A role behind the broker's proxy is minted nothing: its forwarder asks for its grant
+		// (githubproxy.go), its Secret records no default, and its gh volume projects nothing.
+		if r.proxiesGitHubIn(nil, role) {
+			bundles[role] = ghconfig.Bundle{}
+			continue
+		}
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
@@ -1324,7 +1334,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if err != nil {
 			return nil, fmt.Errorf("write the github credential for %s: %w", role, err)
 		}
-		if i == 0 {
+		if len(held) == 0 {
 			l.gitHubDefault = bundle.Default
 		}
 		bundles[role], held[role] = bundle, bundle.DirNames()
@@ -1339,7 +1349,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			shared, l.gitHubDefault)
 	}
 	for _, role := range l.roles {
-		if bundles[role].Default != l.gitHubDefault {
+		if _, minted := held[role]; minted && bundles[role].Default != l.gitHubDefault {
 			return nil, fmt.Errorf("write the github credential for %s: its default owner %s is not the pod's %s",
 				role, bundles[role].Default, l.gitHubDefault)
 		}
