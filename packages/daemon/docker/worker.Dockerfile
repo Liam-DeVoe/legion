@@ -120,11 +120,10 @@ ARG GH_TOOL=gh@2.98.0
 # gh's at 2.98.0) and jj's on 2026-11-23 (at its 0.46.0-sami.20261123-130747 pin), each as the
 # `digest` GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag>
 # --jq '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the
-# tools stage reads. gh's is also its line
-# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
-# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
-# releases carry no attestation (the same command answers 404 for both). A bump repeats those
-# reads.
+# tools stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and
+# `gh attestation verify <archive> --repo cli/cli` verified that archive against cli/cli's
+# deployment.yml workflow; the Oh My Pi and jj releases carry no attestation (the same command
+# answers 404 for both). A bump repeats those reads.
 ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
 ARG JJ_SHA256=1412b31055fdf997743bdf73a969285ebb1a7f77e15573bcf0d2016be21e22e3
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
