@@ -7,8 +7,9 @@ jobs:
   rows:
     runs-on: ubuntu-24.04
     steps:
-      - name: Run the third row and record it
+      - name: Run the third row
+        run: bun test fixtures/c3.test.ts > rows.txt
+      - name: Record the third row
         run: |
-          bun test fixtures/c3.test.ts > rows.txt
           dispatch result --issue ACME-1 --check c3 --verdict pass \
             --commit "$GITHUB_SHA" --observed-file rows.txt

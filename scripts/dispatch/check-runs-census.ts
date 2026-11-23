@@ -695,10 +695,11 @@ function command(text: string): string {
 }
 
 /**
- * The commands a shell script runs, one each: lines joined across a trailing backslash, then split
- * at each unquoted newline, `;`, `&&`, `||` and `|`, with any leading `NAME=value` assignments and
- * comments left out. A command quoted inside another, as `echo 'bun test x'` holds one, stays a
- * part of that other command.
+ * The commands a shell script names, one each: lines joined across a trailing backslash, then
+ * split at each unquoted newline, `;`, `&&`, `||` and `|`, with any leading `NAME=value`
+ * assignments and comments left out. A command quoted inside another, as `echo 'bun test x'`
+ * holds one, stays a part of that other command. A command named here may never run (`false &&
+ * cmd`); this only finds the steps that name a check's command, and `proofDoubts` judges them.
  */
 export function commandsOf(script: string): string[] {
   const joined = script.replace(/\\\r?\n/g, " ");
@@ -737,18 +738,47 @@ export function commandsOf(script: string): string[] {
     .filter((part) => part !== "" && !part.startsWith("#"));
 }
 
-/** Whether a step's commands run a check's commands, in order: each as written, the last one
- *  with arguments of its own after it (a redirection, a reporter). */
-function executesCommand(ran: readonly string[], wanted: readonly string[]): boolean {
+/** Whether a step's commands name a check's commands, in order: each as written, the last one
+ *  with arguments of its own after it (a redirection, a reporter). It finds the steps that name a
+ *  check's command, and proves nothing: `proofDoubts` says whether such a step is CI's proof. */
+function namesCommand(named: readonly string[], wanted: readonly string[]): boolean {
   if (wanted.length === 0) return false;
-  for (let start = 0; start + wanted.length <= ran.length; start++) {
+  for (let start = 0; start + wanted.length <= named.length; start++) {
     const matches = wanted.every((part, offset) => {
-      const step = ran[start + offset] as string;
+      const step = named[start + offset] as string;
       return step === part || (offset === wanted.length - 1 && step.startsWith(`${part} `));
     });
     if (matches) return true;
   }
   return false;
+}
+
+/** A script as the proof rule compares it: line continuations joined, each line's runs of
+ *  whitespace one space, blank lines left out. Two scripts that differ only in that layout are
+ *  one script; a second line is a second command. */
+function scriptLines(script: string): string {
+  return script
+    .replace(/\\\r?\n/g, " ")
+    .split(/\r?\n/)
+    .map(command)
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+/**
+ * Why a step that names a check's command is not CI's proof of the check, or nothing where it is.
+ * Its `run` must be the check's `run` alone — no other command, operator, comment or `${{ }}`
+ * expression before or after it — and nothing on the step, its job, the jobs its job needs, its
+ * caller job or its workflow may let CI pass without that command running and passing at the
+ * repository's root (`Execution.doubts`). A step with any reason is one the census cannot judge.
+ */
+function proofDoubts(step: Execution, run: string): string[] {
+  const own = /\$\{\{/.test(step.script)
+    ? [`its run holds a \${{ }} expression: ${JSON.stringify(scriptLines(step.script))}`]
+    : scriptLines(step.script) === scriptLines(run)
+      ? []
+      : [`its run is not the check's command alone: ${JSON.stringify(scriptLines(step.script))}`];
+  return [...own, ...step.doubts];
 }
 
 /** What a job's or step's condition says of an ordinary pull request: it runs there, it never
@@ -832,10 +862,49 @@ function pullRequestTrigger(workflow: object): Condition | undefined {
   return RUNS;
 }
 
+/** How a value of a workflow key reads in a reason. */
+function shown(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** A `continue-on-error` set to anything but false, which lets CI pass where what it covers
+ *  fails, or nothing. */
+function continueOnErrorOf(value: object): string | undefined {
+  if (!("continue-on-error" in value) || value["continue-on-error"] === false) return undefined;
+  return `continue-on-error: ${shown(value["continue-on-error"])}`;
+}
+
+/** The keys of a step, or of a `defaults.run`, that change how or where its script runs: another
+ *  shell, or another folder than the repository's root. */
+const RUN_KEYS = ["shell", "working-directory"] as const;
+
+/** What a workflow's or a job's `defaults.run` changes of each step's script, said of `owner`. */
+function runDefaultsOf(value: object, owner: string): string[] {
+  if (!("defaults" in value) || value.defaults === undefined || value.defaults === null) return [];
+  const defaults = value.defaults;
+  if (typeof defaults !== "object" || Array.isArray(defaults)) {
+    return [`the defaults of ${owner} are of a form the census cannot read: ${shown(defaults)}`];
+  }
+  if (!("run" in defaults) || defaults.run === undefined || defaults.run === null) return [];
+  const run = defaults.run;
+  if (typeof run !== "object" || Array.isArray(run)) {
+    return [`the defaults.run of ${owner} is of a form the census cannot read: ${shown(run)}`];
+  }
+  const keys: Record<string, unknown> = { ...run };
+  return RUN_KEYS.filter((key) => key in keys).map(
+    (key) => `the defaults.run of ${owner} sets ${key}: ${shown(keys[key])}`
+  );
+}
+
 /** A step of a workflow job that runs a shell script. */
 interface WorkflowStep {
+  /** Its `name`, quoted, else its 1-based place among the job's steps. */
+  readonly label: string;
   readonly condition: unknown;
   readonly run: string;
+  /** Its keys that can let CI pass without its script running and passing at the repository's
+   *  root: `continue-on-error` set to anything but false, `shell` and `working-directory`. */
+  readonly forms: string[];
 }
 
 /** A job of a workflow, as the reading of a parsed workflow narrows it: a workflow file is
@@ -846,26 +915,55 @@ interface WorkflowJob {
   readonly uses?: string;
   /** Where the inputs a called workflow is given name a label or the merge queue. */
   readonly gate?: string;
+  /** The ids of the jobs its `needs` names, or why the census cannot read its `needs`. */
+  readonly needs: readonly string[] | string;
+  readonly continueOnError?: string;
+  /** What its `defaults.run` changes of each step's script. */
+  readonly defaults: string[];
   readonly steps: WorkflowStep[];
 }
 
-function jobOf(value: unknown): WorkflowJob {
-  if (value === null || typeof value !== "object") return { condition: undefined, steps: [] };
+/** The ids a job's `needs` names: one id, or a list of them. */
+function needsOf(value: object): readonly string[] | string {
+  if (!("needs" in value) || value.needs === undefined || value.needs === null) return [];
+  const needs = value.needs;
+  if (typeof needs === "string") return [needs];
+  if (Array.isArray(needs) && needs.every((need) => typeof need === "string")) return needs;
+  return `has a needs the census cannot read: ${shown(needs)}`;
+}
+
+function jobOf(id: string, value: unknown): WorkflowJob {
+  if (value === null || typeof value !== "object") {
+    return { condition: undefined, needs: [], defaults: [], steps: [] };
+  }
   const inputs = "with" in value ? JSON.stringify(value.with) : "";
   const name = "name" in value && typeof value.name === "string" ? value.name : undefined;
   const uses = "uses" in value && typeof value.uses === "string" ? value.uses : undefined;
+  const continueOnError = continueOnErrorOf(value);
   const steps: WorkflowStep[] = [];
   const listed = "steps" in value && Array.isArray(value.steps) ? value.steps : [];
-  for (const step of listed) {
+  for (const [index, step] of listed.entries()) {
     if (step === null || typeof step !== "object") continue;
     if (!("run" in step) || typeof step.run !== "string") continue;
-    steps.push({ condition: "if" in step ? step.if : undefined, run: step.run });
+    const stepContinues = continueOnErrorOf(step);
+    steps.push({
+      label: "name" in step && typeof step.name === "string" ? `"${step.name}"` : `${index + 1}`,
+      condition: "if" in step ? step.if : undefined,
+      run: step.run,
+      forms: [
+        ...(stepContinues === undefined ? [] : [stepContinues]),
+        ...RUN_KEYS.filter((key) => key in step).map((key) => `${key}: ${shown(step[key])}`),
+      ],
+    });
   }
   return {
     condition: "if" in value ? value.if : undefined,
+    needs: needsOf(value),
+    defaults: runDefaultsOf(value, `job ${id}`),
     steps,
     ...(name === undefined ? {} : { name }),
     ...(uses === undefined ? {} : { uses }),
+    ...(continueOnError === undefined ? {} : { continueOnError }),
     ...(/full-ci|merge_group/.test(inputs) ? { gate: command(inputs) } : {}),
   };
 }
@@ -875,7 +973,46 @@ function jobsOf(workflow: object): Map<string, WorkflowJob> {
   if (!("jobs" in workflow)) return new Map();
   const jobs = workflow.jobs;
   if (jobs === null || typeof jobs !== "object") return new Map();
-  return new Map(Object.entries(jobs).map(([id, job]) => [id, jobOf(job)]));
+  return new Map(Object.entries(jobs).map(([id, job]) => [id, jobOf(id, job)]));
+}
+
+/**
+ * Why the census cannot decide that each job `id` needs runs and succeeds on an ordinary pull
+ * request, followed through their own `needs`, or nothing where it can. GitHub skips a job whose
+ * needed job is skipped or fails, and a skipped job passes a required check, so a needed job
+ * must have no condition but one that holds there, no `continue-on-error`, and no call of
+ * another workflow, whose jobs the census does not judge for this; an id the workflow lacks, or a
+ * cycle, decides nothing either.
+ */
+function needsDoubt(
+  jobs: ReadonlyMap<string, WorkflowJob>,
+  id: string,
+  chain: readonly string[] = [id]
+): string | undefined {
+  const needs = jobs.get(id)?.needs ?? [];
+  if (typeof needs === "string") return `job ${id} ${needs}`;
+  for (const need of needs) {
+    const needed = jobs.get(need);
+    const condition = conditionOf(needed?.condition);
+    let reason: string | undefined;
+    if (chain.includes(need)) reason = "in a cycle";
+    else if (needed === undefined) reason = "which the workflow does not hold";
+    else if (condition.kind === "off") reason = `which never runs: ${condition.text}`;
+    else if (condition.kind === "gated") {
+      reason = `which runs only on another event, a label or the merge queue: ${condition.text}`;
+    } else if (condition.kind === "unsure") {
+      reason = `which runs under a condition the census cannot read: ${condition.text}`;
+    } else if (needed.uses !== undefined) {
+      reason = `which calls ${needed.uses}, whose jobs the census does not judge for it`;
+    } else if (needed.continueOnError !== undefined) {
+      reason = `which sets ${needed.continueOnError}`;
+    } else {
+      const deeper = needsDoubt(jobs, need, [...chain, need]);
+      if (deeper !== undefined) return `job ${id} needs ${need}, and ${deeper}`;
+    }
+    if (reason !== undefined) return `job ${id} needs ${need}, ${reason}`;
+  }
+  return undefined;
 }
 
 /** A workflow file as a YAML object, or the reason it is none. */
@@ -892,15 +1029,28 @@ function parseWorkflow(path: string, body: string): object | string {
   return parsed;
 }
 
-/** One step of an ordinary pull request's job that runs at the head: the commands it runs, the
- *  names a `ci_check` may give its job, and the condition the census could not read, if any. */
+/** One step of an ordinary pull request's job that the census does not decide as never running
+ *  at the head: where it is, the names a `ci_check` may give its job, its script and the commands
+ *  it names, and each reason the census cannot judge that it runs, and fails CI when its script
+ *  fails, at the repository's root, whatever its script is. */
 interface Execution {
   readonly file: string;
   readonly job: string;
+  /** The workflow file, the job id, the caller job of a called workflow, and the step: its
+   *  `name`, else its 1-based place among the job's steps. */
+  readonly step: string;
   readonly names: readonly string[];
   readonly script: string;
   readonly commands: readonly string[];
-  readonly unsure?: string;
+  readonly doubts: readonly string[];
+}
+
+/** What a job inherits from above it: the bar of its workflow's trigger and of its caller job,
+ *  each reason the census cannot judge a step under them, and the caller job, by its place. */
+interface Above {
+  readonly condition: Condition;
+  readonly doubts: readonly string[];
+  readonly caller?: { readonly id: string; readonly name?: string; readonly place: string };
 }
 
 /** What the workflows at one head say, and what of them the census could not read. */
@@ -956,15 +1106,13 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
     });
   }
 
-  const walk = (
-    file: string,
-    jobs: Map<string, WorkflowJob>,
-    above: Condition,
-    caller?: { readonly id: string; readonly name?: string }
-  ): void => {
+  const walk = (file: string, workflow: object, above: Above): void => {
+    const jobs = jobsOf(workflow);
+    const workflowDefaults = runDefaultsOf(workflow, file);
     for (const [id, job] of jobs) {
       const label = `${file} ${id}`;
-      let condition = both(above, conditionOf(job.condition));
+      const own = conditionOf(job.condition);
+      let condition = both(above.condition, own);
       if (job.gate !== undefined) condition = both(condition, { kind: "gated", text: job.gate });
       if (condition.kind === "off") {
         reads.disabled.push({ job: label, condition: condition.text });
@@ -974,32 +1122,60 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
         reads.gated.push({ job: label, gate: condition.text });
         continue;
       }
-      const own = [id, ...(job.name === undefined ? [] : [job.name])];
+      // What of the job, and of what it needs, lets a step under it pass CI unrun: inherited by
+      // a workflow it calls. Its `defaults` and its workflow's apply to its own steps alone.
+      const needs = needsDoubt(jobs, id);
+      const doubts = [
+        ...above.doubts,
+        ...(own.kind === "unsure"
+          ? [`job ${id} runs under a condition the census cannot read: ${own.text}`]
+          : []),
+        ...(needs === undefined ? [] : [needs]),
+        ...(job.continueOnError === undefined ? [] : [`job ${id} sets ${job.continueOnError}`]),
+      ];
+      const place =
+        above.caller === undefined
+          ? `${file}, job ${id}`
+          : `${file}, job ${id} (called by ${above.caller.place})`;
+      const ids = [id, ...(job.name === undefined ? [] : [job.name])];
       const callers =
-        caller === undefined
+        above.caller === undefined
           ? []
-          : [caller.id, ...(caller.name === undefined ? [] : [caller.name])];
+          : [above.caller.id, ...(above.caller.name === undefined ? [] : [above.caller.name])];
       const names =
         callers.length === 0
-          ? own
-          : [...own, ...callers.flatMap((outer) => own.map((inner) => `${outer} / ${inner}`))];
+          ? ids
+          : [...ids, ...callers.flatMap((outer) => ids.map((inner) => `${outer} / ${inner}`))];
       for (const step of job.steps) {
-        const stepCondition = both(condition, conditionOf(step.condition));
+        const stepOwn = conditionOf(step.condition);
+        const stepCondition = both(condition, stepOwn);
         if (stepCondition.kind === "off") {
-          reads.disabled.push({ job: `${label} step`, condition: stepCondition.text });
+          reads.disabled.push({
+            job: `${label} step ${step.label}`,
+            condition: stepCondition.text,
+          });
           continue;
         }
         if (stepCondition.kind === "gated") {
-          reads.gated.push({ job: `${label} step`, gate: stepCondition.text });
+          reads.gated.push({ job: `${label} step ${step.label}`, gate: stepCondition.text });
           continue;
         }
         reads.executions.push({
           file,
           job: label,
+          step: `${place}, step ${step.label}`,
           names,
           script: step.run,
           commands: commandsOf(step.run),
-          ...(stepCondition.kind === "unsure" ? { unsure: stepCondition.text } : {}),
+          doubts: [
+            ...doubts,
+            ...workflowDefaults,
+            ...job.defaults,
+            ...(stepOwn.kind === "unsure"
+              ? [`the step runs under a condition the census cannot read: ${stepOwn.text}`]
+              : []),
+            ...step.forms.map((form) => `the step sets ${form}`),
+          ],
         });
       }
       const called = job.uses?.match(/^\.\/(\.github\/workflows\/[^@]+)$/)?.[1];
@@ -1011,9 +1187,14 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
         reads.failures.push(parsed);
         continue;
       }
-      walk(called, jobsOf(parsed), condition, {
-        id,
-        ...(job.name === undefined ? {} : { name: job.name }),
+      walk(called, parsed, {
+        condition,
+        doubts,
+        caller: {
+          id,
+          place: `${file} job ${id}`,
+          ...(job.name === undefined ? {} : { name: job.name }),
+        },
       });
     }
   };
@@ -1039,41 +1220,118 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
       reads.gated.push({ job: path, gate: trigger.text });
       continue;
     }
-    walk(path, jobsOf(parsed), trigger);
+    walk(path, parsed, {
+      condition: trigger,
+      doubts:
+        trigger.kind === "unsure"
+          ? [`${path} runs only for some pull requests: ${trigger.text}`]
+          : [],
+    });
   }
   return reads;
 }
 
-/** How a workflow step records a check itself: a step that runs at the head and whose command
- *  names the check, as the reading's search finds it. A search line in a step that never runs
- *  records nothing there; one outside a workflow file, or in a step under a condition the census
- *  cannot read, is a question for a reader. */
-function recorderOf(
-  reads: WorkflowReads,
-  id: string
-): { kind: "none" } | { kind: "records"; detail: string } | { kind: "unsure"; reason: string } {
-  const named = new Set([id]);
-  for (const hit of reads.hits) {
-    if (!namesCheck(hit.text, named)) continue;
-    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(hit.file)) {
-      return {
-        kind: "unsure",
-        reason: `the search found dispatch result naming it in ${hit.file}, which is no workflow step`,
-      };
+/** A script that is one simple command, as one line: line continuations joined, and no second
+ *  line, shell operator, redirection, grouping, comment, command substitution or `${{ }}`
+ *  expression outside or inside its quotes. Any other script is nothing. */
+function simpleCommand(script: string): string | undefined {
+  const joined = script.replace(/\\\r?\n/g, " ").trim();
+  if (/\$\{\{|\$\(|`/.test(joined)) return undefined;
+  let quote: string | null = null;
+  let previous = " ";
+  for (const character of joined) {
+    if (quote !== null) {
+      if (character === quote) quote = null;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/[\n;&|<>()]/.test(character) || (character === "#" && /\s/.test(previous))) {
+      return undefined;
     }
-    const step = reads.executions.find(
-      (execution) => execution.file === hit.file && execution.script.includes(hit.first.trim())
-    );
-    if (step === undefined) continue;
-    if (step.unsure !== undefined) {
-      return {
-        kind: "unsure",
-        reason: `the step that records it runs under a condition the census cannot read: ${step.unsure}`,
-      };
-    }
-    return { kind: "records", detail: `${hit.file}:${hit.line}: ${command(hit.text)}` };
+    previous = character;
   }
-  return { kind: "none" };
+  return quote === null ? command(joined) : undefined;
+}
+
+/** The flags with which `dispatch result` records no result: a dry run, a retraction, help. */
+const RECORDS_NOTHING: Record<string, true> = {
+  "--dry-run": true,
+  "--retract": true,
+  "--help": true,
+  "-h": true,
+};
+
+/** Why a step's script may record no result of check `id`, or nothing where it is one
+ *  `dispatch result` command alone that names the check as its one `--check` (its id, or a
+ *  reference that ends in `#b-<id>`) with none of the flags that record nothing. */
+function recordDoubts(script: string, id: string): string[] {
+  const alone = simpleCommand(script);
+  if (alone === undefined || !alone.startsWith("dispatch result ")) {
+    return [
+      `its run is not one dispatch result command alone: ${JSON.stringify(scriptLines(script))}`,
+    ];
+  }
+  const words = alone.split(" ").map((word) => word.replace(/^(["'])(.*)\1$/, "$2"));
+  const checks = words.flatMap((word, at) =>
+    word === "--check" ? [words[at + 1] ?? ""] : word.startsWith("--check=") ? [word.slice(8)] : []
+  );
+  const doubts: string[] = [];
+  const [check] = checks;
+  if (checks.length !== 1 || check === undefined || (check !== id && !check.endsWith(`#b-${id}`))) {
+    doubts.push(`its dispatch result does not name it as its one --check: ${alone}`);
+  }
+  const idle = words.filter((word) => RECORDS_NOTHING[word.split("=")[0] ?? ""] === true);
+  if (idle.length > 0) doubts.push(`its dispatch result records nothing with ${idle.join(", ")}`);
+  return doubts;
+}
+
+/** The steps that record a check themselves, as the reading's search finds them. */
+interface Recording {
+  /** The step that records the check, where one meets the rule. */
+  readonly records?: string;
+  /** Each step or file that holds `dispatch result` naming the check but that the census
+   *  cannot judge as recording it, with why. */
+  readonly cannotJudge: string[];
+}
+
+/**
+ * How a workflow step records a check itself, as the reading's search finds it: a step that holds
+ * `dispatch result` and names the check. It leaves the check out of the round only where its
+ * script is one `dispatch result` command alone that records the check (`recordDoubts`), and it,
+ * its job, what its job needs, its caller job and its workflow meet the proof rule's other terms
+ * (`Execution.doubts`). Any other such step, and a search line outside a workflow file that names
+ * the check, is one the census cannot judge, never a reason to leave the check out. A search line
+ * in a step the census decides never runs on an ordinary pull request records nothing there.
+ */
+function recorderOf(reads: WorkflowReads, id: string): Recording {
+  const named = new Set([id]);
+  const cannotJudge: string[] = [];
+  const judged = new Set<Execution>();
+  let records: string | undefined;
+  for (const hit of reads.hits) {
+    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(hit.file)) {
+      if (namesCheck(hit.text, named)) {
+        cannotJudge.push(
+          `the search found dispatch result naming it in ${hit.file}, which is no workflow step`
+        );
+      }
+      continue;
+    }
+    // The line as the step's script holds it: a scalar `run:` holds it after its key.
+    const line = hit.first.replace(/^\s*(?:-\s+)?(?:run:\s*(?:[|>][-+]?)?)?/, "").trim();
+    if (line === "") continue;
+    for (const step of reads.executions) {
+      if (step.file !== hit.file || !step.script.includes(line) || judged.has(step)) continue;
+      judged.add(step);
+      if (!namesCheck(step.script, named)) continue;
+      const doubts = [...recordDoubts(step.script, id), ...step.doubts];
+      if (doubts.length > 0) {
+        cannotJudge.push(`cannot judge whether ${step.step} records it: ${doubts.join("; ")}`);
+      } else {
+        records ??= `${step.step} (line ${hit.line}): ${command(step.script)}`;
+      }
+    }
+  }
+  return { cannotJudge, ...(records === undefined ? {} : { records }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,12 +1586,16 @@ interface CheckVerdict {
 
 /**
  * One `before_merge` check of one round, by the reading's steps. A check a workflow step records
- * is left out of both. Step 2 reads the check against the ordinary pull request's jobs at the
- * head: a check with no `ci_check` whose command such a job runs is listed, and so is a `ci_check`
- * whose named job does not run its command, and a result a role recorded in the round on a check
- * that carries `ci_check` now. A check such a job proves is CI's, and step 3 reads no run of it.
- * Step 3 then looks for the round session's own run at the head, unless the check's words or the
- * issue's plan give its run to another runner or one run at a head.
+ * is left out of both, where that step meets the recording rule (`recorderOf`). Step 2 reads the
+ * check against the ordinary pull request's jobs at the head. A step proves the check only where
+ * it meets the proof rule (`proofDoubts`); every other step that names the check's command is one
+ * the census cannot judge, listed by name as UNKNOWN and never proof, also where another step
+ * proves the check. A check with no `ci_check` that such a step proves is listed, and so is a
+ * `ci_check` whose named job holds no step that names its command, and a result a role recorded
+ * in the round on a check that carries `ci_check` now. A check a step proves — of its named job,
+ * where it carries `ci_check` — is CI's, and step 3 reads no run of it. Step 3 then looks for the
+ * round session's own run at the head, unless the check's words or the issue's plan give its run
+ * to another runner or one run at a head.
  */
 async function judgeCheck(input: {
   config: DispatchConfig;
@@ -1352,56 +1614,52 @@ async function judgeCheck(input: {
     verdict.excluded = { ...place, reason: `its when is ${check.when}` };
     return verdict;
   }
-  const recorder = recorderOf(workflows, id);
-  if (recorder.kind === "unsure") {
-    verdict.unknown.push({ issue, what, reason: recorder.reason });
-    return verdict;
-  }
-  if (recorder.kind === "records") {
-    verdict.excluded = { ...place, reason: "a workflow step records it", detail: recorder.detail };
+  const recording = recorderOf(workflows, id);
+  for (const reason of recording.cannotJudge) verdict.unknown.push({ issue, what, reason });
+  if (recording.records !== undefined) {
+    verdict.excluded = {
+      ...place,
+      reason: "a workflow step records it",
+      detail: recording.records,
+    };
     return verdict;
   }
 
   const row = { ...place, head: round.head, session: round.session, words: flat(check.text) };
   const wanted = commandsOf(check.run);
-  const running = workflows.executions.filter((execution) =>
-    executesCommand(execution.commands, wanted)
-  );
-  const sure = running.filter((execution) => execution.unsure === undefined);
-  const unsure = running.filter((execution) => execution.unsure !== undefined);
+  const judged = workflows.executions
+    .filter((execution) => namesCommand(execution.commands, wanted))
+    .map((execution) => ({ execution, doubts: proofDoubts(execution, check.run) }));
+  for (const { execution, doubts } of judged) {
+    if (doubts.length === 0) continue;
+    verdict.unknown.push({
+      issue,
+      what,
+      reason: `cannot judge whether CI proves it: ${execution.step}: ${doubts.join("; ")}`,
+    });
+  }
+  const proving = judged
+    .filter(({ doubts }) => doubts.length === 0)
+    .map(({ execution }) => execution);
   const attribute = check.ci_check ?? "";
 
   // Step 2: the check against the ordinary pull request's jobs at the head.
   let proved: Execution | undefined;
   if (attribute === "") {
-    proved = sure[0];
+    proved = proving[0];
     if (proved !== undefined) {
       verdict.rows.push({
         ...row,
         step: "v-open-work step 2",
         reason: "a job of an ordinary pull request runs its command, and it carries no ci_check",
-        detail: sure.map((execution) => execution.job).join(", "),
+        detail: proving.map((execution) => execution.job).join(", "),
       });
-    } else if (unsure[0] !== undefined) {
-      verdict.unknown.push({
-        issue,
-        what,
-        reason: `a job runs its command under a condition the census cannot read: ${unsure[0].unsure}`,
-      });
-      return verdict;
     }
   } else {
-    proved = sure.find((execution) => execution.names.includes(attribute));
-    const named = unsure.find((execution) => execution.names.includes(attribute));
-    if (proved === undefined && named !== undefined) {
-      verdict.unknown.push({
-        issue,
-        what,
-        reason: `the job its ci_check names runs under a condition the census cannot read: ${named.unsure}`,
-      });
-      return verdict;
-    }
-    if (proved === undefined) {
+    proved = proving.find((execution) => execution.names.includes(attribute));
+    // A named job whose steps the census cannot judge is UNKNOWN above, not a job that lacks it.
+    const named = judged.some(({ execution }) => execution.names.includes(attribute));
+    if (proved === undefined && !named) {
       verdict.rows.push({
         ...row,
         step: "v-open-work step 2",

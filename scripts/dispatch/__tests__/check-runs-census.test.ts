@@ -719,6 +719,40 @@ function pullRequestJob(job: string, body: string): string {
   return `name: ${job}\non:\n  pull_request:\njobs:\n  ${job}:\n    runs-on: ubuntu-24.04\n${body}`;
 }
 
+/** c3 as the reviewer's probe of CI's proof gives it: its `ci_check` names the job `job`, `rows`
+ *  by default, so only a step of a job of that name can prove it. */
+function c3OfRows(job = "rows"): RoundScene {
+  const scene = roundScene();
+  const checks = scene.checks.map((check) =>
+    check.block_id === "c3" ? { ...check, ci_check: job } : check
+  );
+  return { ...scene, checks };
+}
+
+/** A workflow of an ordinary pull request: `top` holds its keys beside `on`, `jobs` its jobs. */
+function pullRequestWorkflow(jobs: string, top = ""): string {
+  return `name: rows\non:\n  pull_request:\n${top}jobs:\n${jobs}`;
+}
+
+/** A job `id` of a workflow, with `keys` before its `steps:`, which hold `steps`. */
+function workflowJob(id: string, keys: string, steps: string): string {
+  return `  ${id}:\n    runs-on: ubuntu-24.04\n${keys}    steps:\n${steps}`;
+}
+
+/** One step that runs c3's command alone. */
+const C3_STEP = "      - run: bun test fixtures/c3.test.ts\n";
+
+/** The planted workflow of the probes, and the place of its one job's one step. */
+const ROWS = ".github/workflows/rows.yaml";
+const ROWS_STEP = `${ROWS}, job rows, step 1`;
+
+/** Each check the census cannot judge, as `<what> <reason>`. */
+function cannotJudge(report: CensusReport): string[] {
+  return report.unknown
+    .map((row) => `${row.what} ${row.reason}`)
+    .filter((line) => line.includes("cannot judge"));
+}
+
 async function rounds(
   scene: RoundScene,
   options: { repository?: Record<string, string>; loseOutput?: boolean } = {}
@@ -904,6 +938,7 @@ describe("the rounds census", () => {
       expect(excluded?.reason).toBe("a workflow step records it");
       expect(excluded?.detail).toContain(".github/workflows/record-rows.yaml");
       expect(report.rows).toEqual([]);
+      expect(report.unknown).toEqual([]);
       expect(exitCode).toBe(0);
     },
     SLOW
@@ -1007,6 +1042,393 @@ describe("the rounds census", () => {
         "needs.changes.outputs.rows"
       );
       expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  // The reviewer's four forms: a workflow line names c3's command, and it may never run.
+  for (const [title, workflow, reason] of [
+    [
+      "a command after false &&",
+      pullRequestWorkflow(
+        workflowJob("rows", "", "      - run: false && bun test fixtures/c3.test.ts\n")
+      ),
+      `${ROWS_STEP}: its run is not the check's command alone: "false && bun test fixtures/c3.test.ts"`,
+    ],
+    [
+      "a command after true ||",
+      pullRequestWorkflow(
+        workflowJob("rows", "", "      - run: true || bun test fixtures/c3.test.ts\n")
+      ),
+      `${ROWS_STEP}: its run is not the check's command alone: "true || bun test fixtures/c3.test.ts"`,
+    ],
+    [
+      "a command after exit 0",
+      pullRequestWorkflow(
+        workflowJob(
+          "rows",
+          "",
+          "      - name: Run the third row\n        run: |\n          exit 0\n          bun test fixtures/c3.test.ts\n"
+        )
+      ),
+      `${ROWS}, job rows, step "Run the third row": its run is not the check's command alone: "exit 0\\nbun test fixtures/c3.test.ts"`,
+    ],
+    [
+      "a job whose needed job never runs",
+      pullRequestWorkflow(
+        workflowJob("changes", "    if: false\n", "      - run: echo changes\n") +
+          workflowJob("rows", "    needs: [changes]\n", C3_STEP)
+      ),
+      `${ROWS_STEP}: job rows needs changes, which never runs: false`,
+    ],
+  ] as const) {
+    test(
+      `${title} is no proof of CI's: the census names the step it cannot judge`,
+      async () => {
+        const { report, exitCode } = await rounds(c3OfRows(), { repository: { [ROWS]: workflow } });
+        expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+        expect(cannotJudge(report)).toEqual([
+          `c3 at H1 cannot judge whether CI proves it: ${reason}`,
+        ]);
+        expect(exitCode).toBe(3);
+      },
+      SLOW
+    );
+  }
+
+  for (const [title, workflow] of [
+    [
+      "a rows job that runs c3's command alone",
+      pullRequestWorkflow(workflowJob("rows", "", C3_STEP)),
+    ],
+    [
+      "a rows job whose needed job has no if",
+      pullRequestWorkflow(
+        workflowJob("changes", "", "      - run: echo changes\n") +
+          workflowJob("rows", "    needs: [changes]\n", C3_STEP)
+      ),
+    ],
+  ] as const) {
+    test(
+      `${title} proves c3, and the run is clean`,
+      async () => {
+        const { report, exitCode } = await rounds(c3OfRows(), { repository: { [ROWS]: workflow } });
+        expect(report.unknown).toEqual([]);
+        expect(report.rows).toEqual([]);
+        expect(report.ci?.map((row) => `${row.check} ${row.job}`)).toEqual([
+          `c3 ${ROWS} rows`,
+          "c5 .github/workflows/ci.yaml test",
+        ]);
+        expect(exitCode).toBe(0);
+      },
+      SLOW
+    );
+  }
+
+  test(
+    "with no rows job c3 is listed, and CI proves c5 alone",
+    async () => {
+      const { report, exitCode } = await rounds(c3OfRows());
+      expect(report.unknown).toEqual([]);
+      expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+      expect(roundRows(report)).toEqual([
+        "c3 its ci_check names rows, and no job of that name runs its command on an ordinary pull request",
+        "c3 no result of the round's session at the head",
+      ]);
+      expect(exitCode).toBe(1);
+    },
+    SLOW
+  );
+
+  // The same class: forms that let CI pass without c3's command running and passing at the root.
+  const stepWith = (keys: string): string =>
+    pullRequestWorkflow(workflowJob("rows", "", `${C3_STEP}${keys}`));
+  const jobWith = (keys: string): string => pullRequestWorkflow(workflowJob("rows", keys, C3_STEP));
+  const needingChanges = (changes: string): string =>
+    pullRequestWorkflow(`${changes}${workflowJob("rows", "    needs: changes\n", C3_STEP)}`);
+  for (const [title, files, reason] of [
+    [
+      "a command whose failure is ignored",
+      {
+        [ROWS]: pullRequestWorkflow(
+          workflowJob("rows", "", "      - run: bun test fixtures/c3.test.ts || true\n")
+        ),
+      },
+      `${ROWS_STEP}: its run is not the check's command alone: "bun test fixtures/c3.test.ts || true"`,
+    ],
+    [
+      "a command with an expression after it",
+      {
+        [ROWS]: pullRequestWorkflow(
+          workflowJob(
+            "rows",
+            "",
+            `      - run: bun test fixtures/c3.test.ts \${{ inputs.extra }}\n`
+          )
+        ),
+      },
+      `${ROWS_STEP}: its run holds a \${{ }} expression: "bun test fixtures/c3.test.ts \${{ inputs.extra }}"`,
+    ],
+    [
+      "a step under a condition the census cannot read",
+      {
+        [ROWS]: pullRequestWorkflow(
+          workflowJob(
+            "rows",
+            "",
+            "      - if: github.event.pull_request.head.repo.fork == false\n        run: bun test fixtures/c3.test.ts\n"
+          )
+        ),
+      },
+      `${ROWS_STEP}: the step runs under a condition the census cannot read: github.event.pull_request.head.repo.fork == false`,
+    ],
+    [
+      "a step that continues on error",
+      { [ROWS]: stepWith("        continue-on-error: true\n") },
+      `${ROWS_STEP}: the step sets continue-on-error: true`,
+    ],
+    [
+      "a job that continues on error",
+      { [ROWS]: jobWith("    continue-on-error: true\n") },
+      `${ROWS_STEP}: job rows sets continue-on-error: true`,
+    ],
+    [
+      "a step with a shell of its own",
+      { [ROWS]: stepWith("        shell: bash\n") },
+      `${ROWS_STEP}: the step sets shell: bash`,
+    ],
+    [
+      "a step in another folder",
+      { [ROWS]: stepWith("        working-directory: fixtures\n") },
+      `${ROWS_STEP}: the step sets working-directory: fixtures`,
+    ],
+    [
+      "a job whose defaults put its steps in another folder",
+      { [ROWS]: jobWith("    defaults:\n      run:\n        working-directory: fixtures\n") },
+      `${ROWS_STEP}: the defaults.run of job rows sets working-directory: fixtures`,
+    ],
+    [
+      "a job whose defaults give its steps another shell",
+      { [ROWS]: jobWith("    defaults:\n      run:\n        shell: sh\n") },
+      `${ROWS_STEP}: the defaults.run of job rows sets shell: sh`,
+    ],
+    [
+      "a workflow whose defaults put its steps in another folder",
+      {
+        [ROWS]: pullRequestWorkflow(
+          workflowJob("rows", "", C3_STEP),
+          "defaults:\n  run:\n    working-directory: fixtures\n"
+        ),
+      },
+      `${ROWS_STEP}: the defaults.run of ${ROWS} sets working-directory: fixtures`,
+    ],
+    [
+      "a workflow whose defaults give its steps another shell",
+      {
+        [ROWS]: pullRequestWorkflow(
+          workflowJob("rows", "", C3_STEP),
+          "defaults:\n  run:\n    shell: sh\n"
+        ),
+      },
+      `${ROWS_STEP}: the defaults.run of ${ROWS} sets shell: sh`,
+    ],
+    [
+      "a job whose needed job runs under a condition the census cannot read",
+      {
+        [ROWS]: needingChanges(
+          workflowJob(
+            "changes",
+            "    if: github.event.pull_request.head.repo.fork == false\n",
+            "      - run: echo changes\n"
+          )
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, which runs under a condition the census cannot read: github.event.pull_request.head.repo.fork == false`,
+    ],
+    [
+      "a job whose needed job runs only with a label",
+      {
+        [ROWS]: needingChanges(
+          workflowJob(
+            "changes",
+            "    if: contains(github.event.pull_request.labels.*.name, 'full-ci')\n",
+            "      - run: echo changes\n"
+          )
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, which runs only on another event, a label or the merge queue: contains(github.event.pull_request.labels.*.name, 'full-ci')`,
+    ],
+    [
+      "a job whose needed job continues on error",
+      {
+        [ROWS]: needingChanges(
+          workflowJob("changes", "    continue-on-error: true\n", "      - run: echo changes\n")
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, which sets continue-on-error: true`,
+    ],
+    [
+      "a job whose needed job calls another repository's workflow",
+      {
+        [ROWS]: needingChanges(
+          "  changes:\n    uses: example/ci/.github/workflows/changes.yaml@main\n"
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, which calls example/ci/.github/workflows/changes.yaml@main, whose jobs the census does not judge for it`,
+    ],
+    [
+      "a job that needs a job the workflow lacks",
+      { [ROWS]: needingChanges("") },
+      `${ROWS_STEP}: job rows needs changes, which the workflow does not hold`,
+    ],
+    [
+      "a job in a cycle of needs",
+      {
+        [ROWS]: needingChanges(
+          workflowJob("changes", "    needs: rows\n", "      - run: echo changes\n")
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, and job changes needs rows, in a cycle`,
+    ],
+    [
+      "a job whose needed job needs a job that never runs",
+      {
+        [ROWS]: needingChanges(
+          workflowJob("base", "    if: false\n", "      - run: echo base\n") +
+            workflowJob("changes", "    needs: base\n", "      - run: echo changes\n")
+        ),
+      },
+      `${ROWS_STEP}: job rows needs changes, and job changes needs base, which never runs: false`,
+    ],
+  ] as const) {
+    test(
+      `${title} is no proof of CI's: the census names the step it cannot judge`,
+      async () => {
+        const { report, exitCode } = await rounds(c3OfRows(), { repository: files });
+        expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+        expect(cannotJudge(report)).toEqual([
+          `c3 at H1 cannot judge whether CI proves it: ${reason}`,
+        ]);
+        expect(exitCode).toBe(3);
+      },
+      SLOW
+    );
+  }
+
+  test(
+    "a called workflow whose caller job needs a job that never runs is no proof of CI's: the census names the step it cannot judge",
+    async () => {
+      const { report, exitCode } = await rounds(c3OfRows("rows / third-row"), {
+        repository: {
+          [ROWS]: pullRequestWorkflow(
+            `${workflowJob("changes", "    if: false\n", "      - run: echo changes\n")}  rows:\n    needs: changes\n    uses: ./.github/workflows/rows-job.yaml\n`
+          ),
+          ".github/workflows/rows-job.yaml": fixture("workflow-rows-job.yaml"),
+        },
+      });
+      expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+      expect(cannotJudge(report)).toEqual([
+        `c3 at H1 cannot judge whether CI proves it: .github/workflows/rows-job.yaml, job third-row (called by ${ROWS} job rows), step "Run the third row": job rows needs changes, which never runs: false`,
+      ]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a step the census cannot judge is listed even where another step proves the check",
+    async () => {
+      const workflow = pullRequestWorkflow(
+        workflowJob("rows", "", `${C3_STEP}      - run: false && bun test fixtures/c3.test.ts\n`)
+      );
+      const { report, exitCode } = await rounds(c3OfRows(), { repository: { [ROWS]: workflow } });
+      expect(report.ci?.map((row) => row.check)).toEqual(["c3", "c5"]);
+      expect(cannotJudge(report)).toEqual([
+        `c3 at H1 cannot judge whether CI proves it: ${ROWS}, job rows, step 2: its run is not the check's command alone: "false && bun test fixtures/c3.test.ts"`,
+      ]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  // A recording step is of the same class: it leaves c3 out only as one dispatch result alone.
+  const RECORDS = ".github/workflows/record-rows.yaml";
+  for (const [title, workflow, reason] of [
+    [
+      "a step that runs c3 and records it in one script",
+      pullRequestWorkflow(
+        workflowJob(
+          "rows",
+          "",
+          '      - name: Run the third row and record it\n        run: |\n          bun test fixtures/c3.test.ts > rows.txt\n          dispatch result --check c3 --verdict pass \\\n            --commit "$GITHUB_SHA" --observed-file rows.txt\n'
+        )
+      ),
+      `${RECORDS}, job rows, step "Run the third row and record it" records it: its run is not one dispatch result command alone`,
+    ],
+    [
+      "a dry run of the record",
+      pullRequestWorkflow(
+        workflowJob(
+          "rows",
+          "",
+          "      - run: |\n          dispatch result --check c3 --verdict pass --dry-run\n"
+        )
+      ),
+      `${RECORDS}, job rows, step 1 records it: its dispatch result records nothing with --dry-run`,
+    ],
+    [
+      "a record of another check that names c3 in its words",
+      pullRequestWorkflow(
+        workflowJob(
+          "rows",
+          "",
+          `      - run: |\n          dispatch result --check c1 --verdict pass --observed "c3 too"\n`
+        )
+      ),
+      `${RECORDS}, job rows, step 1 records it: its dispatch result does not name it as its one --check`,
+    ],
+    [
+      "a record in a job whose needed job never runs",
+      pullRequestWorkflow(
+        workflowJob("changes", "    if: false\n", "      - run: echo changes\n") +
+          workflowJob(
+            "rows",
+            "    needs: changes\n",
+            "      - run: |\n          dispatch result --check c3 --verdict pass\n"
+          )
+      ),
+      `${RECORDS}, job rows, step 1 records it: job rows needs changes, which never runs: false`,
+    ],
+  ] as const) {
+    test(
+      `${title} leaves c3 in the round: the census names the step it cannot judge`,
+      async () => {
+        const { report, exitCode } = await rounds(roundScene(), {
+          repository: { [RECORDS]: workflow },
+        });
+        expect(report.excluded?.map((row) => row.check)).not.toContain("c3");
+        expect(cannotJudge(report).join("\n")).toContain(`c3 at H1 cannot judge whether ${reason}`);
+        expect(exitCode).toBe(3);
+      },
+      SLOW
+    );
+  }
+
+  test(
+    "a scalar run that is one dispatch result alone leaves c3 out",
+    async () => {
+      const workflow = pullRequestWorkflow(
+        workflowJob("rows", "", "      - run: dispatch result --check c3 --verdict pass\n")
+      );
+      const { report, exitCode } = await rounds(roundScene(), {
+        repository: { [RECORDS]: workflow },
+      });
+      const excluded = report.excluded?.find((row) => row.check === "c3");
+      expect(excluded?.reason).toBe("a workflow step records it");
+      expect(excluded?.detail).toContain(`${RECORDS}, job rows, step 1`);
+      expect(report.unknown).toEqual([]);
+      expect(report.rows).toEqual([]);
+      expect(exitCode).toBe(0);
     },
     SLOW
   );

@@ -121,23 +121,44 @@ the results of each check. It writes the issue list to `<out>/keys.txt`, which `
 reads. A run that reads no round — no updated issue moved into testing, or no round of one could
 be read — reports UNKNOWN, and so does a listing that does not load.
 
-At each round's head it reads the workflows of an ordinary pull request. A step proves a check
-only where it runs the check's own command: the step's script split into its commands at each
-unquoted newline, `;`, `&&`, `||` and `|`, so `echo 'bun test x'` runs no `bun test x`. A job or
-step whose `if` is `false` never runs and proves nothing; one that runs only on another event or
-with a label such as `full-ci` proves nothing on an ordinary pull request; and an `if` of any
-other form than a chain of terms true on a ready pull request (`!github.event.pull_request.draft`,
-`github.event_name != 'merge_group'` and the like), or a trigger that filters by path or branch,
-makes the check UNKNOWN rather than CI's. A workflow or commit the run cannot read is UNKNOWN.
+At each round's head it reads the workflows of an ordinary pull request. A job or step whose `if`
+is `false` never runs; one that runs only on another event or with a label such as `full-ci` does
+not run on an ordinary pull request. Each proves nothing, and the report names it.
 
-A check is left out of a round, and named with the reason, where its `when` is not `before_merge`
-or where a workflow step at the head records it (`dispatch result` under `.github/`, in a step
-that runs and names the check). Then it is read against the jobs (`v-open-work` step 2): a check
-with no `ci_check` whose command such a job runs is listed, and is CI's; a `ci_check` that names no
-job running the check's command is listed; and a result a role recorded during the round on a
-check that carries `ci_check` now is listed, for the check carried none then. A check its named job
-proves is CI's. Every other check is left out where its words give its run only to another runner,
-or where the issue's plan gives it one run at a head.
+Of the other steps, the run finds each one that names the check's command (its script split into
+commands at each unquoted newline, `;`, `&&`, `||` and `|`, so `echo 'bun test x'` names no
+`bun test x`). A found step proves the check only where all of these hold:
+
+- its `run`, with line continuations joined and whitespace folded, is the check's `run` alone: no
+  other command, operator, comment or `${{ }}` expression before or after it, so
+  `false && bun test x`, `true || bun test x`, `bun test x || true` and `exit 0` before it are
+  not proof;
+- the step, its job, the caller job of a called workflow, and the workflow's trigger have no `if`
+  or trigger filter but one that holds on a ready pull request (`!github.event.pull_request.draft`,
+  `github.event_name != 'merge_group'` and the like);
+- each job its job `needs`, followed through their own `needs`, has no `if` but one such, no
+  `continue-on-error`, and calls no other workflow; a `needs` that names a job the workflow lacks,
+  or a cycle, decides nothing;
+- no `continue-on-error` other than `false` on the step or its job, no `shell` on the step, and no
+  `working-directory` on the step, and neither key in the `defaults.run` of its job or workflow.
+
+Every other found step is one the run cannot judge: an UNKNOWN row that names the workflow file,
+the job, the step (its `name`, else its place among the job's steps) and each reason, never proof,
+listed also where another step proves the check. A workflow or commit the run cannot read is
+UNKNOWN too.
+
+A check is left out of a round, and named with the reason, where its `when` is not `before_merge`,
+or where a workflow step at the head records it: the search for `dispatch result` under
+`.github/` finds a step whose script is one `dispatch result` command alone, naming the check as
+its one `--check`, with no `--dry-run`, `--retract` or `--help`, in a step that meets the proof
+rule's other terms. Any other step that holds `dispatch result` and names the check, and a search
+line outside a workflow file that names it, is one the run cannot judge, never a reason to leave
+the check out. Then it is read against the jobs (`v-open-work` step 2): a check with no
+`ci_check` that a step proves is listed, and is CI's; a `ci_check` whose named job holds no step
+that names the check's command is listed; and a result a role recorded during the round on a
+check that carries `ci_check` now is listed, for the check carried none then. A check a step of
+its named job proves is CI's. Every other check is left out where its words give its run only to
+another runner, or where the issue's plan gives it one run at a head.
 
 For each check left (`v-open-work` step 3), the run looks for a result of the round's session, at
 the round's head, between the move into testing and the handoff. It lists a check with no such
