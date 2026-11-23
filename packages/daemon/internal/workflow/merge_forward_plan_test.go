@@ -29,11 +29,11 @@ import (
 const approvalWait = "only once the reviewer's approval of"
 
 // plannedConflictIssue is seedConflictIssue on a run with plan rows: the owner's plan whose steps
-// are steps, with task a running at the place of at: the step whose role runs as at, its retro or
-// its merge.
-func plannedConflictIssue(t *testing.T, at phase.Phase, steps ...string) *pgxpool.Pool {
+// are steps, with task a running at the place of at (the step whose role runs as at, its retro or
+// its merge), and pr as the record holds the pull request.
+func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, steps ...string) *pgxpool.Pool {
 	t.Helper()
-	pool := seedConflictIssue(t, at, "retro", settledGreen("lint"))
+	pool := seedConflictIssue(t, at, "retro", pr)
 	seedStepsPlan(t, pool, "LEGION-208", 1, steps...)
 	place := record.TaskPlace{Kind: record.PlaceRetro}
 	switch at {
@@ -57,6 +57,17 @@ func plannedConflictIssue(t *testing.T, at phase.Phase, steps ...string) *pgxpoo
 	return pool
 }
 
+// askedInReviewing is a pull request whose record holds the implementer's ask of the merge forward
+// of conflictHead, made in reviewing while a check the base requires was not green, and not landed.
+// Where every step of the task has run, a conflict waits for the merger (cybermonklabs/legion#4979),
+// so an ask of the implementer stands there only where it was made at an earlier step.
+func askedInReviewing() record.PullRequest {
+	pr := settledGreen("lint")
+	pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Reviewing,
+		Why: record.ConflictCheckNotGreen, AskedAt: firstConflictRead}
+	return pr
+}
+
 // toldWho is each merge-forward message as the role it goes to and its step, in the order written.
 func toldWho(messages []record.MergeForwardMessage) []string {
 	told := make([]string, len(messages))
@@ -78,7 +89,7 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Run("the merger in merging", func(t *testing.T) {
-				pool := plannedConflictIssue(t, phase.Merging, tc.steps...)
+				pool := plannedConflictIssue(t, phase.Merging, settledGreen("lint"), tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
@@ -105,8 +116,12 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				}
 			})
 
+			// Where every step of the task has run a conflict waits for the merger
+			// (cybermonklabs/legion#4979), so a merge forward lands in retro only where the implementer
+			// was asked at an earlier step, while a required check had no green result, and its merge
+			// lands once the issue is in retro.
 			t.Run("a merger entering merging after the landing", func(t *testing.T) {
-				pool := plannedConflictIssue(t, phase.Retro, tc.steps...)
+				pool := plannedConflictIssue(t, phase.Retro, askedInReviewing(), tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
@@ -137,33 +152,36 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 // stands at when it runs, so it is asked nothing. So under `implementer acceptance:owner reviewer`
 // a landing in accepting asks no review, and under `implementer reviewer tester` a landing in
 // testing asks one, and the tester is told the landing as before. The controls are the other
-// order of each pair.
+// order of each pair. Where every step of the task has run - accepting as the last step, or the
+// retro - a conflict waits for the merger, so a merge that lands there is one the implementer was
+// asked for at an earlier step (askedInReviewing).
 func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
 		steps []string
+		pr    record.PullRequest
 		want  []string
 	}{
 		{name: "accepting before the reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "acceptance:owner", "reviewer"}, want: []string{}},
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}, pr: settledGreen("lint"), want: []string{}},
 		{name: "control: accepting after the reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "reviewer", "acceptance:owner"}, want: []string{"reviewer review"}},
+			steps: []string{"implementer", "reviewer", "acceptance:owner"}, pr: askedInReviewing(), want: []string{"reviewer review"}},
 		{name: "testing after the reviewer step", at: phase.Testing,
-			steps: []string{"implementer", "reviewer", "tester"}, want: []string{"tester landed", "reviewer review"}},
+			steps: []string{"implementer", "reviewer", "tester"}, pr: settledGreen("lint"), want: []string{"tester landed", "reviewer review"}},
 		{name: "control: testing before the reviewer step", at: phase.Testing,
-			steps: []string{"implementer", "tester", "reviewer"}, want: []string{"tester landed"}},
+			steps: []string{"implementer", "tester", "reviewer"}, pr: settledGreen("lint"), want: []string{"tester landed"}},
 		{name: "retro after a reviewer step that follows the acceptance", at: phase.Retro,
-			steps: []string{"implementer", "acceptance:owner", "reviewer"}, want: []string{"reviewer review"}},
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}, pr: askedInReviewing(), want: []string{"reviewer review"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := plannedConflictIssue(t, tc.at, tc.steps...)
+			pool := plannedConflictIssue(t, tc.at, tc.pr, tc.steps...)
 			confirmsConflict(t, pool, requiresCI)
-			asked := len(mergeForwardMessages(t, pool))
-			if asked == 0 {
-				t.Fatalf("the confirmed conflict in %s asked no merge forward, want one", tc.at)
+			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Head != conflictHead || mf.Asked() != claim.RoleImplementer {
+				t.Fatalf("the record's merge forward in %s = %+v, want the implementer's ask of %s", tc.at, mf, conflictHead)
 			}
+			asked := len(mergeForwardMessages(t, pool))
 			landsMergeForward(t, pool)
 
 			if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, tc.want) {
@@ -180,15 +198,16 @@ func TestAMergeForwardAsksTheReviewerOnlyWhereItsStepAlreadyRan(t *testing.T) {
 	}
 }
 
-// The merge is the next step of an issue in accepting only where no step of its task follows the
-// acceptance (classify.MergeComesNext). There a confirmed conflict asks for the merge forward
-// whatever the checks say (record.ConflictMergeNext). Where a step follows, the conflict is decided
-// as it is in testing and reviewing: with every check the base requires green on the head, nothing
-// is asked, and the next step works at that head. The merge forward is asked once the issue reaches
-// its retro. The controls are the acceptance as the task's last step, and the retro of a task whose
-// acceptance a step follows.
-func TestAConflictInAcceptingAsksForTheMergeOnlyWhereTheMergeComesNext(t *testing.T) {
-	requiresLint := &record.BaseRules{Required: []string{"lint"}}
+// Where every step of the task has run, the merge comes next (classify.MergeComesNext): the retro,
+// and accepting where no step of the task follows the acceptance. There a confirmed conflict asks
+// nobody, whatever the base's rules, and waits for merging, where the merger merges the base
+// forward (cybermonklabs/legion#4979). In accepting that a step follows, the step still to run
+// needs a head the base's checks run on, so the conflict is decided as it is in testing and
+// reviewing: a check the base requires that is not green asks the implementer at once. Merging
+// asks the merger whatever the task's steps. The controls are the acceptance as the task's last
+// step, the retro of a task whose acceptance a step follows, and its merging.
+func TestAConflictInAcceptingAsksTheImplementerOnlyWhereAStepFollows(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
@@ -196,20 +215,22 @@ func TestAConflictInAcceptingAsksForTheMergeOnlyWhereTheMergeComesNext(t *testin
 		why   record.ConflictWhy
 	}{
 		{name: "accepting before a reviewer step", at: phase.Accepting,
-			steps: []string{"implementer", "acceptance:owner", "reviewer"}},
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}, why: record.ConflictCheckNotGreen},
 		{name: "accepting before a tester step", at: phase.Accepting,
-			steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}},
+			steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}, why: record.ConflictCheckNotGreen},
 		{name: "control: accepting as the last step", at: phase.Accepting,
-			steps: []string{"implementer", "reviewer", "acceptance:owner"}, why: record.ConflictMergeNext},
+			steps: []string{"implementer", "reviewer", "acceptance:owner"}},
 		{name: "control: the retro of a task whose acceptance a step follows", at: phase.Retro,
+			steps: []string{"implementer", "acceptance:owner", "reviewer"}},
+		{name: "control: the merging of a task whose acceptance a step follows", at: phase.Merging,
 			steps: []string{"implementer", "acceptance:owner", "reviewer"}, why: record.ConflictMergeNext},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := plannedConflictIssue(t, tc.at, tc.steps...)
-			confirmsConflict(t, pool, requiresLint)
+			pool := plannedConflictIssue(t, tc.at, settledGreen("lint"), tc.steps...)
+			confirmsConflict(t, pool, requiresCI)
 			if tc.why == "" {
 				if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked != nil {
-					t.Fatalf("the record's merge forward = %+v, want none asked", asked)
+					t.Fatalf("the record's merge forward = %+v, want none asked: the conflict waits for the merger", asked)
 				}
 				assertNothingActed(t, pool, tc.at)
 				return
@@ -220,36 +241,48 @@ func TestAConflictInAcceptingAsksForTheMergeOnlyWhereTheMergeComesNext(t *testin
 }
 
 // The reviewer's approval of a head held in a confirmed conflict ends its round and moves the
-// issue to the task's next step (reviewRound). The move asks for the merge forward only where the
-// merge comes next there (mergeForwardOnEntry): into accepting as the task's last step, and not
-// into accepting that a tester step follows, where the tester works at that head first.
-func TestAnApprovalOfAConflictingHeadAsksForTheMergeOnlyWhereTheMergeComesNext(t *testing.T) {
+// issue to the task's next step (reviewRound). With every check the base requires green on the
+// head, the conflict asked nothing when it was confirmed, and the move asks nothing either,
+// wherever it goes: into accepting that a tester step follows, where the tester works at that head
+// first, into accepting as the task's last step, or into the retro of a task whose last step is
+// the review. The conflict waits for merging, and the move into merging asks the merger
+// (cybermonklabs/legion#4979, mergeForwardOnEntry).
+func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 	every := &record.BaseRules{Required: []string{"lint"}}
 	for _, tc := range []struct {
 		name  string
 		steps []string
-		asks  bool
+		next  phase.Phase
 	}{
-		{name: "into accepting before a tester step", steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}},
-		{name: "control: into accepting as the last step", steps: []string{"implementer", "reviewer", "acceptance:owner"}, asks: true},
+		{name: "into accepting before a tester step", steps: []string{"implementer", "reviewer", "acceptance:owner", "tester"}, next: phase.Accepting},
+		{name: "into accepting as the last step", steps: []string{"implementer", "reviewer", "acceptance:owner"}, next: phase.Accepting},
+		{name: "into the retro, then merging", steps: []string{"implementer", "reviewer"}, next: phase.Retro},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := plannedConflictIssue(t, phase.Reviewing, tc.steps...)
+			pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), tc.steps...)
 			confirmsConflict(t, pool, every)
 			assertNothingActed(t, pool, phase.Reviewing)
 			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
 				State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
 				SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
-			if got := issuePhase(t, pool); got != phase.Accepting {
-				t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
+			if got := issuePhase(t, pool); got != tc.next {
+				t.Fatalf("after the approval the issue is in %s, want %s: an approval of a conflicting head ends its round", got, tc.next)
 			}
-			want := []record.MergeForwardMessage{}
-			if tc.asks {
-				want = append(want, record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead,
-					Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: record.ConflictMergeNext})
+			if got := mergeForwardMessages(t, pool); len(got) != 0 {
+				t.Fatalf("merge-forward messages %+v after the move into %s, want none: the conflict waits for the merger", got, tc.next)
 			}
+			if tc.next != phase.Retro {
+				return
+			}
+			applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+			if got := issuePhase(t, pool); got != phase.Merging {
+				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
+			}
+			want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead,
+				Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-				t.Fatalf("merge-forward messages %+v, want %+v", got, want)
+				t.Fatalf("merge-forward messages %+v after the move into merging, want %+v", got, want)
 			}
 		})
 	}
