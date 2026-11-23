@@ -1072,8 +1072,7 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the
 // text before the colon of one of the task's lines. Every line of the task is built from its
-// label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
-// skills that tell the worker to read it, so a label renamed on one side alone fails there.
+// label here, and TestEachTaskLabelIsALineTheTaskWrites holds that the task writes a line of each.
 // testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
 // tests of their own.
 const (
