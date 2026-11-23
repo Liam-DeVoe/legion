@@ -66,9 +66,10 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * the commit or merge each names; the two older entry sizes are the readings of 2026-10-29 and
  * 2026-11-11 named above. `web/vite.config.ts` records the entry: the merge of 4b22ece4
  * (2026-11-23) read 500,672 bytes, the cut in `01fc0e41` brought it to 499,380, and `97c0cde6`
- * added 105, so the head's build at the merge of 54b78b71 (4548096d) reads 499,485 bytes, 515
- * under this budget. It records the sizes of `53286717` the same day too, seven days after
- * `61e5c402`: the Mermaid worker and the ECharts chunk at the sizes above.
+ * added 105, so the head's build at `4935c4af`, with a 39-character build id, reads 499,485
+ * bytes, 515 under this budget (CI's 40-character id writes one byte more, by the rule above).
+ * It records the sizes of `53286717` the same day too, seven days after `61e5c402`: the Mermaid
+ * worker and the ECharts chunk at the sizes above.
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

@@ -206,8 +206,10 @@ export default defineConfig({
   build: {
     outDir: "dist",
     // The entry - the one `assets/index-*.js` that dist/index.html names - is 499,485 bytes,
-    // measured with `bun run build:web` at the merge of 54b78b71 (4548096d) on 2026-11-23, where
-    // the default branch's own build at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109
+    // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` at `4935c4af` (the
+    // same at the merges 4548096d and e15ee5e4) on 2026-11-23; the build id is in the entry, so
+    // CI's 40-character commit writes one byte more. That is where the default branch's own build
+    // at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109
     // split the shell: the Inbox and its peek, the ask card, the search bar, the Create issue
     // dialog, the shortcut sheet, the reference-preview layer, the event-refresh map, the headless
     // Markdown engine the shell warms at boot, the new issue page's frame shell, the pending-writes
@@ -216,9 +218,9 @@ export default defineConfig({
     // out of a page that reads neither - in the editor's chunks too, which import that package
     // by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
     // The merge of 4b22ece4 read 500,672 bytes, over the budget; the cut in `01fc0e41` brought it
-    // to 499,380, and `97c0cde6`'s focus helper added 105, so the head's build at the merge of
-    // 54b78b71 reads those 499,485 bytes, 515 under the budget. That cut made two moves. The
-    // Inbox's `Blocked on you` strip and the project page's pill left the entry for a file of
+    // to 499,380, and `97c0cde6`'s focus helper added 105, so the head reads those 499,485 bytes,
+    // 515 under the budget. That cut made two moves. The Inbox's `Blocked on you` strip and the
+    // project page's pill left the entry for a file of
     // their own, `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the
     // project page's chunks share, and without that move the entry at `01fc0e41` measured 500,104
     // bytes. The modulepreload polyfill, 710 bytes of the entry, is off, for the reason beside
