@@ -68,6 +68,10 @@ type judgeKey struct {
 	Seconds int64 `json:"seconds"`
 	// Guidance is the key owner's instruction to the judge, "" for a key that carries none.
 	Guidance string `json:"guidance,omitempty"`
+	// Source is the stored secret a profile is made from, whose judge and guidance tags these
+	// are, and absent for a name served as itself. A source that profiles of other names use is
+	// served only through them, so `secret show` of it finds its judged profiles by this field.
+	Source string `json:"source,omitempty"`
 }
 
 // readSettings is GET /v1/settings: public, since it answers only the broker's own configuration —
@@ -97,7 +101,11 @@ func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 			if resp.JudgeKeys == nil {
 				resp.JudgeKeys = map[string]judgeKey{}
 			}
-			resp.JudgeKeys[name] = judgeKey{Seconds: int64(seconds), Guidance: secret.Guidance}
+			key := judgeKey{Seconds: int64(seconds), Guidance: secret.Guidance}
+			if secret.Profile != nil && secret.Profile.Source != "" && secret.Profile.Source != name {
+				key.Source = secret.Profile.Source
+			}
+			resp.JudgeKeys[name] = key
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

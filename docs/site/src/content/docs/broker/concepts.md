@@ -1778,8 +1778,9 @@ No request has to cite anything. The judge reads the Dispatch issue a reason nam
 cites (`dispatch://KEY/ask/<id>`) as data for the model, and a key's guidance may ask for either:
 for example, "grant only to post text that the key's owner approved in Dispatch; the reason must
 cite that answer". `GET /v1/settings` answers each judge key with its seconds and guidance
-(`judge_keys`), and `agent-secrets secret show` prints who decides a request for the key and the
-guidance, so an agent can meet the guidance on its first request.
+(`judge_keys`), and `agent-secrets secret show` prints the key's own `judge` and `guidance` tags
+and who decides a request for it — for a source served only through its profiles, the judge, for
+each judged profile made from it — so an agent can meet the guidance on its first request.
 
 While the judge decides a request, which is at most two minutes from when it was written, nobody
 else can: it is on no person's list or Dispatch Inbox, on any broker; its answer carries

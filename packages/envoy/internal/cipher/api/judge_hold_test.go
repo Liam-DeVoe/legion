@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -197,5 +198,37 @@ func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
 	unjudged := newTestServer(t)
 	if _, body := unjudged.req(t, http.MethodGet, "/v1/settings", nil, nil); strings.Contains(string(body), "judge_keys") {
 		t.Fatalf("GET /v1/settings with no key carrying a judge tag = %s; want no judge_keys", body)
+	}
+}
+
+// TestTheSettingsNameTheSourceOfAJudgedProfile: a profile made from a stored secret of another
+// name is served under the profile's name, and the source is served only through it, so judge_keys
+// names the profile, at its source's seconds and guidance, and says which source those are
+// (source), for `secret show` of that source to name its judged profiles. A name served as itself
+// carries no source.
+func TestTheSettingsNameTheSourceOfAJudgedProfile(t *testing.T) {
+	type judgeKey struct {
+		Seconds  int    `json:"seconds"`
+		Guidance string `json:"guidance"`
+		Source   string `json:"source"`
+	}
+	type settings struct {
+		JudgeKeys map[string]judgeKey `json:"judge_keys"`
+	}
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(
+		`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.example"]}}`,
+	), func(d *api.Deps) {
+		store := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+		judged := policytest.Judged(policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job")
+		store.Put(judged)
+		store.Put(policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))
+		if err := d.Policy.Refresh(t.Context()); err != nil {
+			t.Fatalf("policy refresh: %v", err)
+		}
+	})
+	code, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
+	got := decode[settings](t, body).JudgeKeys
+	if code != http.StatusOK || got["DEEL_READ"] != (judgeKey{900, "grant for the payroll export job", "DEEL_API_KEY"}) || got["SHARED_KEY"] != (judgeKey{Seconds: 300}) {
+		t.Errorf("GET /v1/settings = %d %s; want DEEL_READ at its source DEEL_API_KEY's 900 seconds and guidance, naming that source, and SHARED_KEY at 300 with none", code, body)
 	}
 }

@@ -51,6 +51,9 @@ type JudgeKey struct {
 	Seconds uint32 `json:"seconds"`
 	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
 	Guidance string `json:"guidance,omitempty"`
+	// Source is the stored secret the name is a profile of, whose judge and guidance tags these
+	// are, "" for a name served as itself; `secret show` of that source names its judged profiles.
+	Source string `json:"source,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {

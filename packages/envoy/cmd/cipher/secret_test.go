@@ -1601,21 +1601,21 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 }
 
-// TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints who decides a request for the key and
-// the guidance the judge decides it on, so an agent can meet the guidance on its first request.
-// The model judge for a key whose judge tag gives the judge seconds of it (GET /v1/settings's
-// judge_keys), whoever owns it, with its seconds and its guidance; a person, on the broker page,
-// for a key with no judge tag, and for an administrator's key even where its judge tag names it;
-// and, for an agent-tier key, nobody for a session its tags allow, since only another session's
-// request waits at all.
+// TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints the key's own judge and guidance
+// tags, then who decides a request for the key, so an agent can meet the guidance on its first
+// request. The model judge for a key whose judge tag gives the judge seconds of it (GET
+// /v1/settings's judge_keys), whoever owns it, with its seconds; a person, on the broker page, for
+// a key with no judge tag, and for an administrator's key even where its judge tag names it; and,
+// for an agent-tier key, nobody for a session its tags allow, since only another session's request
+// waits at all.
 func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
-	admin := policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a")
+	admin := policytest.Judged(policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a"), 900, "grant for anything")
 	admin.Tags[policy.TagAdmin] = "true"
 	local := secrets.NewLocal(
-		policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"),
+		policytest.Judged(policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"), 900, "grant for the release job named in the reason"),
 		policytest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
 		admin,
-		policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"),
+		policytest.Judged(policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"), 300, ""),
 		policytest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
 	)
 	startSecretBrokerWith(t, Settings{
@@ -1627,13 +1627,41 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 		},
 	}, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-	const person = "decides: a person, on the broker page\nguidance: -\n"
+	const person = "judge: -\nguidance: -\ndecides: a person, on the broker page\n"
 	for name, want := range map[string]string{
-		"JUDGED_KEY":        "decides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: grant for the release job named in the reason\n",
+		"JUDGED_KEY":        "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\n",
 		"PAGE_KEY":          person,
-		"ADMIN_JUDGED_KEY":  "decides: a person, on the broker page: an administrator's key, which the judge never decides\nguidance: -\n",
-		"SHARED_JUDGED_KEY": "decides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: -\n",
-		"AGENT_KEY":         "decides: nobody, for a session its tags allow; otherwise a person, on the broker page\nguidance: -\n",
+		"ADMIN_JUDGED_KEY":  "judge: 900\nguidance: grant for anything\ndecides: a person, on the broker page: an administrator's key, which the judge never decides\n",
+		"SHARED_JUDGED_KEY": "judge: 300\nguidance: -\ndecides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\n",
+		"AGENT_KEY":         "judge: -\nguidance: -\ndecides: nobody, for a session its tags allow; otherwise a person, on the broker page\n",
+	} {
+		stdout, stderr, code := runSecret("show", name)
+		if code != 0 || !strings.Contains(stdout, want) {
+			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+		}
+	}
+}
+
+// TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles: show prints the key's own judge and
+// guidance tags, and for a source the broker serves only through profiles of other names, which
+// judge_keys names by the profile and not by the source, it says the judge decides those profiles
+// on this key's guidance. A key that carries a judge tag the broker gives the judge nothing of
+// says so, and a person decides it.
+func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
+	source := policytest.Judged(policytest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason")
+	unserved := policytest.Judged(policytest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, "")
+	local := secrets.NewLocal(source, unserved)
+	startSecretBrokerWith(t, Settings{
+		SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
+		JudgeKeys: map[string]JudgeKey{
+			"RELEASE_READ":  {Seconds: 900, Guidance: "grant for the release job named in the reason", Source: "RELEASE_PAT"},
+			"RELEASE_WRITE": {Seconds: 900, Guidance: "grant for the release job named in the reason", Source: "RELEASE_PAT"},
+		},
+	}, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+	for name, want := range map[string]string{
+		"RELEASE_PAT":  "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, for the profiles made from this key (RELEASE_READ, RELEASE_WRITE), against its guidance; the key's person only if the judge cannot decide\n",
+		"UNSERVED_KEY": "judge: 600\nguidance: -\ndecides: a person, on the broker page: the broker serves no name from this key now, so its judge tag gives the judge nothing\n",
 	} {
 		stdout, stderr, code := runSecret("show", name)
 		if code != 0 || !strings.Contains(stdout, want) {

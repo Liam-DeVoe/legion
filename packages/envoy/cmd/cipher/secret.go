@@ -800,37 +800,53 @@ func proofFailed(err error) bool {
 		refused.Status == http.StatusServiceUnavailable && refused.Code == "DATABASE_UNAVAILABLE"
 }
 
-// whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
-// the guidance the model judge decides it on, so an agent can meet the guidance on its first
-// request. It reads the key's own tags and the broker's judge_keys (GET /v1/settings), the live
-// policy's answer, which holds while the tags are unchanged:
+// whoDecides is secret show's decides line: who decides a request for the key, so an agent can
+// meet the guidance on its first request. It reads the key's own tags and the broker's judge_keys
+// (GET /v1/settings), the live policy's answer, which holds while the tags are unchanged:
 //
 //   - an administrator's key is a person's, on the broker page, whatever its judge tag says,
 //     since a person approves every release of one;
 //   - a key whose judge tag gives the judge seconds of it is the model judge's, up to those
 //     seconds, against its guidance, and its person's only if the judge cannot decide;
+//   - a source the broker serves only through profiles of other names (always so for a GitHub
+//     App's key) is not in judge_keys by its own name: the judge decides the profiles judge_keys
+//     names as made from it (JudgeKey.Source), on this key's tags;
+//   - a key that carries a judge tag the broker gives nothing of is a person's, and the line says
+//     why: the broker serves no name from it now;
 //   - any other key is a person's, on the broker page.
 //
 // An agent-tier key is granted at once to a session its tags allow, so for one of those the line
-// says nobody decides, and names who decides any other session's request.
-func whoDecides(view secretView, judged map[string]JudgeKey) (decides, guidance string) {
-	guidance = "-"
+// says nobody decides, and names who decides any other session's request. The profile names are
+// text of the broker's answer, so they print through settings.words, as every such text does.
+func whoDecides(view secretView, settings Settings) string {
+	judged := settings.JudgeKeys
 	entry, hasJudge := judged[view.Name]
+	var profiles []string
+	var profileSeconds uint32
+	for name, key := range judged {
+		if key.Source == view.Name && name != view.Name {
+			profiles = append(profiles, name)
+			profileSeconds = key.Seconds
+		}
+	}
+	slices.Sort(profiles)
+	var decides string
 	switch {
 	case view.Admin == "true":
 		decides = "a person, on the broker page: an administrator's key, which the judge never decides"
 	case hasJudge:
 		decides = fmt.Sprintf("the model judge, up to %s, against its guidance; the key's person only if the judge cannot decide", time.Duration(entry.Seconds)*time.Second)
-		if entry.Guidance != "" {
-			guidance = entry.Guidance
-		}
+	case len(profiles) > 0:
+		decides = fmt.Sprintf("the model judge, up to %s, for the profiles made from this key (%s), against its guidance; the key's person only if the judge cannot decide", time.Duration(profileSeconds)*time.Second, settings.words(strings.Join(profiles, ", ")))
+	case view.Judge != "":
+		decides = "a person, on the broker page: the broker serves no name from this key now, so its judge tag gives the judge nothing"
 	default:
 		decides = "a person, on the broker page"
 	}
 	if view.Tier == policy.TierAgent {
 		decides = "nobody, for a session its tags allow; otherwise " + decides
 	}
-	return decides, guidance
+	return decides
 }
 
 // Close releases the session's backend connection.
@@ -1197,6 +1213,11 @@ type secretView struct {
 	// the broker refuses the secret for (policy.ReasonAdminMalformed), instead of hiding it as
 	// not-admin.
 	Admin string `json:"admin"`
+	// Judge and Guidance are the judge and guidance tags as the store holds them, "" for a
+	// secret carrying none (policy.TagJudge, policy.TagGuidance). Who decides a request for the
+	// key is secret show's own line, which reads the broker's answer beside them (whoDecides).
+	Judge    string `json:"judge"`
+	Guidance string `json:"guidance"`
 	// Project is the dispatch-project tag as the store holds it, the key of the Dispatch project
 	// the secret belongs to, and nil for a secret carrying none, which --json writes as null
 	// (policy.TagProject). It is a pointer so a census of the store's tagged secrets counts the
@@ -1242,6 +1263,7 @@ func (v secretView) withTags(tags map[string]string) secretView {
 	v.Owner, v.Tier = tags[policy.TagOwner], tags[policy.TagTier]
 	v.Type, v.GitHubOwners, v.MaxGrant, v.DefaultGrant = policy.TypeFromTags(tags), tags[policy.TagGitHubOwners], tags[policy.TagMaxGrant], tags[policy.TagDefaultGrant]
 	v.Scopes, v.Admin = tags[policy.TagScopes], tags[policy.TagAdmin]
+	v.Judge, v.Guidance = tags[policy.TagJudge], tags[policy.TagGuidance]
 	v.Requesters, v.RollbackGuard = policy.SplitRequestersGuard(tags[policy.TagRequesters])
 	if project, tagged := tags[policy.TagProject]; tagged {
 		v.Project = &project
@@ -1359,8 +1381,9 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), rollbackGuard, orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
-	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
-	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, s.settings.words(guidance))
+	// The key's own judge and guidance tags, as the store holds them, then who decides a request
+	// for it, which reads the broker's answer beside them.
+	fmt.Fprintf(stdout, "judge: %s\nguidance: %s\ndecides: %s\n", orDash(view.Judge), orDash(view.Guidance), whoDecides(view, s.settings))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",

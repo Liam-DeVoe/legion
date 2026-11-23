@@ -1383,9 +1383,11 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
   machine could register a session under it. When a key's `judge` tag gives the model judge
   seconds of it it also answers `judge_keys`: each such name with its judge seconds and its
-  `guidance` tag — the key owner's own words, never a value. It is the live policy's answer, the
+  `guidance` tag — the key owner's own words, never a value — and, for a profile made from a
+  stored secret of another name, that secret as `source`. It is the live policy's answer, the
   same on a broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a
-  request for a secret and what the judge looks for. An administrator's secret is listed there when
+  request for a secret and what the judge looks for: for a source the broker serves only through
+  its profiles, it names the judged profiles made from it. An administrator's secret is listed there when
   its `judge` tag gives it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
   the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
