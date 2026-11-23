@@ -43,7 +43,8 @@ type podUpdateRoute struct {
 func newPodUpdateRoute(t *testing.T, s *supervision, sup *supervisor, log *slog.Logger) *podUpdateRoute {
 	t.Helper()
 	grants := credential.New(nil)
-	grant, err := grants.MintController("ses_controller")
+	// Generation 1 is the one a project's first controller registration takes (store.MintController).
+	grant, err := grants.MintController("ses_controller", 1)
 	if err != nil {
 		t.Fatalf("mint a controller grant: %v", err)
 	}
