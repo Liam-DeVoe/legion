@@ -1722,7 +1722,7 @@ func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
 	}
 	stdout, stderr, err := list("not-a-number")
 	if err == nil {
-		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- exited 0 and printed %q: this jj ignores the variable, as a jj without the chunked-pack patch does (jj 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list %s here too), where the patched gix-pack refuses the value as it opens the pack and jj reports the commit %s not found", stdout, file, head)
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- exited 0 and printed %q: this jj ignores the variable, as a jj without the chunked-pack patch does (jj 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list %s here too), where the patched gix-pack refuses the value as it opens the pack and jj reports the commit %s not found. This test ran %s, the first compiled jj on PATH; on a box whose session started before the box moved its jj pin to the release .github/ci-tools.yaml names, PATH can still name the old jj's mise install directory first, so run the test again with the pinned jj's directory first on PATH: PATH=\"$(dirname \"$(mise which jj)\"):$PATH\"", stdout, file, head, jj)
 	}
 	if !strings.Contains(stderr, head) || !strings.Contains(stderr, "not found") {
 		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want the commit %s not found, which is how the patched gix-pack's refusal of the value reaches the user (gix-odb takes the pack as absent), where an unpatched jj lists %s", err, stdout, stderr, head, file)
