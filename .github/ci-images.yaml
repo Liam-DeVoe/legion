@@ -189,8 +189,8 @@ images:
   # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
   # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
   - built: .github/docker/browser.Dockerfile
-    tag: browser-69c3a316
-    digest: sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
+    tag: browser-2e355312
+    digest: sha256:2e3553120a459f144706ea6e038754edf28348c35d569673bdea257302550496
 
   # The kind job's cluster, five images, each named by scripts/e2e/lib/kind-sandbox.sh: the node
   # image of every kind cluster it creates (Kubernetes v1.37.0, the default of kind v0.33.0), the
