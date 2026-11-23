@@ -240,7 +240,7 @@ body: |-
     leave still decodes, and leave one they would carry past the cap as it was.
 
     These bounds are built on the ygo fork Dispatch pins,
-    `github.com/cybermonklabs/ygo v1.55.1-legion.2`. It applies a browser's update whole or not at
+    `github.com/cybermonklabs/ygo v1.55.1-legion.4`. It applies a browser's update whole or not at
     all under the allowance, roots and content kinds the room gives it, and reports what a refused
     apply's counters reached. It runs the room's render check after the apply and before its commit,
     keeps what parks out of the document until it lands, lets a delete range park only under a
@@ -252,7 +252,10 @@ body: |-
     three fixes of the fork's release at `d18319dc` as well: the record of who parked each struct
     holds only what the room's queue holds, a parked string a merge cuts at its front keeps only its
     own part, and a sync reply carrying a sync step 1 is dropped, rather than answered outside the
-    bound on a first sync's answer and relayed to every other browser.
+    bound on a first sync's answer and relayed to every other browser. And no record or list of
+    what a room has parked keeps the room of its largest size once it holds far less: each is
+    copied into one of its size once it falls under a quarter of what it holds room for, so a
+    queue that reached its cap and then fell holds only what it still parks.
 time: 2026-10-30T06:00:01.000000000Z
 custom:
     Issue: pr2544

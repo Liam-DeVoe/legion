@@ -339,4 +339,16 @@ require (
 // awareness waits behind; its wait on another caller's load of that room ends at its bound of 3 s
 // (awarenessInjectBound), and drops the frame too. It is cut with knives on cybermonklabs/ygo as the
 // member rel/v1.55.1-load-context; the tag is on 4004ab70, the head of release/v1.55.1/2026-11-22.
-replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.2
+// v1.55.1-legion.4 adds no option. It keeps no container of what a document has parked at the
+// room of its largest size: the record of who parked each struct and each delete range, each
+// recorded set's range list, the store's pending deletes (each client's range list and the map of
+// clients), the map of clients given a struct since the last retry, and the pending queue's list
+// of structs are each copied into one made at their size once they fall under a quarter of what
+// they hold room for (a map: under a quarter of its peak, or empty). Before it, a room whose queue
+// reached the 4,096-struct cap and then fell to one struct kept about 218 KB for the record of
+// parked structs and 238 KB for the range lists, which no room charge counts. Each copy is checked
+// in constant time and runs under the document's lock. legion.3 (1ceb0fd5), which shrank the two
+// parking records alone, is never pinned. The tag is on 3a34db68, the head of
+// release/v1.55.1/2026-11-23.2, cut with knives on cybermonklabs/ygo as the member
+// rel/v1.55.1-parked-record-peak.
+replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.4

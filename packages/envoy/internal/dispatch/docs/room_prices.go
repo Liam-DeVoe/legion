@@ -88,7 +88,11 @@ const roomCopies = 2
 // reads, nor in the stored state (leaveParkedOut): so a room holding a backlog costs the pod what
 // that backlog holds of its heap. The term charges a parked struct in both copies where only the
 // live one holds it - the replica applies only what each commit integrated
-// (renderedReplica.takeLocked) - which errs on the side of the budget.
+// (renderedReplica.takeLocked) - which errs on the side of the budget. Since cybermonklabs/ygo
+// v1.55.1-legion.4 the record of who parked each struct, and the queue's list of parked structs,
+// are copied into ones of their size once they fall under a quarter of what they hold room for,
+// so a room whose queue reached its cap and then fell holds no slots for its peak beyond what this
+// term charges (dispatch://INFRA-179, review 6015209957, finding 5).
 func roomWeight(stateBytes, structs int64) int64 {
 	return max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct) * roomCopies
 }
@@ -101,7 +105,11 @@ func roomWeight(stateBytes, structs int64) int64 {
 // cybermonklabs/ygo at f80e73e7 the record keeps one delete set for each sender, the
 // connection the provider applies an update for (its origin, provider/websocket/peer.go:357),
 // compacted as the pending deletes are and cut to what they still hold, and after every apply it
-// holds at most twice the parked ranges plus 16; an apply with no sender records nothing.
+// holds at most twice the parked ranges plus 16; an apply with no sender records nothing. Since
+// v1.55.1-legion.4 each set's range list, and each client's range list in the pending deletes,
+// are copied into ones of their length once they fall under a quarter of their capacity, so a
+// list whose ranges merged keeps no room for its peak (before it, 4,096 ranges merged to one kept
+// 147,440 bytes in the record's list and 90,096 in the pending deletes').
 //
 // Measured 2026-11-20 on cybermonklabs/ygo at f80e73e7, over this package at
 // fae59209, each shape parking 4,096 ranges, the cap, through the hook (weighPeerUpdate), with the
