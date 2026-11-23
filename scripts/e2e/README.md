@@ -4185,6 +4185,8 @@ Each item below names an input and its default, then what it means.
   The driver then skips every case before the one-pass phases, and every phase of another case but the self-check of the boundary.
   The first phase of `rule-reaches-each-row` still makes its writes, and asserts nothing, when it names `key-reading-changes` or `stores-agree`, which stand on them.
   A phase whose assert the driver skips prints `skip <phase>`, never `ok <phase>`.
+  The run exits 1, with the driver's `FAIL <case>` line, only when the named case failed.
+  A run that stops before that case's check (at a prerequisite, a build, a start, a step of the setup or of a fixture, or a failed self-check of the boundary) shows nothing of the check, as a control or as a pass: it prints `UNKNOWN <case>` lines and a last line `verification results e2e: UNKNOWN for <case>`, and exits 2.
   A run of the head never sets it
 
 - `VERIFICATION_RESULTS_E2E_OLD_BUILD` — unset
@@ -4222,9 +4224,10 @@ The setup line names the command the run uses.
 Each run gets `DISPATCH_HOST=omp`, the run's own session, `DISPATCH_URL` and token, and a scratch `HOME`, and the driver gives it a stdin and a working directory when a step needs them.
 The bases case reads two of its answers through the command, which is the surface a reviewer reads.
 The three cases of a bare `-` drive the command for every step, and judge each step by its exit code and what it printed.
-The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — and sets each as a project's default repository (`PUT /api/v1/projects/{key}/default-repository`).
+The driver's setup seeds the fake GitHub with two repositories — `acme/verification-live`, whose default branch `main` holds three of the run's commits, and `acme/verification-hidden`, which the installation lookup answers 404 for — and sets each as a project's default repository.
+It writes each default through the route the server serves, which it reads from the server's route index (`GET /api/v1`): `PUT /api/v1/projects/{key}/default-repository`, or, on a build before #4457 that has no such route (`5ea6b2ffb2`, the build of four negative controls below), a repository mapping marked default (`PUT /api/v1/settings/repo-projects/{owner}/{repo}`).
 It also seeds the repositories of the seven checks, on an installation of their own: `acme/attribution-live`, the default repository of the project `ATT`, which holds every commit those cases record at, and `acme/attribution-second`, which an issue of `ATT` names as its own in `rule-reaches-each-row`.
-An issue's own repository is any `owner/name`, so the second repository takes no write of its own.
+An issue's own repository is any `owner/name`, so the second repository takes no write of its own, except on a build that serves the mapping route: a build before #3730, as `5ea6b2ffb2` is, takes an issue's own repository only where a mapping maps it to the issue's project, so there the setup maps it to `ATT` and prints a `setup:` line that names both writes.
 The setup writes no rename pair: no route writes one, and a server reads the pairs once, at its start; `older-rows` writes its own, on its own database (below).
 Until `stores-agree`, the run writes no `delivery_settings` row, as a deployment that never configured the delivery timeline holds none: the intake binds its durable at start and writes a pull request's head row from its envelope all the same.
 `acme/verification-live`'s `commits` names every commit a case records at, since the record route asks GitHub whether the repository holds a result's commit and refuses one it does not; the one commit it names nowhere is what the refusal case drives.
@@ -4364,7 +4367,7 @@ each pass also reads again the open pull requests the earlier cases left in `acm
 
 - `older-rows` — 300 merged pull requests `#7001` to `#7300` (i = n − 7000, j = i % 6), each on `legion/N(j)` with the body `Follows D(j). Closes L(j).` (`#7051` to `#7060`: `Follows D(j).`), as GitHub answers them from the start.
   The release before's build stores them, under the delivery settings its intake needs to take any event (deploy repository `acme/attribution-deploy`).
-  First the issues `L(j)` are made, with `acme/old-name` the project's default repository (`PUT /api/v1/projects/ATT/default-repository`), and the merged events of `#7221` to `#7240` are published under that name.
+  First the issues `L(j)` are made, with `acme/old-name` the project's default repository (through the route its build serves, as the setup above writes a default), and the merged events of `#7221` to `#7240` are published under that name.
   Then `acme/attribution-live`, the name the repository has after its rename, becomes the project's default repository, and the events of `#7001` to `#7220` and `#7241` to `#7260` are published under it.
   Its intake stores 260 results rows with no texts, as `L(j)` by `title_body` and `#7051` to `#7060` as no issue, and the timeline rows of `#7001` to `#7060`, whose author is of the settings' population.
   The issues `D(j)` follow, and one pass of its reconcile: the pass resolves those timeline rows again to `D(j)`, and its merged search stores `#7261` to `#7300` as timeline rows of `D(j)` alone.
@@ -4475,6 +4478,8 @@ git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 The seven checks take their negative controls from `DISPATCH_BIN` and `VERIFICATION_RESULTS_E2E_ONLY`, so the checkout does not change, except one whose mutation is a file of the driver.
 A build of an older commit comes from a detached worktree of that commit; a mutated build of this tree is `go build -overlay` with the changed file beside it, never a commit, and a build with one more migration is a copy of `packages/envoy` with the file added, since the migrations are embedded.
 The head of `5ea6b2ffb2` writes no attribution line, so its runs give `VERIFICATION_RESULTS_E2E_OLD_BUILD=1`; the last control shows that a run without it fails the boundary when the line is missing.
+That build serves no `PUT /api/v1/projects/{key}/default-repository` either, so the driver's setup writes each project's default and `acme/attribution-second` as repository mappings there, and its run prints the `setup:` line that says so before the case.
+Each `FAIL <case>` below is that control's own check failing, and the run exits 1; a control that stops before its check prints `UNKNOWN <case>` and exits 2, and shows nothing of that check.
 
 ```sh
 git -C <checkout> worktree add --detach "$TMPDIR/<base tree>" 5ea6b2ffb2   # or d52a3f43c6
@@ -4530,6 +4535,8 @@ DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=limit-o
 DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=older-rows bash <tree with that driver>/scripts/e2e/verification-results.sh
 # → setup the boundary of one pass failed: … the log holds 0 more attribution line(s) than at the
 #   fixture, want 1
+# → UNKNOWN older-rows: the run stopped at older-rows, before the check of older-rows: …; exit 2:
+#   the run shows the boundary's refusal, and nothing of older-rows' own check
 ```
 
 ## child-adoption.sh

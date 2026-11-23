@@ -98,7 +98,9 @@
 # run, and the driver skips every other case and phase but the boundary's self-check and the
 # writes the named case stands on; the second, set to 1, names a server built before the
 # attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
-# boundary of one pass does not count that line.
+# boundary of one pass does not count that line. Under the first, a run exits 1 (`FAIL <case>`)
+# only when the named case failed; a run that stopped before that case's check exits 2, and its
+# lines read `UNKNOWN <case>`: it shows nothing of the check, as a control or as a pass.
 # VERIFICATION_RESULTS_E2E_RELEASE_BEFORE names the commit of the release before this change, whose
 # build writes older-rows' database. Unset, it is the newest commit of main without this change,
 # read from git at each run (release_before_of_head): on a branch that has not merged, main at the
@@ -133,6 +135,10 @@ begin() {
 note() { echo "   $*"; }
 pass() { echo "ok $check"; }
 fail() {
+  if [ -n "${only_case:-}" ] && [ -z "${case_failed:-}" ]; then
+    echo "UNKNOWN $only_case: the run stopped at $check, before the check of $only_case: $*" >&2
+    exit 2
+  fi
   echo "FAIL $check: $*" >&2
   exit 1
 }
@@ -159,6 +165,14 @@ release_before_bin=${VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN:-}
 # other VERIFICATION_RESULTS_E2E_ONLY), and only then is the release before built.
 older_rows=''
 case "${VERIFICATION_RESULTS_E2E_ONLY:-}" in '' | older-rows) older_rows=1 ;; esac
+# A negative control's run (VERIFICATION_RESULTS_E2E_ONLY) shows something of its check only when
+# that check failed: the driver's status 1, which under that setting is a failed case of the named
+# check alone (case_failed). Any other stop (a prerequisite, a build, a start, a server that exited,
+# a step of the driver outside the cases, or a failed case of another name, which the driver exits
+# 2 for) came before that check, so fail prints UNKNOWN for it and exits 2, never the 1 of a failed
+# check, and the run's last line says UNKNOWN too (cleanup).
+only_case=${VERIFICATION_RESULTS_E2E_ONLY:-}
+case_failed=''
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
@@ -182,8 +196,11 @@ dispatch_pid=''
 # which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
 # TERM. PASS needs rc 0 and run_end, the script's last statement, so a run that a HUP ended, whose
 # EXIT trap reads 0, reads FAIL as an interrupted run does. The work directory goes with a pass.
+# A negative control's run that did not pass and whose check did not fail reads UNKNOWN, and exits
+# 2 in place of 0 or 1.
 cleanup() {
   local rc=$1
+  local failed="verification results e2e: FAIL at $check after $((SECONDS - started))s${work:+ (logs: $work)}"
   trap - EXIT INT TERM
   set +e
   stop_pid "$dispatch_pid"
@@ -198,9 +215,11 @@ cleanup() {
         "${work:?}/release-before" "${work:?}/release-before.git" "${work:?}/main-history.git"
     fi
   fi
-  run_verdict "$rc" \
-    "verification results e2e: PASS in $((SECONDS - started))s" \
-    "verification results e2e: FAIL at $check after $((SECONDS - started))s${work:+ (logs: $work)}"
+  if [ -n "$only_case" ] && [ -z "$case_failed" ] && ! run_passed "$rc"; then
+    failed="verification results e2e: UNKNOWN for $only_case: the run stopped at $check after $((SECONDS - started))s, before that check${work:+ (logs: $work)}"
+    case "$rc" in 0 | 1) rc=2 ;; esac
+  fi
+  run_verdict "$rc" "verification results e2e: PASS in $((SECONDS - started))s" "$failed"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -449,8 +468,9 @@ export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
 
 # driver ARG... runs the driver with ARG... before its three URLs. The state file carries what one
 # run of the driver leaves for a later one. A server that exited during the run fails the check,
-# and so does the driver's status: 1 is a case that failed, 3 a half of a one-pass phase that
-# VERIFICATION_RESULTS_E2E_ONLY skips (it sets phase_skipped), any other a step outside the cases.
+# and so does the driver's status: 1 is a case that failed (it sets case_failed), 3 a half of a
+# one-pass phase that VERIFICATION_RESULTS_E2E_ONLY skips (it sets phase_skipped), any other a step
+# outside the cases.
 phase_skipped=''
 driver() {
   local status=0
@@ -465,7 +485,10 @@ driver() {
   fi
   case "$status" in
     0) ;;
-    1) fail "a case failed (above)" ;;
+    1)
+      case_failed=1
+      fail "a case failed (above)"
+      ;;
     3) phase_skipped=1 ;;
     *) fail "the driver stopped before its cases (status $status)" ;;
   esac

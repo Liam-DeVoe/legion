@@ -73,7 +73,8 @@
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
 // seed, the probe issue, the counter of reads, a phase's fixture, the boundary of one pass) exits
-// 2 naming it.
+// 2 naming it. Under VERIFICATION_RESULTS_E2E_ONLY so does a failed case other than the named one:
+// a negative control that stops there never reached its own check (summarise).
 //
 // Until stores-agree, the run writes no delivery settings, as a deployment that never configured
 // the delivery timeline holds none: the intake writes a pull request's head row from its envelope
@@ -394,6 +395,32 @@ async function asPerson(method: string, path: string, body?: Json): Promise<unkn
 
 function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
+}
+
+/** Makes `repo` the default repository of the project `key` through the route the server this run
+ *  drives serves, and answers which route that was. Main's #4457 added
+ *  PUT /api/v1/projects/{key}/default-repository and removed the repository mappings
+ *  (PUT /api/v1/settings/repo-projects/{owner}/{repo}); a build before it reads a project's default
+ *  as the mapping marked default. Four negative controls drive such a build, 5ea6b2ffb2's, so each
+ *  write reads the server's own route index (GET /api/v1) for the route it serves: the cases'
+ *  server and older-rows' release before are different builds. A server that lists neither route
+ *  fails the write, naming both. */
+async function setDefaultRepository(key: string, repo: string): Promise<"project" | "mapping"> {
+  const index = (await call("GET", "/api/v1", {})) as {
+    readonly routes?: readonly { readonly method?: string; readonly path?: string }[];
+  };
+  const served = new Set((index.routes ?? []).map((route) => `${route.method} ${route.path}`));
+  if (served.has("PUT /api/v1/projects/{key}/default-repository")) {
+    await asSession("PUT", `/api/v1/projects/${key}/default-repository`, { repo });
+    return "project";
+  }
+  if (served.has("PUT /api/v1/settings/repo-projects/{owner}/{repo}")) {
+    await asSession("PUT", `/api/v1/settings/repo-projects/${repo}`, { default: true, project: key });
+    return "mapping";
+  }
+  throw new Error(
+    "GET /api/v1 lists neither PUT /api/v1/projects/{key}/default-repository nor PUT /api/v1/settings/repo-projects/{owner}/{repo}"
+  );
 }
 
 /** The checks of an issue's Verification document, each with the commits and branches its results
@@ -823,6 +850,10 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
   console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
 }
 
+/** Prints the summary and exits: 0 when every case passed, 1 when a case failed. Under
+ *  VERIFICATION_RESULTS_E2E_ONLY a failed case other than the named one (the boundary's own
+ *  self-check, one-pass-boundary) exits 2, as a step outside the cases does: that negative control
+ *  stopped before its own check, so its run shows nothing of that check. */
 function summarise(stopped?: string): never {
   const failed = results.filter((result) => !result.ok).map((result) => result.name);
   if (stopped !== undefined) console.log(`   ${stopped}`);
@@ -830,7 +861,8 @@ function summarise(stopped?: string): never {
     `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}`
   );
   void nats.close();
-  process.exit(failed.length === 0 ? 0 : 1);
+  const beforeItsCheck = onlyCase !== "" && failed.some((name) => name !== onlyCase);
+  process.exit(failed.length === 0 ? 0 : beforeItsCheck ? 2 : 1);
 }
 
 // --- the tooling of one complete pass ----------------------------------------------------------
@@ -1429,6 +1461,7 @@ await seedRepositories(
   }
 );
 
+let defaultRoute: "project" | "mapping" = "project";
 for (const [key, name, defaultRepo] of [
   ["VRF", "Verification results", repo],
   ["VRH", "Verification results, unreadable repository", hiddenRepo],
@@ -1437,15 +1470,27 @@ for (const [key, name, defaultRepo] of [
   await asPerson("POST", "/api/v1/projects", { key, name }).catch((error: unknown) =>
     setupFailed(`project ${key}`, error)
   );
-  await asSession("PUT", `/api/v1/projects/${key}/default-repository`, {
-    repo: defaultRepo,
-  }).catch((error: unknown) => setupFailed(`default repository ${defaultRepo} of ${key}`, error));
+  defaultRoute = await setDefaultRepository(key, defaultRepo).catch((error: unknown) =>
+    setupFailed(`default repository ${defaultRepo} of ${key}`, error)
+  );
 }
-// Each project's one default repository is all the setup writes of repositories. The second
-// repository of the seven checks needs no write: an issue's own repository is any owner/name, so
-// rule-reaches-each-row's move names it on the issue alone (ruleMove). No rename pair is written
-// here either: older-rows writes its own, on the database that the shell empties after it
-// (olderRowsFixture), and no case after it reads a row, a link or an event under a renamed name.
+// Each project's one default repository is all the setup writes of repositories on a build that
+// serves the project route. The second repository of the seven checks needs no write there: an
+// issue's own repository is any owner/name, so rule-reaches-each-row's move names it on the issue
+// alone (ruleMove). A build that serves the mapping route instead predates main's #4457, and one
+// before main's #3730, as 5ea6b2ffb2 is, takes an issue's own repository only where a mapping maps
+// it to the issue's project; so on such a build the second repository is mapped to ATT as well. No
+// rename pair is written here either: older-rows writes its own, on the database that the shell
+// empties after it (olderRowsFixture), and no case after it reads a row, a link or an event under a
+// renamed name.
+if (defaultRoute === "mapping") {
+  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionSecondRepo}`, {
+    project: attributionProject,
+  }).catch((error: unknown) => setupFailed(`repository mapping ${attributionSecondRepo}`, error));
+  note(
+    `setup: the server serves no PUT /api/v1/projects/{key}/default-repository (a build before #4457), so each project's default repository is its repository mapping marked default, and ${attributionSecondRepo} is mapped to ${attributionProject}`
+  );
+}
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
  *  `checks`, whose `%KEY%` is the issue's own key — a `serves` is refused unless it names a block
@@ -2777,9 +2822,10 @@ function sqlKeys(keys: readonly string[]): string {
 // start (olderRowsPull). The release before's build stores them itself, under the delivery
 // settings that its intake needs to take any event:
 //   - with the issues L(j) alone made and acme/old-name the project's default repository
-//     (PUT /api/v1/projects/ATT/default-repository), the merged events of #7221 to #7240 under
-//     that name; then, with acme/attribution-live the project's default repository, the events of
-//     #7001 to #7220 and #7241 to #7260, under the name the repository has after its rename.
+//     (setDefaultRepository, by the route its build serves), the merged events of #7221 to #7240
+//     under that name; then, with acme/attribution-live the project's default repository, the
+//     events of #7001 to #7220 and #7241 to #7260, under the name the repository has after its
+//     rename.
 //     Its intake stores each results row from its event with no texts, which it has nowhere to
 //     store, as L(j): the body names it, and no candidate above it names an issue, N(j) being
 //     none yet. It stores #7051 to #7060 as no issue. The author of #7001 to #7060 is of the
@@ -2928,9 +2974,7 @@ async function countOf(statement: string): Promise<number> {
  *  above). */
 async function olderRowsReleaseWrites(): Promise<string | undefined> {
   await asPerson("POST", "/api/v1/projects", { key: attributionProject, name: "Attribution" });
-  await asSession("PUT", `/api/v1/projects/${attributionProject}/default-repository`, {
-    repo: attributionOldName,
-  });
+  await setDefaultRepository(attributionProject, attributionOldName);
   const L = await seedAttributionIssues(olderRowsNames("L"));
   const D = keysAfter(L, 6);
   const N = keysAfter(D, 6);
@@ -2981,9 +3025,7 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
   ) {
     return `the release before stored ${await stored(attributionOldName, 7221, 7240)} of the 20 results rows of #7221 to #7240 under ${attributionOldName} within 120 s of their events`;
   }
-  await asSession("PUT", `/api/v1/projects/${attributionProject}/default-repository`, {
-    repo: attributionRepo,
-  });
+  await setDefaultRepository(attributionProject, attributionRepo);
   note(
     `${attributionRepo}, the name of ${attributionOldName} after its rename, is the project's default repository`
   );
