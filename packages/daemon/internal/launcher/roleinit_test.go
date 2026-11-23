@@ -1019,6 +1019,10 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 			fmt.Println("control error:", err)
 			os.Exit(1)
 		}
+		if err := stageOwnProc(); err != nil {
+			fmt.Println("control error:", err)
+			os.Exit(1)
+		}
 		roles := filepath.Join(dir, "roles")
 		if err := os.MkdirAll(filepath.Join(roles, "b"), 0o755); err != nil {
 			fmt.Println("control error:", err)
@@ -1039,12 +1043,7 @@ func TestTheUncoverProbeReportsAnUnlockedCoverRemoved(t *testing.T) {
 	}
 	control := exec.Command(self, "-test.run=^TestTheUncoverProbeReportsAnUnlockedCoverRemoved$")
 	control.Env = append(os.Environ(), uncoverControlEnv+"="+t.TempDir())
-	control.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	control.SysProcAttr = roleStageAttr()
 	output, err := control.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the control: %v\n%s", err, output)
@@ -1165,6 +1164,9 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	if dir := os.Getenv(roleCheckEnv); dir != "" {
 		err := privateMounts()
 		if err == nil {
+			err = stageOwnProc()
+		}
+		if err == nil {
 			err = mountTmpfs(dir, "size=16m")
 		}
 		if err != nil {
@@ -1189,12 +1191,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	}
 	check := exec.Command(self, "-test.run=^TestTheRoleNamespaceCheckRunsARoleGeneration$")
 	check.Env = append(os.Environ(), roleCheckEnv+"="+stageMountPoint(t))
-	check.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	check.SysProcAttr = roleStageAttr()
 	output, err := check.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the check's helper: %v\n%s", err, output)
@@ -1682,10 +1679,11 @@ func roleDrainEnd(output string) (string, time.Duration) {
 	return "", 0
 }
 
-// roleDrainReport runs that row's stage in a user and mount namespace of its own, as the role
-// namespace check's helper runs, and answers every `drain <key>=<value>` line it printed, with
-// its whole output for a failure to print. Its deadline is a hang guard alone, the test binary's
-// own less a margin: a stage that never ends fails here, by name, rather than as the binary's panic.
+// roleDrainReport runs that row's stage in user, mount and PID namespaces of its own
+// (roleStageAttr), as the role namespace check's helper runs, and answers every `drain
+// <key>=<value>` line it printed, with its whole output for a failure to print. Its deadline is a
+// hang guard alone, the test binary's own less a margin: a stage that never ends fails here, by
+// name, rather than as the binary's panic, and its kill ends role-init with the stage.
 func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -1702,12 +1700,7 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 	stage := exec.CommandContext(ctx, self, "-test.run=^TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills$")
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleDrainEnv+"="+string(encoded))
-	stage.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	stage.SysProcAttr = roleStageAttr()
 	output, err := stage.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("the stage had not ended %s after it started, the hang guard: role-init or the role's shim never finished\n%s", guard, output)
@@ -1736,6 +1729,9 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 // stage's output through its stderr.
 func runRoleDrain(plan roleDrainPlan) error {
 	if err := privateMounts(); err != nil {
+		return err
+	}
+	if err := stageOwnProc(); err != nil {
 		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {

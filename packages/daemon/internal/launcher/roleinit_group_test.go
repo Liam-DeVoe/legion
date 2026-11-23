@@ -49,12 +49,156 @@ const roleGroupBound = 30 * time.Second
 // memory filesystem of its own, and one generation whose stand-in shim runs Case. Stop says the
 // stage stops the generation as the launcher does (signalChild: SIGTERM to role-init alone), once
 // the stand-in says it is ready, and gives it Grace before it kills role-init as endGeneration
-// does at the end of the stop grace.
+// does at the end of the stop grace. Hang says the stage prints `group hanging=yes` once the
+// stand-in says it is ready, and then waits for role-init, which never ends on its own.
 type roleGroupPlan struct {
 	Dir   string
 	Case  string
 	Stop  bool
 	Grace time.Duration
+	Hang  bool
+}
+
+// roleStageAttr is how a test starts a stage that runs role-init, or a probe of a role's
+// namespaces: in user, mount and PID namespaces of its own, with uid and gid 0 there mapped to the
+// test's own. The stage is the init of its PID namespace, so a hang guard's kill of the stage ends
+// role-init and every process the stage started with it, where a stage in the test's PID namespace
+// would leave role-init and its role running behind the failed test
+// (TestAStageWhoseHangGuardFiresLeavesNoRoleInitBehind).
+func roleStageAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+	}
+}
+
+// stageOwnProc mounts, in a stage that roleStageAttr started and that has made its mounts private,
+// its PID namespace's own /proc: /proc/self, through which the stage starts role-init and role-init
+// its shim, names the stage only there. A stage that is not its namespace's init, as one started
+// without CLONE_NEWPID is, keeps the /proc it has, which a user namespace could not mount over.
+func stageOwnProc() error {
+	if os.Getpid() != 1 {
+		return nil
+	}
+	if err := mountProc("/proc"); err != nil {
+		return fmt.Errorf("mount the stage's own /proc: %w", err)
+	}
+	return nil
+}
+
+// A stage whose hang guard fires leaves no role-init behind. The stage runs a role whose stand-in
+// shim never ends, says so, and the test then kills the stage as a hang guard does (the context of
+// exec.CommandContext). Before the kill the test records the stage's one child, role-init, by its
+// pid in the test's own PID namespace; after the stage is reaped, that process must be gone, since
+// the stage was the init of its PID namespace (roleStageAttr). Started without CLONE_NEWPID, the
+// stage dies alone, and role-init and its stand-in shim run on: the plant that drops it from
+// roleStageAttr fails here, and the test kills the leftover by that recorded pid.
+func TestAStageWhoseHangGuardFiresLeavesNoRoleInitBehind(t *testing.T) {
+	requireRoleNamespaces(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(roleGroupPlan{Dir: stageMountPoint(t), Case: "hang", Hang: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, guard := context.WithCancel(context.Background())
+	defer guard()
+	stage := exec.CommandContext(ctx, self, "-test.run=^TestRoleGroupStageHelper$")
+	stage.WaitDelay = time.Second
+	stage.Env = append(os.Environ(), roleGroupStageEnv+"="+string(encoded))
+	stage.SysProcAttr = roleStageAttr()
+	out, err := stage.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Stderr = stage.Stdout
+	if err := stage.Start(); err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 64)
+	go func() {
+		defer close(lines)
+		buffer := make([]byte, 0, 4096)
+		chunk := make([]byte, 1024)
+		for {
+			n, err := out.Read(chunk)
+			buffer = append(buffer, chunk[:n]...)
+			for {
+				line, rest, ok := bytes.Cut(buffer, []byte("\n"))
+				if !ok {
+					break
+				}
+				lines <- string(line)
+				buffer = rest
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	var seen []string
+	hanging := false
+	for deadline := time.After(roleGroupBound); !hanging; {
+		select {
+		case line, open := <-lines:
+			if !open {
+				guard()
+				_ = stage.Wait()
+				t.Fatalf("the stage ended before its role hung\n%s", strings.Join(seen, "\n"))
+			}
+			seen = append(seen, line)
+			hanging = strings.TrimSpace(line) == "group hanging=yes"
+		case <-deadline:
+			guard()
+			_ = stage.Wait()
+			t.Fatalf("the stage never said its role hung, %s after it started\n%s", roleGroupBound, strings.Join(seen, "\n"))
+		}
+	}
+	// The stage's later lines are read and dropped, so the reader never blocks on a full channel.
+	go func() {
+		for range lines {
+		}
+	}()
+	roleInit, err := onlyChildOf(stage.Process.Pid)
+	if err != nil {
+		guard()
+		_ = stage.Wait()
+		t.Fatalf("find the stage's child, role-init: %v", err)
+	}
+	guard()
+	_ = stage.Wait()
+	if state := awaitReaped(roleInit); state != "reaped" {
+		_ = syscall.Kill(roleInit, syscall.SIGKILL)
+		gone := awaitReaped(roleInit)
+		t.Fatalf("role-init (pid %d) is %q %s after the hang guard killed its stage, want gone with the stage's PID namespace; killed it by that pid: %s",
+			roleInit, state, roleGroupBound, gone)
+	}
+}
+
+// onlyChildOf is the pid, in the caller's PID namespace, of the one process whose parent is parent.
+func onlyChildOf(parent int) (int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, err
+	}
+	var children []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if ppid, _, _, err := procStat(pid); err == nil && ppid == parent {
+			children = append(children, pid)
+		}
+	}
+	if len(children) != 1 {
+		return 0, fmt.Errorf("process %d has children %v, want role-init alone", parent, children)
+	}
+	return children[0], nil
 }
 
 // A role's shim runs in role-init's own process group, so an orphan the role leaves in that group
@@ -170,12 +314,7 @@ func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, strin
 	stage := exec.CommandContext(ctx, self, "-test.run=^TestRoleGroupStageHelper$")
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleGroupStageEnv+"="+string(encoded))
-	stage.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
-	}
+	stage.SysProcAttr = roleStageAttr()
 	output, err := stage.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("the stage had not ended %s after it started, the hang guard: role-init or the stand-in shim never finished\n%s", guard, output)
@@ -221,11 +360,8 @@ func runRoleGroupStage(plan roleGroupPlan) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
-	// The stage is the init of a PID namespace of its own (roleGroupReport), so it mounts that
-	// namespace's /proc: /proc/self, which starts role-init and the stand-in, names this process
-	// only there.
-	if err := mountProc("/proc"); err != nil {
-		return fmt.Errorf("mount the stage's own /proc: %w", err)
+	if err := stageOwnProc(); err != nil {
+		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
@@ -279,6 +415,12 @@ func runRoleGroupStage(plan roleGroupPlan) error {
 		}
 		fmt.Printf("group killed=%s\n", killed)
 	}
+	if plan.Hang {
+		if !awaitPath(filepath.Join(tmp, "ready"), ended) {
+			return errors.New("the stand-in shim never said it was ready to hang")
+		}
+		fmt.Println("group hanging=yes")
+	}
 	<-ended
 	_ = process.status.Close()
 	if err := process.cmd.Wait(); err != nil {
@@ -324,6 +466,8 @@ func TestRoleGroupShimHelper(t *testing.T) {
 		code = groupShimHup()
 	case "stop":
 		code = groupShimStop()
+	case "hang":
+		code = groupShimHang()
 	case "session":
 		code = groupControlSession()
 	case "leader":
@@ -466,6 +610,19 @@ wait $sleeper`)
 		break
 	}
 	fmt.Printf("group sigterms=%d\n", count)
+	return 0
+}
+
+// groupShimHang is a shim that never ends on its own: it says it is ready (writes /tmp/ready) and
+// sleeps through every signal it can, so only the end of its PID namespace ends it. Its sleep has a
+// bound of its own, ten times the stage's, so a stand-in left behind by a broken test still ends.
+func groupShimHang() int {
+	signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	if err := os.WriteFile("/tmp/ready", nil, 0o600); err != nil {
+		fmt.Printf("group error=%v\n", err)
+		return 1
+	}
+	time.Sleep(10 * roleGroupBound)
 	return 0
 }
 
