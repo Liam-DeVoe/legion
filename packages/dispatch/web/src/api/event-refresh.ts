@@ -757,12 +757,16 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
 /**
  * The issues above issue `key` that the page can place from what `cache` holds: a document event
  * carries no `ancestors`, so the chain is read from the page's own reads. An issue's parent is the
- * one its held detail (`["issue", <key>]`) names, else the issue a held tree read or view places
- * the issue's node under: the node the issue's node stands under is that issue's own node, or a
- * node of it the issue's `part_of` names (a requirement), which is of the issue it names
- * (`issue`), else of the tree's own issue (the query's key), as the route marks a node of the
- * issue read with no issue. The trees are read only once a detail names no parent. The walk goes
- * up from `key` to each parent it finds, and stops at an issue it has passed already.
+ * one its held detail (`["issue", <key>]`) names, unless that detail is marked stale - the issue
+ * may have moved since it was read, so it places nothing until it is read again - else the issue
+ * a held tree read or view places the issue's node under: the node the issue's node stands under
+ * is that issue's own node, or a node of it the issue's `part_of` names (a requirement), which is
+ * of the issue it names (`issue`), else of the tree's own issue (the query's key), as the route
+ * marks a node of the issue read with no issue. The trees are read only once a detail names no
+ * parent. The walk goes up from `key` to each parent it finds, and stops at an issue it has
+ * passed already. The event's own refresh marks its issue's detail stale too, which says nothing
+ * of where the issue stands: `ownerTargets` names the trees first, so the walk runs before that
+ * mark wherever the page holds a tree with no read out.
  */
 function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
   const above = new Set<string>();
@@ -787,10 +791,12 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
     return parents.get(issue);
   };
   for (let issue = key; ; ) {
-    const detail = cache.get(hashKey(["issue", issue]))?.state.data as
-      | Partial<Pick<IssueDetails, "parent">>
-      | undefined;
-    const parent = detail?.parent ?? treeParent(issue);
+    const detail = cache.get(hashKey(["issue", issue]))?.state;
+    const named =
+      detail?.isInvalidated === true
+        ? undefined
+        : (detail?.data as Partial<Pick<IssueDetails, "parent">> | undefined)?.parent;
+    const parent = named ?? treeParent(issue);
     if (parent === undefined || parent === key || above.has(parent)) {
       return above;
     }
@@ -808,11 +814,11 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
  * - and is judged by its own kind; a node standing under one names it as its parent, and is
  * judged by its parent's kind. A document event of the issue reaches as well every answer that
- * holds the node of an issue the page places above it (`issuesAbove`): a grandparent's outline
- * holds its child's node and none of the grandchild's, and the grandchild's new check serving the
- * grandparent's requirement comes into it. A block ask's answer reaches as well a view that
- * carries ties (`VIEWS_CARRYING_TIES`) and holds a block of the ask's issue, and no other answer
- * by that (`tie`).
+ * holds the node of an issue the page places above it (`issuesAbove`) other than the answer's own
+ * issue's node, which every outline holds: a grandparent's outline holds its child's node and none
+ * of the grandchild's, and the grandchild's new check serving the grandparent's requirement comes
+ * into it. A block ask's answer reaches as well a view that carries ties (`VIEWS_CARRYING_TIES`)
+ * and holds a block of the ask's issue, and no other answer by that (`tie`).
  *
  * A view follows its outline (`["issue-tree", key]`): whatever marks an issue's outline stale
  * marks every view of that issue the page holds, by the outline's answer. An outline with no read
@@ -864,11 +870,14 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
     if (known !== undefined) {
       return known;
     }
+    // An issue placed above the event's issue reaches an answer by its node, but never the
+    // answer's own issue's node: every outline holds that one, whatever it holds under it.
+    const own = (data as Partial<IssueTreeRead>).issue;
     const answer = treeNodesOf(data).some(
       (node) =>
         moves(node) ||
         (node.parent != null && moves(node.parent)) ||
-        (node.kind === "issue" && issues?.has(node.id) === true)
+        (node.kind === "issue" && node.id !== own && issues?.has(node.id) === true)
     );
     if (issues !== undefined) {
       held.set(data, answer);
@@ -1842,7 +1851,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       }
     }
     const holding = treesHolding(key, event);
-    if (holding !== undefined) {
+    // A document event's check places its issue by the issue's detail (`issuesAbove`), so it goes
+    // first, before that detail's own target: the refresh judges each query once, in the order its
+    // targets reach it, so the trees the page holds with no read out are judged before this
+    // event's own target marks the detail stale. Any other event's goes in its turn.
+    if (holding !== undefined && DOCUMENT_WRITES[event.type] === true) {
+      targets.unshift(holding);
+    } else if (holding !== undefined) {
       targets.push(holding);
     }
   }

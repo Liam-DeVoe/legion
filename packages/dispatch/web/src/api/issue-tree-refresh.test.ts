@@ -1292,3 +1292,25 @@ test("an outline whose refetch answers no node of the issue it was placed above 
     verification: false,
   });
 });
+
+// A detail marked stale - its issue was moved since it was read - names a parent the issue may
+// have left, so it places nothing until it is read again, and the page places the issue from the
+// trees it holds alone. The grandchild's detail names its parent, whose node the grandparent's
+// outline holds, and no tree holds a node of the grandchild: its document version reads the
+// grandparent's outline and every view of it where that detail is fresh - the event's own
+// refresh marks the detail stale only after it has placed the grandchild - and none of them where
+// the detail was marked stale before the event.
+test("a grandchild's document version marks its grandparent's outline and views where its fresh detail names its parent, and none of them where that detail is marked stale", () => {
+  const seen: Record<string, unknown> = {};
+  for (const detail of ["fresh", "marked stale"]) {
+    const client = new QueryClient();
+    const { marks } = parentBeforeTheCheck(client, OUTLINE_WITH_CHILD);
+    client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+    if (detail === "marked stale") {
+      void client.invalidateQueries({ exact: true, queryKey: ["issue", "CORE-3"] });
+    }
+    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+    seen[detail] = marks();
+  }
+  expect(seen).toEqual({ fresh: EVERY_ANSWER, "marked stale": NO_ANSWER });
+});
