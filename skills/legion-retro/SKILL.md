@@ -5,7 +5,7 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 
 # Legion retro
 
-Retro, between the task's last step and the merger's merge, reads the evidence, records what the work taught for the skill librarian, rates the plan, and leaves the head as it found it.
+Retro, between the task's last step and the merger's merge, reads the evidence, records what the work taught, rates the plan, and leaves the head as it found it.
 The architect's acceptance precedes it only where the task names `acceptance:owner`.
 
 **Done when:** before you complete:
@@ -16,7 +16,6 @@ The architect's acceptance precedes it only where the task names `acceptance:own
 - The pull request's head is the head you found.
 - Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion` tool's `handoff_complete` takes neither.
 
-`<issue>` is your `LEGION_ISSUE`.
 Run every step, even on a mechanical change.
 
 - **Commit nothing and push nothing.** The merger merges the branch's head.
@@ -39,8 +38,8 @@ Run every step, even on a mechanical change.
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
+1. **Read the evidence**: the issue, `dispatch results --issue "$LEGION_ISSUE"`, the pull request, and the implementer's handoff.
+   Also read the tester's handoff (`dispatch handoff-read --issue "$LEGION_ISSUE" --phase test`) where it has a tester step.
    Read the review (`--phase review`) where it has a reviewer step, at the version your `Handoff:` line names when that line names one.
    - **A pass must stand at the last worker step's head for every `before_merge` check.** The body's `Checks` block carries each.
    - **A check carrying `ci_check` is CI's:** its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
@@ -63,7 +62,8 @@ Run every step, even on a mechanical change.
 3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`, which says what a point must carry for the skill librarian to use it.
    - **When no point qualifies, write no comment.** Say so in step 5's message.
 4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.
-   - **With no reviewer step, also record step 1's bot threads in `Threads` at the head you found**, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+   - **With no reviewer step, record step 1's bot threads in `Threads` at the head you found.**
+   - **With no reviewer step, bring `Not proven / risk` up to date** from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 5. **Post one Dispatch message on the issue**, at most 32,000 characters:
 
    ```bash

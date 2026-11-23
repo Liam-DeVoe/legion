@@ -29,8 +29,12 @@ The merger reports a stale body rather than rewriting it.
    ```
 
    The parentheses keep `pipefail` to this line.
-   In `$dir/body.md`, change only the path-derived lines, adding a missing one where the sources place it, and with no reviewer step the `Not proven / risk` and `Threads` lines (step 4 of `skill://legion-retro`);
-   leave every other line byte for byte, the `Checks` block included, except a no-result line, which you replace as `skill://legion-worker/references/ci-checks.md` says.
+   In `$dir/body.md`, change only these lines:
+   - the path-derived lines, adding a missing one where the sources place it;
+   - with no reviewer step, the `Not proven / risk` and `Threads` lines (step 4 of `skill://legion-retro`);
+   - a no-result line, which you replace as `skill://legion-worker/references/ci-checks.md` says.
+
+   Leave every other line byte for byte, the `Checks` block included.
 
 4. **Write it back.** A body edit changes no commit, so no result or approval at the head moves:
 

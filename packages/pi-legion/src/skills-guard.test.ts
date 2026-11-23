@@ -882,8 +882,9 @@ test("retro reads only the handoffs its task has, and answers bot threads with n
     ...lacks("legion-retro/references/pr-body-content.md", [
       /stop here unless the task has no reviewer step/,
       /`<head>`, the head the task's last step passed/,
-      /no reviewer step[^.]*`Not proven \/ risk` and `Threads` lines[^.]*leave every other line byte for byte/,
-      /the `Checks` block included, except a no-result line/,
+      /change only these lines: - the path-derived lines[^.]*- with no reviewer step, the `Not proven \/ risk` and `Threads` lines/,
+      /- a no-result line, which you replace as/,
+      /Leave every other line byte for byte, the `Checks` block included\./,
     ]),
     ...lacks("legion-worker/references/review-threads.md", [
       /declined thread[^.]*in its completion summary when it implements/,
