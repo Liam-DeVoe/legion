@@ -852,6 +852,42 @@ func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 	}
 }
 
+// R2 at the owner's own place: a step of the key owner is the owner's work, so a settlement on the
+// head of the issue's pull request wakes the owner's released claim, the issue's own architect,
+// with the settlement's task, as it wakes a released worker at a worker's step. On
+// `implementer:owner tester` the owner pushed, opened the pull request and ended its turn waiting
+// for the checks, and the idle release took its pod, the owner's claim among the claims it
+// suspended. That claim serves no run here, as a child's architect started with no task serves
+// none (childArchitectStart): an architect is told its steps by notices, which no delivery of a run
+// carries, and the owner is the issue's by rule whatever run its claim served last. The woken owner
+// is told no role message of the settlement that woke it: neither as the owner, nor as the
+// implementer, whose row at the owner's implementer step names the owner's claim. The control is
+// the wake as it was, which reads the worker of the open phase alone (OpenRoleOf), names none at
+// the owner's place and so wakes nobody, while the role message the owner is sent in its place
+// finishes undelivered, since its claim is released (the outbox's roleMessage).
+func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
+	rig := newWakeRig(t)
+	owner := wakeToken(t, claim.RoleArchitect)
+	setWakeIssuePhase(t, rig.pool, phase.Admitted)
+	seedTreeLifecycle(t, rig.pool, "LEGION-208")
+	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
+	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, rig.pool, rig.engine, "LEGION-208", phase.Implementing, stepPlace(1))
+	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
+		t.Fatalf("leave the owner's claim serving no run: %v", err)
+	}
+
+	rig.apply("settled", settlement("head1", "build"))
+
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeChecks, "The wake is a CI settlement on your pull request's head: head1 failed build.")
+	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
+		t.Fatalf("the settlement's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
+	}
+	if told := roleMessageTokens(t, rig.pool); slices.Contains(told, string(owner)) {
+		t.Fatalf("the settlement's role messages = %v, want none to the owner %s: its wake task names the settlement", told, owner)
+	}
+}
+
 // setWakeIssuePhase moves the rig's issue to the phase whose worker the settlement wakes.
 func setWakeIssuePhase(t *testing.T, pool *pgxpool.Pool, p phase.Phase) {
 	t.Helper()

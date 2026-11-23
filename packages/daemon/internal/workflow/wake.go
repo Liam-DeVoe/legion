@@ -229,12 +229,18 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // issue's pull request).
 //
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
-// no one else's, and an architect reads it from its own notices. That worker is the claim of the
-// agent that works the phase's step (Engine.workerClaim), and it is woken only where it stands
-// released: another released claim of the same role, an earlier version's agent, does not work
-// the step. A head that settles again as each of its checks finishes wakes the pod no second time,
-// because the role's resume is still open.
-func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
+// no one else's, and an architect off its own place reads it from its own notices. That worker is
+// the claim of the agent that works the phase's step (Engine.workerClaim), and it is woken only
+// where it stands released: another released claim of the same role, an earlier version's agent,
+// does not work the step. At the owner's own place (record.Issue.OwnersPlace: a step of the key
+// owner, the owner's retro, and accepting on an issue with no plan rows) that worker is the owner,
+// the issue's own architect by rule (record.OwnerClaim), which does the step as a worker of its
+// role would and so waits for the checks as that worker waits: it is woken where it stands
+// released, whatever run its claim served last, since an architect is told its steps by notices,
+// which no delivery of a run carries. A head that settles again as each of its checks finishes
+// wakes the pod no second time, because the role's resume is still open. It answers the claim it
+// woke, which tellChecks tells nothing more, and "" where it woke none.
+func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Token, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
 	}
@@ -250,20 +256,22 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || issue == nil {
 		return "", err
 	}
-	role := OpenRoleOf(*issue)
-	if role == "" {
-		return "", nil
+	owners := issue.OwnersPlace()
+	var worker claim.Token
+	if owners {
+		worker, err = record.OwnerClaim(*issue)
+	} else if role := OpenRoleOf(*issue); role != "" {
+		worker, err = e.workerClaim(ctx, tx, *issue, role)
 	}
-	worker, err := e.workerClaim(ctx, tx, *issue, role)
-	if err != nil {
+	if err != nil || worker == "" {
 		return "", err
 	}
 	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
-	if err != nil || !found || released.ServingGeneration != issue.Generation {
+	if err != nil || !found || !owners && released.ServingGeneration != issue.Generation {
 		return "", err
 	}
 	// The role is the settlement's to tell only when this call is what woke it: a wake another
-	// pass took is already bringing the pod back with a task of its own, and a claim this
+	// pass took is already bringing the pod back with a task of its own, and a role this
 	// settlement did not wake is told as any live role is (tellChecks).
 	//
 	// A list of commit statuses the decoder could not read names none, and the pull request keeps
@@ -277,7 +285,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || !woken {
 		return "", err
 	}
-	return role, nil
+	return worker, nil
 }
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
@@ -489,9 +497,10 @@ func OpenPhaseRole(p phase.Phase) claim.Role {
 // plan rows, as OpenPhaseRole. It is the one statement of "the worker of the open phase" each path
 // that brings a worker back to its work reads: which ready claim is sent its phase's task
 // (readyWorkerTask), which suspended claim the boot resumes (suspendedPhaseOwners), which claim the
-// silence repair prompts (phaseWorkerRecord) and which role a CI settlement wakes
-// (wakeOnSettlement). A held issue stands in held, which no role works, so none of those paths
-// gives its worker anything until a release of the hold gives the phase back.
+// silence repair prompts (phaseWorkerRecord) and which role a CI settlement wakes off the owner's
+// place (wakeOnSettlement, which wakes the owner at its own). A held issue stands in held, which no
+// role works, so none of those paths gives its worker anything until a release of the hold gives
+// the phase back.
 func OpenRoleOf(issue record.Issue) claim.Role {
 	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
 		return role
