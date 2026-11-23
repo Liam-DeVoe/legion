@@ -1037,7 +1037,7 @@ func populatedState(t *testing.T) State {
 			},
 			WithoutWebhookApp: []WebhookAppGapView{{
 				Repo:   "zeta/tools",
-				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues that wait on a pull request stand still until the App is installed",
 			}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
