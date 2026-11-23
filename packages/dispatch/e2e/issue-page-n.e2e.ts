@@ -4784,29 +4784,53 @@ test("round-trips through the filters leave one open document connection and the
     // The outline drawn again opens with the focus on its first row (`IssueTree.tsx`'s opening),
     // which brings that row on screen: the reader's scroll is made after it, as a reader's is.
     await expectOpeningLanded(page);
-    await page.evaluate(() => window.scrollTo(0, 500));
-    const scrollPosition = await page.evaluate(() => window.scrollY);
-    expect(scrollPosition).toBeGreaterThan(0);
 
     // A round-trip through the filter row: the Spec filter on, then every filter off again with
     // Conversation (dispatch://INFRA-1196 R2), the outline drawn again at the end of it where the
-    // reader left it (part N's R1).
+    // reader left it (part N's R1). It is made at 390 px, where the view row stays at the top of
+    // the screen as the page scrolls, so the reader presses it where they stand. At 1440 px the
+    // view row scrolls away with the header, so a press there comes after the reader has scrolled
+    // back up to it, and the place they leave the outline at is the one they pressed from. Below
+    // 1280 px the five toggles are one control whose menu holds them (part D's
+    // `IssuePresets.tsx`), so each press is that control's and then its item's, and the view on is
+    // read from the control's name (`expectActivePreset`), where the source read each toggle's
+    // `aria-pressed`.
+    //
+    // The reader leaves the outline's row for the page before they scroll, as the source's reader
+    // left the focus on the Conversation tab: the focused row draws its body, which closes as the
+    // focus goes to the view row's control, and the browser's scroll anchoring then moves the page
+    // by that body's height to keep what the reader sees, so the place they left would no longer
+    // be the number they scrolled to.
+    const wide = page.viewportSize();
+    await page.setViewportSize({ height: 844, width: 390 });
+    await focusThePage(page);
+    await page.evaluate(() => window.scrollTo(0, 500));
+    const scrollPosition = await page.evaluate(() => window.scrollY);
+    expect(scrollPosition).toBeGreaterThan(0);
+    for (const preset of ["spec", "conversation"] as const) {
+      await presetChooser(page).click();
+      await openMenu(page)
+        .getByRole("menuitemradio", { name: new RegExp(`^${PRESET_NAMES[preset]}( |$)`) })
+        .click();
+      await expectActivePreset(page, PRESET_NAMES[preset]);
+    }
+    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollPosition);
+
+    // The same round-trip by the key table's chords, at the row's own width: `t s` turns the
+    // Spec filter on, and `t c` turns every filter off (part N's R1). The reader stands on a row
+    // the page shows, as one who moves by keys does, and goes to it as the keys go, the page
+    // bringing it on screen. The outline is drawn again at that place with that row focused
+    // (`stage-landing.tsx`'s `ViewNodeKeeper`), and `t c`, which puts the focus on the outline's
+    // one tab stop, leaves the row where it stands (`useIssueKeymap.ts`'s `showPart`).
+    if (wide !== null) await page.setViewportSize(wide);
     const spec = page.getByRole("button", { exact: true, name: "Spec" });
     const conversation = page.getByRole("button", { exact: true, name: "Conversation" });
-    await spec.click();
-    await expect(spec).toHaveAttribute("aria-pressed", "true");
-    await conversation.click();
-    await expect(conversation).toHaveAttribute("aria-pressed", "true");
-    await expect(tree(page).getByText("Existing message 29")).toBeVisible();
-    await expect
-      .poll(async () => ({
-        row: await focusedRow(page),
-        y: await page.evaluate(() => window.scrollY),
-      }))
-      .toEqual({ row: null, y: scrollPosition });
-
-    // The same round-trip by the key table's chords: `t s` turns the Spec filter on, and `t c`
-    // turns every filter off (part N's R1).
+    const standing = tree(page).getByRole("treeitem").filter({ hasText: "Existing message 20" });
+    await standing.focus();
+    await expect(standing).toBeInViewport();
+    const chordPosition = await page.evaluate(() => window.scrollY);
+    expect(chordPosition).toBeGreaterThan(0);
     await page.keyboard.press("t");
     await page.keyboard.press("s");
     await expect(spec).toHaveAttribute("aria-pressed", "true");
@@ -4814,7 +4838,7 @@ test("round-trips through the filters leave one open document connection and the
     await page.keyboard.press("c");
     await expect(conversation).toHaveAttribute("aria-pressed", "true");
     await expect(tree(page).getByText("Existing message 29")).toBeVisible();
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollPosition);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(chordPosition);
 
     // Back to the document, with the text typed into it and one connection open, not two.
     await navigateInApp(page, await specAddress(issue.key));

@@ -47,13 +47,23 @@ export async function specAddress(issueKey: string): Promise<string> {
 }
 
 /** Opens an issue's spec at its own address and waits until its editor shows `text` and its
- *  document is connected, so a selection or a margin card the row reaches for next is live.
- *  `e2e/editor.ts`'s `openSpec` opens `/spec`, which on the new page is the Spec view and draws
- *  no editor. */
+ *  document is connected (`expectDocumentConnected`), so a selection or a margin card the row
+ *  reaches for next is live. `e2e/editor.ts`'s `openSpec` opens `/spec`, which on the new page is
+ *  the Spec view and draws no editor. */
 export async function openSpecDocument(page: Page, issueKey: string, text: string): Promise<void> {
   await page.goto(await specAddress(issueKey));
   await expect(documentEditor(page)).toContainText(text);
-  await expect(connectedDot(page)).toHaveText("connected");
+  await expectDocumentConnected(page);
+}
+
+/** Waits until the opened document's editor is live: its connection dot reads "connected".
+ *  Today's page draws the dot in the document's own toolbar; the new page draws it in the
+ *  version control, beside an open editor alone (part N's R3), and the version control stands
+ *  behind its small control in the filter row (R4), so the dot is read with the control open, as
+ *  a reader sees it. The control is left open. */
+export async function expectDocumentConnected(page: Page): Promise<void> {
+  await openVersionControl(page);
+  await expect(connectedDot(versionControl(page))).toHaveText("connected");
 }
 
 /** The selectors the readers below pass into the browser. Nothing outside this module spells one:

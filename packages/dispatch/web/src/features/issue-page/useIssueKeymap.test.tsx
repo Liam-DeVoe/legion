@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -114,6 +114,45 @@ test("t f opens the words box with the caret in it", async () => {
         expect(screen.getByTestId("where").textContent, address).toBe(`${address}?q=ab`)
       );
     } finally {
+      view.unmount();
+      restore();
+      restore = () => {};
+    }
+  }
+});
+
+// A chord's target the reader already sees whole takes the focus where it stands, and the page
+// stays where it was (part N's R1): a chord back to the outline finds the row the reader was on
+// at the place they left it. One the reader does not see is brought on screen as before.
+// happy-dom lays nothing out, so the node menu's items are given a box, on screen and then below
+// it, and every other box is empty.
+test("a chord leaves a target already on screen where it is", async () => {
+  const user = userEvent.setup();
+  for (const [where, top, moves] of [
+    ["on screen", 200, false],
+    ["below the screen", 2_000, true],
+  ] as const) {
+    const view = drawRow("/issues/CORE-1/spec");
+    const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      return this.matches('[role="menuitem"]') ? new DOMRect(0, top, 320, 40) : new DOMRect();
+    });
+    const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+    try {
+      await screen.findByRole("button", { name: "Files and documents" });
+      await user.keyboard("ta");
+      const [first] = within(await screen.findByRole("menu")).getAllByRole("menuitem");
+      await waitFor(() => expect(first, where).toHaveFocus());
+      expect(
+        intoView.mock.calls.length + scrolled.mock.calls.length > 0,
+        `the chord's target ${where} ${moves ? "was not brought on screen" : "moved the page"}`
+      ).toBe(moves);
+    } finally {
+      boxes.mockRestore();
+      intoView.mockRestore();
+      scrolled.mockRestore();
       view.unmount();
       restore();
       restore = () => {};

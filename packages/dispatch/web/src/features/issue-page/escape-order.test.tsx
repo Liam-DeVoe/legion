@@ -709,3 +709,93 @@ test("a new address, a link: the outline's place is not put back, and the addres
     view.unmount();
   }
 });
+
+/** The outline's rows, in the order the page draws them. */
+function outlineRows(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>("[data-issue-body] [data-node-row]")];
+}
+
+/** Lays the outline's rows out down the page where happy-dom lays nothing out: each 80 px tall,
+ *  one every 200 px from 100 px down, read at the place the page stands at. Every other box is
+ *  empty. */
+function layOutRows(): { mockRestore(): void } {
+  return spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const index = outlineRows().indexOf(this);
+    return index === -1
+      ? new DOMRect()
+      : new DOMRect(0, 100 + 200 * index - window.scrollY, 600, 80);
+  });
+}
+
+/** The spec with no statement, so the Spec view draws no row and sets no node of its own: the
+ *  node the outline then draws focused is the one the reader was on before the view. */
+function specWithNoStatement(): void {
+  restoreReads.push(
+    spyOn(api, "getIssueCoverage").mockResolvedValue({
+      gaps: [],
+      has_plan: true,
+      issue: KEY,
+      requirements: [],
+      spec_artifact_id: "artifact-spec",
+    }),
+    spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) =>
+      id === "artifact-spec" ? [] : [...(BLOCKS[id] ?? [])]
+    )
+  );
+}
+
+test("t s then t c: the outline's place is put back and the row the reader was on holds the focus", async () => {
+  specWithNoStatement();
+  const user = userEvent.setup();
+  const view = drawPage(`/issues/${KEY}`);
+  const boxes = layOutRows();
+  try {
+    await rowOf(view, "[data-issue-body]", "head-b");
+    // The third row, at 500 px down: the place below shows it whole, and the second row above it.
+    const on = outlineRows()[2] as HTMLElement;
+    await focus(on);
+    scrollPage(300);
+    await user.keyboard("ts");
+    await waitFor(() => expect(pressed()).toBe("Spec"));
+    scrollPage(0);
+    await user.keyboard("tc");
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
+    await waitFor(() =>
+      expect(focusedRow(), "the row the reader was on does not hold the focus").toBe(
+        on.dataset.nodeId
+      )
+    );
+    expect(window.scrollY, "the outline's place was not put back").toBe(300);
+  } finally {
+    boxes.mockRestore();
+    view.unmount();
+  }
+});
+
+test("a reader who scrolled away from the focused row: a round trip puts the place back and the first row on screen takes the focus", async () => {
+  specWithNoStatement();
+  const user = userEvent.setup();
+  const view = drawPage(`/issues/${KEY}`);
+  const boxes = layOutRows();
+  try {
+    await rowOf(view, "[data-issue-body]", "head-b");
+    const [first, second] = outlineRows().map((row) => row.dataset.nodeId);
+    // The reader is on the first row, at 100 px down, and scrolls it away: at 300 px the second
+    // row, at 300 px down, is the first the page shows whole.
+    await focus(outlineRows()[0] as HTMLElement);
+    expect(focusedRow()).toBe(first);
+    scrollPage(300);
+    await specOn(user);
+    await user.click(screen.getByRole("button", { name: "Conversation" }));
+    await waitFor(() => expect(address()).toBe(CONVERSATION));
+    await waitFor(() =>
+      expect(focusedRow(), "the first row on screen does not hold the focus").toBe(second)
+    );
+    expect(window.scrollY, "the outline's place was not put back").toBe(300);
+  } finally {
+    boxes.mockRestore();
+    view.unmount();
+  }
+});

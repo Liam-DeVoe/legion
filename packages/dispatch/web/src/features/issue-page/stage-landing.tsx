@@ -20,7 +20,9 @@ import { useFocusedNode } from "./focused-node";
 import { type AddressTarget, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { OpenedDocument } from "./OpenedDocument";
+import { wholeOnScreen } from "./on-screen";
 import { useAskOutline, useFocusBranch } from "./outline-request";
+import { CONTROL_LABELS } from "./page-words";
 import { isFilter } from "./presets";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
@@ -174,11 +176,19 @@ export function useStageLanding({ issue, route }: SlotProps): {
 /**
  * Keeps the node the reader was last on in a view while the stage turns the view off - by
  * Escape, `t c`, Conversation or Back - and then asks the outline for it, which draws it focused
- * (R14). Each view's tree sets that node as its rows take the focus (`focused-node.tsx`); the
- * focus leaving a view gives Details the issue back, by the outline's rule (`useReleaseFocus`) or
- * the Decisions view's own, so what is kept is the last node a view set, not what F holds as the
- * view goes. A node F held before the view was drawn is no node of the view's. Where the address
- * names a node of its own to land on, the outline lands there instead, and nothing is asked.
+ * and brings it on screen (R14). Each view's tree sets that node as its rows take the focus
+ * (`focused-node.tsx`); the focus leaving a view gives Details the issue back, by the outline's
+ * rule (`useReleaseFocus`) or the Decisions view's own, so what is kept is the last node a view
+ * set, not what F holds as the view goes. Where the address names a node of its own to land on,
+ * the outline lands there instead, and nothing is asked.
+ *
+ * Where the view set no node of its own, the outline is drawn again at the place the reader left
+ * it (`useOutlinePlace`, R1), and the row the reader was on in it - the node F held in the commit
+ * the view was drawn in, kept across a switch from one view to another - takes the focus where
+ * that place shows it whole; where the reader had scrolled away from it, the first row the place
+ * shows whole takes it instead (`focusOnScreen`). So the outline's one tab stop, which a chord
+ * back (`t c`) puts the focus on, stands on screen, and nothing moves the page. That node is kept
+ * for one turn off; a page opened at a view's address keeps none from before it.
  *
  * It is an element of its own, so a move of the focus draws it alone and not the stage.
  */
@@ -195,6 +205,8 @@ export function ViewNodeKeeper({
   const ask = useAskOutline();
   const [focusBranch] = useFocusBranch();
   const kept = useRef<string | undefined>(undefined);
+  // The node F held as the view was drawn, until the view goes.
+  const before = useRef<string | undefined>(undefined);
   const seen = useRef(focused);
   const wasOn = useRef(viewOn);
   // In the commit that draws the outline, before its own effects take the request.
@@ -202,10 +214,20 @@ export function ViewNodeKeeper({
     const from = wasOn.current;
     wasOn.current = viewOn;
     if (from === viewOn) return;
-    const node = kept.current;
+    const own = kept.current;
+    const prior = before.current;
     kept.current = undefined;
+    before.current = viewOn ? focused?.id : undefined;
     seen.current = focused;
-    if (from && node !== undefined && !lands) ask(node, focusBranch);
+    if (!from || lands) return;
+    if (own !== undefined) {
+      ask(own, focusBranch);
+      return;
+    }
+    // The stage puts the outline's place back in a layout effect of its own, which runs after
+    // this one in the same commit (`useOutlinePlace`): the row is read against that place once
+    // the commit is done, before the browser paints and before a chord's frame.
+    if (prior !== undefined) queueMicrotask(() => focusOnScreen(prior));
   }, [ask, focusBranch, focused, lands, viewOn]);
   useLayoutEffect(() => {
     if (focused === seen.current) return;
@@ -213,6 +235,27 @@ export function ViewNodeKeeper({
     if (viewOn && focused !== undefined) kept.current = focused.id;
   }, [focused, viewOn]);
   return null;
+}
+
+/** The outline, by its name: the Contents pane's list is a tree too. */
+const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
+
+/**
+ * Puts the focus, without scrolling, on a row of `node` in the outline where the page shows it
+ * whole, else on the outline's first row that the page shows whole, and on nothing where it
+ * shows none (`wholeOnScreen`). A row the outline draws already is reached by its own focus, as
+ * the outline reaches one (`IssueTree.tsx`'s `reach`), in this task: an ask of the outline goes
+ * through two renders, and could come after the frame in which a chord back puts the focus on
+ * the outline's tab stop (`useIssueKeymap.ts`'s `reachPart`), which this row then is.
+ */
+function focusOnScreen(node: string): void {
+  const tree = document.querySelector(OUTLINE_TREE);
+  if (tree === null) return;
+  const rows = [
+    ...tree.querySelectorAll<HTMLElement>(nodeRowSelectorOf(node)),
+    ...tree.querySelectorAll<HTMLElement>("[data-node-row]"),
+  ];
+  rows.find(wholeOnScreen)?.focus({ preventScroll: true });
 }
 
 /** What the stage keeps of the first thing a view told it for a following of an address that

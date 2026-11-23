@@ -5,6 +5,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { OUTLINE_CONTROL, WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
+import { wholeOnScreen } from "./on-screen";
 import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
 
 /**
@@ -49,6 +50,11 @@ const SETTLING_FRAMES = 20;
 /** Shows `shown`, which is `found` where the whole part fits the screen and the control the
  *  chord leaves the focus on where it does not. */
 function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
+  // A control the chord left the focus on that the reader already sees whole stays where it
+  // stands, and the page with it (part N's R1): a chord back to the outline (`t c`) finds the
+  // outline at the place the reader left it, the row they were on in view (`stage-landing.tsx`'s
+  // `ViewNodeKeeper`), which showing it again would move to the middle of the screen.
+  if (wholeOnScreen(takes)) return takes;
   const whole = found.getBoundingClientRect().height <= window.innerHeight;
   const shown = whole ? found : takes;
   shown.scrollIntoView({ block: whole ? "start" : "center" });
