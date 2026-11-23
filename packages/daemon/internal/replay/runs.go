@@ -120,20 +120,22 @@ func partsRule(parts []Part) string {
 // windowRecord is a window's record.json in a directory of runs: its name, its place among the
 // windows compared (0 for the window before the change of the rule), its project, span and parts,
 // the rule its daemon ran ("" where its parts name more than one), its record's scorecard (Score),
-// and the recorded stretches inside its span, which its conflict model is fitted on
-// (windowConflicts), with how many ended in a conflict, which say whether a branch of it draws
-// (draws).
+// the recorded stretches inside its span, which its conflict model is fitted on (windowConflicts),
+// with how many ended in a conflict, which say whether a branch of it draws (draws), and each wait
+// on another issue that gave a slot back in its record (waitsGaveBack), which the comparison reads
+// what each rule's grace keeps from (graceKeeps).
 type windowRecord struct {
-	Name       string    `json:"name"`
-	Order      int       `json:"order"`
-	Project    string    `json:"project"`
-	From       time.Time `json:"from"`
-	To         time.Time `json:"to"`
-	Rule       string    `json:"rule"`
-	Parts      []Part    `json:"parts"`
-	Scorecard  Scorecard `json:"scorecard"`
-	Stretches  int       `json:"stretches"`
-	Conflicted int       `json:"conflicted"`
+	Name          string         `json:"name"`
+	Order         int            `json:"order"`
+	Project       string         `json:"project"`
+	From          time.Time      `json:"from"`
+	To            time.Time      `json:"to"`
+	Rule          string         `json:"rule"`
+	Parts         []Part         `json:"parts"`
+	Scorecard     Scorecard      `json:"scorecard"`
+	Stretches     int            `json:"stretches"`
+	Conflicted    int            `json:"conflicted"`
+	WaitsGaveBack []waitGaveBack `json:"waitsGaveBack"`
 }
 
 // draws says whether a replay of the window on branch draws anything with its seed: a conflict,
@@ -157,8 +159,8 @@ func (r windowRecord) seeds(branch Branch, perDraw int) []int64 {
 	return seeds
 }
 
-// newWindowRecord is the record of w, named name at order: its record's scorecard and its
-// conflict model's counts, both read from one trace.
+// newWindowRecord is the record of w, named name at order: its record's scorecard, its conflict
+// model's counts and its waits that gave a slot back, all read from one trace.
 func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 	t, err := BuildTrace(w)
 	if err != nil {
@@ -166,7 +168,7 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 	}
 	model := windowConflicts(t, newBaseMerges(w, t))
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, Rule: partsRule(w.Parts), Parts: w.Parts,
-		Scorecard: scoreTrace(t), Stretches: model.Stretches, Conflicted: model.Conflicts}, nil
+		Scorecard: scoreTrace(t), Stretches: model.Stretches, Conflicted: model.Conflicts, WaitsGaveBack: waitsGaveBack(t)}, nil
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -345,11 +347,13 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 
 // windowRecordFor is the record of ws's window w, as record.json under root holds it where a
 // record of the same window (its project and span) is there, at ws's place, and otherwise read from
-// w (newWindowRecord); either way it is written back with ws's place.
+// w (newWindowRecord), as it is where the record there was written before it held the waits that
+// gave a slot back (WaitsGaveBack nil); either way it is written back with ws's place.
 func windowRecordFor(w Window, ws windowSpec, root string) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
-	if err := readJSON(path, &rec); err != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) || !rec.To.Equal(w.To) {
+	if err := readJSON(path, &rec); err != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) || !rec.To.Equal(w.To) ||
+		rec.WaitsGaveBack == nil {
 		if rec, err = newWindowRecord(w, ws.name, ws.order); err != nil {
 			return windowRecord{}, err
 		}

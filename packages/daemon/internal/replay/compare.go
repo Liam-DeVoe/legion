@@ -646,7 +646,8 @@ func (c comparison) breakEven(window, rule string) BreakEvenResult {
 // Comparison is the document of a comparison of slot rules (spec R7), written in Markdown from the
 // runs alone, so it is the same whether one process made every run or many processes each made a
 // part: the windows, rules, branches, seeds and factors it read; the rule it names best, or that
-// none is, with each rule's trade; each window's scorecard read from its record; each window's
+// none is, with each rule's trade; each window's scorecard read from its record; what each rule's
+// grace keeps over the waits that gave a slot back in each window's record; each window's
 // validation; the forecast across the change, with the workflow commits it carries too; which
 // window measures how a rule changes conflicts; the value of every measure for every rule, window
 // and branch, read from the snapshot timeline, with the lowest and the highest seed; the gap of
@@ -668,6 +669,7 @@ func (r Runs) Comparison() (string, error) {
 	c.writeHead(p, forecast)
 	c.writeDecision(p, forecast)
 	c.writeScorecards(p)
+	c.writeGraces(p)
 	p.line("## The validation of each window (R5)")
 	p.line("")
 	p.line("Each window is replayed under the rule its daemon ran, on every branch, and each branch's line timeline is compared with the record's.")
@@ -850,6 +852,38 @@ func (c comparison) writeScorecards(p *printer) {
 			p.line("| %s | %s |", m.Name, formatNumber(m.Value))
 		}
 		p.line("| issues with a first slot | %d |", len(w.Scorecard.FirstSlot))
+	}
+	p.line("")
+}
+
+// writeGraces writes, for each window and each rule of the comparison with a grace
+// (record.SlotRule.WaitGrace), what the grace keeps over the waits on another issue that gave a slot
+// back in the window's record (graceKeeps): how many of them it keeps the slot through, of how
+// many, and the slot-hours it keeps. It is the record's own, read from its trace under the grace and
+// from no replay. A comparison with no rule with a grace writes nothing of it.
+func (c comparison) writeGraces(p *printer) {
+	var graced []record.SlotRule
+	for _, name := range c.rules {
+		if rule, _ := record.SlotRuleNamed(name); rule.WaitGrace > 0 {
+			graced = append(graced, rule)
+		}
+	}
+	if len(graced) == 0 {
+		return
+	}
+	p.line("## What each grace keeps, read from each window's record")
+	p.line("")
+	p.line("A rule with a grace keeps a holder's slot through a wait on another issue until the wait has lasted the grace. " +
+		"Over the waits on another issue that gave a slot back in each window's record, the grace keeps the slot through each wait that lasts no longer than it, a wait still open at the window's end counted at its length to the end. " +
+		"Each wait holds its slot for the shorter of its length and the grace, and the sum over the waits is the slot-hours the grace keeps from the line.")
+	p.line("")
+	p.line("| window | rule | grace | waits it keeps the slot through | slot-hours it keeps |")
+	p.line("| --- | --- | --- | --- | --- |")
+	for _, w := range c.windows {
+		for _, rule := range graced {
+			kept := graceKeeps(rule.WaitGrace, w.WaitsGaveBack)
+			p.line("| %s | `%s` | %s | %d of %d | %s |", w.Name, rule.Name, rule.WaitGrace, kept.Kept, kept.Waits, formatNumber(kept.SlotHours))
+		}
 	}
 	p.line("")
 }

@@ -9,12 +9,14 @@ body: |-
     `neutralize` renames the private names of a window for test data. `run` replays a window, and
     `scorecard` reads the same measures from the record of a window. `validate` checks a replay
     against the record, `forecast` checks it against a recorded change of the rule, and `compare`
-    compares the rules on two windows. `rules` prints the nine rules that a replay can run, each
-    with its commit. Two of them come from a deployment's reported cases: `wait-grace` keeps a
-    holder's slot through a wait on another issue for its first five minutes, and
-    `returned-by-first-slot` places the issues whose work came back by their first slot. The daemon
-    keeps no first slot after a slot goes back, so a replay keeps it in a table of its own. The tool
-    writes nothing to a running daemon, to Dispatch or to GitHub. The page
+    compares the rules on two windows. `rules` prints the ten rules that a replay can run, each
+    with its commit. Three of them come from a deployment's reported cases: `wait-grace` keeps a
+    holder's slot through a wait on another issue for its first five minutes, `wait-grace-1h` keeps
+    it for its first hour, and `returned-by-first-slot` places the issues whose work came back by
+    their first slot. The daemon keeps no first slot after a slot goes back, so a replay keeps it
+    in a table of its own. For each rule with a grace, `compare` names how many of the waits that
+    gave a slot back in each window's record the grace keeps the slot through, and the slot-hours
+    that it keeps. The tool writes nothing to a running daemon, to Dispatch or to GitHub. The page
     "Replaying a recorded window" of the docs says how to collect a window and how to run each
     command, and gives each measure, each rule and each assumption.
 

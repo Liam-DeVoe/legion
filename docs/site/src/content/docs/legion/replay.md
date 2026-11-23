@@ -479,6 +479,8 @@ The document gives:
 
 - each window's scorecard, read from its record
 
+- for each rule with a grace, what the grace keeps on each window, read from the window's record: how many of the waits on another issue that gave a slot back the grace keeps the slot through, of how many such waits, and the slot-hours that it keeps ([`wait-grace` and its grace](#wait-grace-and-its-grace))
+
 - each window's validation under its own rule, with the branches that give no comparison
 
 - the forecast across the change, with the workflow commits that it carries too
@@ -498,6 +500,22 @@ The document gives:
 A rule is best when it is no worse than `main` on each of four numbers by more than that number's allowance, and better on at least one.
 That must be true in every branch of both windows that passes the validation.
 The four numbers are the issues finished, the hours of started work that waits only for a slot, the priority taken by holders, and the hours of the other delays.
+
+The part on the graces gives one row for each window and each rule with a grace.
+For the fixture windows `one-minute-wait` and `two-waiters-one-blocker` of the tool's tests, it reads:
+
+```text
+## What each grace keeps, read from each window's record
+
+| window | rule | grace | waits it keeps the slot through | slot-hours it keeps |
+| --- | --- | --- | --- | --- |
+| one-minute-wait | `wait-grace` | 5m0s | 1 of 1 | 0.0167 |
+| one-minute-wait | `wait-grace-1h` | 1h0m0s | 1 of 1 | 0.0167 |
+| two-waiters-one-blocker | `wait-grace` | 5m0s | 0 of 2 | 0.1667 |
+| two-waiters-one-blocker | `wait-grace-1h` | 1h0m0s | 0 of 2 | 2 |
+```
+
+Between the heading and the table, the document has a paragraph that says how to read the rows, which the example leaves out.
 
 To split the work, run each part with `--only-window <name>` and `--only-rule <name>` into one `--runs` directory, with no `--out`.
 Then write the document from the parts' directories with `--from-runs <dir>... --out <file>`, which runs nothing.
@@ -623,6 +641,7 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
 | `cover` | A slot kept until the work is done, and an issue that a waiter waits on started on the waiter's slot, one cover for each holder. | `0d3786da` |
 | `wait-grace` | `main` with a wait on another issue that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part. | `0d3786da` |
+| `wait-grace-1h` | `wait-grace` with a grace of one hour, so that the comparison shows beside it what a longer grace keeps and what it costs. | `0d3786da` |
 | `returned-by-first-slot` | `main` with a returned issue placed in the line by its first slot in its current generation, not by the time at which its work came back, for the reason that a deployment reported: a started issue sent back from merging for one forward merge stood last of 76 in the returned part, and the issue of the one-minute wait last of 79. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
@@ -718,6 +737,17 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
 
+wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 1h0m0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
 returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
   a link wait gives the slot back: true
@@ -769,7 +799,18 @@ No pass is asked for at the end of the grace, because the daemon has no wake tha
 The slot goes back at the next pass after the grace: the next fact of the project or the next controller tick, at most `controller_wake_interval_seconds` later.
 That delay is the rule's own, in the daemon and in a replay alike.
 
-The value comes from window one of the comparison, 94 hours at a cap of 157:
+The repository keeps the rule at two graces: `wait-grace` at five minutes, and `wait-grace-1h` at one hour, so that the comparison shows what a longer grace keeps and what it costs.
+`compare` runs both, and for each rule with a grace it names what the grace keeps on each window, read from the window's record and not from a replay.
+It takes each wait on another issue that gave a slot back in the record.
+Such a wait runs from its start to the end of the last wait of its issue on a link or on children that follows it with no gap.
+A wait that is still open at the window's end counts at its length to the end.
+The grace keeps the slot through each wait that lasts no longer than the grace, because the pass at the end of the grace finds such a wait over.
+`compare` names how many of the waits the grace keeps the slot through, and of how many.
+Each wait holds its slot under the grace for the shorter of its length and the grace, and `compare` names the sum over the waits as the slot-hours that the grace keeps, which the line goes without.
+The lengths of the kept waits alone would leave out the grace that each longer wait holds, where most of the cost falls.
+The slot of a longer wait goes back at the first pass after the end of the grace, a little later, which the slot-hours leave out.
+
+The value of five minutes comes from window one of the comparison, 94 hours at a cap of 157:
 
 | Reading of the window | Value |
 | --- | --- |
@@ -782,23 +823,27 @@ The value comes from window one of the comparison, 94 hours at a cap of 157:
 | Median time from a release for a wait to the issue's next slot | 18 hours 18 minutes, over 49 |
 | Median time from the end of such a wait to the issue's next slot | 7 minutes 48 seconds, over 49 |
 
-| Grace | Waits shorter than the grace | Slot-hours the grace keeps |
-| --- | --- | --- |
-| 1 minute | 1 (0.9%) | 1.89 |
-| 2 minutes | 1 (0.9%) | 3.77 |
-| 5 minutes | 1 (0.9%) | 9.42 |
-| 10 minutes | 1 (0.9%) | 18.84 |
-| 15 minutes | 2 (1.8%) | 28.24 |
-| 30 minutes | 4 (3.5%) | 55.89 |
-| 1 hour | 8 (7.0%) | 109.28 |
-| 2 hours | 12 (10.5%) | 210.24 |
-| 4 hours | 15 (13.2%) | 399.98 |
+Each grace below is read as `compare` reads it, over the same 114 waits:
+
+| Grace | Waits that it keeps the slot through | Of those, still open at the window's end | Slot-hours that it keeps |
+| --- | --- | --- | --- |
+| 1 minute | 1 (0.9%) | 0 | 1.89 |
+| 2 minutes | 1 (0.9%) | 0 | 3.77 |
+| 5 minutes, `wait-grace` | 1 (0.9%) | 0 | 9.42 |
+| 10 minutes | 1 (0.9%) | 0 | 18.84 |
+| 15 minutes | 2 (1.8%) | 0 | 28.24 |
+| 30 minutes | 5 (4.4%) | 1 | 55.89 |
+| 1 hour, `wait-grace-1h` | 9 (7.9%) | 1 | 109.28 |
+| 2 hours | 15 (13.2%) | 3 | 210.24 |
+| 4 hours | 22 (19.3%) | 7 | 399.98 |
 
 The median time from a slot's release to its next taking names no grace: the cap was full, and the pass that freed a slot gave it out at once in 776 of 819 releases.
 The time from one pass that frees a slot to the next, 4 minutes 44 seconds, is when a slot next comes free, and five minutes is that time rounded up.
 Five minutes keeps the slot through the one-minute class, the 15-second wait of the window, and through no other wait of the window, because the next shortest lasted 14 minutes.
 Each longer wait holds its slot five minutes more, 9.4 slot-hours of the window's 14,768.
 Over the window's waits, the next pass that a replay makes after the grace's end, an event, a recorded move, a slot moved or a tick, came a median 2.6 seconds later, at most 31.5 seconds.
+An hour keeps the slot through 8 more waits than five minutes: 7 that ended within the hour and 1 still open at the window's end after less than an hour.
+It keeps 109.28 slot-hours against 9.42, nearly all of them the hour that each of the other 105 waits holds: 105 slot-hours.
 
 ### `returned-by-first-slot` and the first slot
 

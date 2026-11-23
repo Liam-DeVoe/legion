@@ -522,11 +522,12 @@ func TestBreakEvenFactor(t *testing.T) {
 // The document of a comparison holds every rule, window, branch and measure (spec R7; check k6): it
 // is written from made-up runs of two windows under every rule the repository keeps, every branch
 // with its seeds and the break-even search, and is read for each window's scorecard, validation
-// and table of each branch, every rule in each table, every measure in each, the forecast with the
-// workflow commits it carries, which window measures conflicts, each rule's break-even factor, the
-// decision and the assumptions. With LEGION_TEST_PG_DSN set it also replays two fixture windows
-// whole and in parts and holds the two documents equal: a document written from one process's runs
-// and one written from the runs of parts, each run in a process of its own, are the same.
+// and table of each branch, every rule in each table, every measure in each, what each rule with a
+// grace keeps on each window, the forecast with the workflow commits it carries, which window
+// measures conflicts, each rule's break-even factor, the decision and the assumptions. With
+// LEGION_TEST_PG_DSN set it also replays two fixture windows whole and in parts and holds the two
+// documents equal: a document written from one process's runs and one written from the runs of
+// parts, each run in a process of its own, are the same.
 func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	dir := t.TempDir()
 	to := compareFrom.Add(compareHours * time.Hour)
@@ -591,6 +592,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		want = append(want, "### "+w.Name+"\n", "### "+w.Name+" under `"+w.Rule+"`")
 	}
 	want = append(want, "## The rule named best (R7)", "## The scorecard of each window, read from its record", "## The validation of each window (R5)",
+		"## What each grace keeps, read from each window's record",
 		"## The forecast across the change (R5)", "replayed under the rule after it, `legion-v20.42.5`",
 		"The forecast also carries the workflow commits between `1111111111111111111111111111111111111111` and `2222222222222222222222222222222222222222`",
 		"window-two does not measure how a rule changes conflicts", "window-one measures how a rule changes conflicts",
@@ -601,6 +603,11 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			want = append(want, "| `"+rule.Name+"` | no factor up to 2 changes it")
 		}
 		want = append(want, "- `"+rule.Name+"`, `main@1.1`")
+		if rule.WaitGrace > 0 {
+			for _, w := range []windowRecord{before, after} {
+				want = append(want, "| "+w.Name+" | `"+rule.Name+"` | "+rule.WaitGrace.String()+" | ")
+			}
+		}
 	}
 	for _, line := range want {
 		if !strings.Contains(document, line) {

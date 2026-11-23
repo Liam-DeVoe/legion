@@ -205,7 +205,9 @@ func statusIn(stands phase.Phase) string {
 	}
 }
 
-// slotRuleReaders is the table of the readers of the slot rule, one row for each.
+// slotRuleReaders is the table of the readers of the slot rule, one row for each, but the grace's
+// reader, which has one row for each grace a kept rule names (keptWaitGraces), so each kept rule
+// with a grace finds a row whose choice it makes the row's way.
 //
 // record.PastReview is read by four callers, and each one reads either "holds no slot", which is
 // the rule's complement and a row here, or "past the review" in the workflow's sense, which no
@@ -251,6 +253,27 @@ func slotRuleReaders() []slotRuleReader {
 			},
 			main: keeps(record.MainRule), changed: keeps(rule),
 			why: "a started issue keeps its slot in a phase the rule keeps one in, and gives it back in any other",
+		})
+	}
+	for _, grace := range keptWaitGraces() {
+		rows = append(rows, slotRuleReader{
+			reader:  "blockers.waitsOf: a wait within a grace of " + grace.String(),
+			changes: []string{"WaitGrace"},
+			rule:    ruleWith("main with a wait grace of "+grace.String(), func(rule *record.SlotRule) { rule.WaitGrace = grace }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const waiter, blocker = "ACME-75", "ACME-76"
+				acmeRoot(t, pool, waiter, phase.Implementing, "in_progress", "a", []string{blocker}, nil)
+				takeSlot(t, pool, waiter)
+				seedMirrorIn(t, pool, acmeProject, blocker, "in_progress")
+				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
+				return slotWord(t, pool, waiter) + "; " + markWord(t, pool, waiter)
+			},
+			main:    "ACME-75 holds no slot; ACME-75 carries the mark of a release for a wait",
+			changed: "ACME-75 holds a slot; ACME-75 carries no mark of a release for a wait",
+			why: "a started issue that waits on another issue gives its slot back at the pass that finds the wait, and under a rule " +
+				"with a grace keeps it while the wait is younger than the grace",
 		})
 	}
 	return append(rows,
@@ -386,25 +409,6 @@ func slotRuleReaders() []slotRuleReader {
 			main:    "ACME-80 holds no slot; ACME-80 carries the mark of a release for a wait",
 			changed: "ACME-80 holds a slot; ACME-80 carries no mark of a release for a wait",
 			why:     "a started parent that waits on its open children gives its slot back for the wait only under a rule whose children wait does",
-		},
-		slotRuleReader{
-			reader:  "blockers.waitsOf: a wait within the grace",
-			changes: []string{"WaitGrace"},
-			rule:    ruleWith("main with a wait grace", func(rule *record.SlotRule) { rule.WaitGrace = keptWaitGrace() }),
-			outcome: func(t *testing.T, rule record.SlotRule) string {
-				t.Helper()
-				pool := migratedPool(t)
-				const waiter, blocker = "ACME-75", "ACME-76"
-				acmeRoot(t, pool, waiter, phase.Implementing, "in_progress", "a", []string{blocker}, nil)
-				takeSlot(t, pool, waiter)
-				seedMirrorIn(t, pool, acmeProject, blocker, "in_progress")
-				tickThrough(t, pool, ruledAdmission(t, 2, rule, silent()), "the pass")
-				return slotWord(t, pool, waiter) + "; " + markWord(t, pool, waiter)
-			},
-			main:    "ACME-75 holds no slot; ACME-75 carries the mark of a release for a wait",
-			changed: "ACME-75 holds a slot; ACME-75 carries no mark of a release for a wait",
-			why: "a started issue that waits on another issue gives its slot back at the pass that finds the wait, and under a rule " +
-				"with a grace keeps it while the wait is younger than the grace",
 		},
 		slotRuleReader{
 			reader:  "the release for a wait: a wait that stops the phase",

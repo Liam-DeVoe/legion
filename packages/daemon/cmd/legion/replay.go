@@ -630,14 +630,16 @@ alone into --runs and write no document, so each pod of an indexed Job can run o
 --from-runs <dir>... --out <file> writes the document from the directories the parts wrote,
 running nothing; it is the same document a single process writes.
 
-The document gives each window's scorecard read from its record; each window's validation under
-its own rule, with which branches give no comparison; the forecast across the change, which
-replays the window before under the rule of the window after, with the workflow commits it carries
-too; which window measures how a rule changes conflicts; the value of every measure for every
-rule, window and branch, read from the snapshot timeline, with the lowest and the highest seed;
-the gap of each measure between the snapshot and the line timelines; each rule's break-even
-slowdown factor against main; the rule it names best, or that none is, with each rule's trade; and
-the assumptions and the scenario each run used.`
+The document gives each window's scorecard read from its record; for each rule with a grace, how
+many of the waits on another issue that gave a slot back in each window's record the grace keeps
+the slot through, of how many, and the slot-hours it keeps; each window's validation under its own
+rule, with which branches give no comparison; the forecast across the change, which replays the
+window before under the rule of the window after, with the workflow commits it carries too; which
+window measures how a rule changes conflicts; the value of every measure for every rule, window
+and branch, read from the snapshot timeline, with the lowest and the highest seed; the gap of each
+measure between the snapshot and the line timelines; each rule's break-even slowdown factor
+against main; the rule it names best, or that none is, with each rule's trade; and the
+assumptions and the scenario each run used.`
 
 // newReplayCompareCommand is `legion replay compare` (replay.RunCompare, replay.Runs.Comparison).
 func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {

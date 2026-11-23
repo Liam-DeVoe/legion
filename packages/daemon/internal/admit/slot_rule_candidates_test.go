@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -23,14 +24,19 @@ func keptRule(t *testing.T, name string) record.SlotRule {
 	return rule
 }
 
-// keptWaitGrace is the grace of the rule the repository keeps as wait-grace
-// (record.SlotRule.WaitGrace), which the row of the grace's reader takes as its own so that the
-// kept rule makes the row's choice the row's way (TestEveryKeptRuleTakesTheReadersRows); zero where
-// the repository keeps no such rule, which leaves the row's rule the daemon's own and fails
-// TestTheChoicesOfARuleAreTheReadersRows.
-func keptWaitGrace() time.Duration {
-	rule, _ := record.SlotRuleNamed("wait-grace")
-	return rule.WaitGrace
+// keptWaitGraces is each grace a rule the repository keeps names (record.SlotRule.WaitGrace), in
+// the order of record.SlotRules, which the rows of the grace's reader take one each as their own, so
+// that each kept rule with a grace makes a row's choice the row's way
+// (TestEveryKeptRuleTakesTheReadersRows); none where the repository keeps no such rule, which leaves
+// no row that moves the grace and fails TestTheChoicesOfARuleAreTheReadersRows.
+func keptWaitGraces() []time.Duration {
+	var graces []time.Duration
+	for _, rule := range record.SlotRules() {
+		if rule.WaitGrace > 0 && !slices.Contains(graces, rule.WaitGrace) {
+			graces = append(graces, rule.WaitGrace)
+		}
+	}
+	return graces
 }
 
 // firstSlotTables is a replay's rule tables as far as the first slots go (RuleTables): the moment

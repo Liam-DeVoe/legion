@@ -47,8 +47,8 @@ type SlotRule struct {
 	// grace's end, since the daemon has no wake an admission pass can ask for at a moment of its
 	// choosing: the slot goes back at the next pass after the grace, which every fact of the
 	// project and every controller tick makes, and that delay is the rule's own (GraceOver). Zero,
-	// the daemon's own and every rule's but wait-grace's, gives the slot back at the pass that
-	// finds the wait.
+	// the daemon's own and every rule's but wait-grace's and wait-grace-1h's, gives the slot back
+	// at the pass that finds the wait.
 	WaitGrace time.Duration
 	// WaitStopsPhase says whether a wait on another issue stops the phase under way: under a rule
 	// where it does, a started parent waits on its open children in whatever phase it stands
@@ -233,15 +233,15 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules two recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3) and the six candidates of the comparison (keep-past-review,
-// blockers-first, returned-by-rank, cover, wait-grace, returned-by-first-slot). `legion replay
-// rules` prints them. Each answer is built afresh, so a caller that changes a rule it was handed
-// changes no other caller's.
+// (legion-v20.42.5, legion-v19.57.3) and the seven candidates of the comparison (keep-past-review,
+// blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule at two graces,
+// and returned-by-first-slot). `legion replay rules` prints them. Each answer is built afresh, so a
+// caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
 	daemon := MainRule
 	daemon.KeepsSlotIn = slices.Clone(MainRule.KeepsSlotIn)
 	return []SlotRule{daemon, windowOneRule(), windowTwoRule(), keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
-		waitGraceRule(), returnedByFirstSlotRule()}
+		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -339,17 +339,19 @@ func coverRule() SlotRule {
 	})
 }
 
-// waitGraceRule is the daemon's own rule with a wait on another issue that gives the slot back
-// only once it has lasted the grace (WaitGrace, waitGrace): a holder keeps its slot through a
+// waitGraceRule is the rule named name, the daemon's own rule with a wait on another issue that
+// gives the slot back only once it has lasted grace (WaitGrace): a holder keeps its slot through a
 // shorter wait, which neither frees a slot nor sends the holder to the line, and a longer one gives
 // it back at the first pass at or after the grace's end, as the daemon's rule gives it back at
-// once. Its reason is a deployment's reported cases: a started issue's blocked_by link set and
-// taken off within a minute took its slot back and placed it last of 79 in the line's returned
-// part, which orders by the moment the work came back, so one minute of a wait put work in
-// progress behind every issue that came back before it.
-func waitGraceRule() SlotRule {
-	return mainRuleWith("wait-grace", func(rule *SlotRule) {
-		rule.WaitGrace = waitGrace
+// once. The repository keeps it at two graces, wait-grace (waitGrace) and wait-grace-1h
+// (longWaitGrace), so the comparison shows what a longer grace keeps and costs. Its reason is a
+// deployment's reported cases: a started issue's blocked_by link set and taken off within a minute
+// took its slot back and placed it last of 79 in the line's returned part, which orders by the
+// moment the work came back, so one minute of a wait put work in progress behind every issue that
+// came back before it.
+func waitGraceRule(name string, grace time.Duration) SlotRule {
+	return mainRuleWith(name, func(rule *SlotRule) {
+		rule.WaitGrace = grace
 	})
 }
 
@@ -366,6 +368,15 @@ func waitGraceRule() SlotRule {
 // rule's own delay: over that window's waits the next pass a replay makes (an event, a recorded
 // move, a slot moved or a tick) came a median 2.6 seconds after the grace's end, at most 31.5.
 const waitGrace = 5 * time.Minute
+
+// longWaitGrace is the grace of the rule wait-grace-1h, one hour: wait-grace at a longer grace, to
+// show beside it what a longer grace keeps and what it costs. Of the same 114 waits of window one,
+// 8 ended within an hour (7.0%) and one more stood open at the window's end after less than an
+// hour, so an hour keeps the slot through 9 (7.9%), where five minutes keeps it through 1; and each
+// wait holds its slot for the shorter of its length and the hour, 109.28 slot-hours in all, where
+// five minutes holds 9.42. The comparison reads both from each window's record (replay's
+// graceKeeps).
+const longWaitGrace = time.Hour
 
 // returnedByFirstSlotRule is the daemon's own rule with an issue whose work came back placed in the
 // line by the moment of its first slot in its current generation (LineReturnedByFirstSlot) rather
