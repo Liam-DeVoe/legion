@@ -148,9 +148,14 @@ func writeQueuedInboxEvents(ctx context.Context, tx pgx.Tx, keys [][]string) (in
 	var actor []byte
 	if _, err := pgx.ForEachRow(rows, []any{&held.id, &held.kind, &held.issue, &held.project, &held.target, &actor, &held.at,
 		&held.body, &held.truncated}, func() error {
-		if err := json.Unmarshal(actor, &held.actor); err != nil {
+		// Each row's actor is decoded into an Actor of its own: held serves every row, and a
+		// decode into held.actor would keep a member an earlier event's actor carried and this
+		// one lacks, and would write through the pointers of that earlier event's copy in read.
+		var made model.Actor
+		if err := json.Unmarshal(actor, &made); err != nil {
 			return fmt.Errorf("read the actor of event %d: %w", held.id, err)
 		}
+		held.actor = made
 		read = append(read, held)
 		return nil
 	}); err != nil {

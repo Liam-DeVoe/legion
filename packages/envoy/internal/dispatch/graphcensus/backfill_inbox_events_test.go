@@ -2,8 +2,11 @@ package graphcensus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -82,6 +85,27 @@ func requireEnded(t *testing.T, database *store.Store, what, fromKind, fromID, k
 	t.Helper()
 	if asserted, under := newestOf(t, database, fromKind, fromID, kind, toKind, toID); asserted {
 		t.Errorf("%s: %s/%s -%s-> %s/%s still stands, under event %d", what, fromKind, fromID, kind, toKind, toID, under)
+	}
+}
+
+// requireMadeBy fails unless the newest tuple of the relation was made by want.
+func requireMadeBy(t *testing.T, database *store.Store, what string, want model.Actor, fromKind, fromID, kind, toKind, toID string) {
+	t.Helper()
+	var who []byte
+	if err := database.Pool.QueryRow(context.Background(), `
+		select who from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
+		order by seq desc limit 1
+	`, fromKind, fromID, kind, toKind, toID).Scan(&who); err != nil {
+		t.Fatalf("%s: read who made the newest %s/%s -%s-> %s/%s: %v", what, fromKind, fromID, kind, toKind, toID, err)
+	}
+	var made model.Actor
+	if err := json.Unmarshal(who, &made); err != nil {
+		t.Fatalf("%s: read who made the newest %s/%s -%s-> %s/%s: %v", what, fromKind, fromID, kind, toKind, toID, err)
+	}
+	if !reflect.DeepEqual(made, want) {
+		t.Errorf("%s: the newest %s/%s -%s-> %s/%s was made by %s, want %s",
+			what, fromKind, fromID, kind, toKind, toID, who, actorJSON(t, want))
 	}
 }
 
@@ -241,6 +265,70 @@ func TestTheLastOfAnOlderBuildsMovesOfAnAskStatesItsArm(t *testing.T) {
 	requireASecondRunAppendsNothing(t, writes.database)
 }
 
+// R2: each move of an ask states its arm "made by its own writer" (inboxwrite.QueueMoveWaiting's
+// Move.who). A build of the release before hands two of alice's asks on before any pass reads
+// either hand-on: bob, proven by his browser's cookie and writing from his laptop, hands the first
+// to carol, and then bob, under a credential that proves nobody and names no origin, hands the
+// second to dave. One batch of the queue reads both events (writeQueuedInboxEvents), and each
+// hand-on's tuples carry its own event's actor as their maker: carol's delivered_to and
+// participates_in the proven bob from his laptop, and dave's the bare bob, with neither the mark
+// nor the origin of the event the batch read before it.
+func TestEachOfAnOlderBuildsMovesInOneBatchIsMadeByItsOwnActor(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	if _, err := writes.database.Pool.Exec(ctx, `update issues set assignee = 'bob' where key = 'CENS-1'`); err != nil {
+		t.Fatalf("give CENS-1 to bob: %v", err)
+	}
+	ask := func(question string) olderWrite {
+		return writeAsAnOlderBuild(t, writes, "ask.opened", alice, `
+			insert into asks (issue_key, author, question) values ('CENS-1', $1, $2)
+			returning id::text, created_at`, actorJSON(t, alice), question)
+	}
+	first, second := ask("Ready?"), ask("Shipped?")
+	backfillInboxOnce(t, writes.database)
+
+	handOn := func(asked olderWrite, to string, by model.Actor) model.Event {
+		return writeAsTheReleaseBefore(t, writes, func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+			var at time.Time
+			err := tx.QueryRow(ctx, `
+				update asks set asked_of = $2, asked_of_by = $3, asked_of_at = now() where id = $1::uuid
+				returning asked_of_at`, asked.id, to, by.ID).Scan(&at)
+			return model.Event{IssueKey: new("CENS-1"), Type: "ask.asked_of", Actor: by, Payload: model.AskEventPayload{Ask: model.Ask{
+				ID: asked.id, IssueKey: new("CENS-1"), Author: alice, CreatedAt: asked.at, AskedOf: &to, AskedOfBy: &by.ID, AskedOfAt: &at,
+			}}}, err
+		})
+	}
+	fromLaptop := model.Actor{Kind: "user", ID: "bob", Origin: &model.ActorOrigin{Host: "laptop"}, Proven: true}
+	toCarol := handOn(first, "carol", fromLaptop)
+	toDave := handOn(second, "dave", bob)
+	if queued := queuedInboxEvents(t, writes.database); len(queued) != 2 || queued[0] != toCarol.ID || queued[1] != toDave.ID {
+		t.Fatalf("the queue holds %v after the older build's two hand-ons, want %d and %d", queued, toCarol.ID, toDave.ID)
+	}
+
+	backfillInboxOnce(t, writes.database)
+	for _, moved := range []struct {
+		ask, to string
+		event   int64
+		by      model.Actor
+	}{{first.id, "carol", toCarol.ID, fromLaptop}, {second.id, "dave", toDave.ID, bob}} {
+		what := "the hand-on to " + moved.to
+		requireStands(t, writes.database, what, moved.event,
+			graphstore.KindAsk, moved.ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, moved.to)
+		requireMadeBy(t, writes.database, what, moved.by,
+			graphstore.KindAsk, moved.ask, graphstore.TupleDeliveredTo, graphstore.KindPerson, moved.to)
+		requireStands(t, writes.database, what, moved.event,
+			graphstore.KindPerson, moved.to, graphstore.TupleParticipatesIn, graphstore.KindAsk, moved.ask)
+		requireMadeBy(t, writes.database, what, moved.by,
+			graphstore.KindPerson, moved.to, graphstore.TupleParticipatesIn, graphstore.KindAsk, moved.ask)
+	}
+	if queued := queuedInboxEvents(t, writes.database); len(queued) != 0 {
+		t.Errorf("the queue holds %v after the backfill, want none", queued)
+	}
+	requireTheThreadsAgree(t, writes.database, "after the backfill of the two hand-ons")
+	requireASecondRunAppendsNothing(t, writes.database)
+}
+
 // R5: a mention "runs from the comment, issue message or document block that holds it to the
 // identity it points at", and R4: participation "holds every thread they were mentioned or
 // addressed in without writing in it". This release's edit of a comment states the mentions tuple
@@ -361,6 +449,53 @@ func TestTheBackfillStatesThePeopleAnOlderBuildsCommentsAndIssueMessagesName(t *
 	}
 	requireTheThreadsAgree(t, writes.database, "after the backfill of the items naming people")
 	requireASecondRunAppendsNothing(t, writes.database)
+}
+
+// R5's mention is made by the maker of the node that holds it (refs.ItemIdentityMentions), and
+// what an item owed its thread by the person who wrote it (inboxwrite.Comment, inboxwrite.Message):
+// the backfill reads the two off a comment's or an issue message's node and row
+// (writeCommentPointers, writeMessages), each into an actor of its own. bob, proven by his
+// browser's cookie and writing from his laptop, writes as a build of the release before a comment
+// and an issue message that name dave, and each item's node is made by bob from his desk under a
+// credential that proves nobody. No pass of the backfill makes a node whose maker differs from its
+// row's author, so the test writes each node itself before the backfill runs, as a writer that
+// wrote it meanwhile would, and the backfill keeps a node it finds as it finds it. Each item's
+// mentions tuple to dave is made by its node's maker, with neither the author's mark nor his
+// laptop, and its delivered_to to dave by its author, with his laptop and his mark.
+func TestTheBackfillTellsTheMakerOfAnOlderBuildsItemsNodeFromItsAuthor(t *testing.T) {
+	writes := newAddressingWrites(t)
+	writes.createIssue(t, "CENS-1", 1, "U", alice)
+	ctx := context.Background()
+	fromLaptop := model.Actor{Kind: "user", ID: "bob", Origin: &model.ActorOrigin{Host: "laptop"}, Proven: true}
+	fromDesk := model.Actor{Kind: "user", ID: "bob", Origin: &model.ActorOrigin{Host: "desk"}}
+	comment := writeAsAnOlderBuild(t, writes, "comment.created", fromLaptop, `
+		insert into comments (issue_key, author, body) values ('CENS-1', $1, 'Over to dispatch://person/`+daveAddress+` to check.')
+		returning id::text, created_at`, actorJSON(t, fromLaptop))
+	message := writeAsAnOlderBuild(t, writes, "message.created", fromLaptop, `
+		insert into messages (issue_key, author, body) values ('CENS-1', $1, 'For dispatch://person/`+daveAddress+` to read.')
+		returning id::text, created_at`, actorJSON(t, fromLaptop))
+	commentNode, _ := graphstore.CommentFacts(nil, comment.id, fromDesk, comment.at, comment.event, "", "", "CENS", nil)
+	messageNode := graphstore.MessageNode(message.id, "CENS", nil, fromDesk, message.at)
+	if err := pgx.BeginFunc(ctx, writes.database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{commentNode, messageNode}, nil)
+	}); err != nil {
+		t.Fatalf("write the items' nodes, made by bob from his desk: %v", err)
+	}
+
+	backfillInboxOnce(t, writes.database)
+	for _, item := range []struct {
+		what, kind, id string
+		event          int64
+	}{{"bob's comment", graphstore.KindComment, comment.id, comment.event}, {"bob's message", graphstore.KindMessage, message.id, message.event}} {
+		requireStands(t, writes.database, item.what, item.event,
+			item.kind, item.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+		requireMadeBy(t, writes.database, item.what, fromDesk,
+			item.kind, item.id, graphstore.TupleMentions, graphstore.KindPerson, daveAddress)
+		requireStands(t, writes.database, item.what, item.event,
+			item.kind, item.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+		requireMadeBy(t, writes.database, item.what, fromLaptop,
+			item.kind, item.id, graphstore.TupleDeliveredTo, graphstore.KindPerson, daveAddress)
+	}
 }
 
 // mentionedSession is the agent's session the texts of these tests name, and daveAddress the

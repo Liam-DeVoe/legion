@@ -472,11 +472,16 @@ func writeMessages(ctx context.Context, tx pgx.Tx, ids []string) (inboxWrote, er
 			rows.Close()
 			return inboxWrote{}, fmt.Errorf("read the author of message %s: %w", held.row.ID, err)
 		}
-		if held.maker = held.author; maker != nil {
-			if err := json.Unmarshal(maker, &held.maker); err != nil {
+		// The node's maker is decoded into an Actor of its own, so it shares no pointer with the
+		// author and keeps no member of the author's that made_by lacks.
+		held.maker = held.author
+		if maker != nil {
+			var made model.Actor
+			if err := json.Unmarshal(maker, &made); err != nil {
 				rows.Close()
 				return inboxWrote{}, fmt.Errorf("read the maker of message %s's node: %w", held.row.ID, err)
 			}
+			held.maker = made
 		}
 		read = append(read, held)
 	}
@@ -998,7 +1003,15 @@ func writeCommentPointers(ctx context.Context, tx pgx.Tx, ids []string, causes [
 		if _, err := pgx.ForEachRow(nodes, []any{&position, &visibility, &maker}, func() error {
 			held := &read[position-1]
 			held.visibility = visibility
-			return json.Unmarshal(maker, &held.maker)
+			// The node's maker is decoded into an Actor of its own, so it shares no pointer with
+			// the author held.maker was set to and keeps no member of the author's that made_by
+			// lacks.
+			var made model.Actor
+			if err := json.Unmarshal(maker, &made); err != nil {
+				return err
+			}
+			held.maker = made
+			return nil
 		}); err != nil {
 			return inboxWrote{}, fmt.Errorf("read the nodes of the comments whose pointers are no tuples: %w", err)
 		}
