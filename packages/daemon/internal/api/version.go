@@ -3346,7 +3346,7 @@ package api
 // 2026-11-22 that brought in e7381b7d left main at 213, and a reading of every open head made
 // between 2026-11-22T21:10:50Z and 21:17:52Z found #3993, #4392, #4432 and #4771 declaring 221 as
 // well, so this entry kept 221 again. The forward merges of 2026-11-23 that brought in 958ff939
-// and then 8f332682 left main at 213 and then at 217 (#4273's, the entry right above), and a
+// and then 8f332682 left main at 213 and then at 217 (#4273's entry), and a
 // reading of every open head made between 2026-11-23T01:01:55Z and 01:06:00Z found #3993, #4392,
 // #4432, #4771 and #4940 declaring 221 as well, so this entry kept 221 again. The forward merges
 // that brought in e96f1420 and then cdf532a8 left main at 217, and a reading of every open head

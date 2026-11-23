@@ -103,9 +103,8 @@ type rowFactsRead struct {
 
 func (r *rowFactsRead) dest() []any {
 	f := &r.facts
-	return []any{&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names,
-		&r.asked.Kind, &r.asked.Operator, &r.asked.Subject, &r.asked.Issuer, &r.asked.Projects,
-		&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Issuer, &f.holder.Projects, &f.holder.Service}
+	return slices.Concat([]any{&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names},
+		r.asked.credentialDest(), f.holder.credentialDest(), []any{&f.holder.Service})
 }
 
 func (r *rowFactsRead) done(m *Machine) rowFacts {

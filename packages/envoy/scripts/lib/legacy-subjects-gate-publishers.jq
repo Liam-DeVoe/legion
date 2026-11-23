@@ -116,13 +116,15 @@ def auth_conf:
     else {users: .users, callout: .callout} end;
 
 # nats_services reads BROKER_NATS_SERVICES as the broker's config.ParseNATSServices does, for the
-# part fact (a3) needs: whitespace-separated <kind>/<machine id or ->/<scope>=<account> entries,
-# each answered with its kind and the name the auth service's answer gives its user, <kind>/<machine
-# id>, or <kind>/<account> for an entry of no machine id (config.NATSService Name). An entry of
-# any other shape is an error, {error: {entry}}, since its kind could be a publisher's.
+# part fact (a3) needs: whitespace-separated <kind>/<machine id or ->/<scope>=<account>[=<issuer
+# name>[,<issuer name>…]] entries, each issuer name as BROKER_K8S_OIDC_ISSUER names one (lowercase
+# letters, digits and hyphens, at most 64), each entry answered with its kind and the name the auth
+# service's answer gives its user, <kind>/<machine id>, or <kind>/<account> for an entry of no
+# machine id, the account without its issuer names (config.NATSService Name). An entry of any other
+# shape is an error, {error: {entry}}, since its kind could be a publisher's.
 def nats_services:
   [splits("\\s+") | select(length > 0)] as $entries
-  | "^(?<kind>[a-z][a-z-]*)/(?<machine>[^/=\\s]+)/(?<scope>[^/=\\s]+)=(?<account>\\S+)$" as $form
+  | "^(?<kind>[a-z][a-z-]*)/(?<machine>[^/=\\s]+)/(?<scope>[^/=\\s]+)=(?<account>[^=\\s]+)(?:=[a-z0-9-]{1,64}(?:,[a-z0-9-]{1,64})*)?$" as $form
   | ([$entries[] | select(test($form) | not)] | first) as $bad
   | if $bad != null then {error: {entry: $bad}}
     else {entries: [$entries[] | capture($form) | {kind, identity: "\(.kind)/\(if .machine == "-" then .account else .machine end)"}]} end;

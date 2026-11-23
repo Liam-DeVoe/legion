@@ -1597,6 +1597,12 @@ const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, en
 // login) answers an empty kind, which names no project.
 const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, cur.issuer, coalesce(cur.projects, '{}')`
 
+// credentialDest is where a scan of credentialColumns or currentCredentialColumns puts each of
+// their columns: e's Kind, Operator, Subject, Issuer and Projects, in that order.
+func (e *enrollmentRow) credentialDest() []any {
+	return []any{&e.Kind, &e.Operator, &e.Subject, &e.Issuer, &e.Projects}
+}
+
 // pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
 // (PendingStates' zero value): every record of the approver still pending by what is stored,
 // newest first, which is exactly the list from before records had a state. An agent_secret record
@@ -1726,9 +1732,8 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		var id, kind, approverOf, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
 		var asked, current enrollmentRow
-		if err := rows.Scan(&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Issuer, &current.Projects); err != nil {
+		if err := rows.Scan(slices.Concat([]any{&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify},
+			asked.credentialDest(), current.credentialDest())...); err != nil {
 			return nil, err
 		}
 		identifiers, reason, service, err := m.requestedIdentifiers(canonical, createdAt)
@@ -2412,9 +2417,8 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		var g ApproverGrant
 		var s seen
 		var current, asked enrollmentRow
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
-			&current.Projects, &current.Subject, &current.Issuer, &s.reason,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects); err != nil {
+		if err := rows.Scan(append([]any{&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
+			&current.Projects, &current.Subject, &current.Issuer, &s.reason}, asked.credentialDest()...)...); err != nil {
 			return nil, err
 		}
 		current.Kind = g.Enrollment.Kind

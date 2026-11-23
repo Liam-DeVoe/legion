@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"slices"
 	"strconv"
@@ -14,6 +15,27 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
+
+// mapFixtureSubjectToPriv replaces m's exchange set with one operator's entry
+// (BROKER_EXCHANGE_ACCOUNTS) mapping fixtureSubject, the account the fixture service's pods run
+// as, to PRIV for insider, under the fixture's one issuer (fixtureIssuer): each such pod's
+// credential names PRIV (Exchange.PodProjects), so its requests and grants are PRIV's.
+func mapFixtureSubjectToPriv(t *testing.T, m *Machine) {
+	t.Helper()
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+}
+
+// privatePod is PRIV's pod: a pod of the fixture's service whose runtime id is runtimeID, enrolled
+// once mapFixtureSubjectToPriv has mapped its account to PRIV.
+func privatePod(t *testing.T, m *Machine, runtimeID string) (string, *ecdsa.PrivateKey) {
+	t.Helper()
+	mapFixtureSubjectToPriv(t, m)
+	return newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, runtimeID)
+}
 
 // TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople: the production path of a
 // private project's agent is a pod whose account an operator's entry maps to the project
@@ -35,12 +57,7 @@ import (
 // carol "PRIV, private, which the session does not name".
 func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
-	if err != nil {
-		t.Fatalf("exchange.NewSet: %v", err)
-	}
-	m.Exchange = set
-	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-priv-"+t.Name())
+	pod, podKey := privatePod(t, m, "pod-priv-"+t.Name())
 
 	plain, err := m.Create(t.Context(), pod, signRequest(t, m, podKey, "carol's unannounced PRIV acquisition: rotate the vendor key", "SHARED_KEY"), "")
 	if err != nil || plain.RecordID == nil {
