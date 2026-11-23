@@ -170,6 +170,39 @@ const allAgentsSelected: LayoutState = {
   requiredGroups: ["chosen-agents"],
 };
 
+/** The first row of the Inbox opened, the way the pointer opens it: below the wide layout its
+ *  reading view stands in place of the list (INFRA-5200), from it up the reading column shows it
+ *  beside the list. */
+const inboxItemOpened: LayoutState = {
+  act: async (page) => {
+    const row = page.locator("[data-inbox-row]").first();
+    const id = await row.getAttribute("data-inbox-row");
+    await row.locator("time").first().click();
+    await ((page.viewportSize()?.width ?? 0) >= 1280
+      ? page.locator(`[data-inbox-row="${id}"][data-inbox-selected="true"]`)
+      : page.locator(`[data-inbox-reading-row="${id}"]`)
+    ).waitFor();
+  },
+  name: "item-opened",
+};
+
+/** That row opened and left again by the reading view's own Inbox control, which brings the
+ *  list back at the row: below the wide layout alone, where the list gave way to the view; from
+ *  it up the list never left, so this reads the opened row beside it. */
+const inboxBackToList: LayoutState = {
+  act: async (page) => {
+    await inboxItemOpened.act(page);
+    if ((page.viewportSize()?.width ?? 0) >= 1280) return;
+    await page
+      .getByTestId("inbox-reading-view")
+      .getByRole("button", { exact: true, name: "Inbox" })
+      .click();
+    await page.getByTestId("inbox-reading-view").waitFor({ state: "detached" });
+    await page.getByTestId("inbox-list").waitFor();
+  },
+  name: "back-to-list",
+};
+
 /** The lists of chips today's issue page draws from the stress issue's data: its 13 labels, its
  *  13 components, its 15 pull requests, and its links that are no pull request. Each is a list of
  *  R3, which `components/CappedGroup.tsx` marks with these names. */
@@ -194,6 +227,7 @@ const additions: Readonly<
   broadcasts: { minElements: shortPage(14) },
   "credentials-machine": { minElements: shortPage(24) },
   "issue-children": { requiredGroups: [...ISSUE_GROUPS, "child-links"] },
+  inbox: { states: [inboxItemOpened, inboxBackToList] },
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
