@@ -223,7 +223,11 @@ step) or send it back with `request_backward_move` (`issue`, `to` the phase of a
 the task, and `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
+`dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
+the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
+To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
+A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
 requirement, which clears the root's coverage flag for it. The root's own checks are proven in
@@ -235,8 +239,12 @@ that a tester step and a reviewer step name and neither refuses, so your accepta
 gate on it: give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-A tester completion that rejects the implementer's results goes back to the implementer, or to
-the earlier step its completion names; a worker that reports no surface reaches the changed path gets the surface built
+The tester's completion carries no verdict: the daemon decides the move by the state of each
+check at the head the tester's record names, once each has a state there that it ends at. When
+each reads yes, the issue goes on to the task's next step, the reviewer in the default steps.
+Otherwise it goes back to the step its completion's `return_to` names, or, with none named, to
+the first implementation step before the tester. That step's task names each check that does
+not pass; a worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
 wakes it when its idle pod was released): once that child

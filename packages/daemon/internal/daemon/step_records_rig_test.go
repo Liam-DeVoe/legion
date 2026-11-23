@@ -274,8 +274,10 @@ func (r *stepRecordsRig) implement() {
 	r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
 }
 
-// testCompletion is the tester's completion of a round it passes.
-var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Verdict: "pass"}
+// testCompletion is the tester's completion of a round it passes: the check state of the head the
+// rig holds passes (finish), and the completion names that head as the one it tested and no
+// verdict.
+var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Commit: stepRecordsHead}
 
 // test is one round of the tester, which passes.
 func (r *stepRecordsRig) test() {
@@ -319,12 +321,17 @@ func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompl
 }
 
 // finish is the end of c's turn: it writes its handoff record of word to Dispatch under its own
-// session (none for word ""), completes, ends its turn, and waits for the issue to reach next.
+// session (none for word ""), completes, ends its turn, and waits for the issue to reach next. A
+// tester's round passes on the check state of the head it tests, which the store holds before its
+// completion, as Dispatch's event of the tester's result puts it there.
 func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	t := r.t
 	t.Helper()
 	if word != "" {
 		req.HandoffID, req.HandoffVersion = r.writeHandoff(c.session, word)
+	}
+	if c.role == claim.RoleTester && next == phase.Reviewing {
+		testedAs(t, r.st.Pool(), r.key, req.Commit, true)
 	}
 	if status, body := r.complete(c, req); status != http.StatusOK {
 		t.Fatalf("the %s's completion = %d %s, want 200", c.role, status, body)

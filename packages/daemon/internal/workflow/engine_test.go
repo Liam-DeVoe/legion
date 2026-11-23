@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -212,7 +213,7 @@ func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrde
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			handoff := func() {
-				if _, err := intake.ApplyFact(ctx, pool, "api", "handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "abc123", HandoffRecord: "implement-1", HandoffVersion: 1, Verdict: "pass"}, engine, admissionStub{}); err != nil {
+				if _, err := intake.ApplyFact(ctx, pool, "api", "handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Commit: "abc123", HandoffRecord: "implement-1", HandoffVersion: 1}, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact handoff: %v", err)
 				}
 			}
@@ -342,27 +343,30 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	}
 }
 
-// A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
-// bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
-// from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
-func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
+// A reviewer started on the tester's pass is told the tester's handoff as the Dispatch record it
+// reads with `dispatch handoff-read`, with the commit that record names, the head the tester
+// tested, and no verdict of the tester's: no completion carries one, and the check states at the
+// head decided the move. (This completion named no commit before a tester's completion was held
+// to name the head it tested.)
+func TestAReviewerIsToldTheTestersRecordAndNoVerdict(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	testedAs(t, pool, engine, "LEGION-208", headOne, true)
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "tester-passed", intake.HandoffComplete{
-		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 3,
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "passed", Commit: headOne, HandoffRecord: "test-handoff", HandoffVersion: 3,
+	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Handoff commit: " + headOne + ". Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
-	if strings.Contains(task, "Handoff verdict") {
-		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
+	if strings.Contains(strings.ToLower(task), "verdict") {
+		t.Fatalf("reviewer task %q still names a verdict", task)
 	}
 }
 
@@ -393,17 +397,6 @@ func rolePrompt(t *testing.T, role claim.Role) string {
 		prompt.Write(part)
 	}
 	return prompt.String()
-}
-
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
-	prompt := reviewerPrompt(t)
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("the reviewer's prompt does not say %q", want)
-		}
-	}
 }
 
 // The reviewer is told the commit its later round reads from, and the entry of each round, by
@@ -440,29 +433,44 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 }
 
 // The architect learns what a phase produced from its phase-finished notice: the worker's own
-// summary, and beside it the verdict the tester gave. Neither stands in for the other; a notice
-// that carried the verdict in its summary told the architect "pass" and nothing the tester wrote.
-func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T) {
-	pool := migratedPool(t)
-	ctx := context.Background()
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
-
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-passed", intake.HandoffComplete{
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: "twelve scenarios pass against the head", Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 1,
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact tester completion: %v", err)
-	}
-	var payload []byte
-	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
-		t.Fatalf("read the phase-finished notice: %v", err)
-	}
-	var notice map[string]any
-	if err := json.Unmarshal(payload, &notice); err != nil {
-		t.Fatalf("decode notice %s: %v", payload, err)
-	}
-	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" || notice["verdict"] != "pass" {
-		t.Fatalf("phase-finished notice = %s, want the tester's summary and its verdict pass", payload)
+// summary, and, for the tester's move back, the reason naming each check that does not pass. No
+// notice carries a verdict: the check states decided the move.
+func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndNoVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		passes bool
+		reason string
+	}{
+		{"a pass", true, ""},
+		{"a fail", false, "these checks do not pass at " + headOne + ": k1: no (fail)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			ctx := context.Background()
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			testedAs(t, pool, engine, "LEGION-208", headOne, tc.passes)
+			if _, err := intake.ApplyFact(ctx, pool, "api", "tester-completed", intake.HandoffComplete{
+				Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: "twelve scenarios pass against the head", Commit: headOne,
+				HandoffRecord: "test-handoff", HandoffVersion: 1,
+			}, engine, admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact tester completion: %v", err)
+			}
+			var payload []byte
+			if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
+				t.Fatalf("read the phase-finished notice: %v", err)
+			}
+			var notice map[string]any
+			if err := json.Unmarshal(payload, &notice); err != nil {
+				t.Fatalf("decode notice %s: %v", payload, err)
+			}
+			_, verdict := notice["verdict"]
+			if reason, _ := notice["reason"].(string); notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" ||
+				verdict || reason != tc.reason {
+				t.Fatalf("phase-finished notice = %s, want the tester's summary, the reason %q and no verdict", payload, tc.reason)
+			}
+		})
 	}
 }
 
@@ -631,15 +639,21 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		},
 		{
 			name: "tester pass", current: phase.Testing, role: claim.RoleTester,
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				testedAs(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-208", headOne, true)
+			},
 			fact: func() intake.Fact {
-				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Verdict: "pass", HandoffRecord: "test", HandoffVersion: 1}
+				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Commit: headOne, HandoffRecord: "test", HandoffVersion: 1}
 			},
 			wantPhase: phase.Reviewing, wantStatus: "needs_review", wantOutbox: []string{"dispatch_status", "supervise", "notice"},
 		},
 		{
 			name: "tester fail", current: phase.Testing, role: claim.RoleTester,
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				testedAs(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-208", headOne, false)
+			},
 			fact: func() intake.Fact {
-				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Verdict: "fail", HandoffRecord: "test", HandoffVersion: 1}
+				return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "claim", Commit: headOne, HandoffRecord: "test", HandoffVersion: 1}
 			},
 			wantPhase: phase.Implementing, wantStatus: "in_progress", wantOutbox: []string{"dispatch_status", "supervise", "notice"},
 		},
@@ -730,9 +744,11 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
 // back to an earlier phase does; the review rounds stand, since no review requested changes. A
 // move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is
-// already live.
+// already live. The edges out of testing are not here: the role running testing is the tester,
+// whose step ends by its checks' states alone, so its move back is refused
+// (TestATestersBackwardMoveOutOfTestingIsRefused holds each of those edges to that refusal).
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
-	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
+	for _, from := range []phase.Phase{phase.Implementing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
 		for _, to := range requiredBackwardTargets(phase.Order, from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
@@ -766,6 +782,117 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A testing step ends by the states of its checks at the head the tester tested, and by nothing
+// else, so the tester has no way out of testing but its completion: its backward move to each
+// earlier phase a backward row serves is refused BACKWARD_REFUSED with a reason that says how the
+// step ends instead, and nothing moves, nothing is counted, no step result is written and nothing
+// is posted on the issue. A target no backward row serves keeps the refusal that names the row,
+// and the reviewer's move back out of reviewing is still taken. Each refusal of the tester finds
+// the run of testing's step open, as the move into testing leaves it, and leaves it open at its
+// one start, with no end written and nothing queued beside its start.
+func TestATestersBackwardMoveOutOfTestingIsRefused(t *testing.T) {
+	seed := func(t *testing.T, at phase.Phase, role claim.Role) *pgxpool.Pool {
+		pool := migratedPool(t)
+		seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: at, Generation: 1, Status: PhaseStatus(at), Rank: "U"})
+		seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
+		return pool
+	}
+	back := func(t *testing.T, pool *pgxpool.Pool, requester claim.Role, to phase.Phase) intake.Result {
+		result, err := intake.ApplyFact(context.Background(), pool, "api", "backward-"+string(to), intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: to,
+			Reason: "the harness needs a fixture the plan does not name"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+		if err != nil {
+			t.Fatalf("ApplyFact backward: %v", err)
+		}
+		return result
+	}
+	// openTesting starts the run of testing's step as the move into testing does, in a fact's
+	// transaction and with no boot pass before it (a boot would open the run itself, as one an
+	// earlier release started), and returns the place its count of starts is kept under and what
+	// the outbox holds with that start.
+	openTesting := func(t *testing.T, pool *pgxpool.Pool) (record.StepPlace, []heldRow) {
+		t.Helper()
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+			if err != nil {
+				return err
+			}
+			return engine.StartStepRecord(ctx, tx, *issue)
+		})
+		// Testing is the third step of the default task, the task of an issue with no plan rows.
+		place := placeOf("step", 3)
+		if row := readStepStartRow(t, pool, "LEGION-208", place); row.starts != 1 || row.run != record.RunOpen {
+			t.Fatalf("the seeded run of testing = %+v, want one start, open", row)
+		}
+		queued := queuedRows(t, pool)
+		if writes := stepWrites(t, pool, "LEGION-208"); len(writes) != 1 || !isStart(writes[0]) || len(queued) != 1 {
+			t.Fatalf("the seeded run of testing queued %+v with step writes %+v, want its start alone", queued, writes)
+		}
+		return place, queued
+	}
+	// stillOpen fails unless the run of testing's step at place is open at its one start, no end
+	// of it is written, and the outbox holds what it held before the refusal.
+	stillOpen := func(t *testing.T, pool *pgxpool.Pool, place record.StepPlace, before []heldRow) {
+		t.Helper()
+		if row := readStepStartRow(t, pool, "LEGION-208", place); row.starts != 1 || row.run != record.RunOpen {
+			t.Fatalf("after the refused move the run of testing is %+v, want it open at its one start", row)
+		}
+		for _, write := range stepWrites(t, pool, "LEGION-208") {
+			if write.EndedAt != nil || write.Result != nil {
+				t.Fatalf("the refused move wrote the step write %+v, want no end and no result", write)
+			}
+		}
+		if queued := queuedRows(t, pool); !reflect.DeepEqual(queued, before) {
+			t.Fatalf("the refused move left the outbox holding %+v, want what it held before, %+v: no step result, no post and no start", queued, before)
+		}
+	}
+	targets := requiredBackwardTargets(phase.Order, phase.Testing)
+	if len(targets) == 0 {
+		t.Fatal("testing has no backward edge to refuse, so nothing was tested")
+	}
+	for _, to := range targets {
+		t.Run("the tester to "+string(to), func(t *testing.T) {
+			pool := seed(t, phase.Testing, claim.RoleTester)
+			place, queued := openTesting(t, pool)
+			before := phaseRowOf(t, pool, claim.RoleTester)
+			result := back(t, pool, claim.RoleTester, to)
+			if refusalCode(result) != "BACKWARD_REFUSED" {
+				t.Fatalf("the tester's move to %s = %+v, want BACKWARD_REFUSED", to, result.Refusal)
+			}
+			for _, says := range []string{"ends by the states of its checks", "`dispatch result`", "a fail, with its evidence, for a check you cannot verify", "handoff_complete"} {
+				if !strings.Contains(result.Refusal.Message, says) {
+					t.Fatalf("the refusal reads %q, want it to say %q", result.Refusal.Message, says)
+				}
+			}
+			if got := issuePhase(t, pool); got != phase.Testing {
+				t.Fatalf("after the refused move the issue is in %s, want testing", got)
+			}
+			if after := phaseRowOf(t, pool, claim.RoleTester); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the refused move took the tester's row from %+v to %+v, want nothing written", before, after)
+			}
+			stillOpen(t, pool, place, queued)
+		})
+	}
+	t.Run("the tester to a phase no backward row serves", func(t *testing.T) {
+		pool := seed(t, phase.Testing, claim.RoleTester)
+		place, queued := openTesting(t, pool)
+		result := back(t, pool, claim.RoleTester, phase.Reviewing)
+		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, "no backward row of testing serves reviewing") {
+			t.Fatalf("the tester's move to reviewing = %+v, want BACKWARD_REFUSED naming the row no backward row serves", result.Refusal)
+		}
+		stillOpen(t, pool, place, queued)
+	})
+	t.Run("the reviewer out of reviewing", func(t *testing.T) {
+		pool := seed(t, phase.Reviewing, claim.RoleReviewer)
+		if result := back(t, pool, claim.RoleReviewer, phase.Implementing); result.Refusal != nil {
+			t.Fatalf("the reviewer's move to implementing was refused %+v, want it taken", result.Refusal)
+		}
+		if got := issuePhase(t, pool); got != phase.Implementing {
+			t.Fatalf("after the reviewer's move the issue is in %s, want implementing", got)
+		}
+	})
 }
 
 // A move back into planning writes planning's own status, in_progress, over the one the issue
@@ -1125,28 +1252,57 @@ func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int)
 // that said nothing, which is how a tester's return to implementing looked like a phase that
 // finished with no verdict. So the notice names the move: the phase it went back to, the role that
 // asked, and that role's own words.
+//
+// The case is a harness that needs a fixture the plan does not name, found in testing. The tester
+// used to send the work back with its own move; a testing step now ends by its checks' states
+// alone, so that move is refused (TestATestersBackwardMoveOutOfTestingIsRefused), and the tester
+// records a fail of the check it cannot verify, with that evidence, and completes at the head it
+// tested. The issue goes back to implementing with a task naming that check, and the implementer,
+// the role running implementing, takes the work back to planning with its own move, whose notice
+// names the move.
 func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
+	const why = "the harness needs a fixture the plan does not name"
 	pool := migratedPool(t)
 	ctx := context.Background()
+	engine := testEngine(config.DesignGateRootIssues, nil)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
+		HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
 
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-back", intake.BackwardMove{
-		Issue: "LEGION-208", Requester: claim.RoleTester, To: phase.Implementing, Reason: "the harness needs a fixture the plan does not name",
-	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact the tester's backward move: %v", err)
+	result, err := intake.ApplyFact(ctx, pool, "api", "tester-back", intake.BackwardMove{
+		Issue: "LEGION-208", Requester: claim.RoleTester, To: phase.Implementing, Reason: why,
+	}, engine, admissionStub{})
+	if err != nil || refusalCode(result) != "BACKWARD_REFUSED" {
+		t.Fatalf("the tester's backward move = %+v, %v; want BACKWARD_REFUSED", result.Refusal, err)
 	}
+	assertPhase(t, pool, phase.Testing)
+
+	testedAs(t, pool, engine, "LEGION-208", headOne, false)
+	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
+		Summary: why, Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
+	assertPhase(t, pool, phase.Implementing)
+	if task := startTask(t, pool, claim.RoleImplementer); !strings.Contains(task, "k1: no (fail)") {
+		t.Fatalf("the implementer's task %q, want it to name the check the tester failed, k1: no (fail)", task)
+	}
+
+	if result, err := intake.ApplyFact(ctx, pool, "api", "implementer-back", intake.BackwardMove{
+		Issue: "LEGION-208", Requester: claim.RoleImplementer, To: phase.Planning, Reason: why,
+	}, engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("the implementer's backward move = %+v, %v; want it taken", result.Refusal, err)
+	}
+	assertPhase(t, pool, phase.Planning)
 	var payload []byte
-	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
-		t.Fatalf("read the phase-finished notice: %v", err)
+	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished' and payload->>'role' = 'implementer'").Scan(&payload); err != nil {
+		t.Fatalf("read the implementer's phase-finished notice: %v", err)
 	}
 	var notice map[string]any
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode notice %s: %v", payload, err)
 	}
-	want := "moved back to implementing by the tester: the harness needs a fixture the plan does not name"
-	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["reason"] != want {
-		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing reading %q", payload, want)
+	want := "moved back to planning by the implementer: " + why
+	if notice["role"] != "implementer" || notice["phase"] != "implementing" || notice["reason"] != want {
+		t.Fatalf("the backward move's notice = %s, want the implementer's phase-finished for implementing reading %q", payload, want)
 	}
 	if notice["summary"] != nil || notice["verdict"] != nil {
 		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)

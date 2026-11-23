@@ -194,6 +194,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
       issue: z
         .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
         .optional(),
+      // A production check report's verdict alone. A phase completion carries none: Dispatch's
+      // check states at the tested head decide the testing phase, and executePhaseOp refuses a
+      // verdict once the record says the completion is a phase's, as the daemon does
+      // (VERDICT_NOT_TAKEN).
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -318,6 +322,8 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
+    "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "That move counts no review round: only a review that requests changes counts one. ",
   readBuild:
@@ -342,7 +348,7 @@ export const PHASE_OP_SENTENCES = {
 export const STALE_ENTRY_INSTRUCTION =
   "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. " +
   "That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's " +
-  "record, commit or verdict";
+  "record or commit";
 
 /**
  * The `legion` tool's description on every host, one template: what the tool is, then `before`,
@@ -364,9 +370,10 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
-    "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+    "architect), and `verdict` pass|pending|fail on a production check report alone (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
+    "A phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states at the tested head " +
+    "decide the testing phase. " +
     "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
     "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
     "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
@@ -377,7 +384,8 @@ export function legionToolDescription(host: {
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, a test record naming no head, since the daemon " +
+    "reads the check states at the head it names and refuses a tester's completion naming none (TESTED_HEAD_REQUIRED), and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -557,7 +565,7 @@ export async function readBuild(runtime: {
  * then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them, and a completion's
  * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
- * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
+ * report's verdict, its claim's role against the check's own, its `wake_at`, a verdict or
  * `wake_at` on a phase completion, the issue a completion or a move names, a completion's
  * `return_to` without the verdict `fail` or on a done issue), then a refused handoff report
  * (`findHandoffReport`). A daemon refusal throws its code and sentence.
@@ -569,8 +577,9 @@ export async function readBuild(runtime: {
  * call what its phase's completion carries, and the daemon's answer decides. A check report names
  * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
  * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
- * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
- * completion, and so is `wake_at`. A rating of the plan is sent as given on either: which
+ * is looked up and none is sent. A phase completion carries no verdict, since Dispatch's check
+ * states at the tested head decide the testing phase, and no `wake_at`: each is refused there,
+ * before the report is looked up. A rating of the plan is sent as given on either: which
  * completion ends the retro, and so takes one, is the daemon's to say (`PLAN_RATING_UNEXPECTED`,
  * `PLAN_RATING_REQUIRED`).
  */
@@ -646,7 +655,10 @@ export async function executePhaseOp(
       // An architect's grant serves its whole tree, so its move names the issue it returns from
       // accepting. A phase worker's grant names its own issue, the only one it may move, so its
       // request leaves `issue` out; one naming another issue is refused here, as the daemon would
-      // (ISSUE_NOT_GRANTS).
+      // (ISSUE_NOT_GRANTS). The tester's move out of testing is the daemon's to refuse
+      // (BACKWARD_REFUSED), and the refusal's sentence reaches the agent: a testing step ends by
+      // its checks' states alone, so the tester records a fail of each check it cannot verify and
+      // completes. The issue's phase is the daemon's record, which this call does not read.
       let issue: string | undefined;
       if (claim.role === "architect") {
         const named = args.issue?.trim() ?? "";
@@ -939,9 +951,12 @@ async function completeHandoff(
       ...rating,
     });
   }
-  if (args.verdict === "pending") {
+  // A phase completion carries no verdict: Dispatch's check states at the tested head decide the
+  // testing phase, and the daemon refuses a phase completion that names one (VERDICT_NOT_TAKEN).
+  // This says so without the round trip, whatever the verdict and whichever role sends it.
+  if (args.verdict !== undefined) {
     throw new Error(
-      "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+      "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase"
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
@@ -957,7 +972,7 @@ async function completeHandoff(
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
-    verdict: args.verdict ?? "",
+    verdict: "",
     ...report,
     ...rating,
     ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),

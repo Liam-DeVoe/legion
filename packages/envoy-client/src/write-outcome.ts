@@ -29,26 +29,30 @@ export type WriteState = "nothing-sent" | "may-have-landed";
 
 /** What one step of a write met. */
 export type WriteEvent =
+  /** An echoed auth refusal cannot settle a possibly committed attempt. */
+  | "uncommitted-401"
   /** A 2xx whose body was read whole: Dispatch ran the write, or replayed the answer it stored
    *  under the key. */
   | "applied"
-  /** A non-2xx final refusal, settled even after a possible landing: an answer marked
+  /** A non-2xx final refusal, settled even after a possible landing, that names exactly this
+   *  request's key back, as every answer of Dispatch's keyed layer does: an answer marked
    *  `Idempotency-Replayed: ?1` (a stored or a recovery replay), `409 KEY_COMMITTED`,
-   *  `422 KEY_REUSED` echoing exactly this request's key (every attempt of a call carries its
-   *  bytes, so a key held under another digest was claimed by no attempt of it), or a fresh
-   *  answer echoing exactly this request's key with a 4xx Dispatch stores (not 401, 408 or 429)
-   *  and none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. It holds once every replica
-   *  runs `b1c42d1d7d`; an older one could land an attempt unkeyed. */
+   *  `422 KEY_REUSED` (every attempt of a call carries its bytes, so a key held under another
+   *  digest was claimed by no attempt of it), or a fresh answer with a 4xx Dispatch stores (not
+   *  401, 408 or 429) and none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. It holds once
+   *  every replica runs `b1c42d1d7d`; an older one could land an attempt unkeyed. */
   | "judged"
   /** A non-2xx answer without that proof: a page, a refusal made before the key claim (none
-   *  echoes the key), an answer echoing another key, a second dead token, or a 1xx. */
+   *  echoes the key), an answer echoing another key or none, a second dead token, or a 1xx. */
   | "unjudged"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that is no Dispatch answer: a captive portal's or proxy's empty or non-JSON page, or
-   *  one without the write's key after an earlier answer of the call carried it back, so it says
-   *  nothing of whether the write ran. */
+  /** A 2xx that is no answer of Dispatch's to this write (a captive portal's or a proxy's own
+   *  page), so it says nothing of whether the write ran: its body is empty or not JSON-typed where
+   *  its status carries one, though every answer Dispatch writes to a keyed write is JSON or a
+   *  bodiless 204 or 205; or it carried no key back, though every Dispatch runs the keyed layer,
+   *  whose every answer to a keyed write carries it. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
@@ -127,6 +131,7 @@ const nothing = (action: WriteAction): WriteStep => ({ state: "nothing-sent", ac
 export const WRITE_TRANSITIONS: {
   readonly [E in WriteEvent]: { readonly [S in WriteState]: WriteStep };
 } = {
+  "uncommitted-401": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   applied: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   judged: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   unjudged: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },

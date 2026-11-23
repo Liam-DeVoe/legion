@@ -1,36 +1,42 @@
 #!/usr/bin/env bun
 /**
- * A stand-in for the Legion daemon that serves exactly the routes a phase worker's `legion` tool
+ * A stand-in for the Legion daemon that serves exactly the routes a Legion worker's `legion` tool
  * hits in a skill scenario: the worker's claim registration (`claims/register`, `claims/ready`,
  * the daemon's claim routes the plugin boots through), the grant the tool mints in-process before
  * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/issues/<key>/record`,
  * the tool's `read_record` and the reminder's own check, with `GET /legion/v1/state` beside it),
  * the health route (`GET /healthz`, which the tool's `read_build` reads for the contract this
- * stand-in states on it) and the phase completion (`handoff/complete`, the tool's
- * `handoff_complete`, the one route here that redeems a grant). No credential route and no grant
- * file: a pane's `gh` and `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`,
- * which `daemon-pane.go` writes, and no agent runs `legion` from bash.
+ * stand-in states on it), the phase completion (`handoff/complete`, the tool's
+ * `handoff_complete`), and an architect's acceptance and move back of an issue in `accepting`
+ * (`signoff`, the tool's `sign_off`, and `phase/backward`, its `request_backward_move`). The last
+ * three each redeem a grant. No credential route and no grant file: a pane's `gh` and `git` read
+ * the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go` writes, and
+ * no agent runs `legion` from bash.
  *
  * Every request and response body is the Go daemon's (`@legion/contracts/legion-api`): the
- * tool's grant request, its completion, and the state document. The grant rule mirrors the real
- * daemon's: a grant lives for 60 seconds and redeems any number of times while it lives; an
- * unknown or expired grant id answers 403 `{"error":"Invalid or expired grant"}`. Nothing is
- * single-use. A completion of a phase that ends with a handoff record (daemon-pane.go's handoff
- * word for the role's phase) must name one, `handoffId` and a positive `handoffVersion`, and is
- * refused 400 `HANDOFF_RECORD_REQUIRED` otherwise; a completion of a phase that ends with none
- * and names one is refused 409 `HANDOFF_RECORD_MISMATCH`; both as the real daemon refuses them
- * (`L/api/handoff.go`). Any other completion answers `{}`. The stand-in reads no record from
- * Dispatch: the `legion` tool found the newest record of the phase on Dispatch before posting, and
- * the rig's scorer reads that record back from Dispatch and holds it to the run's session
- * (score.ts testerProof).
+ * tool's grant request, its completion, its sign-off and its move back, and the state document.
+ * The grant rule mirrors the real daemon's: a grant lives for 60 seconds and redeems any number of
+ * times while it lives; an unknown or expired grant id answers 403
+ * `{"error":"Invalid or expired grant"}`. Nothing is single-use. A completion of a phase that ends
+ * with a handoff record (daemon-pane.go's handoff word for the role's phase) must name one,
+ * `handoffId` and a positive `handoffVersion`, and is refused 400 `HANDOFF_RECORD_REQUIRED`
+ * otherwise; a completion of a phase that ends with none and names one is refused 409
+ * `HANDOFF_RECORD_MISMATCH`; both as the real daemon refuses them (`L/api/handoff.go`). Any other
+ * completion, every sign-off and every move back answers `{}`: the stand-in moves no phase. The
+ * stand-in reads no record from Dispatch: the `legion` tool found the newest record of the phase on
+ * Dispatch before posting, and the rig's scorer reads that record back from Dispatch and holds it
+ * to the run's session (score.ts testerProof).
  *
  * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
- * mintedGrantId?, handoffId?, handoffVersion?}`, the run's record of what reached the daemon; a
- * completion's line carries the record it named.
+ * mintedGrantId?, handoffId?, handoffVersion?, body?}`, the run's record of what reached the
+ * daemon; a completion's line carries the record it named, and a sign-off's or a move back's its
+ * whole body (score.ts headsArchitect).
  *
- * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>`
- * The state document holds that one issue, in the phase its role works. Prints
- * `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's pick).
+ * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> [<phase>]`
+ * The state document holds that one issue, in the phase its role works, or in <phase> for a role
+ * that works none (the architect, which daemon-pane.go's `phase` refuses), whose phase ends with no
+ * handoff record. Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0:
+ * the kernel's pick).
  */
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
@@ -39,14 +45,17 @@ import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
   LegionHealthResponse,
+  LegionPhaseBackwardRequest,
+  LegionSignOffRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import { RIG_WORLD } from "./rig-world";
 
 const GRANT_TTL_MS = 60_000;
-const [portArg, logFile, bootTokenFile, project, issue, role] = Bun.argv.slice(2);
+const [portArg, logFile, bootTokenFile, project, issue, role, phaseArg] = Bun.argv.slice(2);
 if (
   portArg === undefined ||
   logFile === undefined ||
@@ -56,7 +65,7 @@ if (
   role === undefined
 ) {
   console.error(
-    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>"
+    "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> [<phase>]"
   );
   process.exit(2);
 }
@@ -72,13 +81,19 @@ const ROLE_TOKEN = roleToken(project, issue, role);
 const SESSION_SECRET = fixtureSecret("reg");
 
 const startedAt = new Date().toISOString();
-/** The phase the role works and the word of the handoff record it ends with, empty when none. */
-const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n");
-/** `GET /legion/v1/state`: the one issue the worker holds, admitted in the phase its role works
- * (`workflow.RoleFor`, through daemon-pane.go), on the rig's one repository. `capabilities` is the
- * deployment's capability report, `strandedClaims` the claims nothing will wake, `heldOutboxRows`
- * the lifecycle rows held behind their issues' running ones, `consumers` the lag of the daemon's
- * durable consumers and `repositories` the repositories the live records name, each of which the reader requires;
+/** The phase the issue is in and the word of the handoff record it ends with, empty when none: the
+ * phase the role works, or the one the seventh argument names, with no handoff record. */
+const [PHASE = "", HANDOFF_WORD = ""] =
+  phaseArg === undefined
+    ? runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n")
+    : [phaseArg, ""];
+/** `GET /legion/v1/state`: the one issue the worker holds, admitted in PHASE (the phase its role
+ * works, through daemon-pane.go, or the seventh argument's), on the rig's one repository
+ * (rig-world.json's, which the pane's addressing names).
+ * `capabilities` is the deployment's capability report, `strandedClaims` the claims nothing will
+ * wake, `heldOutboxRows` the lifecycle rows held behind their issues' running ones, `consumers`
+ * the lag of the daemon's durable consumers and `repositories` the repositories the live records
+ * name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -95,8 +110,8 @@ const STATE = LegionStateResponse.parse({
       phase: PHASE,
       status: "in_progress",
       tree: issue,
-      repo: "sjawhar/legion-smoke",
-      defaultBranch: "main",
+      repo: RIG_WORLD.repository,
+      defaultBranch: RIG_WORLD.defaultBranch,
       workers: {},
     },
   },
@@ -106,7 +121,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
+    live: [{ repo: RIG_WORLD.repository, apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
@@ -133,6 +148,7 @@ interface LogLine {
   readonly mintedGrantId?: string;
   readonly handoffId?: string;
   readonly handoffVersion?: number;
+  readonly body?: unknown;
 }
 
 const expectedBootToken = (await Bun.file(bootTokenFile).text()).trim();
@@ -177,7 +193,10 @@ function resolveGrant(grantId: string): Response | undefined {
   return undefined;
 }
 
-function handle(path: string, body: unknown): { response: Response; mintedGrantId?: string } {
+function handle(
+  path: string,
+  body: unknown
+): { response: Response; mintedGrantId?: string; logged?: unknown } {
   switch (path) {
     case "/legion/v1/claims/register": {
       if (stringField(body, "bootToken") !== expectedBootToken) {
@@ -242,6 +261,17 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       }
       return { response: json(200, {}) };
     }
+    case "/legion/v1/signoff":
+    case "/legion/v1/phase/backward": {
+      const parsed =
+        path === "/legion/v1/signoff"
+          ? LegionSignOffRequest.safeParse(body)
+          : LegionPhaseBackwardRequest.safeParse(body);
+      if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
+      const refused = resolveGrant(parsed.data.grantId);
+      if (refused) return { response: refused, logged: parsed.data };
+      return { response: json(200, {}), logged: parsed.data };
+    }
     default:
       return { response: json(404, { error: `no route for ${path}` }) };
   }
@@ -251,12 +281,13 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
 const RECORD_ROUTE = /^\/legion\/v1\/issues\/([^/]+)\/record$/;
 
 /** The answer to one request: the POST routes `handle` serves, then the three GET routes, then
- * the 404 every other request gets. */
+ * the 404 every other request gets. `logged` is the body a sign-off's or a move back's log line
+ * carries (`handle`). */
 function answer(
   method: string,
   path: string,
   body: unknown
-): { response: Response; mintedGrantId?: string } {
+): { response: Response; mintedGrantId?: string; logged?: unknown } {
   if (method === "POST") return handle(path, body);
   if (method === "GET") {
     if (path === "/healthz") {
@@ -297,7 +328,7 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    const { response, mintedGrantId } = answer(request.method, path, body);
+    const { response, mintedGrantId, logged } = answer(request.method, path, body);
     const line: LogLine = {
       at: new Date().toISOString(),
       path,
@@ -315,6 +346,7 @@ const server = Bun.serve({
       ...(numberField(body, "handoffVersion") === undefined
         ? {}
         : { handoffVersion: numberField(body, "handoffVersion") }),
+      ...(logged === undefined ? {} : { body: logged }),
     };
     await appendFile(logFile, `${JSON.stringify(line)}\n`);
     return response;

@@ -400,18 +400,18 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 }
 
 // handBackOwn publishes msg's hand-back after after, the answer a handler makes of its own
-// (Intake.deliver's ErrHeadNotStored case): only while this delivery may answer the durable
-// (mayAnswer), which needs !stopping. So the connected read in mayHandBack can withhold only
-// when a stop begins between the two checks. A handler makes it before or after any stop
-// begins, and the stop waits for that handler.
+// (Intake.deliver's ErrHeadNotStored and errCheckStatesNotMarked cases): only while this
+// delivery may answer the durable (mayAnswer), which needs !stopping. So the connected read in
+// mayHandBack can withhold only when a stop begins between the two checks. A handler makes it
+// before or after any stop begins, and the stop waits for that handler.
 func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 	if !d.mayAnswer() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
+		slog.Warn("dispatch delivery: the hold no longer covers this delivery or its subscription has stopped, so the envelope its handler asked to have redelivered is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
+		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope its handler asked to have redelivered is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, after)
@@ -550,7 +550,7 @@ func (d *intakeDelivery) holdCovers() bool {
 
 // mayAnswer reports whether this delivery may answer the durable with a hand-back of its own,
 // which is the one answer no stop of this intake makes for it (Intake.deliver's ErrHeadNotStored
-// case). Two things have to hold, and both are the hold's:
+// and errCheckStatesNotMarked cases). Two things have to hold, and both are the hold's:
 //
 //   - the hold has not passed its loss deadline (holdCovers), so no other process can hold the
 //     durable yet;
@@ -583,13 +583,14 @@ func (d *intakeDelivery) mayAnswer() bool {
 }
 
 // intakeKey reads from a message's subject, notifications.github.<owner>.<repo>.<kind>..., and
-// from its envelope, whether the intake wants it and the key its handler runs under. Only three
+// from its envelope, whether the intake wants it and the key its handler runs under. Only four
 // shapes can carry a kind route handles: a pull request's own subject, pr.<n> and nothing after
-// it (pr.<n>.review and pr.<n>.comment carry other kinds, contracts' githubTopic), a workflow
-// run's, workflow.<file>.<action>, and a push of a branch's, push.branch.<branch>, whose branch is
-// one segment however many dots or slashes it holds (contracts.GithubPushSubject). Every other
-// subject -- checks, comments, issues, a push of a tag (push.tag.<tag>), job events -- is not
-// wanted, and is decided with no decode at all.
+// it (pr.<n>.review and pr.<n>.comment carry other kinds, contracts' githubTopic), the
+// settlement of a pull request's CI runs at one commit, pr.<n>.checks, which the listener's CI
+// summary loop publishes (cistore), a workflow run's, workflow.<file>.<action>, and a push of a
+// branch's, push.branch.<branch>, whose branch is one segment however many dots or slashes it
+// holds (contracts.GithubPushSubject). Every other subject -- comments, issues, a push of a tag
+// (push.tag.<tag>), job events -- is not wanted, and is decided with no decode at all.
 //
 // Every wanted message is decoded, and one whose subject names a repository other than the one
 // its payload names is not wanted. That message is the second copy the listener publishes of a
@@ -608,7 +609,9 @@ func (d *intakeDelivery) mayAnswer() bool {
 // and deliver would otherwise decode it itself. The payload is another matter -- route parses the
 // same payload string again for its kind and its fields -- so a pull request's or a push's message
 // pays one extra JSON parse, which is what the copy rule costs. A pull request is keyed by its
-// subject's repository and number. A push of a branch is keyed by its subject's repository alone,
+// subject's repository and number, and so is the settlement of its checks: the settlement reads
+// the head row the pull request's own envelopes write, so it runs after the ones that arrived
+// before it and never beside them. A push of a branch is keyed by its subject's repository alone,
 // `push <owner>/<repo>`: its handler is the importer's one read of that repository's sources,
 // which returns without waiting for an import (PushImports), so the pushes of one repository,
 // handled in delivery order, wait for one another for that read alone. A workflow run's subject
@@ -628,9 +631,10 @@ func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wante
 		return "", nil, false
 	}
 	pullRequest := tokens[4] == "pr" && len(tokens) == 6
+	checks := tokens[4] == "pr" && len(tokens) == 7 && tokens[6] == "checks"
 	workflow := tokens[4] == "workflow" && len(tokens) == 7
 	branchPush := tokens[4] == "push" && len(tokens) == 7 && tokens[5] == "branch"
-	if !pullRequest && !workflow && !branchPush {
+	if !pullRequest && !checks && !workflow && !branchPush {
 		return "", nil, false
 	}
 	decoded, err := decodeEnvelope(msg.Data)
@@ -654,9 +658,10 @@ func intakeKey(msg *natsgo.Msg) (key string, envelope *contracts.Envelope, wante
 }
 
 // subjectKey is the key a message keeps when its subject is all there is to key it by: a pull
-// request by its subject's repository and number, a push of a branch by its subject's repository,
-// and a workflow run by its whole subject, since that subject names the workflow file and not the
-// run. It is built where it is returned, so a message pays for the one key it is handled under.
+// request, and the settlement of its checks, by its subject's repository and number, a push of a
+// branch by its subject's repository, and a workflow run by its whole subject, since that subject
+// names the workflow file and not the run. It is built where it is returned, so a message pays
+// for the one key it is handled under.
 func subjectKey(subject string, tokens []string) string {
 	switch tokens[4] {
 	case "pr":

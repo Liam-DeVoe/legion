@@ -35,11 +35,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -201,10 +201,11 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the nine test-only settings of the broker's local stack, the
-// airlock's eight and the judge's one, each as a Config the refusal below reads and as the
-// environment a real broker is started with. One row per setting: the refusal has to name
-// whichever one it found, since an operator reads from it which setting to take out.
+// airlockTestSettings is the ten test-only settings of the broker's local stack, the
+// airlock's eight, the result grant's one and the judge's one, each as a Config the refusal
+// below reads and as the environment a real broker is started with. One row per setting: the
+// refusal has to name whichever one it found, since an operator reads from it which setting to
+// take out.
 func airlockTestSettings() []struct {
 	name string
 	cfg  func(*config.Config)
@@ -225,11 +226,12 @@ func airlockTestSettings() []struct {
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true"},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test"},
+		{"BROKER_RESULT_GRANT_TEST_SECONDS", func(c *config.Config) { c.ResultGrantTestSeconds = 2 }, "2"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true"},
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the nine points the broker at
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the ten points the broker at
 // a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
 // own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
@@ -247,7 +249,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all nine at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all ten at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -256,7 +258,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all nine with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all ten with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -264,7 +266,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the nine, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the ten, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -1301,7 +1303,7 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 	// A broker whose main does not set its logging up writes the refusal as text, with the
 	// placeholder in it.
 	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
-		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
+		placeholder := strings.ToUpper(placeholder.Prefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
 		path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
 		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
 			[]string{placeholder, strings.ToLower(placeholder)})

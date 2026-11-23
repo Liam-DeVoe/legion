@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
@@ -6,6 +7,7 @@ import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -643,24 +645,28 @@ const rejectedCommentFrameRaw = JSON.stringify({
   trace_id: "dispatch-malformed-comment",
 })
 
+// The reply is Dispatch's own answer, which names the call's key back, so the channel reports it
+// as made: it writes no line saying it could not report the rejected delivery.
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
   let server: Server<undefined> | undefined
+  const stderr = spyOn(process.stderr, "write")
   try {
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
       readonly body: unknown
     }> = []
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -674,6 +680,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
     // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+    const lines = stderr.mock.calls.map(([chunk]) => String(chunk))
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
 
     expect(notifier.notifications).toEqual([])
     expect(replies).toEqual([
@@ -688,6 +696,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    stderr.mockRestore()
     server?.stop(true)
   }
 })
@@ -709,12 +718,12 @@ test("a Dispatch frame the channel answered with an error is answered again when
     const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         const path = new URL(request.url).pathname
         replied.push(path)
         if (path.includes("55555555")) controlAnswered.resolve()
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -763,14 +772,14 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     }> = []
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -823,6 +832,13 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 })
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+/**
+ * What each channel server this file starts is given beside its own environment: no transpiler
+ * cache. Its HOME is a folder of its row (`temporaryHome`), where Bun keeps that cache, about 259
+ * files, and the fixture's afterEach removes the folder. With the cache off the removal reads only
+ * what the server itself wrote.
+ */
+const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
@@ -839,7 +855,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...env, ...CHILD_BUN },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -945,6 +961,21 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
+}, 20_000)
+
+// The row's folder is the server's HOME, and the fixture's afterEach removes it: what the server
+// leaves there is all that removal reads.
+test("the channel server leaves no Bun cache in its HOME", async () => {
+  const home = temporaryHome("cache")
+  const configDirectory = join(home, "claude-config")
+  await mkdir(configDirectory)
+  const { exitCode } = await runChannelServer({
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDirectory,
+    CLAUDE_CODE_SESSION_ID: "ses_cache",
+    CLAUDE_PLUGIN_DATA: home,
+  })
+  expect({ exitCode, cache: existsSync(join(home, ".bun")) }).toEqual({ exitCode: 0, cache: false })
 }, 20_000)
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
@@ -1055,6 +1086,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         CLAUDE_CONFIG_DIR: configDirectory,
         CLAUDE_CODE_SESSION_ID: "ses_credentials",
         CLAUDE_PLUGIN_DATA: home,
+        ...CHILD_BUN,
       },
       stdin: "pipe",
       stdout: "pipe",

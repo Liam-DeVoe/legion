@@ -77,10 +77,13 @@ import (
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
 //     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
 //     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
-//     sends a failed write again under its key whatever the echo says. It reads the echo only to
-//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
-//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
-//     a refusal back into an unsettled write.
+//     sends a failed write again under its key whatever the echo says. It reads the echo to settle
+//     an answer (answerEvent, packages/envoy-client): a 2xx that names no key back, or another
+//     request's, is no answer of Dispatch's and leaves the write unsettled; an echoed 401 may
+//     follow a commit; and a non-2xx is final only where it echoes exactly its key - a replay, a
+//     409 KEY_COMMITTED, a 422 KEY_REUSED, or a fresh 4xx the handler stored. So a change that
+//     drops or moves the echo turns every stored write, and every such refusal, back into an
+//     unsettled one.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
@@ -484,12 +487,17 @@ func requestKeyHeader(r *http.Request) (key string, present bool, err error) {
 }
 
 // requestKeyLogin is whom a caller's keys belong to: a person's canonical login, whether they write
-// from the dashboard or through an agent's personal token, a service token's subject, or the shared
-// agent token, which names nobody.
+// from the dashboard or through an agent's personal token, a CI job's run for its results token,
+// a service token's subject, or the shared agent token, which names nobody. A results token names
+// its result entry's person, who sent nothing (R12), so its keys are its run's,
+// `ci-run:<repository>#<check run>`: the repository and the check run of the job, which no other
+// job of any run shares, and two jobs of one entry never replay each other's writes.
 func requestKeyLogin(actor model.Actor, human bool) string {
 	switch {
 	case human:
 		return model.CanonicalLogin(actor.ID)
+	case actor.Credential != nil && actor.Credential.ResultsOnly && actor.Credential.CI != nil:
+		return "ci-run:" + actor.Credential.CI.Repository + "#" + actor.Credential.CI.CheckRunID
 	case actor.Owner != nil:
 		return model.CanonicalLogin(*actor.Owner)
 	case actor.Service != nil:

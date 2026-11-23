@@ -1207,8 +1207,9 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
 });
 
 // The checking role's report carries no commit (the look pushed nothing) and a verdict the
-// daemon holds to pass, pending or fail; a phase completion keeps its commit. A pending report
-// names when the agent asks to be woken for its next look, an offset timestamp.
+// daemon holds to pass, pending or fail; a phase completion keeps its commit and, from contract
+// 221, carries the empty verdict. A pending report names when the agent asks to be woken for its
+// next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
   const report = { grantId: "grant-207", summary: "Driven in production." };
   for (const verdict of ["pass", "pending", "fail"]) {
@@ -1263,9 +1264,10 @@ test("wakeAt refuses a time with no seconds, as the daemon's decode does", () =>
   }
 });
 
-// A file-backed phase's completion names the Dispatch handoff record the worker wrote: the
-// planner, tester and reviewer report it alone, the implementer with the commit it pushed. A record
-// is named by a non-empty id and a positive version.
+// A file-backed phase's completion names the Dispatch handoff record the worker wrote, and
+// carries the empty verdict: the planner, tester and reviewer report the record alone, the
+// implementer with the commit it pushed. A record is named by a non-empty id and a positive
+// version.
 test("a phase completion names its handoff record", () => {
   const planner = {
     grantId: "grant-208",

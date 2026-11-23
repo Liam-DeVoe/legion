@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `LegionHandoffCompleteRequest`'s documentation says what contract 221 takes: `verdict` is
+  `pass`, `pending` or `fail` on a production check report and the empty string on every phase
+  completion, which the daemon refuses `VERDICT_NOT_TAKEN` when it names one. The schema is
+  unchanged.
+time: 2026-11-21T13:48:28Z
+custom:
+    Issue: check-states-tool

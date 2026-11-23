@@ -119,6 +119,39 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real
+      # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
+      # the real secrets broker for the airlock placeholder of a result grant, the real CLI, run
+      # as its child, writes with that placeholder alone through the broker's airlock proxy,
+      # which puts the run's results token in its place, and the real Dispatch server stores the
+      # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two
+      # brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and
+      # one for their proxy ports. It builds from this tree ./cmd/cipherd, ./cmd/dev-oidc-issuer,
+      # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
+      # on this job's Postgres; it needs no container and no fixed port.
+      - name: A CI job's result through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
+        working-directory: packages/envoy-client
+      # The same path for a check of an issue's Verification document that its ci_check gives to
+      # the job: the job records the check's result on a push of the issue's branch with its own
+      # identity, and `dispatch results --issue` prints it at the head of that branch, with the
+      # in-toto statement of its run in the JSON (packages/envoy-client/test/ci-results-stack.ts).
+      - name: A CI job's result of a check its ci_check names, through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-check-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same path for what a CI job's `dispatch result --issue` prints when the real Dispatch
+      # refuses the result: each refusal, a check id or a check run name holding a line break and
+      # a workflow command among them, prints on one line, so no line of the job's log is a
+      # workflow command to its runner. Each row runs under the real `agent-secrets result-grant`.
+      - name: A CI job's refused result of a check its ci_check names prints no workflow command
+        run: bun test src/__tests__/ci-job-results-one-line.test.ts
+        working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.

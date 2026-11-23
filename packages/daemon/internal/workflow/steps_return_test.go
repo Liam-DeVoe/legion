@@ -364,12 +364,13 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	}
 }
 
-// failedTest is the tester's completion of testing on key, generation 1, that fails its step and
-// names step returnTo of the task as the one the task returns to (0 names none), with handoff as
-// its handoff record.
+// failedTest is the tester's completion of testing on key, generation 1, at headOne, the head it
+// tested, with no verdict, naming step returnTo of the task as the one the task returns to (0
+// names none), with handoff as its handoff record. The check states at headOne decide its step:
+// a test that wants it failed applies the failed state first (testedAs).
 func failedTest(key string, returnTo int, handoff string) intake.HandoffComplete {
 	return intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleTester, Claim: "test-claim", Summary: "the widget does not render",
-		Verdict: "fail", HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
+		Commit: headOne, HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
 }
 
 // recordAt is what a refused completion must leave as it found: the issue, its task where it has
@@ -412,7 +413,8 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
-	// step 3, its implementer started once.
+	// step 3, its implementer started once, with its check failed at headOne, the head the
+	// tester's completion names.
 	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -422,6 +424,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		testedAs(t, pool, engine, root.Key, headOne, false)
 		return pool, engine, root
 	}
 
@@ -438,9 +441,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
-		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
-			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
+		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + "."
+		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) || !strings.Contains(start.Task, "k1: no (fail)") {
+			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q and the check that failed, k1: no (fail)", start, report)
 		}
 		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got > implementers {
 			t.Fatalf("the return wrote %d starts of the implementer, want none: the report named the planner", got-implementers)
@@ -491,6 +494,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Testing)
+		testedAs(t, pool, engine, root.Key, headOne, false)
 		before := standingOf(t, pool, engine, root.Key, false)
 		apply := applyFacts(t, pool, engine)
 

@@ -314,8 +314,9 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 // sentence that named one of them as if every issue ran it now says where it runs and, where it
 // does not, who holds its duty: the order of the starts is the order of the steps of the issue's
 // plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
-// the move back names an earlier step's phase; a failed step goes back to the implementer or to
-// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
+// the move back names an earlier step's phase; a testing step whose checks do not read yes goes
+// back to the step its completion's `return_to` names, or to the first implementation step before
+// the tester. A parent with no `acceptance:owner` step gets no reading
 // of its finished whole from its owner, and each part says so in one sentence where it speaks of a
 // parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
 // the daemon's routes. The words the parts carried before are gone from both, and from the
@@ -337,7 +338,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"A task with no `acceptance:owner` step has no `accepting`",
 		"`to` the phase of an earlier step of the task, and `reason`",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the implementer, or to the earlier step its completion names",
+		"Otherwise it goes back to the step its completion's `return_to` names, or, with none named, to the first implementation step before the tester.",
 	}
 	retired := []string{
 		"fixed workflow table",
@@ -356,6 +357,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"Your last act is `sign_off` of this child in `accepting`",
 		"a parent only on an approved head",
 		"`implementing`, or `testing` where the task has a tester step",
+		"goes back to the implementer, or to the earlier step its completion names",
 	}
 	for _, tc := range []struct {
 		part string
@@ -884,8 +886,8 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 		{"roles/planner.md", func(t *testing.T) string { return rolePart(t, "planner.md") }, []string{resumed}, []string{onlyYours}},
 		{
 			"roles/tester.md", func(t *testing.T) string { return rolePart(t, "tester.md") },
-			[]string{resumed, "the daemon sends the issue back to the first implementation step before yours, or to the earlier step your completion's `return_to` names"},
-			[]string{onlyYours, "the daemon sends the issue back to the implementer."},
+			[]string{resumed, "It goes back to the step your completion's `return_to` names, or, with none named, to the first implementation step before yours."},
+			[]string{onlyYours, "the daemon sends the issue back to the implementer.", "the daemon sends the issue back to the first implementation step before yours, or to the earlier step your completion's `return_to` names"},
 		},
 		{
 			"roles/mechanics/headless.md", func(t *testing.T) string { return rolePart(t, "mechanics/headless.md") },

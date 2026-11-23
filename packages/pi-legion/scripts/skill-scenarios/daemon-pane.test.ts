@@ -5,6 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import { RIG_OWNER } from "./rig-world";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -73,7 +74,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/${RIG_OWNER}`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: GEMINI_KEY,
       OPENAI_API_KEY: OPENAI_KEY,
@@ -219,30 +220,33 @@ test.skipIf(skip)(
   600_000
 );
 
-// The rig's stand-in daemon serves a phase worker's routes alone, none of a tree architect's (its
-// design gate's among them), so the rig builds no pane prompt for one; `composeRolePrompt` below
-// composes that architect's prompt for a reader of it.
-test.skipIf(skip)(
-  "refuses the pane prompt of a tree architect",
-  () => {
-    expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-profile" },
-        inherited,
-        { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
-        { daemonModule: DAEMON_MODULE, systemPrompt: true }
-      )
-    ).toThrow(
-      "a tree architect is also told its design gate policy, which the rig does not stand in for"
-    );
-  },
-  600_000
-);
-
 // A part of the daemon module's own role prompts, as the composition holds it: each part's text in
 // order, so every part but the last ends with its own newline, which this drops.
 const promptPart = (name: string) =>
   readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
+
+// The rig runs a tree's root architect in a pane (rig.sh's architect-pass-and-fail), against a
+// stand-in daemon that gates no design step, so the pane's prompt is the root architect's parts and
+// addressing, then the design gate fragment the daemon gives a deployment that gates no step.
+test.skipIf(skip)(
+  "gives a tree's root architect's pane its prompt, ending with no design gate step",
+  () => {
+    const pane = workerPane(
+      { rig, port: 13399, profile: "rig-profile" },
+      inherited,
+      { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
+      { daemonModule: DAEMON_MODULE, systemPrompt: true }
+    );
+    const promptFile = `${rig}/state/secrets/legion-skillsrig-lweval-1-architect-system-prompt.md`;
+    expect(pane.systemPromptArgument).toContain(promptFile);
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(prompt.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
+    expect(prompt).toMatch(
+      /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: none\.$/
+    );
+  },
+  600_000
+);
 
 // The prompt a launch of a role starts with is the daemon's composition of that role's parts and
 // its addressing, and a tree's root architect is told the design gate steps after its addressing;

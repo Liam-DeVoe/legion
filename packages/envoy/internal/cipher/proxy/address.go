@@ -7,7 +7,10 @@
 // alike - resolves the name once here, refuses the whole name when any one of its addresses is
 // one the proxy never dials, and then dials those addresses rather than the name. So a name
 // that answers one address to the check and another to the dial, which is DNS rebinding,
-// reaches the address that was checked or nothing at all.
+// reaches the address that was checked or nothing at all. The one dial the other way round is
+// the private destination's (upstreamAddresses): the one host the broker's own settings name as
+// inside its cluster, dialled only at addresses every other dial is refused, and only for the
+// allowed requests of the one bound host it serves.
 package proxy
 
 import (

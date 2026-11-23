@@ -285,11 +285,12 @@ func (r *versionNewsLive) a3() {
 
 // Step A5. The tester is in a turn when a checks-only version of its root's Verification document
 // is approved; the task that carries the news waits behind that turn. In that same turn the tester
-// completes with a pass, and its turn ends. The tester is sent nothing, since its phase is over,
-// and the reviewer the pass starts is prompted with a start task naming the changed check and the
-// two versions. The same version changes nothing the root's child holds, since a root's checks are
-// the root's alone, so the reviewer the child's tester's pass starts is prompted with a start task
-// that names no check and no change at all: the same read that found the root reviewer's change.
+// completes, its check passing at the head it tested, and its turn ends. The tester is sent
+// nothing, since its phase is over, and the reviewer the pass starts is prompted with a start task
+// naming the changed check and the two versions. The same version changes nothing the root's child
+// holds, since a root's checks are the root's alone, so the reviewer the child's tester's pass
+// starts is prompted with a start task that names no check and no change at all: the same read
+// that found the root reviewer's change.
 func (r *versionNewsLive) a5() {
 	tree := r.trees["a5"]
 	key := tree.root().key
@@ -304,7 +305,8 @@ func (r *versionNewsLive) a5() {
 	r.held("the news of version 2 is queued behind %s's open turn (delivery %s)", tester.name(), queued.ID)
 	id, version := r.writeHandoff(key, "test", tester.session)
 	before := r.rt.Calls()
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Verdict: "pass", HandoffID: id, HandoffVersion: version})
+	testedAs(r.t, r.st.Pool(), key, versionNewsHead(key), true)
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Commit: versionNewsHead(key), HandoffID: id, HandoffVersion: version})
 	if status != http.StatusOK {
 		r.fail("%s's completion with a pass = %d %s: %s, want 200", tester.name(), status, failure.Code, failure.Error)
 	}
@@ -325,7 +327,8 @@ func (r *versionNewsLive) a5() {
 	childTester := r.claimant(child, claim.RoleTester)
 	id, version = r.writeHandoff(child.key, "test", childTester.session)
 	before = r.rt.Calls()
-	if status, failure := childTester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Verdict: "pass", HandoffID: id, HandoffVersion: version}); status != http.StatusOK {
+	testedAs(r.t, r.st.Pool(), child.key, versionNewsHead(child.key), true)
+	if status, failure := childTester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Commit: versionNewsHead(child.key), HandoffID: id, HandoffVersion: version}); status != http.StatusOK {
 		r.fail("%s's completion with a pass = %d %s: %s, want 200", childTester.name(), status, failure.Code, failure.Error)
 	}
 	r.awaitPhase(child.key, phase.Reviewing)
@@ -556,7 +559,8 @@ func (r *versionNewsLive) off() {
 	r.held("the daemon took in the person's approval of version 2 of %s's spec (%s)", key, eventID)
 	id, version := r.writeHandoff(control.root().key, "test", tester.session)
 	before := r.rt.Calls()
-	if status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Verdict: "pass", HandoffID: id, HandoffVersion: version}); status != http.StatusOK {
+	testedAs(r.t, r.st.Pool(), control.root().key, versionNewsHead(control.root().key), true)
+	if status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "every check passes", Commit: versionNewsHead(control.root().key), HandoffID: id, HandoffVersion: version}); status != http.StatusOK {
 		r.fail("%s's completion with a pass = %d %s: %s, want 200", tester.name(), status, failure.Code, failure.Error)
 	}
 	reviewer := r.connect(control.root(), claim.RoleReviewer, before)

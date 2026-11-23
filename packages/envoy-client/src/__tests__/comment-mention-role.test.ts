@@ -35,7 +35,9 @@ beforeEach(() => {
   resetAdviceMemory();
 });
 
-/** A Dispatch that records each request and posts a comment on DSP-1; it answers nothing else. */
+/** A Dispatch that records each request and posts a comment on DSP-1; it answers nothing else.
+ *  Its answer names the write's Idempotency-Key back, as Dispatch's keyed layer does on every
+ *  answer to a keyed write, so the client reads it as this write's answer (docs/write-answers.md). */
 const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
@@ -46,11 +48,14 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
     body: text === "" ? undefined : JSON.parse(text),
   });
   if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/comments") {
-    return Response.json({
-      id: "comment-1",
-      issue_key: "DSP-1",
-      advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
-    });
+    return Response.json(
+      {
+        id: "comment-1",
+        issue_key: "DSP-1",
+        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+      },
+      { headers: { "Idempotency-Key": request.headers.get("Idempotency-Key") ?? "" } }
+    );
   }
   return Response.json({ error: "not found", code: "NOT_FOUND" }, { status: 404 });
 }) as typeof fetch;

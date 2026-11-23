@@ -450,6 +450,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		nil,
+		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no
 		// domain to hold one to.
 		"",

@@ -425,5 +425,6 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 	})
 }
 
-// versionNewsHead is the head of key's pull request.
-func versionNewsHead(key string) string { return "head-" + strings.ToLower(key) }
+// versionNewsHead is the head of key's pull request, a full commit id of its own (fullCommitOf),
+// since the check state a tester's completion is judged by names its head as one.
+func versionNewsHead(key string) string { return fullCommitOf(key) }

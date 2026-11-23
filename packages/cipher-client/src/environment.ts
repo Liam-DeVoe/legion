@@ -71,9 +71,9 @@ export const IDENTITY_DEVICE_LOGIN = "device-login";
 
 /**
  * The variables this package reads, by name: this module's, `device-login.ts`'s
- * `AGENT_SECRETS_DEVICE_LOGIN_FILE`, and those `signins.ts` reads to find a person's sign-in on
- * this machine and the client that renews it, whose names that module
- * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
+ * `AGENT_SECRETS_DEVICE_LOGIN_FILE`, those `signins.ts` reads to find a person's sign-in on this
+ * machine and the client that renews it, whose names that module holds
+ * (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
  * `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a person's trade off for a
  * process whose own credentials are a service's, and `XDG_STATE_HOME` and `HOME`, which its
  * directory is read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package
@@ -127,7 +127,10 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
  * Each kind reads the variables Go's `MachineIdentity` reads for it
  * (`packages/envoy/internal/cipherclient/environment.go`), in the same order; a device login,
- * which Go has no kind for, reads the broker it was made at and the file that keeps it.
+ * which Go has no kind for, reads the broker it was made at and the file that keeps it. Go's also
+ * takes `github-actions`, a CI job's own identity, which this client never trades: a job's
+ * `dispatch result` holds the airlock's placeholder of its run, and the broker holds the run's
+ * token.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
   const kind = value(env, IDENTITY_VAR);

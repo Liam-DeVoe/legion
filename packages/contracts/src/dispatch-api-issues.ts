@@ -368,6 +368,40 @@ export type CheckResultRetractedEventPayload = z.output<
   typeof CheckResultRetractedEventPayloadSchema
 >;
 
+/** `check.state_changed`: the state of one `before_merge` check at one head, appended on the
+ *  **check's** issue by the system actor `dispatch-check-states` each time that state changes. The
+ *  head is open, or one an open pull request has left (a former head, which keeps its states while
+ *  that pull request is open, since its tester may have tested it); `pull_requests` names the open
+ *  pull requests at the head, or that were at it.
+ *  `checks` is the head's whole set of checks. In the set form `check`, `check_version` and
+ *  `state` are null: it tells a head's set of checks where no check's own event tells it (a head
+ *  with no check, a check removed). `check_artifact_id` is null where the issue has no
+ *  Verification document. `reason` is why a state is not yes, and empty for yes; `roles` the
+ *  roles whose pass counts there; `results` the ids of the results that decide the state;
+ *  `ci_case` the `ci.case` of a check CI proves, empty for every other check; and `serial` counts
+ *  the issue's `check.state_changed` events from 1, one counter across all its heads.
+ *  `fixtures/dispatch-events/check-state-changed.json` holds both forms as Go writes them. */
+export const CheckStateChangedEventPayloadSchema = z
+  .strictObject({
+    issue: z.string(),
+    check_artifact_id: z.string().nullable(),
+    repo: z.string(),
+    head: z.string(),
+    pull_requests: z.array(z.number().int()),
+    checks: z.array(z.string()),
+    check: z.string().nullable(),
+    check_version: z.number().int().nullable(),
+    state: z.enum(["yes", "no", "unknown"]).nullable(),
+    reason: z.enum(["", "fail", "no_result", "pass_and_fail", "read_failed"]),
+    roles: z.array(z.string()),
+    results: z.array(z.string()),
+    ci_case: z.string(),
+    serial: z.number().int(),
+  })
+  .readonly();
+
+export type CheckStateChangedEventPayload = z.output<typeof CheckStateChangedEventPayloadSchema>;
+
 /** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
  *  belongs to another, which changes what that issue's results are measured against. One event
  *  goes on the issue it left and one on the issue it reached, each carrying this payload;

@@ -161,7 +161,11 @@ Then sign the child off, or send it back to the phase of an earlier step of its 
 `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+`dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
+the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
+To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
+A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
@@ -178,11 +182,14 @@ step (on a parent, once the issues beneath it have left, `retro-held`). Every st
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
-session and on the pull request, and asks nothing of you. A tester completion that rejects the
-implementer's results goes back to the implementer, or to the earlier step its completion names;
-a worker that reports
-no surface reaches the changed path gets the surface built in this tree
-(`skill://legion-architect`, wake routing,
+session and on the pull request, and asks nothing of you. The tester's completion carries no
+verdict: the daemon decides the move by the state of each check at the head the tester's record
+names, once each has a state there that it ends at. When each reads yes, the issue goes on to the
+task's next step, the reviewer in the default steps. Otherwise it goes back to the step its
+completion's `return_to` names, or, with none named, to the first implementation step before the
+tester. That step's task names each check that does not pass; a worker that reports no surface
+reaches the changed path gets the surface built in this tree (`skill://legion-architect`, wake
+routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
 (`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a

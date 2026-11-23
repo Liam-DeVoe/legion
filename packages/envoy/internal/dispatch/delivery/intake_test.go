@@ -236,15 +236,15 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
 }
 
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
-// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
-// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
-// cap measures is that there is one at all, which two deliveries show as well as thirty.
-func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+// capOwnHandBackDeliveriesAt shrinks ownHandBackMaxDeliveries to deliveries for one test, the
+// way shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
+// ownHandBackAfter apiece, is nearly five minutes of wall clock, and what a test of the cap
+// measures is that there is one at all, which two deliveries show as well as thirty.
+func capOwnHandBackDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
-	was := headWriteMaxDeliveries
-	headWriteMaxDeliveries = deliveries
-	t.Cleanup(func() { headWriteMaxDeliveries = was })
+	was := ownHandBackMaxDeliveries
+	ownHandBackMaxDeliveries = deliveries
+	t.Cleanup(func() { ownHandBackMaxDeliveries = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

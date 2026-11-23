@@ -186,6 +186,10 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// HideStateFile names the file whose presence makes the results read leave out the state the
+	// server computes from the results (api.Deps.HideStateFile); only DISPATCH_TEST_HIDE_STATE_FILE,
+	// under the test hooks, sets it.
+	HideStateFile string
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -627,12 +631,15 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
-	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
+	//     suggestion outcomes (api.EventsChannel), the check states (api.CheckStatesOwedChannel)
+	//     and the delivery settings both intakes route by (delivery.SettingsChannel). The check
+	//     states settler takes no lease of the loop: each settle takes its issue's own lease, and
+	//     a pass at most a minute after the one before it settles a mark whose notification no
+	//     process received (api/check_states.go). The two leased ones, reference-excerpts and
+	//     edit-notices, take their lease with no period (duty.RunWoken): a process that finds it
+	//     held retries until a pass of its own runs, since the other process's pass may have read
+	//     before the change that woke this one. The suggestion-outcome loop takes none: each of its
+	//     pages runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
@@ -760,6 +767,9 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// The check states settler (Background.RunCheckStates): each settle holds its issue's lease on
+	// this connection while it computes through the shared pool, so it reserves one like a loop.
+	checkStatesLeases := reserve("check states")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -872,6 +882,7 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	checkStatesWake := listenerHub.Wake(api.CheckStatesOwedChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -1163,6 +1174,12 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// Each change of the state of a `before_merge` check at an open pull request head is one
+	// check.state_changed event: the triggers of the tables a state is computed from mark the
+	// issue owed and notify api.CheckStatesOwedChannel at the writer's commit, and this process's
+	// settler publishes the change, under the issue's lease, with a pass at start and one at most
+	// a minute after the one before it for a mark no notification reached.
+	go background.RunCheckStates(ctx, checkStatesLeases, checkStatesWake)
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
@@ -1480,6 +1497,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if err := testHookPath(env, "DISPATCH_TEST_HIDE_STATE_FILE", boot.TestHooksEnabled, &boot.HideStateFile); err != nil {
+		return bootConfig{}, err
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1937,6 +1957,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.HideStateFile = boot.HideStateFile
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
@@ -2161,7 +2182,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs. It
+// serves a results token (ciphertoken.Options.ServesResults) for the same reason: the scope
+// results alone, which the broker mints from a result entry for one CI run, reaches the routes
+// the results list names (resultsScopeRoutes) and every other route answers it 403
+// RESULTS_ONLY_TOKEN.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2179,9 +2204,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
+		// The read list, the results list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token and a results token reach the routes their
+		// lists name and no other.
 		ServesReadOnly: true,
+		ServesResults:  true,
 	})
 }
 
@@ -2363,6 +2390,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
 	*target = raw == "1"
+	return nil
+}
+
+// testHookPath reads the test-only file setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is a path
+// that is not absolute, which would name a file in whatever directory the process started in.
+func testHookPath(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	if !filepath.IsAbs(raw) {
+		return fmt.Errorf("%s=%q (expected an absolute path)", name, raw)
+	}
+	*target = raw
 	return nil
 }
 

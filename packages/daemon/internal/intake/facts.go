@@ -426,6 +426,37 @@ type DispatchClaim struct {
 
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
 
+// DispatchCheckState is Dispatch's check.state_changed, which it appends on a check's issue each
+// time the state of one of the issue's `before_merge` checks changes at an open head, or at a head
+// an open pull request has left, where the tester may have tested while the pull request moved on:
+// the state of Check at Head of Repo, the head of PullRequests or a head they were at, with the
+// head's whole set of checks (Checks).
+// In the set form, which tells a head's set of checks where no check's own event tells it (a head
+// with no check, a check removed), Check and State are "" and CheckVersion is 0. State is `yes`,
+// `no` or `unknown`; Reason is why it is not yes (`fail`, `no_result`, `pass_and_fail`,
+// `read_failed`), "" for yes; Roles are the roles whose pass counts there; CICase is the `ci.case`
+// of a check CI proves (`not_completed` while its run goes on), "" for every other check. Serial
+// counts the issue's check.state_changed events from 1, one counter across all its heads, and Mark
+// places the event in the issue's Dispatch event log: the store keeps the state of the newest
+// sequence (record.Store.PutCheckState), and the tester's move waits for every serial through its
+// handoff's (record.Store.StatesFenceReached).
+type DispatchCheckState struct {
+	Key          string
+	Mark         record.EventMark
+	Repo, Head   string
+	PullRequests []int
+	Checks       []string
+	Check        string
+	CheckVersion int
+	State        string
+	Reason       string
+	Roles        []string
+	CICase       string
+	Serial       int64
+}
+
+func (f DispatchCheckState) namedIssue() (string, bool) { return f.Key, true }
+
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
 // redeliveries and naks included — and whether it is idle, nothing pending or unacknowledged at
@@ -975,11 +1006,12 @@ type HandoffComplete struct {
 	// at all, so a fact reaching the workflow always names a run.
 	Generation uint64
 	Summary    string
-	Verdict    string
 	// Commit is the commit the completion reports: for the planner, the implementer's implementing
 	// round, the tester and the reviewer the head their handoff record names, empty where a
-	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
-	// stand on.
+	// planner's or a reviewer's record names none; and the commit retro and merging stand on. A
+	// tester's is never empty from the route, which refuses one naming no commit
+	// (TESTED_HEAD_REQUIRED), since the testing move reads the check states at the head it names
+	// and at no other (workflow's testedHead).
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
@@ -987,6 +1019,13 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// StatesSerial is the check states serial of the record a tester's completion names, as Dispatch
+	// answered the read of it (`check_states_serial`): every check.state_changed event the tester's
+	// results caused has a serial at or below it, so the testing move waits until the daemon holds
+	// each serial through it (record.Store.StatesFenceReached). 0 for every other completion and for
+	// a record written before Dispatch kept one, whose fence passes at once. No completion carries a
+	// verdict: the states Dispatch publishes at the tested head decide the testing phase.
+	StatesSerial int64
 	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
 	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
 	// completion that named none. Only the completion that ends the retro carries one, and which
@@ -1000,10 +1039,12 @@ type HandoffComplete struct {
 	// a plugin before that contract sends no rating, and its retro ends with none.
 	MustRate bool
 	// ReturnTo is the step of the issue's running task that a failed step names as the one the
-	// task returns to: the place of that step in the task, 1 for its first. The route takes
-	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
-	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
-	// returns to the step the workflow reads from the steps' types.
+	// task returns to: the place of that step in the task, 1 for its first. The route takes it
+	// only on a tester's completion with the verdict fail, which a plugin below the check states'
+	// contract (api.CheckStatesContract) still sends, and holds it to 1 or above; the workflow
+	// refuses a step the task's steps cannot take (RETURN_REFUSED). No move reads it: the check
+	// states at the tested head decide a testing step, and a fail they decide returns to the step
+	// the workflow reads from the steps' types. 0 on every other completion.
 	ReturnTo int
 }
 

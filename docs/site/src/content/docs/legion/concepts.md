@@ -168,9 +168,9 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
-| `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
+| `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; records each check's result with `dispatch result` and completes with no verdict: the state of each `before_merge` check at the tested head sends the issue on to the task's next step, or back to the step its completion's `return_to` names, or with none named to the first implementation step before it. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads the state of each `before_merge` check of the issue's Verification document in `dispatch results`, at the head the step before it passed, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -501,7 +501,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   names, from a role whose phase the issue is no longer in, is answered
   `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
-  One completion behind its entry goes on all the same: a verdict on the head the record holds,
+  One completion behind its entry goes on all the same: one at the head the record holds,
   of a phase that ends with the role's own handoff record. The phase was entered again at that
   head, so the work the new entry's task asks for is the work that completion reports; taking it
   moves the issue on, so the same completion sent again, or one naming a newer record, is

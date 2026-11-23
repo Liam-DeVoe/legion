@@ -357,15 +357,15 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 }
 
 // clearHandoff empties the handoff a role reported for its previous phase — its commit, the
-// Dispatch handoff record it named, its verdict and summary, and the review round's decision,
-// which ends with the round — keeping its claim, the record it last named (LastHandoff) and the
-// review rounds, when a transition starts it on a new phase. A role's recorded handoff is then
-// always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
-// starting round 2 or a tester starting a new round reads as not completed until it completes
-// again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
-// round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
-// its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
+// Dispatch handoff record it named and that record's check states serial, its summary, and the
+// review round's decision, which ends with the round — keeping its claim, the record it last named
+// (LastHandoff) and the review rounds, when a transition starts it on a new phase. A role's
+// recorded handoff is then always its current phase's: the implementer's round-1 commit cannot
+// advance round 2, a reviewer starting round 2 or a tester starting a new round reads as not
+// completed until it completes again (record.PhaseRow.Completed), a merger sent back has no
+// summary until its next one, and no round inherits an earlier decision. The architect reports no
+// handoff, so it has none to clear: its phases row holds only the entry it was handed work on
+// (EnterArchitect), which no move between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -393,7 +393,7 @@ type phaseHandoff struct {
 	commit         string
 	dispatchRecord string
 	version        int
-	verdict        string
+	statesSerial   int64
 	summary        string
 	decision       *record.ReviewDecision
 	completedAt    time.Time
@@ -402,7 +402,7 @@ type phaseHandoff struct {
 // handoffOf is the handoff row carries.
 func handoffOf(row record.PhaseRow) phaseHandoff {
 	return phaseHandoff{commit: row.HandoffCommit, dispatchRecord: row.HandoffRecord, version: row.HandoffVersion,
-		verdict: row.Verdict, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
+		statesSerial: row.StatesSerial, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
 	}
 }
 
@@ -410,7 +410,7 @@ func handoffOf(row record.PhaseRow) phaseHandoff {
 // named, its rounds and their counts — left as it stands.
 func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 	row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = h.commit, h.dispatchRecord, h.version
-	row.Verdict, row.Summary, row.Decision = h.verdict, h.summary, h.decision
+	row.StatesSerial, row.Summary, row.Decision = h.statesSerial, h.summary, h.decision
 	row.CompletedAt = h.completedAt
 	return row
 }
@@ -419,11 +419,6 @@ func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
-
-// testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
-// prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it.
-const testerVerdictLabel = "Tester's verdict"
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
@@ -1073,8 +1068,7 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // text before the colon of one of the task's lines. Every line of the task is built from its
 // label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
 // skills that tell the worker to read it, so a label renamed on one side alone fails there.
-// testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
-// tests of their own.
+// reviewround's CommitLabel and EntryLabel are two more, tied by tests of their own.
 const (
 	phaseLabel       = "Phase"
 	workingCopyLabel = "Working copy"
@@ -1097,10 +1091,9 @@ const (
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
 // whenever the completion reported one: the head the planner's, the implementer's, the tester's or
 // the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
+// No handoff carries a verdict: the tester's pass or fail is the check states at the tested head
+// (decideTesting), which a fail's reason names, and the reviewer started on a pass reads the state
+// of each check at its head from Dispatch.
 //
 // A merger started in merging at the head a merge forward landed on where the task's reviewer step
 // already ran (mergeForwardLanded), while the
@@ -1118,9 +1111,6 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	}
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
-	}
-	if handoff.Verdict != "" {
-		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)

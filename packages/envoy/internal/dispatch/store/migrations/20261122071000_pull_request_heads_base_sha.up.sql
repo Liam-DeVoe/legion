@@ -1,0 +1,23 @@
+-- 20261122071000_pull_request_heads_base_sha.up.sql
+--
+-- The commit a pull request's base branch was at when the pull request was last read
+-- (pull_request_heads.base_sha): GitHub's pull_request.base.sha, which each read of the pull
+-- request and each pull_request webhook carries, and each writer that read it stores with the row
+-- (delivery.UpsertPullRequestHead). base_ref names the branch, which can move with no change of
+-- its name; base_sha names the revision. The check states settler's read of which commits are a
+-- pull request's own is an answer about one head and one base revision, and an answer whose base
+-- revision Dispatch has since stored anew is about a pull request that has moved: its claim names
+-- the stored revisions (migration 20261122071001, pull_request_former_heads_snapshot), and the
+-- answer applies only where they are unchanged.
+--
+-- Null where no writer stored one: every row stored before this migration, and a row a writer that
+-- read no base revision wrote, such as one the release before this one writes while the release
+-- rolls. Null is "not known", and the snapshot names it so: an answer claimed while it is unknown
+-- applies where it is still unknown, and a write that stores a revision since refuses it.
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on pull_request_heads for the catalog write alone, after waiting for each
+-- transaction that holds the table, a wait the runner bounds at pgmigrate.LockTimeout and tries
+-- again. The release before this one neither reads nor writes the column, and its insert names its
+-- columns, so the two roll side by side. The census answers 0.
+alter table pull_request_heads add column base_sha text;

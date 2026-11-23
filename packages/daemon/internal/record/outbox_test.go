@@ -38,7 +38,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
 		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
 			Artifact: &MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch legion/LEGION-208-rescue\n```\n"}},
-		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
+		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Version: 4, Reason: "these checks do not pass at head: k1: no (fail)"},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
 		Notice{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
 			Cause: "died", Detail: "the implementer's process died while its task was outstanding",
@@ -1088,7 +1088,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	// reports a hold rather than a failure and names none, and the record is one field, which a
 	// Published that dropped it would drop for both kinds alike.
 	every := []Notice{
-		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
+		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed"},
 		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
 			Cause: "launch_refused", Detail: "the pod did not start",
 			LaunchFailures: FailureBudget{Count: 3, Limit: 3}, Deaths: FailureBudget{Count: 1, Limit: 3},

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -154,6 +155,12 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
 		// binds at least one host (proxyrules.Validate), so an entry is a name the airlock holds back.
 		entry := m.Airlock.Lookup(g.name)
+		// A name under an entry of kind dpop is a CI run's results capability, which the broker
+		// mints and holds, and never a stored secret's release: it is refused before anything of
+		// it is read, to the session and to the proxy alike.
+		if entry != nil && entry.Kind == proxyrules.KindDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrAirlockMintedOnly)
+		}
 		if entry == nil && want.airlockOnly {
 			continue
 		}

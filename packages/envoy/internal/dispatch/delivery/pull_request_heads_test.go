@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -441,6 +442,39 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 	if head, found := newest(other); !found || head.Number != 920 {
 		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want its own open #920", other, head, found)
+	}
+}
+
+// HeadsAttributedTo names the repository each head's row is stored under, as NewestPullRequestHead
+// does: the results read reads a check run at each open head in that head's own repository, and a
+// pull request an issue links may be of another repository than the issue's.
+func TestHeadsAttributedToNamesEachRowsRepository(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 93)
+	for _, head := range []struct {
+		repo   string
+		number int
+		sha    string
+	}{{"acme/widgets", 931, "9310000000000000000000000000000000000000"}, {"acme/infra", 932, "9320000000000000000000000000000000000000"}} {
+		attributed := issue
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: head.repo, Number: head.number, HeadSHA: head.sha, HeadRef: "legion/work", BaseRef: "main",
+			State: "open", IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
+			Title: issue + " the work", URL: fmt.Sprintf("https://github.com/%s/pull/%d", head.repo, head.number),
+		}); err != nil {
+			t.Fatalf("store %s#%d: %v", head.repo, head.number, err)
+		}
+	}
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
+	if err != nil {
+		t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
+	}
+	repos := map[int]string{}
+	for _, head := range heads {
+		repos[head.Number] = head.Repo
+	}
+	if len(heads) != 2 || repos[931] != "acme/widgets" || repos[932] != "acme/infra" {
+		t.Fatalf("HeadsAttributedTo(%s) = %+v, want #931 of acme/widgets and #932 of acme/infra, each naming its row's repository", issue, heads)
 	}
 }
 
@@ -1389,6 +1423,54 @@ func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
 	}
 }
 
+// The heads a pull request left while it was open under its repository's old name are heads of
+// the same pull request once its row is keyed by the canonical name: after the re-key the
+// canonical row reads them, and the old row's own head, and the old name reads the same one
+// history, since both names stand for one pull request. The check states settler keeps computing
+// a pull request's former heads (pull_request_former_heads), and a tester may have tested one of
+// them.
+func TestReKeyingAPullRequestCarriesTheHeadsItLeft(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedGadgetsIssue(t, ctx, pool, 23)
+	seedRenamedGadgets(t, ctx, pool)
+
+	const left, oldHead, head = "7171717171717171717171717171717171717171", "7272727272727272727272727272727272727272", "7373737373737373737373737373737373737373"
+	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	stale := time.Now().Add(-10 * time.Minute)
+	for index, sha := range []string{left, oldHead} {
+		at := earlier.Add(time.Duration(index) * time.Minute)
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: gadgetsOldRepo, Number: 523, HeadSHA: sha,
+			HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &at, CheckedAt: &stale,
+		}); err != nil {
+			t.Fatalf("store the head of #523 at %s under the old name: %v", sha, err)
+		}
+	}
+	fake := gadgetsFake(t, 523, issue+": the work", head)
+	client := fake.newTestClient()
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	if written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
+		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
+	}
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 523, time.Now()); err != nil {
+		t.Fatalf("refresh the row stored under the old name: %v", err)
+	}
+	if repos := headRepos(t, ctx, pool, 523); len(repos) != 1 || repos[0] != gadgetsRepo {
+		t.Fatalf("#523 is stored under %v after the refresh, want only %s", repos, gadgetsRepo)
+	}
+	formerHeads := func(repo string) []string {
+		t.Helper()
+		return foldedFormerHeadsOf(t, ctx, pool, repo, 523)
+	}
+	if got := formerHeads(gadgetsRepo); !slices.Equal(got, []string{left, oldHead}) {
+		t.Fatalf("#523 under %s left %v, want %v: the head it left and its head under the old name", gadgetsRepo, got, []string{left, oldHead})
+	}
+	if got := formerHeads(gadgetsOldRepo); !slices.Equal(got, []string{left, oldHead}) {
+		t.Fatalf("the old name %s reads the former heads %v of #523, want the canonical name's: one pull request has one history", gadgetsOldRepo, got)
+	}
+}
+
 // A commit the App has already answered for goes on answering while the App cannot read the
 // repository. The stored answer is keyed by a branch, so the branch has to be named before
 // branch_commits can be asked at all, and a check measured against the default branch names
@@ -1623,7 +1705,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // that writes a merge's head row and its branch seed together rolls back at every delivery and
 // no attempt can ever store the row. The cap is shrunk to two deliveries, since what is
 // measured here is that there is a cap at all and not the number it is shipped at
-// (headWriteMaxDeliveries).
+// (ownHandBackMaxDeliveries).
 //
 // The measure is the consumer's delivery count, read twice: once when the cap has been spent,
 // and again after two whole redelivery delays, which is when the third delivery would have
@@ -1634,7 +1716,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
-	capHeadWriteDeliveriesAt(t, 2)
+	capOwnHandBackDeliveriesAt(t, 2)
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
@@ -1659,10 +1741,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 			info.Delivered.Consumer-before, info)
 	})
 
-	time.Sleep(2 * headWriteRedeliverAfter)
+	time.Sleep(2 * ownHandBackAfter)
 	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
 		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
-			2*headWriteRedeliverAfter, delivered)
+			2*ownHandBackAfter, delivered)
 	}
 
 	var stored int
