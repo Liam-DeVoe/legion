@@ -238,7 +238,7 @@ func (r *holdRig) boot(t *testing.T, holdOn bool) {
 	t.Helper()
 	if r.broker != nil {
 		r.broker.Terminate(t)
-		if err := r.broker.AwaitExit(t, stopTimeout); err != nil {
+		if err := r.broker.AwaitExit(t); err != nil {
 			t.Fatalf("the broker at %s exited %v when stopped:\n%s", r.broker.Addr, err, r.broker.Log())
 		}
 	}
