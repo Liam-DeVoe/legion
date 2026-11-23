@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -558,7 +559,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
 		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
-		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (ssh://git@github.com/sjawhar/legion.git)`},
+		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (ssh://` + redact.URLWithCredentials + `/sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
 		{gitPlusHTTPS, nil, []string{"pr", "view", "1", "--json", "title"}, "sjawhar", ""},

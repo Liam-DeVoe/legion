@@ -286,28 +286,85 @@ func ghCanaryRefusal(row ghCanaryRow) error {
 // TestNoRefusalFormatsAPersonsValueItself until it joins this table, which is where a reviewer
 // reads it.
 var ghFormattedValues = map[string]string{
-	"ghShown: strconv.Quote(value)":                                         "the helper itself: a value its slot's strict form admits",
-	"ghCallLogValue: strconv.Quote(value)":                                  "the call log's fields (role, issue, a placed repository, gh's command path, a visibility), no refusal",
-	"ghArgs.set: %q \"--\"+name":                                            "an option the leaf's help lists, by the help's name",
-	"ghCloneGitFlags: %q name":                                              "a git clone flag of ghCloneGitFlagTakes, by the table's spelling",
-	"ghCommand.addFlag: %q strings.TrimSpace(line)":                         "a line of gh's own help, which gh printed for no argument of the call",
-	"ghCommand.mayRead: %q word":                                            "a gh alias or extension gh's own help lists",
-	"ghCommand.parse: cannotPlace(strconv.Quote(\"--\"+name))":              "an option the leaf's help lists, by the help's name",
-	"ghCommand.parse: strconv.Quote(\"--\"+name)":                           "an option the leaf's help lists, by the help's name",
-	"ghRemote.what: %q r.name":                                              "a git remote's name, which git config holds and the refusals of remotes name",
-	"parseGhHelp: %q entry":                                                 "a line of gh's own help",
-	"parseGhHelp: %q placeholder":                                           "a usage placeholder of gh's own help",
-	"parseGhHelp: %q strings.TrimSpace(line)":                               "a line of gh's own help",
+	"ghShown: strconv.Quote(value)":                                       "the helper itself: a value its slot's strict form admits",
+	"ghCallLogValue: strconv.Quote(value)":                                "the call log's fields (role, issue, a placed repository, gh's command path, a visibility), no refusal",
+	"appendGhCallLog: %s ghCallLogValue(commandPath)":                     "the call log's field, quoted by ghCallLogValue",
+	"appendGhCallLog: %s ghCallLogValue(env[\"LEGION_ISSUE\"])":           "the call log's field, quoted by ghCallLogValue",
+	"appendGhCallLog: %s ghCallLogValue(env[\"LEGION_ROLE\"])":            "the call log's field, quoted by ghCallLogValue",
+	"appendGhCallLog: %s ghCallLogValue(repo)":                            "the call log's field, quoted by ghCallLogValue",
+	"appendGhCallLog: %s ghCallLogValue(visibility)":                      "the call log's field, quoted by ghCallLogValue",
+	"appendGhCallLog: %s time.Now().UTC().Format(time.RFC3339Nano)":       "a clock reading",
+	"cannotPlace: %s advice":                                              "this command's own advice, a literal",
+	"cannotPlace: %s name":                                                "its callers' name, each held in this table or a ghShown call or a literal",
+	"cannotPlace: %s why":                                                 "its callers' reason, built from literals and help-listed names",
+	"ghArgs.set: %q \"--\"+name":                                          "an option the leaf's help lists, by the help's name",
+	"ghArgs.set: %s why":                                                  "a reason of ghRefusedOptions, a table",
+	"ghCloneGitFlags: %q name":                                            "a git clone flag of ghCloneGitFlagTakes, by the table's spelling",
+	"ghCloneGitFlags: %s ghCloneGitFlagList()":                            "the flags ghCloneGitFlagTakes holds",
+	"ghCloneGitFlags: %s leaf (2 places)":                                 "the leaf's command path, as gh's help spelled it",
+	"ghCommand.addFlag: %q strings.TrimSpace(line) (5 places)":            "a line of gh's own help, which gh printed for no argument of the call",
+	"ghCommand.addFlag: %s match[1]":                                      "a short option of gh's own help",
+	"ghCommand.addFlag: %s match[2]":                                      "an option of gh's own help",
+	"ghCommand.addFlag: %s prior":                                         "an option of gh's own help",
+	"ghCommand.mayRead: %q word (2 places)":                               "a gh alias or extension gh's own help lists",
+	"ghCommand.parse: cannotPlace(strconv.Quote(\"--\"+name)) (4 places)": "an option the leaf's help lists, by the help's name",
+	"ghCommand.parse: strconv.Quote(\"--\"+name) (4 places)":              "an option the leaf's help lists, by the help's name",
+	"ghConfigShape: %s key":                                               "a key of ghRoutingKeys, a table",
+	"ghConfigShape: %s path (8 places)":                                   "a file of the gh directory GH_CONFIG_DIR names, a configured path",
+	"ghReentryRefusal: %s real":                                           "LEGION_GH_PATH, a configured path",
+	"ghRefusedCommand: %s refused":                                        "a command path of a table of refused commands",
+	"ghRefusedCommand: %s why":                                            "a reason of that table",
+	"ghRemote.what: %q r.name":                                            "a git remote's name, which git config holds and the refusals of remotes name",
+	"ghRemote.what: %s r.name":                                            "a git remote's name, which git config holds and the refusals of remotes name",
+	"ghRemote.what: %s remoteShown(r.url)":                                "a remote's URL through remoteShown, the URL rule's",
+	"ghRemote.what: %s resolved":                                          "a gh-resolved marker through remoteShown, the URL rule's",
+	"ghRepoGitConfigRefusal: %s key (8 places)":                           "a git config key, which printGhRefusal passes through the URL rule",
+	"ghRepoGitConfigRefusal: %s origin (4 places)":                        "the config file git names for the key, a path",
+	"ghRepoGitConfigRefusal: %s strings.TrimSpace(stderr.String())":       "git's own error output, which printGhRefusal passes through the URL rule",
+	"ghRepoGitConfigRefusal: %v err":                                      "git's exit status",
+	"ghTargetOf: %s name (2 places)":                                      "the name of the token variable set, GH_TOKEN or GITHUB_TOKEN",
+	"ghWalk.check: %s path":                                               "a command path of ghRunsAnotherProgram, a table",
+	"ghWrapperPath: %s wrapper (2 places)":                                "the wrapper's own path on PATH",
+	"ghWrapperPath: %v err":                                               "the error of resolving that path",
+	"gitLines: %s strings.Join(args, \" \")":                              "this command's own git arguments",
+	"gitLines: %s strings.TrimSpace(stderr.String())":                     "git's own error output, which printGhRefusal passes through the URL rule",
+	"gitLines: %v err":                                                    "git's exit status",
+	"ordinalArgument: %s suffix":                                          "an ordinal's suffix",
+	"parseGhHelp: %q entry (2 places)":                                    "a line of gh's own help",
+	"parseGhHelp: %q placeholder":                                         "a usage placeholder of gh's own help",
+	"parseGhHelp: %q strings.TrimSpace(line)":                             "a line of gh's own help",
+	"parseGhHelp: %s section (3 places)":                                  "a section heading of gh's own help",
+	"parseGhHelp: %s strings.Join(cmd.path, \" \")":                       "the command path gh's help names",
+	"parseGhHelp: %s strings.Join(slices.Sorted(maps.Keys(ghPassedOnPlaceholders)), \", \")": "a table's placeholders",
+	"parseGhHelp: %s what (9 places)":                                       "the command as ghWalk.named names it, help-listed words or places",
+	"printGhRefusal: %s shown.String()":                                     "the refusal through the URL rule",
+	"readGhCommand: %s what":                                                "the command as ghWalk.named names it, help-listed words or places",
+	"readGhHelp: %s bound (2 places)":                                       "a duration",
+	"readGhHelp: %v context.Cause(ctx) (2 places)":                          "the cause of a stop: a signal or a deadline",
+	"readGhHelp: %v err":                                                    "gh's exit status",
 	"readGitRemotes: %q name":                                               "a git remote's name, the text before the tab of git remote -v's line",
 	"refuseLegionGhAsRealGh: %q gh":                                         "LEGION_GH_PATH, a configured path, no argument of the call",
+	"refuseLegionGhAsRealGh: %s gh":                                         "LEGION_GH_PATH, a configured path, no argument of the call",
+	"runGh: %s ghUsage":                                                     "this command's usage, a literal",
+	"runGh: %s name":                                                        "the name of an environment variable",
+	"runGhChild: %s gh (3 places)":                                          "LEGION_GH_PATH, a configured path",
 	"checkedOwner: cannotPlace(kind)":                                       "a slot's kind, built from literals and a help-listed option name",
-	"repositoryTarget: cannotPlace(shown)":                                  "ghShown's words for the value, with the repository's strict form",
+	"repositoryTarget: cannotPlace(shown) (5 places)":                       "ghShown's words for the value, with the repository's strict form",
+	"selectors.dir: %s filepath.Base(dir)":                                  "an owner's directory, a login the bundle holds",
+	"selectors.dir: %s strings.Join(listed, \" and \")":                     "each owner and the slots naming it (ghNamed.shown), logins and kinds",
+	"selectors.dir: %s strings.Join(routed[dir], \", \")":                   "each slot naming that directory (ghNamed.shown)",
 	"selectors.fromAPI: cannotPlace(ordinalArgument(2))":                    "a position",
+	"selectors.fromCommand: %s leaf":                                        "the leaf's command path, as gh's help spelled it",
+	"selectors.fromCommand: %s unknown":                                     "a usage placeholder of gh's own help",
 	"selectors.fromCommand: cannotPlace(ordinalArgument(i+1))":              "a position",
 	"selectors.fromCommand: cannotPlace(ordinalArgument(len(cmd.slots)+1))": "a position",
 	"selectors.fromOptions: cannotPlace(kind)":                              "a slot's kind, built from literals and a help-listed option name",
 	"selectors.fromOptions: cannotPlace(strconv.Quote(\"--\"+name))":        "an option the leaf's help lists, by the help's name",
 	"selectors.fromOptions: strconv.Quote(\"--\"+name)":                     "an option the leaf's help lists, by the help's name",
+	"selectors.fromWorkingDirectory: %s advice (2 places)":                  "this command's own advice, a literal",
+	"selectors.fromWorkingDirectory: %s remote.what()":                      "a remote as ghRemote.what names it",
+	"selectors.fromWorkingDirectory: %s why":                                "a reason built from literals",
+	"selectors.fromWorkingDirectory: %v err":                                "a git read's error, which printGhRefusal passes through the URL rule",
 }
 
 // ghFormatSites is every place in the package's non-test gh*.go files that quotes or formats a
@@ -321,7 +378,7 @@ func ghFormatSites(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sites := map[string]string{}
+	sites, found := map[string]string{}, map[string][]string{}
 	fset := token.NewFileSet()
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
@@ -359,9 +416,10 @@ func ghFormatSites(t *testing.T) map[string]string {
 					return true
 				}
 				at := fset.Position(call.Pos()).String()
+				add := func(key string) { found[key] = append(found[key], at) }
 				switch callee := text(call.Fun); {
 				case callee == "strconv.Quote" && len(call.Args) == 1:
-					sites[owner+": strconv.Quote("+text(call.Args[0])+")"] = at
+					add(owner + ": strconv.Quote(" + text(call.Args[0]) + ")")
 				case callee == "cannotPlace" && len(call.Args) > 0:
 					first := call.Args[0]
 					if _, literal := first.(*ast.BasicLit); literal {
@@ -370,7 +428,7 @@ func ghFormatSites(t *testing.T) map[string]string {
 					if inner, ok := first.(*ast.CallExpr); ok && text(inner.Fun) == "ghShown" {
 						break
 					}
-					sites[owner+": cannotPlace("+text(first)+")"] = at
+					add(owner + ": cannotPlace(" + text(first) + ")")
 				case strings.HasPrefix(callee, "fmt.") && len(call.Args) > 0:
 					formatAt := 0
 					if callee == "fmt.Fprintf" {
@@ -388,14 +446,28 @@ func ghFormatSites(t *testing.T) map[string]string {
 						break
 					}
 					for i, verb := range formatVerbs(format) {
-						if arg := formatAt + 1 + i; verb == 'q' && arg < len(call.Args) {
-							sites[owner+": %q "+text(call.Args[arg])] = at
+						arg := formatAt + 1 + i
+						if arg >= len(call.Args) || !strings.ContainsRune("sqv", verb) {
+							continue
 						}
+						if _, literal := call.Args[arg].(*ast.BasicLit); literal {
+							continue
+						}
+						if inner, ok := call.Args[arg].(*ast.CallExpr); ok && slices.Contains([]string{"ghShown", "ordinalArgument"}, text(inner.Fun)) {
+							continue
+						}
+						add(owner + ": %" + string(verb) + " " + text(call.Args[arg]))
 					}
 				}
 				return true
 			})
 		}
+	}
+	for key, at := range found {
+		if len(at) > 1 {
+			key += " (" + strconv.Itoa(len(at)) + " places)"
+		}
+		sites[key] = strings.Join(at, ", ")
 	}
 	return sites
 }

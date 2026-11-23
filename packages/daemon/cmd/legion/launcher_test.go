@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -290,7 +291,11 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 		if strings.Contains(printed, token) {
 			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
 		}
-		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+		want := `"https://d.example/status"`
+		if strings.Contains(value, "@") {
+			want = `"https://` + redact.URLWithCredentials + `/status"`
+		}
+		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
 		}
 	}

@@ -1499,7 +1499,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		// The module URL's query (`?mtime=1,`, which runs to the next space) is cut by the URL rule
 		// the refusal is printed through (printRefusal), as a query can carry a credential.
 		{"an Oh My Pi whose pi-envoy publishes another interface", func(c *operatorMachine) { c.loadsEnvoyAt("2") },
-			[]string{"loaded pi-envoy from file://" + "@HOME/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js which publishes plugin interface 2, and a pi-legion that speaks 1. Install both releases built from this daemon's commit into the Oh My Pi the controller runs, and check them with `cd ", "plugin list`"}},
+			[]string{"loaded pi-envoy from file://" + "@HOME/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1, which publishes plugin interface 2, and a pi-legion that speaks 1. Install both releases built from this daemon's commit into the Oh My Pi the controller runs, and check them with `cd ", "plugin list`"}},
 		{"an Oh My Pi that still loads the pre-split package", func(c *operatorMachine) { c.loadsLegacyFrom("file:///plugins/legacy/dist/legion.js") },
 			[]string{"loaded @sjawhar/pi-legion-envoy from file:///plugins/legacy/dist/legion.js beside pi-legion. Run `cd ", "plugin uninstall @sjawhar/pi-legion-envoy` under the controller's environment"}},
 	} {
