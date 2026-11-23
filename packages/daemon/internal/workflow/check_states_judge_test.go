@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -108,41 +109,29 @@ func TestJudgeStates(t *testing.T) {
 	})
 }
 
-// The testing move still reads every check, those a CI job runs among them (decideTesting judges
-// with leaveCI false): until the end of a task holds its checks that a CI job runs, a task whose
-// steps after testing hold no review and no acceptance would otherwise end with no gate on them.
-// So a failed CI job at the tested head sends the issue back naming it, and a CI run still going
-// with no result holds the move. A testing move that left those checks out would send this issue
-// to review and fail this test.
-func TestTheTestingMoveStillReadsEveryCheck(t *testing.T) {
-	t.Run("a failed CI job", func(t *testing.T) {
-		r := newStatesRig(t, phase.Testing)
-		r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"), inCI(stateOf("k3", "no", "fail", "ci"), "failure"))
-		r.complete(headOne, 3)
-		r.movedBackNaming([]string{"k3: no (fail)"}, "k1:", "k2:")
-	})
-	t.Run("a CI run still going with no result", func(t *testing.T) {
-		r := newStatesRig(t, phase.Testing)
-		r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"), inCI(stateOf("k3", "no", "no_result"), "not_completed"))
-		r.complete(headOne, 3)
-		r.waitsSaying("the move waits for the states of k3 at " + headOne)
-	})
-}
-
-// Each pair of a state of the issue and an event the testing move meets, each its own row. A
-// completion that waits tells the architect once, in one phase-finished notice naming what it
-// waits for; a later event that still leaves it waiting tells nothing more. The move decides only
-// once every check of the set holds a conclusive state, so a fail waits while another check has no
-// state or a CI run with no result goes on, and the task of a move back names every check that does
-// not pass, a state Dispatch could not read among them.
+// Each pair of a state of the issue and an event the testing move meets, each its own row, run
+// once with the engine's TestingLeavesCI false, as the daemon wires it, and once true, so both
+// testing moves are held and none is skipped. A completion that waits tells the architect once, in
+// one phase-finished notice naming what it waits for; a later event that still leaves it waiting
+// tells nothing more. The move decides only once every check it reads holds a conclusive state, so
+// a fail waits while another check has no state or a CI run with no result goes on, and the task of
+// a move back names every check it reads that does not pass, a state Dispatch could not read among
+// them. Reading every check, a check whose state names a CI case (k3, or k1 or k2 where a row puts
+// it in CI) counts as any other; leaving those checks out, it neither holds the move nor sends the
+// work back, and a row whose outcome differs then says so in leaving. A check of the set with no
+// state holds the move either way, since only its state says whether a CI job runs it.
 func TestTheTestingMoveStateTable(t *testing.T) {
 	fenceReason := "the move waits for Dispatch's check states through serial 7 at " + headOne
+	k3Failed := inCI(stateOf("k3", "no", "fail", "ci"), "failure")
+	reviewing := func(r *statesRig) { assertPhase(r.t, r.pool, phase.Reviewing) }
 	for _, tc := range []struct {
 		name  string
 		at    phase.Phase
 		given func(r *statesRig)
 		event func(r *statesRig)
 		then  func(r *statesRig)
+		// leaving is the outcome with TestingLeavesCI true, nil where it is then's.
+		leaving func(r *statesRig)
 	}{
 		{
 			name: "testing, tester not completed | a state of k1 at the tested head | held, nothing moves", at: phase.Testing,
@@ -197,7 +186,8 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 				r.states(headOne, 1, inCI(stateOf("k1", "no", "no_result"), "not_completed"), passOf("k2", "tester"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k1 at " + headOne) },
+			then:    func(r *statesRig) { r.waitsSaying("the move waits for the states of k1 at " + headOne) },
+			leaving: reviewing,
 		},
 		{
 			name: "testing, tester completed, k1 no for no_result, ci_case not_completed | the state of k1, yes from ci | reviewing", at: phase.Testing,
@@ -214,7 +204,8 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 				r.states(headOne, 1, inCI(stateOf("k1", "unknown", "pass_and_fail", "ci"), "not_completed"), passOf("k2", "tester"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: unknown (pass_and_fail)"}, "k2:") },
+			then:    func(r *statesRig) { r.movedBackNaming([]string{"k1: unknown (pass_and_fail)"}, "k2:") },
+			leaving: reviewing,
 		},
 		{
 			name: "testing, tester completed, k1 no for fail, ci_case not_completed | the completion | implementing, the task names k1", at: phase.Testing,
@@ -222,7 +213,66 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 				r.states(headOne, 1, inCI(stateOf("k1", "no", "fail"), "not_completed"), passOf("k2", "tester"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)"}, "k2:") },
+			then:    func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)"}, "k2:") },
+			leaving: reviewing,
+		},
+		// k1 and k2 read yes from the tester, and k3 is a check a CI job runs.
+		{
+			name: "testing, tester completed, k1 and k2 yes, k3 no for fail, ci_case failure | the completion | implementing, the task names k3", at: phase.Testing,
+			given: func(r *statesRig) { r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"), k3Failed) },
+			event: func(r *statesRig) { r.complete(headOne, 3) },
+			then:  func(r *statesRig) { r.movedBackNaming([]string{"k3: no (fail)"}, "k1:", "k2:") },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, k1 and k2 yes, k3 no for no_result, ci_case not_completed | the completion | waits for k3", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"), inCI(stateOf("k3", "no", "no_result"), "not_completed"))
+			},
+			event:   func(r *statesRig) { r.complete(headOne, 3) },
+			then:    func(r *statesRig) { r.waitsSaying("the move waits for the states of k3 at " + headOne) },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, k1 and k2 yes, k3 unknown for pass_and_fail, ci_case not_completed | the completion | implementing, the task names k3", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, passOf("k1", "tester"), passOf("k2", "tester"), inCI(stateOf("k3", "unknown", "pass_and_fail", "ci"), "not_completed"))
+			},
+			event:   func(r *statesRig) { r.complete(headOne, 3) },
+			then:    func(r *statesRig) { r.movedBackNaming([]string{"k3: unknown (pass_and_fail)"}, "k1:", "k2:") },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, k2 no for fail, k3 no for fail, ci_case failure | the completion | implementing, the task names k2, and k3 only reading every check", at: phase.Testing,
+			given: func(r *statesRig) { r.states(headOne, 1, passOf("k1", "tester"), stateOf("k2", "no", "fail", "tester"), k3Failed) },
+			event: func(r *statesRig) { r.complete(headOne, 3) },
+			then:  func(r *statesRig) { r.movedBackNaming([]string{"k2: no (fail)", "k3: no (fail)"}, "k1:") },
+			leaving: func(r *statesRig) { r.movedBackNaming([]string{"k2: no (fail)"}, "k1:", "k3") },
+		},
+		{
+			name: "testing, tester completed, k1 and k2 yes, k3 of the set has no state | the completion | waits for k3", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2", "k3"), ofSet(passOf("k2", "tester"), "k1", "k2", "k3"))
+			},
+			event: func(r *statesRig) { r.complete(headOne, 2) },
+			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k3 at " + headOne) },
+		},
+		{
+			name: "testing, tester completed, k1 and k2 yes, k3 of the set has no state | the state of k3, no for fail, ci_case failure | implementing, the task names k3", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, ofSet(passOf("k1", "tester"), "k1", "k2", "k3"), ofSet(passOf("k2", "tester"), "k1", "k2", "k3"))
+				r.complete(headOne, 2)
+			},
+			event:   func(r *statesRig) { r.states(headOne, 3, ofSet(k3Failed, "k1", "k2", "k3")) },
+			then:    func(r *statesRig) { r.movedBackNaming([]string{"k3: no (fail)"}, "k1:", "k2:") },
+			leaving: reviewing,
+		},
+		{
+			name: "testing, tester completed, the set holds k3 alone, k3 no for fail, ci_case failure | the completion | implementing, the task names k3", at: phase.Testing,
+			given:   func(r *statesRig) { r.states(headOne, 1, k3Failed) },
+			event:   func(r *statesRig) { r.complete(headOne, 1) },
+			then:    func(r *statesRig) { r.movedBackNaming([]string{"k3: no (fail)"}) },
+			leaving: reviewing,
 		},
 		{
 			name: "testing, tester completed, k2 has no state | a state of k1 | waits, no second notice", at: phase.Testing,
@@ -275,7 +325,8 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 				r.states(headOne, 1, stateOf("k1", "no", "fail"), inCI(stateOf("k2", "no", "no_result"), "not_completed"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k2 at " + headOne) },
+			then:    func(r *statesRig) { r.waitsSaying("the move waits for the states of k2 at " + headOne) },
+			leaving: func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)"}, "k2") },
 		},
 		{
 			name: "testing, tester completed | a state of k1, no for fail | implementing, the task names k1", at: phase.Testing,
@@ -340,13 +391,20 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)", "k2: unknown (read_failed)"}) },
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newStatesRig(t, tc.at)
-			if tc.given != nil {
-				tc.given(r)
-			}
-			tc.event(r)
-			tc.then(r)
-		})
+		for _, leaveCI := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s (TestingLeavesCI %t)", tc.name, leaveCI), func(t *testing.T) {
+				r := newStatesRig(t, tc.at)
+				r.engine.cfg.TestingLeavesCI = leaveCI
+				if tc.given != nil {
+					tc.given(r)
+				}
+				tc.event(r)
+				if then := tc.leaving; leaveCI && then != nil {
+					then(r)
+					return
+				}
+				tc.then(r)
+			})
+		}
 	}
 }

@@ -213,15 +213,17 @@ func TestAFailStateBeforeTheTesterCompletesStartsNothing(t *testing.T) {
 	}
 }
 
-// Each step of the type testing among the steps the issue runs passes when each check reads yes
-// at its head, and its run ends passed; a check that reads no ends it failed, returning the work
-// to the step a failed step returns to. A check that a CI job runs, k3 here, counts too: the
-// testing step reads every check until the end of a task holds the checks that a CI job runs
-// (TestTheTestingMoveStillReadsEveryCheck). Today every issue runs the default steps.
+// Each step of the type testing among the steps the issue runs passes when each check it reads
+// reads yes at its head, and its run ends passed; a check that reads no ends it failed, returning
+// the work to the step a failed step returns to. A check that a CI job runs, k3 here, counts too
+// while the engine reads every check (TestingLeavesCI false, as the daemon wires it until the end
+// of a task holds the checks a CI job runs); leaving those checks out, a fail of k3 fails no
+// testing step. Each case runs under both values. Today every issue runs the default steps.
 func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 	steps := DefaultSteps()
 	implementing, _, _, _ := stepIn(steps, phase.Implementing)
 	tested := 0
+	k3Failed := []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester"), inCI(stateOf("k3", "no", "fail", "ci"), "failure")}
 	for _, p := range phase.All {
 		if _, typ, ok := stepWork(p); !ok || typ != "testing" {
 			continue
@@ -232,20 +234,24 @@ func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 		}
 		tested++
 		for _, tc := range []struct {
-			name   string
-			states []intake.DispatchCheckState
-			want   phase.Phase
-			result string
-			back   *int
+			name    string
+			leaveCI bool
+			states  []intake.DispatchCheckState
+			want    phase.Phase
+			result  string
+			back    *int
 		}{
-			{"each check reads yes", []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester")}, phase.Reviewing, string(ResultPassed), nil},
-			{"a check that a CI job runs reads no", []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester"),
-				inCI(stateOf("k3", "no", "fail", "ci"), "failure")}, phase.Implementing, string(ResultFailed), &implementing.Place},
-			{"a check reads no", []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Place},
+			{"each check reads yes", false, []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester")}, phase.Reviewing, string(ResultPassed), nil},
+			{"each check reads yes", true, []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester")}, phase.Reviewing, string(ResultPassed), nil},
+			{"a check that a CI job runs reads no", false, k3Failed, phase.Implementing, string(ResultFailed), &implementing.Place},
+			{"a check that a CI job runs reads no", true, k3Failed, phase.Reviewing, string(ResultPassed), nil},
+			{"a check reads no", false, []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Place},
+			{"a check reads no", true, []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Place},
 		} {
-			t.Run(fmt.Sprintf("step %d (%s): %s", place.Place, p, tc.name), func(t *testing.T) {
+			t.Run(fmt.Sprintf("step %d (%s): %s (TestingLeavesCI %t)", place.Place, p, tc.name, tc.leaveCI), func(t *testing.T) {
 				pool := migratedPool(t)
 				engine := stepEngine(nil)
+				engine.cfg.TestingLeavesCI = tc.leaveCI
 				stepRoot(t, pool, phase.Implementing)
 				move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 				assertPhase(t, pool, p)
