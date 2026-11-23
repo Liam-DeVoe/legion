@@ -28,6 +28,8 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -739,7 +741,8 @@ func (r *Runtime) cacheStreams(ctx context.Context, pod *corev1.Pod, repo ghrepo
 
 // cacheHealthOf is GET <address>/healthz through client, carrying no credential, decoded, within a
 // call's budget: an error when the answer is a redirect, which the daemon's client never follows
-// (cacheHealthClient), or names a repository other than repo (workspace.CacheRepositoryHeader).
+// (cacheHealthClient), or names a repository other than repo (workspace.CacheRepositoryHeader). A
+// read that got no answer names its failure through redact.Unanswered.
 func cacheHealthOf(ctx context.Context, client *http.Client, address string, repo ghrepo.Repository) (repocache.Health, error) {
 	bounded, cancel := call(ctx)
 	defer cancel()
@@ -749,12 +752,12 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return repocache.Health{}, err
+		return repocache.Health{}, redact.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
 	// A redirect is the answer itself, refused by its status: its Location is the answering
 	// party's own words, and a cache answers none, whatever repository the answer names.
-	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
+	if redirects.Status(response.StatusCode) {
 		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s, a redirect, which the daemon never follows", address, oauth2call.StatusLine(response.StatusCode))
 	}
 	// The repository the answer names is its own words, so it is compared as it came and printed
@@ -774,15 +777,14 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 }
 
 // cacheHealthClient reaches a cache's pod directly through cacheDial: no proxy stands between the
-// daemon and a pod of its namespace. It follows no redirect: a Location is the answering party's
-// own words, which a followed redirect makes the address whose health is read and the URL of
-// net/http's error, user information and query included. A redirect is the answer itself, which
-// cacheHealthOf refuses by its status.
+// daemon and a pod of its namespace. It follows no redirect (redirects.Refused): a Location is the
+// answering party's own words, which a followed redirect makes the address whose health is read
+// and the URL of net/http's error, user information and query included. A redirect is the answer
+// itself, which cacheHealthOf refuses by its status.
 func (r *Runtime) cacheHealthClient() *http.Client {
-	return &http.Client{
-		Transport:     &http.Transport{Proxy: nil, DialContext: r.cacheDial, DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	return redirects.Refused(&http.Client{
+		Transport: &http.Transport{Proxy: nil, DialContext: r.cacheDial, DisableKeepAlives: true},
+	})
 }
 
 // storedCaches are the cache Sandboxes in the store that are not being deleted.
