@@ -1936,12 +1936,12 @@ func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.
 		return nil
 	}
 	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
-		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		row, err := e.phaseRow(ctx, tx, issue, role)
 		if err != nil {
 			return err
 		}
 		if row.Claim == fact.Claim && row.Entry > 0 {
-			return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{resend: true})
+			return e.sendOwedEntry(ctx, tx, issue, role, row.Claim, row, startMarks{resend: true})
 		}
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
