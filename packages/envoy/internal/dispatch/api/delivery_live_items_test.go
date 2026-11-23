@@ -464,6 +464,91 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 	conns["d"].none(t, 100*time.Millisecond, "the job's change")
 }
 
+// TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours: pr-ci's failures list (sort=failures)
+// counts the jobs that failed in the 24 hours before its range's end, and a preset's range ends at
+// now, so the clock alone moves it. A job that failed in a run completed 23 h 59 min before now is
+// listed, and the preset view expires just past that completion + measures.FailingWindow, by the
+// Pipeline's failing-jobs rule (failingJobsNextExpiry) over the runs the list counts; a custom
+// range listing the same job, whose end the clock does not move, sets no expiry. When the clock
+// reaches the preset view's expiry the view reads its list again, and the frame it sends lists the
+// job no more, while the custom range is sent nothing.
+func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedHubSettings(t, rig.database)
+	key := createHubIssue(t, rig.handler, map[string]any{"title": "Checks"})
+	ctx := t.Context()
+	// Whole seconds, so the times Postgres stores are the ones the test compares with.
+	at := rig.clock.Now().Truncate(time.Second)
+	completed := at.Add(-23*time.Hour - 59*time.Minute)
+	started := completed.Add(-30 * time.Minute)
+	upsertPR(t, rig.database, prNaming(7, completed.Add(time.Hour), key))
+	const runID = 710
+	failure, jobFailure := delivery.DeliveryRunConclusionFailure, delivery.DeliveryJobConclusionFailure
+	if err := delivery.UpsertRun(ctx, rig.database.Pool, delivery.DeliveryRun{
+		Repo: "acme/widgets", RunID: runID, Kind: delivery.DeliveryRunKindPRChecks, HeadSHA: "sha710", HeadCommitAt: started.Add(-time.Minute),
+		StartedAt: started, CompletedAt: &completed, Conclusion: &failure, PRNumber: new(7),
+		URL: "https://github.com/acme/widgets/actions/runs/710", HeadBranch: new("feature"), Event: new("pull_request"),
+	}); err != nil {
+		t.Fatalf("upsert PR-checks run %d: %v", runID, err)
+	}
+	if err := delivery.UpsertRunJobs(ctx, rig.database.Pool, "acme/widgets", runID, []delivery.DeliveryRunJob{
+		{Repo: "acme/widgets", RunID: runID, Name: "checks / flaky", StartedAt: &started, CompletedAt: &completed, Conclusion: &jobFailure},
+	}, true); err != nil {
+		t.Fatalf("upsert PR-checks run %d's job: %v", runID, err)
+	}
+	refreshEvalDays(t, rig.hub.server.registry(), rig.database, at)
+
+	frames := map[string]DeliveryLiveView{
+		"preset": itemsLiveView("HUB", evals.SlugPRCI, DeliveryLiveWindow{Preset: new(7)}, "sort=failures"),
+		"custom": itemsLiveView("HUB", evals.SlugPRCI, evalsDays(at.AddDate(0, 0, -7), at), "sort=failures"),
+	}
+	keys, conns, held := map[string]string{}, map[string]*fakeLiveConn{}, map[string]json.RawMessage{}
+	for _, sub := range []string{"preset", "custom"} {
+		spec, refusal := parseDeliveryLiveView(frames[sub])
+		if refusal != nil {
+			t.Fatalf("read the view of %s: %+v", sub, refusal)
+		}
+		keys[sub] = spec.key
+		conns[sub] = newFakeLiveConn()
+		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
+		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
+		if got := itemsRowKeys(t, held[sub]); !slices.Equal(got, []string{"checks / flaky"}) {
+			t.Fatalf("%s: the failures view holds %v, want the job that failed 23 h 59 min ago", sub, got)
+		}
+	}
+	rig.settle(t)
+	expiryOf := func(sub string) time.Time {
+		rig.hub.mu.Lock()
+		defer rig.hub.mu.Unlock()
+		return rig.hub.generation.views[keys[sub]].expiry
+	}
+	leaves := completed.Add(measures.FailingWindow).Add(time.Nanosecond)
+	if got := expiryOf("preset"); !got.Equal(leaves) {
+		t.Fatalf("the preset failures view expires at %s, want %s, just past the run's completion + 24 h", got.Format(time.RFC3339Nano), leaves.Format(time.RFC3339Nano))
+	}
+	if got := expiryOf("custom"); !got.IsZero() {
+		t.Errorf("the custom range's failures view expires at %s, want never: the clock does not move its end", got.Format(time.RFC3339Nano))
+	}
+
+	mark := rig.mark()
+	ahead := leaves.Sub(rig.clock.Now())
+	if ahead <= 0 {
+		t.Fatalf("the clock already reads %s, past the expiry %s the test moves it to", rig.clock.Now().Format(time.RFC3339Nano), leaves.Format(time.RFC3339Nano))
+	}
+	rig.clock.Advance(ahead)
+	rig.waitFor(t, mark, 5*time.Second, "the preset failures view's read at its expiry", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.view == keys["preset"] && note.cause == deliveryCauseExpiry
+	})
+	delta := conns["preset"].delta(t, 5*time.Second, "preset")
+	if set, _, _, _ := liveSections(delta); !slices.Contains(set, "items") {
+		t.Errorf("the expiry's delta sets %v, want the rows", set)
+	}
+	if got := itemsRowKeys(t, applyLiveDelta(t, evalItemsView, held["preset"], delta)); len(got) != 0 {
+		t.Errorf("past the run's completion + 24 h the failures view holds %v, want no job", got)
+	}
+	conns["custom"].none(t, 100*time.Millisecond, "the preset view's expiry")
+}
+
 // TestTheItemsViewParsesAsTheItemsRoute: an items view is read as the items route reads its query,
 // so a query the route takes is held, with the project and the eval it names and a key of its own,
 // and a query the route refuses is refused with the route's code and words. The view's own shape

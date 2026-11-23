@@ -52,7 +52,10 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	}
 }
 
-// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
+// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due. A
+// delivery view's expiry narrows the population it holds without a read (expire); any other view
+// holds no population, so its expiry reads it again: pr-ci's failures items view, whose list loses
+// a job as the job's failure leaves the 24 hours (readEvalItemsView).
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -69,7 +72,7 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	switch {
 	case due == nil:
 		return false
-	case cause == deliveryCauseExpiry:
+	case cause == deliveryCauseExpiry && due.spec.classes().reads == viewReadsDelivery:
 		h.expire(g, due)
 	default:
 		h.recompute(g, due, cause)
@@ -308,16 +311,23 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 // (viewReads.refusal): its subscribers are told so once and stay open, and the version change of
 // the eval's registration marks the view, whose next read answers it.
 //
-// It names no issue and no session, reads the settings its rows stand built under in the items
-// read's own snapshot, and sets no expiry: what moves it is a write of its eval's readings,
-// versions or day rows and, for pr-ci's run and job rows, a change of a pull-request checks run of
-// its ranges, each of which the change log carries (touchedBy).
-func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, _ *deliveryViewRead) (any, error) {
+// It names no issue and no session, and reads the settings its rows stand built under in the items
+// read's own snapshot: what moves it is a write of its eval's readings, versions or day rows and,
+// for pr-ci's run and job rows, a change of a pull-request checks run of its ranges, each of which
+// the change log carries (touchedBy). The one list the clock moves is pr-ci's failures
+// (sort=failures), which counts the jobs that failed in the 24 hours before the range's end, and a
+// preset's range ends at now: a preset failures view expires by the Pipeline's failing-jobs rule
+// (failingJobsNextExpiry) over the runs the window's list was read from, and its expiry reads it
+// again (runDue). Every other items view sets no expiry.
+func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	answer, err := h.server.readProjectEvalItems(ctx, spec.evalsQuery(now), spec.project, spec.slug)
 	if err != nil {
 		return nil, err
 	}
-	return answer, nil
+	if spec.preset > 0 && spec.query.Get("sort") == evalSortFailures {
+		read.expiry = failingJobsNextExpiry(answer.failing, now)
+	}
+	return answer.body, nil
 }
 
 // readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
@@ -339,7 +349,7 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	}
 	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
 	if spec.at == nil {
-		read.expiry = pipelineNextExpiry(read.pipe, now)
+		read.expiry = failingJobsNextExpiry(read.pipe.checks.Runs, now)
 	}
 	read.from = measures.WindowStart(read.at)
 	read.prs, read.runs = len(read.pipe.leadTimes.prs), len(read.pipe.checks.Runs)+len(read.pipe.deploys.Runs)
@@ -429,7 +439,7 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		at = now
 		narrowed := pipe.narrowedTo(settings, at)
 		body = deliveryPipelineCompute(settings, narrowed, at, now)
-		expiry = pipelineNextExpiry(narrowed, now)
+		expiry = failingJobsNextExpiry(narrowed.checks.Runs, now)
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
