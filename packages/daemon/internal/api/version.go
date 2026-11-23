@@ -3146,7 +3146,7 @@ package api
 // declared and none at 222. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
 //
-// 236: the owner of an issue, its own architect, reports a step of its own: a step whose key is
+// 238: the owner of an issue, its own architect, reports a step of its own: a step whose key is
 // owner, or the retro of a task whose retro is the owner's. A new route, `POST
 // /legion/v1/steps/complete` (`grantId`, `issue`, `step`, `summary`, and, as a completion of that
 // place carries them, `verdict`, `commit`, `handoffId`, `handoffVersion`, `returnTo`, `planRating`
@@ -3156,7 +3156,7 @@ package api
 // step that does not run now or whose agent is not the owner `409 OWNER_STEP_NOT_RUNNING`, a step
 // below 0 `400 INVALID_STEP`, and otherwise as the completion route refuses a report of that place.
 // The owner's failed acceptance that names no step to return to, with no step of the type
-// implementation before it, stops the task as any such failed step does. No plugin below 236
+// implementation before it, stops the task as any such failed step does. No plugin below 238
 // calls it. A reviewer of an issue with no pull request record reports its step on `POST
 // /legion/v1/handoff/complete` with the verdict `pass` or `fail` and a commit (`400
 // STEP_VERDICT_REQUIRED`, `400 MISSING_FIELD`), as the owner's review step does on the new route,
@@ -3171,18 +3171,19 @@ package api
 // key) or, at the retro, the role its agent runs as; it is absent on an issue with no plan rows
 // and at the merge. So a reader such as `legion state` names who works an issue at accepting,
 // which the phase alone names as the architect. A
-// caller below 236 is served each issue without it (one band of shaping.go at
+// caller below 238 is served each issue without it (one band of shaping.go at
 // `completeStepContract`, withoutPlaceRole): a plugin before INFRA-1048 reads an issue as a strict
-// object. The request records of 236 hold the new route's request, and no recorded request field
+// object. The request records of 238 hold the new route's request, and no recorded request field
 // leaves. A claim of the role `acceptance`, the fresh agent of a step `acceptance` with no key, is
 // a role outside Legion's six, which 221's band already leaves out of the state served a caller
 // below 221. The notice kind this entry adds (`owner-step`) rides inside a notice row's payload, as
 // 189's does, and is no key or value of an answer a plugin parses. From this entry the last number
 // of answers.go's SupportedContracts is
 // `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.
-// (This entry takes 236, above 222 (the stranded claims' token, the entry above) and above every
+// (This entry takes 238, above 222 (the stranded claims' token, the entry above) and above every
 // number another open pull request declared: a reading of `const DaemonAPIVersion` at the head of
-// each of the 515 open pull requests, made between 2026-11-23T10:02:09Z and 10:03:26Z, read all
-// 515 and found 235 declared by #5204 as the highest, and nothing at 236. Read the base's own
+// each of the 501 open pull requests, made between 2026-11-23T20:52:35Z and 20:53:49Z, read all
+// 501 and found 237 declared by #5168 and #5169 as the highest, and nothing at 238; 236, which this
+// entry took at an earlier reading, was declared by #4173 and #4182 by then. Read the base's own
 // number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 236
+const DaemonAPIVersion = 238

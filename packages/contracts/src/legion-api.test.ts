@@ -175,7 +175,7 @@ const schemas: Record<string, z.ZodType> = {
   // The owner's plan (contract 211): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
-  // The owner's report of a step of its own (contract 236), the empty answer of a fact route.
+  // The owner's report of a step of its own (contract 238), the empty answer of a fact route.
   "step-complete.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
@@ -2838,7 +2838,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
   // 221 reads them (`belowDeploymentRoles`), contract 222's, which serves each claim nothing will
   // wake and each claim view without its `token`, and each issue without its `otherClaims`
-  // (`withoutStrandedTokens`, `withoutClaimTokens`), and the place role's (contract 236), which
+  // (`withoutStrandedTokens`, `withoutClaimTokens`), and the place role's (contract 238), which
   // serves each issue without its `placeRole` (`withoutPlaceRole`). So the narrowing changes this
   // one block and, beside it, only what those three bands change.
   const { daemonApiVersion } = z

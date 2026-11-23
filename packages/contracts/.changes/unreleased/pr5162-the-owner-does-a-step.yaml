@@ -2,7 +2,7 @@ kind: Added
 custom:
   Issue: pr5162
 body: |-
-  The daemon API contract 236: the request and the answer of the owner's report of a step it does
+  The daemon API contract 238: the request and the answer of the owner's report of a step it does
   itself (the route `complete_step` calls), and the issue's `placeRole` in the state, the role
-  that works the place where the issue's task stands, which a reader below contract 236 is not
+  that works the place where the issue's task stands, which a reader below contract 238 is not
   served.

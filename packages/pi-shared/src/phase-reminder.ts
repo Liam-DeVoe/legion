@@ -254,7 +254,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works the issue's place — the shape of a
    * worker that completed its phase from the shell instead of the tool. The role that works it is
-   * the record's `placeRole` where it names one (contract 236: the fresh agent of acceptance at
+   * the record's `placeRole` where it names one (contract 238: the fresh agent of acceptance at
    * `accepting`, the retro's agent at `retro`, and the architect at a step of its own, where no
    * worker is reminded), and otherwise the phase's role, or at `step`, which no role's phase names,
    * the issue's `stepRole`, a role of the deployment or of the plan — when another claim of this
