@@ -308,8 +308,9 @@ func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispa
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, and an upload answers the slug Dispatch files the name under. It also
-// takes every role-holder publication and keeps none. No route of this package reads or writes a
-// document of an issue's, and none publishes a role holder.
+// takes every role-holder publication and every write of a step record's commits and keeps none,
+// and answers a read of a CI job with none. No route of this package reads or writes a document of
+// an issue's, and none publishes a role holder, writes a record's commits or reads a CI job.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
@@ -317,6 +318,12 @@ func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string,
 	return name, nil
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+func (noArtifacts) PutStepCommits(context.Context, string, string, dispatch.StepWrite, dispatch.StepCommits) error {
+	return nil
+}
+func (noArtifacts) CIJob(context.Context, string, string, string) (dispatch.CIJob, error) {
+	return dispatch.CIJob{}, nil
+}
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 
