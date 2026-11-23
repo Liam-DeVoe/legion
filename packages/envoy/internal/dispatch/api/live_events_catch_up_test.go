@@ -67,7 +67,9 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(running.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
+	})
 	relay := served.eventRelay
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
@@ -119,7 +121,9 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(running.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
+	})
 	relay := served.eventRelay
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
@@ -163,7 +167,9 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	again := newGatedStream()
 	close(again.gate)
 	resubscribed := served.startEventsSubscription(ctx, again, "feed", new(last))
-	t.Cleanup(resubscribed.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the resubscribed events subscription's goroutine to return once stopped", resubscribed.stop)
+	})
 	start, ok := again.feedNext(t, database, "the resubscribe's events_start").(LiveEventsStart)
 	if since, err := strconv.ParseInt(start.Since, 10, 64); !ok || err != nil || since < last || start.ReplayComplete {
 		t.Fatalf("the resubscribe's first frame = %+v, want its events_start at or above %d, not complete", start, last)
@@ -191,7 +197,9 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	close(stream.gate)
 	retry := fake.Now().Add(eventRelayRetry)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
-	t.Cleanup(running.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
+	})
 	awaitArmedAt(t, fake, "the failed subscription's retry", retry)
 	if queued := len(stream.frames); queued != 0 {
 		t.Fatalf("the subscription whose read failed sent %d frames before its retry", queued)
@@ -218,7 +226,9 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(running.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
+	})
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})

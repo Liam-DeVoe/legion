@@ -301,8 +301,7 @@ func oneConnectionHandler(t *testing.T, deps Deps) (http.Handler, uint32) {
 	callDeps := deps
 	callDeps.Store = callStore
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), callDeps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, callDeps)
 	return mux, pid
 }
 
@@ -461,7 +460,7 @@ func TestCommentOnMovedApprovalAskReportsItsDerivedWaitingOn(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Moved approval comment", "A spec")

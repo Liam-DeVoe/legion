@@ -116,7 +116,7 @@ func newUploadRaceFixture(t *testing.T) *uploadRaceFixture {
 		})
 		// Runs before the service shuts down: a failed assertion must not leave the upload
 		// held inside its transaction.
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
 		t.Cleanup(f.persistence.release)
 		f.docs = &engagingDocs{API: service, engaged: make(chan struct{})}
 		return f.docs

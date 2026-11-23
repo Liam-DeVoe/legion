@@ -46,7 +46,7 @@ func closedSettlementHandlerSettlingAfter(t *testing.T, settle time.Duration) (h
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 		return documentService
 	})
 	return handler, database, documentService

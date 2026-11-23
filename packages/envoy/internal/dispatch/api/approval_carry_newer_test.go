@@ -51,7 +51,7 @@ func useNewerAskManifest(t *testing.T) {
 func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Duration) (http.Handler, *docs.Service) {
 	t.Helper()
 	service := docs.New(docs.Deps{Store: database, Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
 	deps, err := NewDeps(DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),
@@ -63,8 +63,7 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 		t.Fatalf("new API dependencies of the newer build: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux, service
 }
 

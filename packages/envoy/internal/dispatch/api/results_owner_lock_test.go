@@ -113,7 +113,7 @@ func TestAResultsWriteReadsTheChecksWordsWithBothIssuesOwnerLocksFree(t *testing
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
-			if err := service.Shutdown(context.Background()); err != nil {
+			if err := shutdownDocuments(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -224,7 +224,7 @@ func TestAResultsWriteRefusesACheckRewordedAtEveryAttempt(t *testing.T) {
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
-			if err := service.Shutdown(context.Background()); err != nil {
+			if err := shutdownDocuments(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -358,7 +358,7 @@ func TestAResultsWriteReadsTheCheckAgainWhenALaterVersionRestoredItsDigest(t *te
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() {
-			if err := service.Shutdown(context.Background()); err != nil {
+			if err := shutdownDocuments(t, context.Background(), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})

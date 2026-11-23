@@ -191,7 +191,7 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store:            second,
 		Identity:         headerIdentity(second),

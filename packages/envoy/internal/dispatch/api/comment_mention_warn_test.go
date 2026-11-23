@@ -46,10 +46,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	sender.heldWarnAfter = 200 * time.Millisecond
 	sender.clock = fake
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -120,10 +117,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	sender.heldWarnAfter = 200 * time.Millisecond
 	sender.clock = fake
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	// a-first's retry parks on release until the row lets it go, and the sender's wait above
 	// returns only once it has. Cleanups run last first, so this one, registered after that wait,
 	// lets the retry go before it: a row that fails between the retry's start and the release
@@ -234,10 +228,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	sender.mu.Lock()
 	sender.after = func(_ time.Duration, f func()) { f() }
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	// Runs before the sender's wait: a row that failed while a send was held lets it go.
 	t.Cleanup(func() { close(abort) })
 	for _, id := range []string{"a-first", "a-second"} {
@@ -317,10 +308,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 		timers <- f
 	}
 	sender.mu.Unlock()
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -391,10 +379,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			// lane until its claim is unknown.
 			sender.serving = mentionSendLanes
 			sender.mu.Unlock()
-			t.Cleanup(func() {
-				stop()
-				testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-			})
+			t.Cleanup(func() { endMentionSender(t, stop, sender) })
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 				attempt: 1, claimed: time.Now(),
@@ -511,10 +496,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			// No lane goroutine may take the send before its claim is unknown.
 			sender.serving = mentionSendLanes
 			sender.mu.Unlock()
-			t.Cleanup(func() {
-				stop()
-				testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-			})
+			t.Cleanup(func() { endMentionSender(t, stop, sender) })
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 				attempt: 1, claimed: fake.Now(),

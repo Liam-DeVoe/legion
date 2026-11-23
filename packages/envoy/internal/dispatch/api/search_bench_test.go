@@ -80,7 +80,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
 	})
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -97,8 +97,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux
 }
 

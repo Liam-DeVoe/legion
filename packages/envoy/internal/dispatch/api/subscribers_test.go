@@ -183,7 +183,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -200,8 +200,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux
 }
 

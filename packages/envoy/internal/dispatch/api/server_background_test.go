@@ -84,12 +84,14 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	stream := newGatedStream()
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
-	t.Cleanup(running.stop)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
+	})
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
-		running.stop()
+		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
 		testwait.Eventually(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})

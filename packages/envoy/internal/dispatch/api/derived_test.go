@@ -22,7 +22,7 @@ func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
 		return service
 	})
 	return withDeadline(t, handler), database

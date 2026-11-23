@@ -414,17 +414,32 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 // first (releaseHeld): the test is over, and they would run next anyway.
 func waitBackgroundOf(t testing.TB, served *server) {
 	t.Helper()
-	waitRegisteredBackground(t, served.waitBackground)
+	releaseHeld(t)
+	testwait.Returns(t, "the server's background work to end", served.waitBackground)
 }
 
-// waitRegisteredBackground is waitBackgroundOf for a server a test registered through Register,
-// which answers the server's Background rather than the server: wait is its Background.Wait, the
-// server's waitBackground. Take Register's answer before the cleanup that calls this, so the
-// server is registered when the row starts.
-func waitRegisteredBackground(t testing.TB, wait func()) {
+// registerJoined registers a server on mux with deps for the rest of the test, as Register does on
+// the test's context, and waits out its background work at the test's end (waitBackgroundOf). The
+// cleanup marks itself a helper too, so a give-up names the line that called registerJoined.
+func registerJoined(t testing.TB, mux RouteMux, deps Deps) {
 	t.Helper()
-	releaseHeld(t)
-	testwait.Returns(t, "the server's background work to end", wait)
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(func() {
+		t.Helper()
+		waitBackgroundOf(t, served)
+	})
+}
+
+// shutdownDocuments shuts service down on ctx, as a test's cleanup does once the test is over, and
+// answers Shutdown's error. Shutdown joins the service's room workers, its settlements, its
+// evictions, its compaction worker and its awareness relay's sends, and the last of these waits on
+// no context, so the call runs through the shared wait: a join that never returns fails the test
+// naming the shutdown rather than hanging the binary to its timeout.
+func shutdownDocuments(t testing.TB, ctx context.Context, service *docs.Service) error {
+	t.Helper()
+	var err error
+	testwait.Returns(t, "the document service's shutdown to return", func() { err = service.Shutdown(ctx) })
+	return err
 }
 
 // directServer is a server a test calls a handler or a delivery step on directly, without the
@@ -910,7 +925,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
 		Events:      broker,
 	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store:    database,
 		Identity: headerIdentity(database),
@@ -921,8 +936,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 
 	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2168,7 +2182,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
 	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: cookieIdentity, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs: documentService, Events: broker, StreamHeartbeat: heartbeat,
@@ -2179,8 +2193,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	handler := http.NewServeMux()
 	// Every server mounts GET /ws/live, the event feed's socket, which a revoked cookie is refused
 	// too.
-	background := Register(handler, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, handler, deps)
 	generation, err := sessions.EnsureSession(context.Background(), "alice@d.example")
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)

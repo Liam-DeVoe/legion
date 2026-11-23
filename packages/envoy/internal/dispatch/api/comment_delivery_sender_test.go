@@ -1175,9 +1175,25 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 // waits the replacement out.
 func withMentionClaimRefresh(t *testing.T, served *server, refreshes *clocktest.Fake) {
 	t.Helper()
-	testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
+	joinRegisteredMentions(t, served)
 	served.mentions = newMentionSender(served.lifetime, mentionClaimRefresh, refreshes, served.sendCommentMention,
 		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
+}
+
+// joinRegisteredMentions stops the mention sender register built for served and waits for its
+// lanes and its claim refresh to return, so a test can put a sender of its own in its place. A
+// test calls it before its first comment, while that sender holds nothing.
+func joinRegisteredMentions(t testing.TB, served *server) {
+	t.Helper()
+	testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
+}
+
+// endMentionSender ends the lifetime of sender, a test's own (stop), and waits for its lanes and its
+// claim refresh to return: a test's cleanup, so a lane that never returns fails the test naming it.
+func endMentionSender(t testing.TB, stop func(), sender *mentionSender) {
+	t.Helper()
+	stop()
+	testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 }
 
 // rereadNone is the reread of a fake mention sender whose refresh never fails, so the sender never

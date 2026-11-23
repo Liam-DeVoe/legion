@@ -52,7 +52,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	person := &endableIdentity{}
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
@@ -68,8 +68,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	}
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -92,7 +91,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	person := &endableIdentity{}
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, true)
@@ -107,8 +106,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	}
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -263,7 +261,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 	}
 	broker := events.NewBroker()
 	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
-	t.Cleanup(func() { _ = rig.documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), rig.documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
 		StreamHeartbeat: heartbeat, Clock: serverClock,
@@ -272,8 +270,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)

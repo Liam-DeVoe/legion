@@ -261,7 +261,7 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration, clk, judged clock.
 	rig.switched = newSwitchedIdentity(rig.iap.identity)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat, Clock: clk,
@@ -270,8 +270,7 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration, clk, judged clock.
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)

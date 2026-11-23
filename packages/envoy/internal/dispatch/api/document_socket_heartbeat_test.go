@@ -58,7 +58,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker,
@@ -71,8 +71,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	// ends one: the heartbeats the rows move through are the server's clock's alone.
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)

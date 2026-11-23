@@ -883,7 +883,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 		Store: database, Events: broker, ServerURL: "https://dispatch.example",
 	})
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(context.Background()); err != nil {
+		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

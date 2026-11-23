@@ -117,7 +117,7 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 				envoyURL: listener.URL, outboxPublishes: true,
 			})
-			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
+			joinRegisteredMentions(t, served)
 			var gated atomic.Bool
 			// The gated refresh and try each wait on their release until the row lets them go, and the
 			// server's cleanup waits for this sender (waitBackground). That cleanup lets both go first
@@ -304,7 +304,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 				envoyURL: listener.URL, outboxPublishes: true,
 			})
-			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
+			joinRegisteredMentions(t, served)
 			var lose, refreshed atomic.Bool
 			// unsureDuring is whether the lost refresh left the claim unsure while the try was in
 			// flight; park's timer, which the test receives, orders its write before the read.
@@ -426,7 +426,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 				envoyURL: listener.URL, outboxPublishes: true,
 			})
-			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
+			joinRegisteredMentions(t, served)
 			var gated atomic.Bool
 			// The gated try waits on tryGo until the row lets it go, and the server's cleanup waits
 			// for this sender (waitBackground). That cleanup lets it go first (heldUntilReleased,

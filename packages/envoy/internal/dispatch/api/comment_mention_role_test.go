@@ -109,10 +109,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, false)
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	enqueue := func(id, issue string) {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new(issue)}, mention: ResolvedMention{Target: "session:s1"},
@@ -255,10 +252,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	sender.capacity = 1
 	sender.mu.Unlock()
 	parks := countParks(sender, true)
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	enqueue := func(id, issue string) mentionSend {
 		item := mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new(issue)}, mention: ResolvedMention{Target: "session:s1"},
@@ -298,10 +292,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, true)
-	t.Cleanup(func() {
-		stop()
-		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
-	})
+	t.Cleanup(func() { endMentionSender(t, stop, sender) })
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{
 			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},

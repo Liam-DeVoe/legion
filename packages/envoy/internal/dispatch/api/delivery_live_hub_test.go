@@ -157,7 +157,9 @@ func newStillHubClock() *fakeHubClock {
 
 // newFakeOnlyHubClock is a fakeHubClock standing still at noon UTC whose timers fire only when the
 // test moves it: no real timer stands beside the fake's, so nothing of the wall clock reaches the
-// hub, and the fake's report of what is armed is the hub's whole timer.
+// hub, and the fake's report of what is armed is the hub's whole timer. A view due a moment past
+// the fake, such as a pull request leaving 500 ns on, would on newStillHubClock have its real timer
+// fire and the worker arm it again at that pace until the test moved the fake.
 func newFakeOnlyHubClock() *fakeHubClock {
 	return &fakeHubClock{Fake: clocktest.New(noonToday()), still: true, fakeOnly: true}
 }
@@ -253,11 +255,15 @@ func hubOnStore(t *testing.T, handler http.Handler, database *store.Store, deps 
 	if configure != nil {
 		configure(rig.hub)
 	}
-	rig.stop = sync.OnceFunc(func() {
-		cancel()
+	// The cancel runs once; the waits run on every call, outside the once, so a give-up ends the
+	// test as any wait's does rather than panicking the binary from inside sync.OnceFunc. A second
+	// call, the cleanup's after a row's own stop, finds both waits already at zero and returns.
+	stopping := sync.OnceFunc(cancel)
+	rig.stop = func() {
+		stopping()
 		testwait.Returns(t, "the hub's generation goroutines (its listener, intake and work) to return once its lifetime ended", rig.hub.wait)
 		testwait.Returns(t, "the relay's generation goroutines (its listener and its run) to return once its lifetime ended", rig.relay.wait)
-	})
+	}
 	t.Cleanup(rig.stop)
 	return rig
 }
@@ -458,10 +464,9 @@ func (r *hubRig) eventsApplied(since int) []int64 {
 	return applied
 }
 
-// onlyViewBody is the JSON body the hub's one view last answered, read under the hub's lock. It
-// fails unless exactly one view is open with a body, so a test that reads it holds the hub to the
-// single view it set up.
-func (r *hubRig) onlyViewBody(t *testing.T) json.RawMessage {
+// withOnlyView runs read on the hub's one view, under the hub's lock. It fails unless exactly one
+// view is open, so a test that reads through it holds the hub to the single view it set up.
+func (r *hubRig) withOnlyView(t *testing.T, read func(*deliveryView)) {
 	t.Helper()
 	r.hub.mu.Lock()
 	defer r.hub.mu.Unlock()
@@ -469,12 +474,40 @@ func (r *hubRig) onlyViewBody(t *testing.T) json.RawMessage {
 		t.Fatalf("the hub holds %d views, want one", n)
 	}
 	for _, view := range r.hub.generation.views {
-		if view.body == nil {
-			t.Fatal("the hub's view holds no body")
-		}
-		return view.body.snapshot("", view.seq, view.changedAt).Body
+		read(view)
 	}
-	return nil
+}
+
+// onlyViewBody is the JSON body the hub's one view last answered (withOnlyView). It fails unless
+// the view holds a body.
+func (r *hubRig) onlyViewBody(t *testing.T) json.RawMessage {
+	t.Helper()
+	var body json.RawMessage
+	answered := false
+	r.withOnlyView(t, func(view *deliveryView) {
+		if view.body != nil {
+			answered, body = true, view.body.snapshot("", view.seq, view.changedAt).Body
+		}
+	})
+	if !answered {
+		t.Fatal("the hub's view holds no body")
+	}
+	return body
+}
+
+// onlyViewFrom is the window start the hub's one view last answered for (withOnlyView).
+func (r *hubRig) onlyViewFrom(t *testing.T) (from time.Time) {
+	t.Helper()
+	r.withOnlyView(t, func(view *deliveryView) { from = view.from })
+	return from
+}
+
+// onlyViewDirty is whether the hub's one view is marked for a recompute, and the cause of the mark
+// (withOnlyView).
+func (r *hubRig) onlyViewDirty(t *testing.T) (dirty bool, cause string) {
+	t.Helper()
+	r.withOnlyView(t, func(view *deliveryView) { dirty, cause = view.dirty, view.cause })
+	return dirty, cause
 }
 
 // cursors is where the hub stands in both logs: its generation's delivery change cursor, and how
@@ -626,6 +659,17 @@ func (c *fakeLiveConn) empty(t *testing.T, after string) {
 		raw, _ := json.Marshal(frame)
 		t.Fatalf("after %s, a frame nobody should be sent: %s", after, raw)
 	default:
+	}
+}
+
+// drain takes every frame the conn holds now and drops it.
+func (c *fakeLiveConn) drain() {
+	for {
+		select {
+		case <-c.frames:
+		default:
+			return
+		}
 	}
 }
 
@@ -2149,7 +2193,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 	// Another task: its own broker and documents, on the same database.
 	other := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: rig.database, Events: other, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: rig.database, Identity: headerIdentity(rig.database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Docs: documents, Events: other,
@@ -2158,8 +2202,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 		t.Fatalf("the other task's dependencies: %v", err)
 	}
 	otherTask := http.NewServeMux()
-	background := Register(otherTask, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, otherTask, deps)
 	patchHubIssue(t, otherTask, key, map[string]any{"title": "Ship the widgets"})
 	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
@@ -2270,13 +2313,7 @@ func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T)
 	// expiry, and drain its delta.
 	clock.Advance(2 * viewQuiet)
 	rig.settle(t)
-	for drained := false; !drained; {
-		select {
-		case <-conn.frames:
-		default:
-			drained = true
-		}
-	}
+	conn.drain()
 	// The view's one timer is the pull request's leaving, a moment just past merged + 28 days and
 	// well before the midnight expiry; the fake clock reports the exact deadline it is armed for,
 	// which the test moves 500 ns past, as a real timer fires late (above), without asserting its
@@ -2308,7 +2345,7 @@ func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T)
 // into that microsecond and drop the pull request, while the GET, its start truncated onto the
 // microsecond, kept it.
 func TestAViewsWindowEdgeAgreesWithPostgresWhenItsMidnightLandsInsideAPullRequestsMicrosecond(t *testing.T) {
-	clock := newStillHubClock()
+	clock := newFakeOnlyHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	window := 28 * 24 * time.Hour
@@ -2325,13 +2362,7 @@ func TestAViewsWindowEdgeAgreesWithPostgresWhenItsMidnightLandsInsideAPullReques
 	// drain its delta.
 	clock.Advance(2 * viewQuiet)
 	rig.settle(t)
-	for drained := false; !drained; {
-		select {
-		case <-conn.frames:
-		default:
-			drained = true
-		}
-	}
+	conn.drain()
 	// The view's one timer is the midnight's, a microsecond before the pull request leaves, so a
 	// wake 500 ns past it reads a window starting inside the pull request's microsecond.
 	dayEdge := midnight.Add(time.Microsecond)
@@ -2362,7 +2393,7 @@ func TestAViewsWindowEdgeAgreesWithPostgresWhenItsMidnightLandsInsideAPullReques
 // window still read the pull request. The view is then recomputed for the change, at its quiet
 // delay, and its frame is a GET's over its window.
 func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T) {
-	clock := newStillHubClock()
+	clock := newFakeOnlyHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	window := 28 * 24 * time.Hour
@@ -2425,35 +2456,6 @@ func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T
 	body := rig.onlyViewBody(t)
 	requireSameBody(t, "the view recomputed for the change on its window start", body,
 		getBody(t, rig.handler, windowTarget(t, deliveryLiveMeasures, body, "")))
-}
-
-// onlyViewFrom is the window start the hub's one view last answered for, read under the hub's lock.
-func (r *hubRig) onlyViewFrom(t *testing.T) time.Time {
-	t.Helper()
-	r.hub.mu.Lock()
-	defer r.hub.mu.Unlock()
-	if n := len(r.hub.generation.views); n != 1 {
-		t.Fatalf("the hub holds %d views, want one", n)
-	}
-	for _, view := range r.hub.generation.views {
-		return view.from
-	}
-	return time.Time{}
-}
-
-// onlyViewDirty is whether the hub's one view is marked for a recompute, and the cause of the mark,
-// read under the hub's lock.
-func (r *hubRig) onlyViewDirty(t *testing.T) (bool, string) {
-	t.Helper()
-	r.hub.mu.Lock()
-	defer r.hub.mu.Unlock()
-	if n := len(r.hub.generation.views); n != 1 {
-		t.Fatalf("the hub holds %d views, want one", n)
-	}
-	for _, view := range r.hub.generation.views {
-		return view.dirty, view.cause
-	}
-	return false, ""
 }
 
 // timelinePRIDs is the ids of the pull requests a timeline body lists.
@@ -2532,13 +2534,7 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 	// good and the wait below, for a view holding its answer with nothing dirty, never ends.
 	clock.Advance(viewQuiet)
 	rig.settle(t)
-	for drained := false; !drained; {
-		select {
-		case <-conn.frames:
-		default:
-			drained = true
-		}
-	}
+	conn.drain()
 	testwait.Eventually(t, "the view to hold its answer with nothing dirty, computing or waking", func() bool {
 		rig.hub.mu.Lock()
 		defer rig.hub.mu.Unlock()

@@ -32,8 +32,7 @@ func agentsHandlerWithStore(t *testing.T, envoyURL string, database *store.Store
 		Envoy:       envoy.New(envoyURL),
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux
 }
 

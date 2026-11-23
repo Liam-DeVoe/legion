@@ -77,7 +77,7 @@ func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clo
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = documentService.Shutdown(t.Context()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, t.Context(), documentService) })
 	seedPeople(t, database, "alice", "bob")
 	depsInput := DepsInput{
 		Store:       database,
@@ -99,8 +99,7 @@ func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clo
 		cipher.WithClock(grants)(deps.AgentSecrets)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux
 }
 

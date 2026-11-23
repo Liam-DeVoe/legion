@@ -66,7 +66,7 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents = docs.New(docs.Deps{Store: database, Settle: settle})
-		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
 		return documents
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Closing with asks", closeDecision)
@@ -368,7 +368,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-				t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 				if settlementFails {
 					return failingSettlement{API: documentService}
 				}
@@ -448,7 +448,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: time.Hour})
-				t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 				if settlementFails {
 					return failingSettlement{API: documentService}
 				}
@@ -564,7 +564,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store:       second,
 		Identity:    headerIdentity(second),
@@ -577,8 +577,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the other process: %v", err)
 	}
 	mux := http.NewServeMux()
-	background := Register(mux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, mux, deps)
 	return mux
 }
 
@@ -593,7 +592,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(t *testing.T) {
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 		return documentService
 	})
 	other := otherProcessHandler(t, database)
@@ -662,7 +661,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 	wrapper := &peerInsertDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 		wrapper.API = documentService
 		return wrapper
 	})
@@ -698,7 +697,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
 		return service
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed and reopened twice", closeDecision)

@@ -967,7 +967,7 @@ func oneConnectionDocs(t *testing.T, deps Deps) (*docs.Service, uint32) {
 	// Registered after the store's close and so run before it, cleanups running last registered
 	// first, which leaves the service its connection while it shuts down.
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := shutdownDocuments(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown the command's document service: %v", err)
 		}
 	})

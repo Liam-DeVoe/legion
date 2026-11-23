@@ -157,7 +157,7 @@ func newContractRig(t *testing.T) *contractRig {
 	documentService := docs.New(docs.Deps{
 		Store: dispatchDB, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
 	seedPeople(t, dispatchDB, contractApprover, contractOther)
 	deps, err := NewDeps(DepsInput{
 		Store: dispatchDB, Identity: headerIdentity(dispatchDB),
@@ -168,8 +168,7 @@ func newContractRig(t *testing.T) *contractRig {
 		t.Fatalf("new dispatch API dependencies: %v", err)
 	}
 	dispatchMux := http.NewServeMux()
-	background := Register(dispatchMux, t.Context(), deps)
-	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
+	registerJoined(t, dispatchMux, deps)
 
 	return &contractRig{
 		Dispatch: dispatchMux, BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey,

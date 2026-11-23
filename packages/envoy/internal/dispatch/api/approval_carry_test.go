@@ -55,7 +55,7 @@ func settlingCarryDocuments(t *testing.T, settle time.Duration) (http.Handler, *
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: settle})
-		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
 		documentService = service
 		return service
 	})
