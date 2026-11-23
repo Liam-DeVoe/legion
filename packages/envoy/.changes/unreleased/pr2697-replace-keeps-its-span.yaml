@@ -18,28 +18,38 @@ body: |-
   span, and nothing is written, where the link went with its URL and a span cut to end on a space
   was written with character references. Each span is weighed alone, so a `find` that spells one
   link's markup and covers a second link (`wrote [this](https://a.example/1) and that`) is refused
-  naming `that`. A `find` names text to change, so a `replace`'s or a `delete`'s that covers a
-  link's whole text and spells it with another URL or title
-  (`wrote [this](https://wrong.example/9) today`, or that link alone,
-  `[this](https://wrong.example/9)`) is refused with `400 FIND_CROSSES_SPAN` naming the link,
-  since the edit would remove a link another writer may have changed, its URL and title with it,
-  where each was taken with no word that the link had changed. So is one that spells only part of
-  a link's whole text as another link, or a bare link as a link to another URL. A `find` over part
-  of a link removes no link: it changes only the text it names, and the rest of the link keeps the
-  document's URL and title, as on `main`. Each refusal names the `find` that covers the very text
-  the `find` named and is taken there, to send in its place, with the `occurrence` at which it
-  matches that text: the same text with each span written with its markup, a link under its own
-  URL and title (`wrote [this](https://example.com/Sami)` for `wrote this`). Where none is taken,
-  it says to move the space out of the bold or italic span, for a struck span to replace the text
-  inside it and the text outside it in two operations, and otherwise to read the document again.
-  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it
-  spells it: `docs at https://example.com/x` was refused with that same `find` as the markup to
-  spell.
+  naming `that`.
 
-  The rule has two limits. No `find` spells strikethrough's markup, so a `find` crossing a struck
-  span's edge is narrowed to its inside, and the text outside it replaced in an operation of its
-  own. A span is kept only by a `with` of one paragraph: a `with` that parses to blocks keeps the
-  ask and comment anchors the match lies inside, and none of its spans.
+  A link the edit removes whole must be spelled as it is wherever the `find` spells it, since the
+  edit would remove a link another writer may have changed since the `find` was read, its URL and
+  title with it. So a `replace`'s or a `delete`'s `find` that spells such a link with another URL
+  or title is refused with `400 FIND_CROSSES_SPAN` naming the link, where each was taken with no
+  word that the link had changed: one over the link's whole text
+  (`wrote [this](https://wrong.example/9) today`, or that link alone,
+  `[this](https://wrong.example/9)`), however much of that text it spells so, a bare link's
+  included; a `delete`'s whose list marker selects the item holding the link, which the delete
+  removes whole (`- [one](https://wrong.example/9)` over
+  `- [one two](https://a.example/1) and more`); and a `replace`'s over part of a link whose rest is
+  whitespace beside the `find`, which a `with` of blocks drops. An edit that removes only part of a
+  link changes only the text the `find` names, and the rest of the link keeps the document's URL
+  and title.
+
+  Each refusal names the `find` that covers the very text the `find` named, selects as it does and
+  is taken there, to send in its place, with the `occurrence` at which it matches that text: the
+  same text with each span written with its markup, a link under its own URL and title
+  (`wrote [this](https://example.com/Sami)` for `wrote this`), after the same list marker where a
+  marker selected the item (`- [one](https://a.example/1)`), so the edit removes what the refused
+  one would have. Where none is taken, it gives the advice of the span that stops every such
+  `find`, naming that span where the `find` written from the document's text crosses it too: to
+  move the space out of a bold or italic span, for a struck span to replace the text inside it and
+  the text outside it in two operations, and otherwise to read the document again. A bare URL or a
+  bare `www.` link is its own markup, so a `find` that covers the whole of it spells it
+  (`docs at https://example.com/x`).
+
+  The rule has two limits. No `find` spells strikethrough's markup, so the text inside a struck
+  span and the text outside it are replaced in two operations. A span is kept only by a `with` of
+  one paragraph: a `with` that parses to blocks keeps the ask and comment anchors the match lies
+  inside, and none of its spans.
 time: 2026-11-16T20:55:00Z
 custom:
     Issue: pr2697

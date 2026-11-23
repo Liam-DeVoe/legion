@@ -237,6 +237,24 @@ func (f *QuoteFinder) OccurrenceOf(quote string, r Range) (occurrence, matches i
 	if err != nil {
 		return 0, 0, false
 	}
+	return occurrenceIn(all, r)
+}
+
+// ListItemOccurrenceOf is OccurrenceOf for a quote that opens with a list item's marker, read as
+// the items it selects (FindListItem): the occurrence that resolves quote to r as FindListItem
+// resolves it, the index of r among the items' matches, and how many it has; found is false where
+// none of them is r, or quote selects no item.
+func (f *QuoteFinder) ListItemOccurrenceOf(quote string, r Range) (occurrence, matches int, found bool) {
+	item := ParseListItemQuote(quote)
+	if item.Text == "" || f.prepare() != nil {
+		return 0, 0, false
+	}
+	return occurrenceIn(listItemQuoteMatches(f.doc, f.text, item), r)
+}
+
+// occurrenceIn is the index of r among a quote's matches, all, and how many there are; found is
+// false where none of them is r.
+func occurrenceIn(all []quoteMatch, r Range) (occurrence, matches int, found bool) {
 	for index, match := range all {
 		if match.Range == r {
 			return index, len(all), true
@@ -1454,8 +1472,8 @@ func (s *markSearch) close() {
 // matched as written spells nothing: its `*`, `_` or backtick is text the document holds (`2*3*4`
 // in `*a 2\*3\*4 b*`). A quote inside a link that writes the link's markup with another URL or
 // title leaves it as one with the link's own does: the text written over it lands outside the
-// link, and the rest of the link keeps the document's URL and title (`that[ one](…)`), as on
-// `main`; a quote over the whole link spelled so is refused before it writes
+// link, and the rest of the link keeps the document's URL and title (`that[ one](…)`); a quote
+// over the whole link spelled so would remove the link, and is refused before it writes
 // (TextblockAt.CrossedSpan). Strikethrough is never markup the finder reads, so it is never taken
 // off.
 func WithoutQuotedMarkup(marks []Mark, spelled Spelling) []Mark {
