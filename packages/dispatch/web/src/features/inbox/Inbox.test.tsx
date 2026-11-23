@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+import { type ReactNode, useRef } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
@@ -31,7 +32,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError, RequestTimeoutError } from "../../api/client";
-import { meInboxQuery, openAsksQuery } from "../../api/queries";
+import { meInboxDismissedQuery, meInboxQuery, openAsksQuery } from "../../api/queries";
 import type {
   Artifact,
   AskRead,
@@ -40,6 +41,7 @@ import type {
   Issue,
   IssueDetails,
   MeInboxEntry,
+  MyReplyRow,
   OpenAskRow,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
@@ -8876,6 +8878,417 @@ describe("the approval mark", () => {
       view.unmount();
       restoreReads();
       projects.mockRestore();
+    }
+  });
+});
+
+// ----------------------------------------------------------------------------------------
+// The Dismissed view's window (R7, the plan's ST4). The view draws the loaded rows near sight
+// and twelve more above and below them, out of every row it has loaded. happy-dom lays nothing
+// out and scrolls nothing, so each case lays the rows down the box they scroll in
+// (`layDismissedRows`) and makes each scroll itself, as a browser reports one
+// (`scrollDismissedBox`).
+// ----------------------------------------------------------------------------------------
+
+/** How tall each Dismissed row is laid down here. */
+const DISMISSED_ROW_PX = 50;
+
+/** The space between two Dismissed rows: the list's `gap-3`, which the window counts too. */
+const DISMISSED_GAP_PX = 12;
+
+/** How far down the list each row starts after the one before it. */
+const DISMISSED_STRIDE_PX = DISMISSED_ROW_PX + DISMISSED_GAP_PX;
+
+/** How tall the box the rows scroll in is: about ten rows. */
+const DISMISSED_BOX_PX = 600;
+
+/** How long the window waits after a scroll before it reads the scroll as over, with room to
+ *  spare (`isScrollingResetDelay`, 150 ms in `@tanstack/virtual-core`). */
+const DISMISSED_SCROLL_SETTLE_MS = 200;
+
+/** `count` threads the reader has dismissed, `d<from>` on, newest dismissal first. */
+function dismissedThreads(count: number, from = 1): MyReplyRow[] {
+  return Array.from({ length: count }, (_, index) =>
+    replyRow(`d${from + index}`, { unread: false, unread_count: 0 })
+  );
+}
+
+/** The row id of dismissed thread `d<n>`. */
+function dismissedId(n: number): string {
+  return `reply:d${n}`;
+}
+
+/** The box the page's Dismissed rows scroll in beside the reading column: the list column. */
+function dismissedListBox(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+}
+
+/** The box the drawer's rows scroll in: the drawer itself. */
+function dismissedDrawerBox(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-testid="inbox-drawer"]');
+}
+
+/** `box()`, which a case reads once the view is drawn. */
+function drawnBox(box: () => HTMLElement | null): HTMLElement {
+  const element = box();
+  if (element === null) throw new Error("the Dismissed rows' scroll box is not drawn");
+  return element;
+}
+
+/** Answers the Dismissed view's read with `pages()`, read at each call: no cursor reads the
+ *  first, and each page but the last names the next as `page-<n>`. Every other state of the one
+ *  read answers nothing, and the reads a row and the reading column make beside it are answered,
+ *  which no case here asserts. Answers the function that puts those reads back. */
+function answerDismissedPages(pages: () => readonly (readonly MyReplyRow[])[]): () => void {
+  mocks.getMeInbox.mockImplementation(async (query = {}) => {
+    if (query.state !== "dismissed") return oneReadAnswer([]);
+    const at = query.cursor === undefined ? 0 : Number(query.cursor.replace("page-", ""));
+    const held = pages();
+    const answer = oneReadAnswer(held[at] ?? []);
+    return at + 1 < held.length ? { ...answer, next_cursor: `page-${at + 1}` } : answer;
+  });
+  const reads = [
+    answerOpenAsks([]),
+    spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
+    spyOn(api, "listComments").mockResolvedValue([]),
+  ];
+  return () => {
+    for (const read of reads) read.mockRestore();
+  };
+}
+
+/** The cursors the Dismissed view has read a next page from, in order. */
+function dismissedCursorsRead(): string[] {
+  return mocks.getMeInbox.mock.calls.flatMap(([query]) =>
+    query?.state === "dismissed" && query.cursor !== undefined ? [query.cursor] : []
+  );
+}
+
+/**
+ * Lays the Dismissed rows down `box()`, the box they scroll in, as happy-dom does not: the box
+ * `DISMISSED_BOX_PX` tall at the window's top, and each row the window draws `DISMISSED_ROW_PX`
+ * tall at the place its index among the loaded rows gives it (`data-index`), less the box's
+ * `scrollTop`. Everything inside a row stands in the row's own box, and the list of rows starts
+ * at the box's top. The box scrolls over the whole list: the space the window keeps above and
+ * below the rows it draws, and those rows. Every other element keeps happy-dom's own box.
+ * Answers the function that gives happy-dom its own boxes back.
+ */
+function layDismissedRows(box: () => HTMLElement | null): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  /** The list of rows inside `scroller`. */
+  const listIn = (scroller: Element) =>
+    [...scroller.querySelectorAll("ul")].find(
+      (list) => list.querySelector("[data-inbox-row]") !== null
+    );
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this === box() ? DISMISSED_BOX_PX : (clientHeight?.get?.call(this) ?? 0);
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.matches("[data-inbox-row][data-index]")
+        ? DISMISSED_ROW_PX
+        : (offsetHeight?.get?.call(this) ?? 0);
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const list = this === box() ? listIn(this) : undefined;
+      if (list === undefined) return scrollHeight?.get?.call(this) ?? 0;
+      const drawn = list.querySelectorAll("[data-inbox-row][data-index]").length;
+      const kept =
+        Number.parseFloat(list.style.paddingTop) + Number.parseFloat(list.style.paddingBottom);
+      return kept + drawn * DISMISSED_STRIDE_PX - DISMISSED_GAP_PX;
+    },
+  });
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const scroller = box();
+    if (scroller === null || !scroller.contains(this)) return real.call(this);
+    if (this === scroller) return new DOMRect(0, 0, 800, DISMISSED_BOX_PX);
+    const row = this.closest("[data-inbox-row][data-index]");
+    if (row !== null) {
+      const top = Number(row.getAttribute("data-index")) * DISMISSED_STRIDE_PX;
+      return new DOMRect(0, top - scroller.scrollTop, 800, DISMISSED_ROW_PX);
+    }
+    if (this === listIn(scroller)) return new DOMRect(0, -scroller.scrollTop, 800, 0);
+    return real.call(this);
+  });
+  const restore = (name: string, descriptor: PropertyDescriptor | undefined) => {
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, name);
+  };
+  return () => {
+    rect.mockRestore();
+    restore("clientHeight", clientHeight);
+    restore("offsetHeight", offsetHeight);
+    restore("scrollHeight", scrollHeight);
+  };
+}
+
+/** Lets the window read a scroll as over, a scroll it started included: it waits that long
+ *  after the last scroll, and draws again then. */
+async function settleDismissedWindow(): Promise<void> {
+  await act(async () => {
+    const settled = Promise.withResolvers<void>();
+    setTimeout(settled.resolve, DISMISSED_SCROLL_SETTLE_MS);
+    await settled.promise;
+  });
+}
+
+/** The scroll a browser makes and reports: happy-dom scrolls no box and reports no scroll, so
+ *  the case moves the box and fires the event the window and the page's rescue read it from. */
+async function scrollDismissedBox(box: HTMLElement, top: number): Promise<void> {
+  act(() => {
+    box.scrollTop = top;
+    box.dispatchEvent(new Event("scroll"));
+  });
+  await settleDismissedWindow();
+}
+
+/** The Inbox drawer, as `InboxDrawer` draws it, on the Dismissed view: a modal dialog whose box
+ *  the rows scroll in. */
+function DismissedDrawer(): ReactNode {
+  const box = useRef<HTMLElement>(null);
+  return (
+    <aside aria-label="Inbox" aria-modal="true" data-testid="inbox-drawer" ref={box} role="dialog">
+      <Inbox
+        filter={{ show: "dismissed" }}
+        keymapScope={DIALOG_SCOPE}
+        onFilterChange={() => {}}
+        pane={false}
+        scroller={box}
+      />
+    </aside>
+  );
+}
+
+/** The Dismissed view under the page's focus rescue, as the app shell mounts it: the page's own
+ *  at the address `address` names, or the drawer's (`DismissedDrawer`). */
+function renderDismissed(where: "drawer" | "page", address = "/?show=dismissed") {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={[where === "page" ? address : "/agents"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>{where === "page" ? <Inbox /> : <DismissedDrawer />}</RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { queryClient, unmount: view.unmount };
+}
+
+describe("the Dismissed window", () => {
+  // ST4 row 1, in the spec's words: a focused row the person scrolls out of the window is no
+  // loss. The window takes the row's element away, and the page's rescue, which read the row out
+  // of sight on that scroll before the window took it, moves the focus nowhere and scrolls
+  // nothing.
+  test("a focused row the person scrolls out of the window is no loss: it goes, and the rescue moves the focus nowhere and scrolls nothing", async () => {
+    const narrow = widenToReadingPane();
+    const reads = answerDismissedPages(() => [dismissedThreads(60)]);
+    const laidOut = layDismissedRows(dismissedListBox);
+    const { unmount } = renderDismissed("page");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(5)));
+      expect(rowIds().length).toBeLessThan(60);
+      const box = drawnBox(dismissedListBox);
+      act(() => markOf(dismissedId(5)).focus());
+      const moves = watchMoves();
+      try {
+        await scrollDismissedBox(box, 40 * DISMISSED_STRIDE_PX);
+        await afterRescue();
+        expect(rowIds()).not.toContain(dismissedId(5));
+        expect(document.activeElement).toBe(document.body);
+        expect(box.scrollTop).toBe(40 * DISMISSED_STRIDE_PX);
+        expect(moves.focused).toEqual([]);
+        expect(moves.scrolled).toEqual([]);
+      } finally {
+        moves.restore();
+      }
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+      narrow();
+    }
+  });
+
+  // ST4 row 2: the same scroll in the drawer, a modal dialog, which takes the focus itself so the
+  // page behind it is never reached, with no scroll.
+  test("in the drawer, a focused row scrolled out of the window leaves the focus on the drawer itself, with no scroll", async () => {
+    const reads = answerDismissedPages(() => [dismissedThreads(60)]);
+    const laidOut = layDismissedRows(dismissedDrawerBox);
+    const { unmount } = renderDismissed("drawer");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(5)));
+      expect(rowIds().length).toBeLessThan(60);
+      const box = drawnBox(dismissedDrawerBox);
+      act(() => markOf(dismissedId(5)).focus());
+      const moves = watchMoves();
+      try {
+        await scrollDismissedBox(box, 40 * DISMISSED_STRIDE_PX);
+        await afterRescue();
+        expect(rowIds()).not.toContain(dismissedId(5));
+        expect(document.activeElement).toBe(box);
+        expect(box.scrollTop).toBe(40 * DISMISSED_STRIDE_PX);
+        expect(moves.focused.map(({ options, target }) => ({ options, target }))).toEqual([
+          { options: { preventScroll: true }, target: box },
+        ]);
+        expect(moves.scrolled).toEqual([]);
+      } finally {
+        moves.restore();
+      }
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+    }
+  });
+
+  // ST4 row 3: the row the window took away is one of the loaded rows still, so the scroll back
+  // draws it again, in its place among the others.
+  test("a row scrolled out of the window is drawn again when the person scrolls back", async () => {
+    const narrow = widenToReadingPane();
+    const reads = answerDismissedPages(() => [dismissedThreads(60)]);
+    const laidOut = layDismissedRows(dismissedListBox);
+    const { unmount } = renderDismissed("page");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(5)));
+      const first = rowIds();
+      const box = drawnBox(dismissedListBox);
+      await scrollDismissedBox(box, 40 * DISMISSED_STRIDE_PX);
+      expect(rowIds()).not.toContain(dismissedId(5));
+      await scrollDismissedBox(box, 0);
+      expect(rowIds()).toEqual(first);
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+      narrow();
+    }
+  });
+
+  // ST4 row 4, in the spec's words: a row a live update takes away while it is the row under the
+  // hand stays drawn in its place while it stays the row under the hand. The focus inside it
+  // stays there, and nothing scrolls, because the person did not cause that loss. Once that row
+  // is no longer the row under the hand, the view draws it no more.
+  test("a row another tab restores stays drawn in its place while it stays the row under the hand, the focus inside it and nothing scrolled, and once it is not the view draws it no more", async () => {
+    const narrow = widenToReadingPane();
+    let held = dismissedThreads(30);
+    const reads = answerDismissedPages(() => [held]);
+    const laidOut = layDismissedRows(dismissedListBox);
+    const user = userEvent.setup();
+    const { queryClient, unmount } = renderDismissed("page");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(3)));
+      const before = rowIds();
+      const box = drawnBox(dismissedListBox);
+      const mark = markOf(dismissedId(3));
+      act(() => mark.focus());
+
+      // Another tab moves the thread back to the Inbox, and this view reads its list again.
+      held = held.filter((thread) => thread.thread_id !== "d3");
+      await act(() => queryClient.refetchQueries({ queryKey: meInboxDismissedQuery().queryKey }));
+      await afterRescue();
+      expect(rowIds()).toEqual(before);
+      expect(document.activeElement).toBe(mark);
+      expect(box.scrollTop).toBe(0);
+
+      // Each stop of the row's own, its link and its controls, keeps it drawn: the focus is in
+      // it still.
+      const next = markOf(dismissedId(4));
+      for (let pressed = 0; pressed < 20 && document.activeElement !== next; pressed += 1) {
+        await user.tab();
+        if (document.activeElement !== next) expect(rowIds()).toContain(dismissedId(3));
+      }
+      expect(document.activeElement).toBe(next);
+      await waitFor(() => expect(rowIds()).not.toContain(dismissedId(3)));
+      const listed = held.map((thread) => `reply:${thread.thread_id}`);
+      expect(rowIds()).toEqual(listed.slice(0, rowIds().length));
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+      narrow();
+    }
+  });
+
+  // ST4 row 5: the row in hand is always drawn. `j` from the last row the window draws selects a
+  // row it does not draw, and the window scrolls to that row and draws it in view.
+  test("`j` from the row in hand at the window's end draws the next row and brings it into view", async () => {
+    const narrow = widenToReadingPane();
+    const reads = answerDismissedPages(() => [dismissedThreads(40)]);
+    const laidOut = layDismissedRows(dismissedListBox);
+    const user = userEvent.setup();
+    const { unmount } = renderDismissed("page");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(1)));
+      await settleDismissedWindow();
+      const drawn = rowIds();
+      expect(drawn.length).toBeLessThan(40);
+      const end = drawn.at(-1) ?? "";
+      const after = `reply:d${Number(end.slice("reply:d".length)) + 1}`;
+      await user.click(shortRow(end));
+      await waitFor(() => expect(selectedIds()).toEqual([end]));
+      expect(rowIds()).not.toContain(after);
+
+      await user.keyboard("j");
+      // The window scrolls to the row in hand, and the browser reports that scroll, which
+      // happy-dom does not.
+      const box = drawnBox(dismissedListBox);
+      await waitFor(() => expect(box.scrollTop).toBeGreaterThan(0));
+      act(() => {
+        box.dispatchEvent(new Event("scroll"));
+      });
+      await settleDismissedWindow();
+      await waitFor(() => expect(selectedIds()).toEqual([after]));
+      const row = shortRow(after).getBoundingClientRect();
+      expect(row.top).toBeGreaterThanOrEqual(0);
+      expect(row.bottom).toBeLessThanOrEqual(DISMISSED_BOX_PX);
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+      narrow();
+    }
+  });
+
+  // ST4 row 6: the window reads the next page itself once it reaches the last loaded row, with
+  // the cursor the first page answered, and once only.
+  test("a scroll that brings the window to the end of the loaded rows reads the next page once, with the first page's cursor", async () => {
+    const narrow = widenToReadingPane();
+    const reads = answerDismissedPages(() => [dismissedThreads(40), dismissedThreads(40, 41)]);
+    const laidOut = layDismissedRows(dismissedListBox);
+    const { unmount } = renderDismissed("page");
+    try {
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(1)));
+      await settleDismissedWindow();
+      expect(dismissedCursorsRead()).toEqual([]);
+      const box = drawnBox(dismissedListBox);
+      const loadedEnd = 40 * DISMISSED_STRIDE_PX - DISMISSED_GAP_PX;
+      await scrollDismissedBox(box, loadedEnd - DISMISSED_BOX_PX);
+      await waitFor(() => expect(dismissedCursorsRead()).toEqual(["page-1"]));
+      // The next page's rows are loaded rows like the first page's: the window draws them as the
+      // person scrolls on, and reads no page again.
+      await scrollDismissedBox(box, loadedEnd);
+      await waitFor(() => expect(rowIds()).toContain(dismissedId(50)));
+      expect(dismissedCursorsRead()).toEqual(["page-1"]);
+    } finally {
+      unmount();
+      laidOut();
+      reads();
+      narrow();
     }
   });
 });

@@ -626,6 +626,16 @@ export function markInboxRead(
   return post("/api/v1/me/inbox/read", { body }, options);
 }
 
+/** `POST /api/v1/me/inbox/dismiss`: the Inbox's **Dismiss**, and with `restore` its **Move to
+ *  Inbox** - by the row ids a page drew, or under the list's own narrowing with a mark, the
+ *  request **Select all** sends. Answers how many threads it changed. */
+export function dismissInbox(
+  body: Body<"/api/v1/me/inbox/dismiss", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/me/inbox/dismiss", { body }, options);
+}
+
 /** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until
  *  `snoozedUntil` (RFC 3339, in the future). */
 export function snoozeAsk(id: string, snoozedUntil: string, options: ApiOptions = {}) {

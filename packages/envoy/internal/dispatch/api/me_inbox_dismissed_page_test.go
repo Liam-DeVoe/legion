@@ -17,18 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// The plans TestScanRowsReadsEveryScanNodeOfAPlan reads (testdata/explain-*.json) were captured
-// from the pod's PostgreSQL 18 over a database TestTheDismissedNarrowingAnswersAtMostOnePage's seed
-// made, kept for the capture, as the read's own transaction runs: JIT off and the generic plan
-// (meInboxSettings). Each command ran with the statement of the first page
-// (GET /api/v1/me/inbox?state=dismissed, meInboxStatement) prepared as `page` with its arguments
-// written as literals:
+// The plan TestScanRowsReadsEveryScanNodeOfAPlan reads (testdata/explain-scan-kinds.json) was
+// captured from the pod's PostgreSQL 18. The database was one that seedDismissedPage made, kept
+// for the capture. The command was:
 //
-//	explain-dismissed-1000.json, with 1,000 threads dismissed:
-//	psql "$LEGION_TEST_PG_DSN/dispatch_test_<seeded>" -X -A -t -c "set jit = off; set plan_cache_mode = force_generic_plan; prepare page(<its types>) as <the statement>; explain (analyze, format json) execute page(<its arguments>)"
-//	explain-dismissed-250.json, the same after 750 of them were put back.
-//	explain-scan-kinds.json, over the same database:
-//	psql "$LEGION_TEST_PG_DSN/dispatch_test_<seeded>" -X -A -t -c "set enable_seqscan = off; set enable_indexscan = off; explain (analyze, format json) with marks as materialized (select thread_id, dismissed_at from user_threads where login = 'alice' and dismissed_at is not null) select m.thread_id, (select max(c.created_at) from comments c where c.reply_to = m.thread_id) as replied, (select count(*) from marks) as total from marks m where m.dismissed_at > now() - interval '30 minutes'"
+//	psql "<the seeded test database>" -X -A -t -q -c "set enable_seqscan = off" -c "explain (analyze, format json) with marks as materialized (select thread_id, read_through from user_threads where login = 'alice' and dismissed_at > now() - interval '30 minutes') select m.thread_id, (select count(*) from comments c where c.reply_to = m.thread_id) as replies, (select count(*) from marks) as total from marks m"
+//
+// The two plans of the Dismissed page's statement are not kept as files. The page test explains
+// both live, with 1,000 dismissed threads and with 250, and sums them with scanRowsOf.
 
 // The seed of the narrowing's page test: a pile of each kind of dismissed thread, built with the
 // scale seed's own helpers (inbox_dismissed_scale_seed_test.go). 960 Reply threads are dismissed a
@@ -251,19 +247,24 @@ func scanRowsOf(t testing.TB, plan json.RawMessage) float64 {
 	return math.Round(rows)
 }
 
-// F1: scanRowsOf over three plans PostgreSQL 18 wrote (the commands at the top of this file), each
-// against a count taken from the fixture apart from it. The two plans of the Dismissed page's
-// statement are what c-dismissed-page sums; the third holds every kind of node the walk must
-// reach: an InitPlan and a SubPlan under the top node, a CTE scan, a bitmap heap scan over a
-// bitmap index scan, and an index-only scan, with the SubPlan run once a row so its loops count.
+// F1: scanRowsOf over a plan PostgreSQL 18 wrote (the command at the top of this file). The plan
+// holds every kind of node the walk must reach: an InitPlan and a SubPlan under the top node, a
+// CTE scan, a bitmap heap scan over a bitmap index scan, and an index-only scan. The SubPlan runs
+// once a row, so its loops count. The count was read off the fixture by hand, scan by scan:
+//
+//	CTE Scan on marks m                                28 rows x 1 loop    28
+//	Bitmap Heap Scan on user_threads (CTE marks)       28 rows x 1 loop    28
+//	Bitmap Index Scan on user_threads_dismissed        28 rows x 1 loop    28
+//	CTE Scan on marks (InitPlan 3)                     28 rows x 1 loop    28
+//	Index Only Scan using comments_reply_to (SubPlan)   1 row  x 28 loops  28
+//
+// The two Aggregate nodes read no rows of their own, so they are not counted.
 func TestScanRowsReadsEveryScanNodeOfAPlan(t *testing.T) {
 	for _, fixture := range []struct {
 		file string
 		rows float64
 	}{
-		{"explain-dismissed-1000.json", 0},
-		{"explain-dismissed-250.json", 0},
-		{"explain-scan-kinds.json", 0},
+		{"explain-scan-kinds.json", 140},
 	} {
 		raw, err := os.ReadFile(filepath.Join("testdata", fixture.file))
 		if err != nil {

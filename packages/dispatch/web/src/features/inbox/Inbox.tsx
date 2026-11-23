@@ -1,11 +1,15 @@
 import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
+import { useVirtualizer, useWindowVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import {
+  createContext,
   type FocusEvent,
   type ReactNode,
   type RefObject,
   useCallback,
+  useContext,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -366,6 +370,19 @@ function ThreadMarkCheckbox({
 /** The checkbox a row draws for its mark (`MarkCheckbox`), the one checkbox every row has. */
 const MARK_SELECTOR = 'input[type="checkbox"]';
 
+/** Where a row of the Dismissed window sits among the loaded rows, how many rows are loaded, and
+ *  the virtualizer's measure of the row (`DismissedWindow`). The row's own `<li>` takes them, so
+ *  it stays a direct child of the list, and a screen reader hears the row's place among every
+ *  loaded row, drawn or not, as `DataTable` says it of its own window. Undefined outside that
+ *  window, where every row is drawn. */
+interface WindowSlot {
+  readonly count: number;
+  readonly index: number;
+  readonly measure: (node: Element | null) => void;
+}
+
+const WindowSlotContext = createContext<WindowSlot | undefined>(undefined);
+
 /** The `<li>` both layouts sit in: where the row is, what the reader's hand does to it, and the
  *  marks the selected row carries. Only the short row is selectable, so only it is ever drawn
  *  as the selected one. */
@@ -389,6 +406,7 @@ function InboxRowShell({
   selected: boolean;
 }): ReactNode {
   const id = rowId(row);
+  const slot = useContext(WindowSlotContext);
   const releaseOnFocusOut =
     onRelease === undefined
       ? undefined
@@ -402,6 +420,8 @@ function InboxRowShell({
        biome-ignore lint/a11y/useKeyWithClickEvents: explained just above. */
     <li
       aria-current={selected ? "true" : undefined}
+      aria-posinset={slot === undefined ? undefined : slot.index + 1}
+      aria-setsize={slot?.count}
       className={`group rounded-xl outline-none focus-visible:ring-2 ${focusVisibleRing} ${
         selected ? surfaceMutedBg : ""
       }`}
@@ -409,6 +429,7 @@ function InboxRowShell({
       data-inbox-row={id}
       data-inbox-section={section}
       data-inbox-selected={selected ? "true" : undefined}
+      data-index={slot?.index}
       onBlur={releaseOnFocusOut}
       onClick={
         onSelect === undefined
@@ -424,6 +445,7 @@ function InboxRowShell({
             }
       }
       onPointerLeave={onRelease}
+      ref={slot?.measure}
       tabIndex={-1}
     >
       {children}
@@ -1020,6 +1042,223 @@ function InboxAskWrites({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
+/** How many rows the Dismissed view draws past the rows in sight, above them and below them: the
+ *  one window size the app holds (`DataTable`'s `overscan`). */
+const DISMISSED_OVERSCAN = 12;
+
+/** The space between two rows of the Dismissed list, in pixels: its `gap-3`. */
+const DISMISSED_ROW_GAP = 12;
+
+/** How tall a row of the Dismissed view is before it is drawn and measured: a short row beside
+ *  the reading column, and a card without it. Close to what each draws at, so the scroll box is
+ *  about the right height from the first draw and the rows move little once measured. */
+const DISMISSED_SHORT_ROW_PX = 58;
+const DISMISSED_CARD_ROW_PX = 120;
+
+/** What the Inbox asks of the Dismissed window. */
+interface DismissedWindowHandle {
+  /** Focuses row `id`, the loaded row at `index`: at once where the window draws it, and else
+   *  once the window has scrolled to it and drawn it. */
+  focusRow: (id: string, index: number) => void;
+}
+
+interface DismissedWindowProps {
+  /** The box the rows scroll in: the list column beside the reading column, or the drawer's own
+   *  box. Undefined where the window scrolls them. */
+  readonly box: RefObject<HTMLElement | null> | undefined;
+  /** The row in hand where the reading column is on: the selected row, which `j` and `k` move.
+   *  Undefined without the column, where the keys move the focus instead (`focusRow`). */
+  readonly hand: string | undefined;
+  readonly handle: RefObject<DismissedWindowHandle | null>;
+  /** Reads the next page of dismissals. Undefined where there is none, or while it loads. */
+  readonly onNearEnd: (() => void) | undefined;
+  readonly renderRow: (row: InboxListRow) => ReactNode;
+  /** How tall a row is before it is measured. */
+  readonly rowHeight: number;
+  /** Every loaded row, in the order the view lists them: what the window draws a part of. */
+  readonly rows: readonly InboxListRow[];
+}
+
+/**
+ * The Dismissed view's rows, drawn as a window: the rows in sight and `DISMISSED_OVERSCAN` more
+ * above and below them, out of every row the view has loaded. A person can have thousands of
+ * dismissed threads, and drawing every loaded row made the view slower with each page. The rows
+ * stay the view's own `<li>`s in its own `<ul>`, with the virtualizer `DataTable` uses.
+ *
+ * The window scrolls the box the list's anchor scrolls: the list column beside the reading
+ * column, the drawer's box, or the window itself. Each kind needs its own virtualizer hook, so
+ * this picks one of two components.
+ */
+function DismissedWindow(props: DismissedWindowProps): ReactNode {
+  return props.box === undefined ? (
+    <DismissedPageWindow {...props} />
+  ) : (
+    <DismissedBoxWindow {...props} box={props.box} />
+  );
+}
+
+/** The window over rows the page itself scrolls. */
+function DismissedPageWindow(props: DismissedWindowProps): ReactNode {
+  const [margin, setMargin] = useState(0);
+  const virtualizer = useWindowVirtualizer({
+    count: props.rows.length,
+    estimateSize: () => props.rowHeight,
+    gap: DISMISSED_ROW_GAP,
+    getItemKey: (index) => (props.rows[index] === undefined ? index : rowId(props.rows[index])),
+    overscan: DISMISSED_OVERSCAN,
+    scrollMargin: margin,
+  });
+  return (
+    <DismissedRows {...props} margin={margin} onMargin={setMargin} virtualizer={virtualizer} />
+  );
+}
+
+/** The window over rows a box scrolls. */
+function DismissedBoxWindow(
+  props: DismissedWindowProps & { readonly box: RefObject<HTMLElement | null> }
+): ReactNode {
+  const [margin, setMargin] = useState(0);
+  const virtualizer = useVirtualizer({
+    count: props.rows.length,
+    estimateSize: () => props.rowHeight,
+    gap: DISMISSED_ROW_GAP,
+    getItemKey: (index) => (props.rows[index] === undefined ? index : rowId(props.rows[index])),
+    getScrollElement: () => props.box.current,
+    overscan: DISMISSED_OVERSCAN,
+    scrollMargin: margin,
+  });
+  return (
+    <DismissedRows {...props} margin={margin} onMargin={setMargin} virtualizer={virtualizer} />
+  );
+}
+
+/**
+ * The drawn part of the window, and what keeps it right.
+ *
+ * The list starts below whatever the box or the page draws above it, so where it starts is read
+ * after each commit (`margin`). The row in hand is always drawn: a step of `j` or `k` to a row
+ * the window does not draw scrolls the window to it first, and the row takes the focus, or the
+ * selection, once it is drawn. The next page is read once the window reaches the last loaded
+ * row, one request for each number of loaded rows; **Show more** still reads it by key.
+ *
+ * A focused row the person scrolls out of the window is no loss. The page's focus rescue reads
+ * the row out of sight from its capture-phase scroll listener, before the virtualizer's own
+ * listener takes the row away (`outOfSight`, `components/focus-place.ts`). So the focus goes to
+ * no row and nothing scrolls, and in the drawer the drawer takes the focus. Scrolled back, the
+ * row is drawn again. A row a live update takes away while it is the row under the hand stays in
+ * the rows the Inbox hands here (`heldRow`), so it stays drawn in its place.
+ */
+function DismissedRows({
+  box,
+  hand,
+  handle,
+  margin,
+  onMargin,
+  onNearEnd,
+  renderRow,
+  rows,
+  virtualizer,
+}: DismissedWindowProps & {
+  readonly margin: number;
+  readonly onMargin: (margin: number) => void;
+  readonly virtualizer: Virtualizer<HTMLElement, Element> | Virtualizer<Window, Element>;
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  /** The row that takes the focus once the window draws it. */
+  const pendingFocus = useRef<string | null>(null);
+  /** How many rows were loaded when the window last asked for the next page. */
+  const askedAt = useRef<number | null>(null);
+  const drawnRow = (id: string) =>
+    list.current?.querySelector<HTMLElement>(`[${ROW_ATTRIBUTE}="${CSS.escape(id)}"]`) ?? null;
+
+  useImperativeHandle(handle, () => ({
+    focusRow: (id, index) => {
+      const row = drawnRow(id);
+      if (row !== null) {
+        pendingFocus.current = null;
+        row.focus();
+        return;
+      }
+      pendingFocus.current = id;
+      virtualizer.scrollToIndex(index, { align: "auto" });
+    },
+  }));
+
+  // Where the list starts in what the box or the page scrolls, which the virtualizer counts its
+  // rows from. Read after every commit: a bar or a filter row above the list can come and go.
+  useLayoutEffect(() => {
+    const element = list.current;
+    if (element === null) return;
+    const top = element.getBoundingClientRect().top;
+    const scroller = box?.current ?? null;
+    const start =
+      scroller === null
+        ? top + window.scrollY
+        : top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    if (Math.abs(start - margin) >= 1) onMargin(start);
+  });
+
+  // A row a step asked for takes the focus once it is drawn, with no scroll of its own: the
+  // window has already brought it into view.
+  useLayoutEffect(() => {
+    const id = pendingFocus.current;
+    if (id === null) return;
+    const row = drawnRow(id);
+    if (row === null) return;
+    pendingFocus.current = null;
+    row.focus({ preventScroll: true });
+  });
+
+  // The selected row stays drawn and in view as `j` and `k` move it. A selected row the window
+  // draws is brought into view by the selection itself (`pane-selection.ts`). On the passive
+  // lane, as the selection's own scroll is: the list's anchor (`ViewportAnchor`) holds the row
+  // under the hand in place at the end of the commit that moved the selection, and a scroll made
+  // inside that commit would be undone by it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a change of the row in hand is what this answers, and nothing else.
+  useEffect(() => {
+    if (hand === undefined || drawnRow(hand) !== null) return;
+    const index = rows.findIndex((row) => rowId(row) === hand);
+    if (index !== -1) virtualizer.scrollToIndex(index, { align: "auto" });
+  }, [hand]);
+
+  const items = virtualizer.getVirtualItems();
+  const first = items[0];
+  const last = items.at(-1);
+  const lastIndex = last?.index;
+  useEffect(() => {
+    if (onNearEnd === undefined || lastIndex === undefined || lastIndex < rows.length - 1) return;
+    if (askedAt.current === rows.length) return;
+    askedAt.current = rows.length;
+    onNearEnd();
+  });
+
+  const { scrollMargin } = virtualizer.options;
+  return (
+    <ul
+      className="flex flex-col gap-3"
+      ref={list}
+      style={{
+        paddingBottom:
+          last === undefined ? 0 : virtualizer.getTotalSize() - (last.end - scrollMargin),
+        paddingTop: first === undefined ? 0 : first.start - scrollMargin,
+      }}
+    >
+      {items.map((item) => {
+        const row = rows[item.index];
+        if (row === undefined) return null;
+        return (
+          <WindowSlotContext
+            key={rowId(row)}
+            value={{ count: rows.length, index: item.index, measure: virtualizer.measureElement }}
+          >
+            {renderRow(row)}
+          </WindowSlotContext>
+        );
+      })}
+    </ul>
+  );
+}
+
 function InboxBody({
   composing,
   filter: filterOverride,
@@ -1068,6 +1307,9 @@ function InboxBody({
    *  as well, and it is the list's own stop for the selection bar's hand-off
    *  (`useLastMarkedPlace`). */
   const listScroller = useRef<HTMLElement>(null);
+  /** The Dismissed view's window over its loaded rows, which `j` and `k` scroll to the row they
+   *  move to where it is not drawn (`DismissedWindow`). */
+  const dismissedWindow = useRef<DismissedWindowHandle | null>(null);
   /** The reading column, where `h`, `o`, `y`, Enter and `1`-`9` act while it is on. Written by
    *  `holdPane` below rather than handed to the wrapper, so the column's unmount is seen. */
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -1284,8 +1526,9 @@ function InboxBody({
     if (folded.has(bandKey)) {
       return rows.filter((row) => row.kind === "ask" && snoozing.has(row.ask.id));
     }
-    // The Dismissed view pages at the server: every row a page answered is drawn, and **Show
-    // more** reads the next 200 rather than revealing rows already here.
+    // The Dismissed view pages at the server: every row a page answered is listed, and **Show
+    // more** reads the next 200 rather than revealing rows already here. Its window draws the
+    // listed rows near sight (`DismissedWindow`).
     if (showDismissed) return rows;
     return rows.slice(0, (pages.get(bandKey) ?? 1) * GROUP_PAGE);
   };
@@ -1320,7 +1563,8 @@ function InboxBody({
     filters,
     // The rows a range runs over, read at the click: the rows the list draws, in its order, less
     // a row it holds in place after the server dropped it (`heldRow`), which is in no range. The
-    // Dismissed view's range runs over every row it has loaded, in its order.
+    // Dismissed view's range runs over every row it has loaded, in its order, whether its window
+    // draws the row or not.
     order: () =>
       showDismissed
         ? shown.map((row) => rowId(row))
@@ -1360,7 +1604,26 @@ function InboxBody({
     release();
   };
   const rows = () => [...(listRef.current?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? [])];
-  const step = (delta: 1 | -1) => roveFocus(rows(), rowAround(document.activeElement), delta);
+  /** One step of the focus over the rows. In the Dismissed view that is over every loaded row in
+   *  the order the view lists them, since its window draws only those near sight: a row it does
+   *  not draw is scrolled to and then focused (`DismissedWindow`). */
+  const step = (delta: 1 | -1) => {
+    if (!showDismissed) {
+      roveFocus(rows(), rowAround(document.activeElement), delta);
+      return;
+    }
+    const ids = presented.current.map(({ row }) => rowId(row));
+    const current = rowAround(document.activeElement)?.dataset.inboxRow;
+    const at = current === undefined ? -1 : ids.indexOf(current);
+    const next =
+      at === -1
+        ? delta === 1
+          ? 0
+          : ids.length - 1
+        : Math.max(0, Math.min(ids.length - 1, at + delta));
+    const id = ids[next];
+    if (id !== undefined) dismissedWindow.current?.focusRow(id, next);
+  };
   const focusInPane = () => paneRef.current?.contains(document.activeElement) === true;
   const focusInList = () => listRef.current?.contains(document.activeElement) === true;
   /** The row a recorded origin names: null where nothing was recorded, and null where the row
@@ -2798,19 +3061,31 @@ function InboxBody({
         rootRef={listRef}
         scroller={paneShown ? listScroller : scroller}
       >
-        <ul className="space-y-3">
-          {drawn.flatMap(({ band, rows: visible }) =>
-            groupItems({
-              folded: folded.has(band.key),
-              group: band,
-              held: folded.has(band.key) ? 0 : band.rows.length - visible.length,
-              onShowMore: showMore,
-              onToggleFold: toggleFold,
-              renderRow: (row) => renderRow(band.key, row),
-              rows: visible,
-            })
-          )}
-        </ul>
+        {showDismissed ? (
+          <DismissedWindow
+            box={paneShown ? listScroller : scroller}
+            hand={paneShown ? paneSelection.id : undefined}
+            handle={dismissedWindow}
+            onNearEnd={threads.showingMore ? undefined : threads.showMore}
+            renderRow={(row) => renderRow(ALL_GROUP_KEY, row)}
+            rowHeight={paneShown ? DISMISSED_SHORT_ROW_PX : DISMISSED_CARD_ROW_PX}
+            rows={presented.current.map(({ row }) => row)}
+          />
+        ) : (
+          <ul className="space-y-3">
+            {drawn.flatMap(({ band, rows: visible }) =>
+              groupItems({
+                folded: folded.has(band.key),
+                group: band,
+                held: folded.has(band.key) ? 0 : band.rows.length - visible.length,
+                onShowMore: showMore,
+                onToggleFold: toggleFold,
+                renderRow: (row) => renderRow(band.key, row),
+                rows: visible,
+              })
+            )}
+          </ul>
+        )}
         {/* The Dismissed view's own **Show more**: the next page of dismissals, read from the
             cursor the last page named, rather than rows this page is holding back, held while
             that page loads (`heldPress`). */}

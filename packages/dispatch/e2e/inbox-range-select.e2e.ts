@@ -1,5 +1,7 @@
+import type { MeInboxResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { seedDismissedThreads } from "./dismissed-seed";
 import { listTrigger, openDisplayMenu, openFilterPanel, pickFromList } from "./filters";
 import { drawer } from "./inbox-drawer";
 import { inboxList, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
@@ -82,6 +84,13 @@ function bar(page: Page): Locator {
 /** Reads the bar counting `count` rows, in its own words. */
 async function expectCount(page: Page, count: number): Promise<void> {
   await expect(bar(page).getByText(`${count} selected`, { exact: true })).toBeVisible();
+}
+
+/** The number the bar counts, read off its own words, or null while it draws no bar. */
+async function barCount(page: Page): Promise<number | null> {
+  if ((await bar(page).count()) === 0) return null;
+  const counted = /(\d+) selected/.exec((await bar(page).textContent()) ?? "");
+  return counted === null ? null : Number(counted[1]);
 }
 
 /** Every band heading the list draws, top to bottom, with its count. */
@@ -289,6 +298,61 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     await expect(rows(page)).toHaveCount(loaded.length - back.length);
     await chooseShow(page, "Inbox");
     for (const id of back) await expect(row(page, id)).toBeVisible();
+
+    // The Dismissed view draws a window of the rows it has loaded, and a range there still runs
+    // over every loaded row, drawn or not: 300 dismissed threads, a first page of 200, and a run
+    // of the first 150 of them.
+    const drill = await createIssue({ project: "CORE", title: "Window drill" });
+    await seedDismissedThreads({ count: 300, issueKey: drill.key, prefix: "Drill" });
+    const firstPage = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/v1/me/inbox" &&
+        url.searchParams.get("state") === "dismissed" &&
+        !url.searchParams.has("cursor")
+      );
+    });
+    await page.goto("/?show=dismissed");
+    const answered = (await (await firstPage).json()) as MeInboxResponse;
+    const loadedIds = (answered.entries ?? []).flatMap((entry) =>
+      entry.thread === undefined || entry.thread === null
+        ? []
+        : [replyRowId(entry.thread.thread_id)]
+    );
+    expect(loadedIds).toHaveLength(200);
+    const span = loadedIds.slice(0, 150);
+    const spanFirst = span[0] ?? "";
+    const spanLast = span.at(-1) ?? "";
+    await expect(row(page, spanFirst)).toBeVisible();
+    const windowed = await drawnIds(page);
+    expect(windowed.length, `the window draws ${windowed.length} of 200 loaded rows`).toBeLessThan(
+      150
+    );
+    await mark(page, spanFirst).click();
+    await expectCount(page, 1);
+    // Down the list column until the window draws the 150th row.
+    for (let step = 0; step < 60 && (await row(page, spanLast).count()) === 0; step += 1) {
+      await inboxList(page).evaluate((list) => {
+        list.scrollTop += 600;
+      });
+      await frameAndTask(page);
+    }
+    const drawnAtClick = await drawnIds(page);
+    await mark(page, spanLast).click({ modifiers: ["Shift"] });
+    await expect
+      .poll(() => barCount(page), {
+        message: `the bar counts the run of ${span.length} loaded rows`,
+      })
+      .toBe(span.length);
+    const undrawn = span.filter((id) => !drawnAtClick.includes(id));
+    expect(undrawn.length, "rows of the run the window did not draw at the click").toBeGreaterThan(
+      0
+    );
+    const moved = await namedByPress(page, () =>
+      bar(page).getByRole("button", { name: "Move to Inbox selected threads" }).click()
+    );
+    expect([...moved].sort()).toEqual([...span].sort());
+    expect(dismisses).toHaveLength(3);
   } finally {
     await alice.close();
   }
