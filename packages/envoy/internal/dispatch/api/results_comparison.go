@@ -119,17 +119,19 @@ func (s *server) resultsNow() time.Time {
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue, the stored heads of each
 // repository-and-commit pair and GitHub's answer about each repository, branch and commit are
-// each read once per read of the results, and so are the canonical name of each linked
-// repository a result's row takes its commit to be of, one GitHub said holds that commit when the
-// result was recorded, and the branch each issue's linked pull request merged into in each such
-// repository. The branch is in that last key of GitHub's, and not the repository and the commit
-// alone, because one issue's Verification document may hold an `after_merge` check and a
-// `default_branch` check with a result at the same commit: two questions, with two answers, that
-// one key for both would collapse into whichever was asked first. Across reads, a repository's
-// default branch, a commit's place on a branch and the last read-through of a commit's pull
-// requests are held by delivery (server.branches, branch_commits and server.commitPulls). A
-// read-only caller's read writes none of those: it reads them as a writer's read does, and carries
-// what a writer's read would write for the rest of its own request alone (answers, carried).
+// each read once per read of the results, and so is the branch each issue's linked pull request
+// merged into in each linked repository a result's row takes its commit to be of, one GitHub said
+// holds that commit when the result was recorded. The branch is in that last key of GitHub's,
+// and not the repository and the commit alone, because one issue's Verification document may
+// hold an `after_merge` check and a `default_branch` check with a result at the same commit: two
+// questions, with two answers, that one key for both would collapse into whichever was asked
+// first. The canonical name of such a linked repository is no read: it comes from the rename
+// pairs Dispatch holds in memory (refs.Renames.Canonical over Deps.Renames). Across reads, a
+// repository's default branch, a commit's place on a branch and the last read-through of a
+// commit's pull requests are held by delivery (server.branches, branch_commits and
+// server.commitPulls). A read-only caller's read writes none of those: it reads them as a
+// writer's read does, and carries what a writer's read would write for the rest of its own
+// request alone (answers, carried).
 type comparisonReader struct {
 	server *server
 	// readOnly is whether the request the reader reads for was made with a read-only credential
