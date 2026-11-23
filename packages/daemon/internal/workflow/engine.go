@@ -2545,6 +2545,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if stops {
 		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, record.StandsAt(issue), "", handoff))
 	}
+	// A move of a task beside its fix, or after its fix ended while another step ran, waits for
+	// the way after the fix: besideFix takes the move in place of the row where it applies.
+	if took, err := e.besideFix(ctx, tx, issue, w, trigger, target, row, handoff, pr, reason); err != nil || took {
+		return err
+	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
 	// counts the task a pass: the tester's fail, a review's request for changes and a worker's
 	// backward move. The pass tells each pass through a phase from the last

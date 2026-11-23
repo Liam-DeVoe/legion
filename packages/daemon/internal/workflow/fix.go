@@ -64,9 +64,9 @@ func taskRuns(issue record.Issue, w Walk) bool {
 }
 
 // atTaskEnd says whether issue stands at its task's end: held before its retro for its fix or
-// for its CI.
+// for its CI. A hold for the fix from a step before the end (besideFix) is no end.
 func atTaskEnd(issue record.Issue) bool {
-	return record.HeldFor(issue, record.HoldForFix) || record.HeldFor(issue, record.HoldForCI)
+	return fixOrCIHold(issue) && issue.Hold.From == phase.Retro
 }
 
 // fixPass is what one run of the fix rule read of an issue: its record, its walk, its task's
@@ -625,7 +625,8 @@ func (e *Engine) fixMovedBack(ctx context.Context, tx pgx.Tx, issue record.Issue
 // Head, and never a commit another step pushed. A fix that failed returns the task to the earlier
 // of the step a step beside it returned the task to and the step the fix's own report names
 // (earlierReturn). The run of the step the fix ran again ends with end (endRun), its report and
-// its return among it.
+// its return among it. The fix's own end decides what runs after it (afterFix), which waits while
+// another step of the task runs.
 func (e *Engine) endFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix *record.TaskFix, end StepEnd, endHead string) error {
 	now := e.now()
 	fix.State, fix.Result, fix.EndHead, fix.EndedAt = record.FixEnded, string(end.Result), endHead, &now
@@ -649,7 +650,7 @@ func (e *Engine) endFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wa
 	}
 	e.logOnCommit(ctx, "workflow: a fix ends", "issue", issue.Key, "task", fix.Task, "fix", fix.Fix, "result", fix.Result,
 		"check", fix.Check, "head", fix.Head, "endHead", fix.EndHead, "returnTo", fix.ReturnTo, "phase", issue.Phase)
-	return nil
+	return e.afterFix(ctx, tx, issue, w, nil)
 }
 
 // earlierReturn is the earlier of two places a task returns to, by place from 1, where 0 is none.
@@ -658,4 +659,235 @@ func earlierReturn(stored, reported int) int {
 		return reported
 	}
 	return stored
+}
+
+// The ways a fix's end takes (record.TaskFix.Way), after R7a's three: wayReturn returns the task
+// to an earlier step, wayAfterFix runs again the steps after the fix's own, and wayOn leaves each
+// step its result.
+const (
+	wayReturn   = 1
+	wayAfterFix = 2
+	wayOn       = 3
+)
+
+// rowMove is a move of the table that transition took no row for while a fix's way was pending
+// (besideFix): afterFix makes it where the way leaves each step its result.
+type rowMove struct {
+	trigger TriggerKind
+	target  phase.Phase
+	handoff record.PhaseRow
+	pr      *record.PullRequest
+	reason  string
+}
+
+// wayMove is a move the way after a fix makes (afterFix), which its context carries: moveTo is the
+// head the working copy of the task moves to before the started step's task (moveToOf), the task's
+// head for the first two ways and none for the third, and its presence marks the move as the
+// way's own, which besideFix lets through.
+type wayMove struct{ moveTo string }
+
+// wayMoveKey is the context key of a wayMove.
+type wayMoveKey struct{}
+
+// moveToOf is the head the start of a step moves the task's working copy to: the task's head for
+// a start the first two ways after a fix make, "" for every other start.
+func moveToOf(ctx context.Context) string {
+	move, _ := ctx.Value(wayMoveKey{}).(wayMove)
+	return move.moveTo
+}
+
+// besideFix takes, in place of the row transition found, a move of a task whose latest fix is open
+// or has ended with its way not taken, and answers whether it took the move; every other move is
+// the row's.
+//
+// Beside an open fix, a step that passed moves the task on as the row says. A step that failed
+// starts no step: its run ends failed, returning to the step the row returns to; where that step
+// is the fix's own, the fix takes the report (GotReport) and the implementer is told of it, and
+// otherwise the fix keeps the earliest step the task returns to (ReturnTo). The task is then held
+// for its fix from the phase of the step that failed, which keeps that phase's slot, stops no
+// claim, and moves nothing: the way after the fix makes the move (afterFix).
+//
+// After a fix ended while another step ran, the step that ends now has its end written as the row
+// would write it, a failure's return kept on the fix, and then afterFix decides the way in place
+// of the row, which it makes itself where each step keeps its result. So no step starts, and no
+// retro starts, before the way is decided.
+//
+// Either way a review that requested changes counts its round here, as transition counts it; its
+// return is counted by the way after the fix, which is the one return. A move the way after a fix
+// makes itself is the row's (wayMove).
+func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, target phase.Phase, row Row,
+	handoff record.PhaseRow, pr *record.PullRequest, reason string) (bool, error) {
+	if _, way := ctx.Value(wayMoveKey{}).(wayMove); way || !w.Stored {
+		return false, nil
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.Way != 0 {
+		return false, err
+	}
+	open := fix.State == record.FixReading || fix.State == record.FixRunning
+	_, returns := endOf(trigger)
+	step, stands := standingStep(w, issue)
+	if (open && !returns) || !stands {
+		return false, nil
+	}
+	if trigger == TriggerReviewRejected || (returns && step.typ == plan.TypeReview) {
+		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
+			return false, err
+		}
+	}
+	end := endOfTransition(w, trigger, step.at, row.To, handoff)
+	gotReport := false
+	if end.ReturnedTo != nil {
+		if gotReport = open && *end.ReturnedTo == fix.Place; gotReport {
+			fix.GotReport = true
+		} else {
+			fix.ReturnTo = earlierReturn(fix.ReturnTo, *end.ReturnedTo)
+		}
+		if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
+			return false, err
+		}
+	}
+	if _, err := e.endRun(ctx, tx, issue.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		return stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
+	}); err != nil {
+		return false, err
+	}
+	if !open {
+		return true, e.afterFix(ctx, tx, issue, w, &rowMove{trigger: trigger, target: target, handoff: handoff, pr: pr, reason: reason})
+	}
+	if gotReport {
+		if err := e.tellImplementer(ctx, tx, issue, fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.",
+			step.role, step.place.Place, handoff.Summary, handoff.HandoffRecord)); err != nil {
+			return false, err
+		}
+	}
+	from := issue.Phase
+	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from, Reason: record.HoldForFix}
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+		return false, err
+	}
+	e.logOnCommit(ctx, "workflow: a failed step beside a fix waits for the fix", "issue", issue.Key, "task", w.Task, "fix", fix.Fix,
+		"from", from, "trigger", trigger, "gotReport", gotReport, "returnTo", fix.ReturnTo)
+	return true, nil
+}
+
+// taskStepRuns says whether a step of w's task runs: the latest run of one of its places is open.
+func (e *Engine) taskStepRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (bool, error) {
+	for place := range w.Steps {
+		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
+		if err != nil || start.Run == record.RunOpen {
+			return err == nil, err
+		}
+	}
+	return false, nil
+}
+
+// fixWayOf is the way fix's end takes (R7a's three ways) on a task of steps steps, and the place
+// of the step the task returns to for the first two. The first: the fix failed, or a step beside
+// it failed to a step other than the fix's, so the task returns to the earliest such step, or,
+// where the fix made new commits (its end is not its start), to the step after the fix where that
+// is earlier. The second: the fix made new commits or got a failed step's report, so the steps
+// after it run again. The third, in each other case, and where no step comes after the fix's:
+// each step keeps its result.
+func fixWayOf(fix record.TaskFix, steps int) (way, place int) {
+	next, madeCommits := fix.Place+1, fix.EndHead != fix.Head
+	switch {
+	case fix.Failed || fix.ReturnTo > 0:
+		place = fix.ReturnTo
+		if place == 0 || (madeCommits && next < place) {
+			place = next
+		}
+		way = wayReturn
+	case madeCommits || fix.GotReport:
+		way, place = wayAfterFix, next
+	}
+	if way == 0 || place > steps {
+		return wayOn, 0
+	}
+	return way, place
+}
+
+// afterFix takes the way after the latest fix of w's task once (R7a's three ways): only where that
+// fix has ended, its way is not taken (Way 0, never wayNone), and no step of the task runs; it
+// does nothing otherwise, and the end of the last step running beside the fix calls it again
+// (besideFix). It writes the way on the fix row in the transaction of its act, so the way is taken
+// once. The first two ways return the task, held or not, by the one move out of a hold
+// (moveFromHold), at the task's head, which the started step's working copy moves to. The third
+// makes pending, the move of the table transition took no row for, where there is one.
+func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pending *rowMove) error {
+	if !w.Stored {
+		return nil
+	}
+	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.State != record.FixEnded || fix.Way != 0 {
+		return err
+	}
+	if runs, err := e.taskStepRuns(ctx, tx, issue, w); err != nil || runs {
+		return err
+	}
+	way, place := fixWayOf(*fix, len(w.Steps))
+	if !e.noWayKept {
+		fix.Way = way
+		if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
+			return err
+		}
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	_, head := taskHead(pr)
+	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
+		"place", place, "head", head)
+	if way == wayOn {
+		if pending == nil {
+			return nil
+		}
+		return e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.reason)
+	}
+	ctx = context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head})
+	handoff, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	if err != nil {
+		return err
+	}
+	steps := w.steps()
+	reason := fmt.Sprintf("fix %d of task %s, for check %s failed at %s, ended at %s", fix.Fix, w.Task, fix.Check, fix.Head, fix.EndHead)
+	return e.moveFromHold(ctx, tx, issue, w, steps[place-1], steps[fix.Place-1], handoff, pr, reason)
+}
+
+// moveFromHold is the one move that returns a held task, and the move of the way after a fix
+// (afterFix): where issue is held for its fix or its CI (fixOrCIHold), the phase the hold stands
+// in is put back and the hold cleared in one write; then, where target is another phase than
+// that one, the task moves back to target on TriggerBackward, which transition counts as a return
+// by the pair of the two phases, firing the deployment's hooks there. Where target is the phase
+// the issue stands in, no row moves the task: the step there starts again as a return to it, its
+// task naming handoff's report, and the return is counted by the pair (rerunFrom, target), the act
+// that sends the task back being the fix's, out of its step into the step after it.
+func (e *Engine) moveFromHold(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, target, rerunFrom phase.Phase, handoff record.PhaseRow,
+	pr *record.PullRequest, reason string) error {
+	current, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil || current == nil {
+		return err
+	}
+	issue = *current
+	if fixOrCIHold(issue) {
+		issue.Phase, issue.Hold = record.StandsAt(issue), nil
+		if err := e.WriteIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
+	if target != issue.Phase {
+		return e.transition(ctx, tx, issue, TriggerBackward, target, handoff, pr, reason)
+	}
+	if err := e.recordPass(ctx, tx, issue, w.Task, rerunFrom, target, pr); err != nil {
+		return err
+	}
+	role := RoleFor(target)
+	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+		return err
+	}
+	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string { return task(issue, at, handoff, pr, reason) }, true); err != nil {
+		return err
+	}
+	return e.queueMovedNews(ctx, tx, issue)
 }

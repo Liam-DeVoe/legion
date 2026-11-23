@@ -473,7 +473,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, moveTo: moveToOf(ctx)})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
