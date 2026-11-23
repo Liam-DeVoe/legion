@@ -72,5 +72,6 @@ A decision only a person may make is a `dispatch ask`. Every other request goes 
 - Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: write it to the owning tree's architect, or file it as a clear defect no tree owns. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
 - What another agent sent you: send no relay; that agent writes to the owner itself.
-- A person's request from outside Dispatch, or an answer on an ask (`finding-asks.md`, catch-up step 5): write it to the owning tree's architect in their words, copying nothing.
+- A person's request from outside Dispatch: write it to the owning tree's architect in their words.
+- A person's answer on an ask: mention the owner where the answer is, as `finding-asks.md`'s catch-up step 5 says, copying nothing.
 - A copy only so another session knows: send none.

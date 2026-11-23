@@ -46,7 +46,7 @@ func ownerStepsWayBack(t *testing.T) string {
 
 // noticeKindsBeforeOwnerSteps is the list of the notice kinds an architect is told in the release
 // this rollback goes back to (its validNoticeKinds): every kind of this release's list but the
-// three it adds. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
+// three it adds and the two #4065 adds, merge-holds-changed and provider-errors. superviseOpsBeforeOwnerSteps is that release's list of supervise ops, which has
 // no step_stop. Both are copies because that release's code is not in the tree, and so is its list
 // of the kinds for the controller alone (controllerKindsBeforeOwnerSteps): it names unslotted and
 // awaiting-person by their words, since that release reads both and this one no longer sends either.

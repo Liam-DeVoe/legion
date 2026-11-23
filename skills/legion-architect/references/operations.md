@@ -4,7 +4,7 @@ Read this on a `provider-errors` wake, when an agent of your tree needs an actio
 
 ## An agent of your tree that needs an action
 
-The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: your `legion` tool refuses each in an architect session, and the daemon refuses any grant but the controller's with `403 CONTROLLER_REQUIRED`. Your `retry_or_escalate` of a held phase stays yours (the `worker-died` row of `skill://legion-architect/references/wake-routing.md`).
+The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: your `legion` tool refuses each in an architect session, and the daemon refuses any grant but the controller's with `403 CONTROLLER_REQUIRED`. Your `retry_or_escalate` of a held phase stays yours (the `worker-died` row of `skill://legion-architect/references/wake-routing.md`), and so does `stop_task`: a tree operation that stops a task of an issue's plan, whose step the daemon suspends, and never a way to stop a named agent.
 
 When an agent of your tree needs an action, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
 

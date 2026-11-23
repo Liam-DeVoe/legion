@@ -22,7 +22,7 @@ Write to the owner on Dispatch: a comment on the issue that owns the subject, wh
 
 ## Another agent that needs an action
 
-The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. The comment's form is in `skill://legion-worker/references/findings-steps.md#another-agent-that-needs-an-action`. Send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it. The controller replies under your comment with what it ran, or why it ran nothing; wait for nothing.
+The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. Read its form in `skill://legion-worker/references/findings-steps.md#another-agent-that-needs-an-action` before you write the comment. Send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it. The controller replies under your comment with what it ran, or why it ran nothing; wait for nothing.
 
 ## Where it goes
 
