@@ -3363,20 +3363,23 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
-// 233: a later version of an owner's plan can change the text of a running task alone, and
+// 235: a later version of an owner's plan can change the text of a running task alone, and
 // register_plan's answer names where each running task stands once the version is taken. Each
 // task of `api.PlanRegisterResponse` gains `running` (`api.RunningStep`: `kind`, one of `step`,
 // `retro` and `merge`; `place`, from 1 for a step and 0 for the retro and the merge; and `role`,
 // the role whose agent works that act), left out for a task that waits, is stopped or is done. The
 // workflow reads it in the transaction that takes the version, and a retry of a registration taken
-// reads it as the record holds it at the retry. A caller below 233 is served each task without it
+// reads it as the record holds it at the retry. A caller below 235 is served each task without it
 // (shaping.go's AnswerPlanRegister row, `withoutRunningSteps`), the answer its reader read before.
 // The plugin reads `kind` and `role` as strings, so no enumerated field arrives. A version that
 // removes a running task or changes more of it than its text is still `409 PLAN_REFUSED`, whose
 // reason now says that the task runs and that a later version can change only its text. No route,
 // request field, refusal code or other key moves.
-// (This entry took 233, the lowest number above this branch's 219 that no open pull request
-// declares, at a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request that changes this file, made on 2026-11-23. Read the base's own number and every open
-// pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 233
+// (This entry took 233 at first, the lowest number above this branch's 219 that no open pull
+// request declared at a reading of `const DaemonAPIVersion` at refs/pull/<n>/head made on
+// 2026-11-23 near 04:45Z. The reading before the push of 2026-11-23, of all 518 open pull requests
+// between 06:51:08Z and 06:54:29Z, found 233 declared by #4596 and 234 by #4065, and 235 by none,
+// so this entry moved to 235: the lowest number above main's 217 and this branch's 219 that no
+// open pull request declares. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+const DaemonAPIVersion = 235

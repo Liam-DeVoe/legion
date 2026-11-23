@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The `legion` tool's `register_plan` hands the architect each running task's step and the role
   whose agent works it, and says that a later version can change the text of a running task
-  alone. The plugin speaks daemon API contract 233.
+  alone. The plugin speaks daemon API contract 235.
 time: 2026-11-23T05:32:22Z
 custom:
     Issue: running-task-text
