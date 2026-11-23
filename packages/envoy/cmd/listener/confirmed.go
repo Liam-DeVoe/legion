@@ -517,9 +517,10 @@ func (s *roleSend) windowEnded(inProcess error) {
 // holder, which is the request's own source session (beforeForward).
 // The repeat is answered as that stored forward (deliveredHeld on the earlier holder's subject),
 // never with the new envelope built for the repeat, whose event_id no stored message carries.
-// The record is the listener's own and lasts 10 minutes; a repeat after that or on another
-// listener answers its own new envelope, as at main. No stream lookup finds the earlier forward
-// by the request alone, since its message id names the earlier holder's subject.
+// The record is this pod's own and lasts 10 minutes: the delivery ledger the pods share holds
+// neither the request nor the copy's sequence (dedupe.Cache). A repeat after that or on another
+// pod answers its own new envelope and forwards nothing, as at main. No stream lookup finds the
+// earlier forward by the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,

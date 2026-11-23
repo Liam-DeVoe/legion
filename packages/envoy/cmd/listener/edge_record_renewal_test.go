@@ -183,11 +183,12 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 
 // H1/T1/N5: a role-claim refresh over a record the stream leader holds no writer's record for
 // carries back none of that record's fields - only the machine, the self-subscription and the claim
-// token's projects. A RePublish can store, at its own session's key, a record naming the key with a
-// chosen title and directory, a non-consumer delivery that would pause its relay, a gap mark, a
-// client instance id, capabilities, and display fields (Host, TmuxPlace, ConsumerStart, Plugin,
-// PluginVersion); the refresh must write none of them back as the session's own registration, as the
-// gap and renewal writes carry back nothing of a server-written record (the F3 rule). The
+// token's projects, with UpdatedAt stamped. A RePublish can store, at its own session's key, a
+// record naming the key with a chosen title and directory, a non-consumer delivery that would pause
+// its relay, a gap mark, a client instance id, capabilities, and display fields (Host, TmuxPlace,
+// ConsumerStart, Plugin, PluginVersion); the refresh must write none of them back as the session's
+// own registration, as the gap and renewal writes carry back nothing of a server-written record (the
+// F3 rule). The
 // leader-read seam answers no writer's record, as the leader does over a RePublish, while the
 // registration the claimant has in the bucket and the cache still carries the forged fields: the
 // refresh clears from the record the leader returns, not from that registration. The whole written
@@ -231,7 +232,7 @@ func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
 		Projects:       []string{"PRIV"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("the refresh over a forged record wrote %+v, want %+v: every field but the machine, self-subscription and the claim token's projects - the gap mark and the display fields Host, TmuxPlace, ConsumerStart, Plugin and PluginVersion among them - must be cleared",
+		t.Errorf("the refresh over a forged record wrote %+v, want %+v: every field but the machine, self-subscription, the claim token's projects and the stamped UpdatedAt - the gap mark and the display fields Host, TmuxPlace, ConsumerStart, Plugin and PluginVersion among them - must be cleared",
 			got, want)
 	}
 }

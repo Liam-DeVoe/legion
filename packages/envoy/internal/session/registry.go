@@ -1153,14 +1153,14 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 }
 
 // PutClearingGap is a role claim's refresh of sessionID's registration (cmd/listener's
-// roleSetHandler): it writes machineID and selfSubscribed, and writes the port out, over the record
-// the one read of each pass finds, so a forged record is cleared and the session's own
-// registration is kept. Each pass reads the stream leader (readForClear), never the cache or a
-// direct get, since neither can tell a RePublish from a registration, decides from that read, and
-// writes at that read's revision (writeEntryAt): a write the server, or any writer, lands between
-// the read and the write moves the revision, so this write loses and the next pass reads and
-// decides again, and no field of a record stored in between survives a decision made on the record
-// before it. The record a pass reads decides what it writes:
+// roleSetHandler): it writes machineID and selfSubscribed, stamps UpdatedAt and writes the port
+// out, over the record the one read of each pass finds, so a forged record is cleared and the
+// session's own registration is kept. Each pass reads the stream leader (readForClear), never the
+// cache or a direct get, since neither can tell a RePublish from a registration, decides from that
+// read, and writes at that read's revision (writeEntryAt): a write the server, or any writer,
+// lands between the read and the write moves the revision, so this write loses and the next pass
+// reads and decides again, and no field of a record stored in between survives a decision made on
+// the record before it. The record a pass reads decides what it writes:
 //   - the session's own writer's record (DecodeEntry binds it and its SessionID is the key): that
 //     record with machineID and selfSubscribed written, UpdatedAt stamped and Port written out, and
 //     every other field kept - its projects, the gap mark, the delivery set (Delivery, Epoch,
@@ -1174,8 +1174,9 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 //     keys are this session's (a registration carries them only from a record naming its key
 //     and a machine, stampClaim).
 //   - any other - a RePublish, a copy of another key's record, a record naming another key, a
-//     marker, or no message at all: the session's key, machineID, selfSubscribed and projects and
-//     nothing else, no gap mark, so a forged record is cleared at the sequence it is stored at.
+//     marker, or no message at all: the session's key, machineID, selfSubscribed, projects and
+//     UpdatedAt, stamped, and nothing else, no gap mark, so a forged record is cleared at the
+//     sequence it is stored at.
 //
 // The entry is rebuilt on every pass, so a pass that reads a forged record after one that read the
 // writer's record clears, and never writes the earlier pass's record's fields. Its write is an
@@ -1205,13 +1206,14 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 			return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
 		}
 		// Every record but the two the switch keeps - none at all, a marker, one the server wrote -
-		// is written bare: the machine, the self-subscription and the claim token's projects, and
-		// no delivery set. Until the session's next heartbeat (contracts.SessionHeartbeat, 90 s)
-		// registers it again, its relay stops (cmd/listener's sessionRelays.wanted relays only a
-		// record on consumer delivery), and a message sent to it stays on its consumer - or, where
-		// a reap took that consumer, in the stream for the one the registration creates at its
-		// resume point; the registration writes the full record and the relay delivers the message
-		// then (cmd/listener's TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat).
+		// is written bare: the machine, the self-subscription, the claim token's projects and the
+		// time stamped below, and no delivery set. Until the session's next heartbeat
+		// (contracts.SessionHeartbeat, 90 s) registers it again, its relay stops (cmd/listener's
+		// sessionRelays.wanted relays only a record on consumer delivery), and a message sent to it
+		// stays on its consumer - or, where a reap took that consumer, in the stream for the one the
+		// registration creates at its resume point; the registration writes the full record and the
+		// relay delivers the message then (cmd/listener's
+		// TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat).
 		own = found && stored.SessionID == sessionID
 		entry := SessionEntry{MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
 		switch {

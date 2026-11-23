@@ -2237,15 +2237,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// back with only the machine, the self-subscription and the port changed and its UpdatedAt
 		// stamped, so the newer host another listener stored is kept, and so are its projects and
 		// the client instance id the registration carries: this write names none of its own. A
-		// record an earlier build wrote, naming no key, keeps the fields this build knows but for
-		// its projects, which become the claim token's (registeringProjects), and drops the keys
-		// this build does not know, as it may be another session's record the server copied here.
+		// record an earlier build wrote, naming no key, is written back the same way, but its
+		// projects become the claim token's (registeringProjects) and the keys this build does not
+		// know are dropped, as it may be another session's record the server copied here.
 		// Any other - a record the server wrote, a copy of another key's, a marker or none - is
-		// cleared to the machine, the self-subscription and the claim token's projects: a RePublish
-		// could set its own session's title, a non-consumer delivery that pauses its relay until the
-		// next registration, a display field or a gap mark, and none of them is written back as the
-		// session's own registration. The port is written out because no registration this build
-		// stores carries one (subscribeHandler refuses a registration that names a serving port)
+		// cleared to the machine, the self-subscription and the claim token's projects, with its
+		// UpdatedAt stamped: a RePublish could set its own session's title, a non-consumer delivery
+		// that pauses its relay until the next registration, a display field or a gap mark, and none
+		// of them is written back as the session's own registration. The port is written out
+		// because no registration this build stores carries one (subscribeHandler refuses a
+		// registration that names a serving port)
 		// and no delivery opens a connection to a session, so a renewed entry still carrying the
 		// port an earlier build's listener stored would keep answering GET /v1/sessions with it
 		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry. One

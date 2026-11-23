@@ -70,8 +70,8 @@ func forgedSessionBody(t *testing.T, sessionID string) []byte {
 
 // requireClearedClaimRefresh fails the test unless sessionID's record, as the stream's leader holds
 // it, is a writer's record naming sessionID with only what a claim refresh over a record no
-// writer's stands for writes (PutClearingGap): the machine, the self-subscription and the claim
-// token's projects, and none of the forged fields.
+// writer's stands for writes (PutClearingGap): the machine, the self-subscription, the claim
+// token's projects and a stamped UpdatedAt, and none of the forged fields. It reads the first three.
 func requireClearedClaimRefresh(t *testing.T, r *SessionRegistry, sessionID, what string) {
 	t.Helper()
 	after, own, err := r.StoredByWriter(context.Background(), sessionID)

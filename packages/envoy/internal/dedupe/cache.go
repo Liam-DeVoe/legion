@@ -9,7 +9,11 @@ import (
 // TTL. It is not the delivery ledger: the ledger is the machine's record of what every lane
 // delivered or forwarded, and the listener's publish route keeps this one beside it, because only
 // a forward the stream stored through the route may answer a later send of the same key 200 with
-// nothing forwarded (cmd/listener/confirmed.go). Thread-safe via sync.RWMutex.
+// nothing forwarded (cmd/listener/confirmed.go). It also keeps what that answer reads and the
+// ledger does not hold: the stream sequence of the stored copy (Stored), which a repeat is answered
+// with, and the forward under the request that made it (Forward), which an echo of that request is
+// answered with. The route reads no other process's record for either. Thread-safe via
+// sync.RWMutex.
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[Key]entry

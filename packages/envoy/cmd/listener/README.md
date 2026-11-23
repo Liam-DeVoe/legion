@@ -413,11 +413,17 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
 One record is each pod's own, deliberately:
-the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod.
+the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod, with the stream sequence of that stored copy, and each such forward under the request that made it (`forwardRequest`: the source, the source session, the role topic and the dedupe key).
 Only a forward the route itself made counts.
 The route's confirmation records its stored forward in the delivery ledger above too (`listenerDeps.confirm`), but a ledger record can also come from another pod, or from another lane's forward, refusal or give-up,
 so the ledger cannot show that this route forwarded the key to this holder, and the route reads its own record instead.
-A send retried against another pod of the machine forwards again, and the stream keeps one copy of that forward under its `Nats-Msg-Id` (`bus.ForwardMsgID`).
+The ledger cannot answer a repeat with the copy it repeats either: its record names neither the request nor the stream sequence of the stored copy, which the answer reads back (`storedCopy`).
+So a repeat of a role send to the same holder is answered from this record's sequence (`dedupe.Cache.Stored`), and an echo, the repeat of a sender that has since taken the role, from the forward recorded under its request (`dedupe.Cache.Forward`, `roleSend.settledBeforeForward`).
+No answer reads another pod's record.
+A send retried against another pod of the machine forwards again, and the stream keeps one copy of that forward under its `Nats-Msg-Id` (`bus.ForwardMsgID`), so that pod answers the duplicate from the copy the stream holds.
+An echo that reaches the other pod, after a take-over say, finds no forward recorded there under its request:
+it forwards nothing, as an echo never does, and is answered 200 with its own envelope, whose event id no stored message carries, so it gives no session a second copy.
+The control of `TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward`, a holder's first publish to its own role, shows that answer.
 
 ## Two builds of the listener
 

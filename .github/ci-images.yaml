@@ -85,7 +85,7 @@ images:
     digest: sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
 
   # NATS 2.15.1, the version the listener requires and the deployment runs: the `services:` NATS of
-  # the pi-shared and pi-legion jobs, and packages/envoy's testnats.Image.
+  # the pi-envoy and pi-legion jobs, and packages/envoy's testnats.Image.
   - upstream: docker.io/library/nats:2.15.1@sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a
     tag: nats-2.15.1-023a08c4
     digest: sha256:023a08c46caa5aff878fb86841187bebfdad9a6e3c552ba5c1a1e18938bbf88a

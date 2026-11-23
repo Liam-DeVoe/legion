@@ -77,8 +77,10 @@ const interestMarkerPurgeAge = 10 * bus.RequestTimeout
 // which is why read 2 is taken immediately before the purge and every value the decision used is
 // logged.
 //
-// The purge is idempotent -- a repeat purges 0 -- so every listener runs this on its own cadence
-// with no lock and no leader.
+// The purge is idempotent -- a repeat purges 0 -- so the collector takes no lock. cmd/listener
+// runs it only on the pod of each machine that receives the machine's durable consumer
+// (holderLoops), each machine's on its own cadence, and a pass of a pod that has just stopped
+// receiving may still run beside its successor's.
 type interestMarkerCollector struct {
 	registry *Registry
 	interval time.Duration

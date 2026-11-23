@@ -861,8 +861,8 @@ func TestSessionConsumerRoleClaimKeepsConsumerDelivery(t *testing.T) {
 }
 
 // A role claim's refresh over a session whose record the bucket no longer holds writes the
-// machine, the self-subscription and the claim token's projects and nothing else
-// (session.SessionRegistry.PutClearingGap), no delivery set. The claim route reads the claimant
+// machine, the self-subscription, the claim token's projects and a stamped UpdatedAt and nothing
+// else (session.SessionRegistry.PutClearingGap), no delivery set. The claim route reads the claimant
 // through the cache (liveSessionEntry), so it reaches that write when the bucket lost the record
 // with no delete marker, as its maximum age removes one, while the cache still holds it. A message
 // sent to the session meanwhile is held on its consumer, neither delivered elsewhere nor

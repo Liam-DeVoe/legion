@@ -909,6 +909,9 @@ func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	m.repositoryGapsMu.Lock()
 	defer m.repositoryGapsMu.Unlock()
 	clear(m.repositoryGaps)
+	// Without this clear a give-back under a later term would count on as a later give-back of a
+	// run this term began: giveBackWithheld would log no line for it, and the next mark write or
+	// fresh repository answer would log an end that counts this term's give-backs as well.
 	clear(m.givenBack)
 }
 
