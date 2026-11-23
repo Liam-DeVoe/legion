@@ -108,8 +108,8 @@ export interface DeviceLoginBrokerOptions {
    *  broker_test.go): a broker, or a proxy before it, answering a 408, a 429 or a 5xx with a body
    *  that still names an OAuth error, or naming one at another refusal status. */
   readonly oauthErrorStatus?: number;
-  /** The `Retry-After` a `busy-429` answer carries, as the broker's own 429 does (`Retry-After:
-   *  30`), in seconds or as an HTTP date; none where unset. */
+  /** The `Retry-After` a `busy-429` answer carries, in seconds or as an HTTP date, as the broker's
+   *  own 429 carries one (its token endpoint's asks 1 s) and a proxy's may; none where unset. */
   readonly retryAfter?: string;
 }
 

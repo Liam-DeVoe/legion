@@ -209,7 +209,9 @@ func TestALoginPollGrowsItsIntervalAsRFC8628Has(t *testing.T) {
 
 // TestALoginPollWaitsOutAnOutagesRetryAfter: an outage's Retry-After, in seconds or as an HTTP
 // date, is waited before the next poll where it asks longer than the interval, though never past
-// the code's lifetime. The broker's own 429 carries Retry-After: 30.
+// the code's lifetime. The broker's own 429 on its token endpoint asks 1 s (its token limit
+// refills one request every 500 ms, which Retry-After rounds up); a proxy before it may ask
+// longer, and 30 s is such a value.
 func TestALoginPollWaitsOutAnOutagesRetryAfter(t *testing.T) {
 	t.Run("Retry-After: 30 on a 429", func(t *testing.T) {
 		r := newPollRig(t, 0, answering(http.StatusTooManyRequests, "invalid_request", "Retry-After", "30"))

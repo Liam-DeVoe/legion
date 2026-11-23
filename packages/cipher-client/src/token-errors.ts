@@ -176,7 +176,7 @@ export class RegistrationPendingError extends Error {
  * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
  * ready once its own signal ends. A pod session not registered yet is
  * {@link RegistrationPendingError} instead. The failure is no answer within the trade's own time
- * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
+ * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, a 408 or a 429, a DPoP refusal, or a trade that
  * could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
  * line for that failure (`Retried.said`), which names nothing a peer wrote.
@@ -293,8 +293,9 @@ export class LockHeldError extends Error {
  * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
  * ({@link SignInEndedError}), or a device login the broker has ended
  * ({@link DeviceLoginEndedError}). A client drops the token in hand on one rather than answer it
- * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
- * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
+ * until it lapses, and a caller that remembers refusals remembers these alone: remembering an
+ * outage (the broker's 429, or a 408) or a clock-skewed proof would stop a client a later trade
+ * would have answered.
  */
 export function isFinalRefusal(error: unknown): boolean {
   return (

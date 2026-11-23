@@ -1022,7 +1022,7 @@ next one:
 |---|---|
 | a token | answers every caller, and both schedules start over |
 | a pod session not registered yet | trades again 2 s later, doubling to 30 s, so the trade after a registration lands is at most 30 s away; that trade has its own 30 s |
-| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| no answer within 30 s, no connection, a 5xx, a 408 or a 429, a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
 | a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
 
 The loop logs through `console.warn`, as the Go client does: a pod session not registered yet

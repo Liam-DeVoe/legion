@@ -115,9 +115,11 @@ const ACCESS_MARGIN_MS = 2 * TRADE_ATTEMPT_MS;
 const BROKER_REQUEST_MS = TRADE_ATTEMPT_MS / 2;
 
 /** How many seconds apart a code is polled where the broker names no interval (RFC 8628 Section
- *  3.2), and the least and the most it is polled apart whatever interval the broker names: a wait
- *  past a timer's range would fire at once, and no broker means a code to wait minutes between
- *  polls. */
+ *  3.2), and the least and the most interval the poll starts at whatever interval the broker
+ *  names: a wait past a timer's range would fire at once, and no broker means a code to wait
+ *  minutes between polls. Each `slow_down` and each poll the broker did not answer or answered
+ *  with an outage add 5 s from then on (RFC 8628 Section 3.5), which can take the interval past
+ *  the most; no wait passes the code's lifetime, at most {@link MOST_LIFETIME_SECONDS}. */
 const DEFAULT_POLL_SECONDS = 5;
 const LEAST_POLL_SECONDS = 1;
 const MOST_POLL_SECONDS = 60;

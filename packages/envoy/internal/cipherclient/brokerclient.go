@@ -365,13 +365,13 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
 // Token is a live access token: the held one while it is good for longer than RenewBefore, and
 // otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
-// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
-// Dispatch holds), while the held token is still live answers that token, since a client that
-// already holds an identity need not stop for a broker that is merely down or busy; a refusal no
-// retry can cure (finalRefusal: the broker's RefusedError.Permanent, or a sign-in the issuer has
-// ended, ErrSignInEnded), and a failure with nothing live left, answer the error and drop the
-// token in hand, so no caller writes with no identity. Token trades once; a caller that waits
-// for a registration to land runs Run, which trades again.
+// trade may cure (an outage, a 408 or a 429; a DPoP refusal; a pod session it holds no
+// registration for yet; a person Dispatch holds), while the held token is still live answers that
+// token, since a client that already holds an identity need not stop for a broker that is merely
+// down or busy; a refusal no retry can cure (finalRefusal: the broker's RefusedError.Permanent, or
+// a sign-in the issuer has ended, ErrSignInEnded), and a failure with nothing live left, answer
+// the error and drop the token in hand, so no caller writes with no identity. Token trades once;
+// a caller that waits for a registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

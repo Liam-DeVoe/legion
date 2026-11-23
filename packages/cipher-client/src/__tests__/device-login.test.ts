@@ -368,8 +368,10 @@ test("a poll's wait ends at the code's lifetime, and a lapse in it names the out
   expect(refusal?.message).toContain("; the broker was unreachable or busy for the last poll;");
 });
 
-// An outage's `Retry-After` is waited before the next poll, as the broker's own 429 carries one
-// (`handlers_oauth.go`, `Retry-After: 30`), where it asks longer than the interval.
+// An outage's `Retry-After` is waited before the next poll where it asks longer than the interval.
+// The broker's own 429 on its token endpoint asks 1 s (`handlers_oauth.go`: its token limit refills
+// one request every 500 ms, which `Retry-After` rounds up); a proxy before it may ask longer, and
+// 30 s is such a value.
 test("a poll answered 429 with Retry-After: 30 waits 30 s before the next poll", async () => {
   const stub = broker({ polls: ["busy-429", "approve"], retryAfter: "30" });
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
