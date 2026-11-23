@@ -605,22 +605,26 @@ var reflectionMethods = map[string]bool{
 // keeps its text in unexported fields, so such a walk cannot reach it, whatever type it is given.
 // An entry that names a guarded package P (guarded_package) is allowed instead for one shape of
 // read alone: a reflect.Value.FieldByName with a constant name, on a variable that runs only under
-// a guard holding its type to P (packageGuarded), whose result is a method call's receiver, other
-// than Elem's and Interface's, or one variable's value used only so (fieldRead). P's import closure
-// must hold neither the box's package nor an external error type's, and P must declare no generic
-// type (closureClean), so no type P declares can name the box. P's source is type-checked for the
-// build being read (sourceChecked), every named type it declares at package level or in a function
-// body among it, and in every struct type of those each field of the name that FieldByName can
-// reach (fieldsNamed) - the struct's own, and those of every struct it embeds, by value or by
-// pointer, from any package, at any depth, another package's read with its unexported fields from
-// that package's export data, and one FieldByName does not return, shadowed by a shallower one or
-// ambiguous at its depth, among them - must be typed with no interface and no type parameter at any
-// depth (through a pointer, a slice, an array, a map, a channel or a struct's fields), and at least
-// one struct type must reach such a field: only an interface or a type parameter could hold the box
-// at run time. Not covered, so refused: any other reflect call, FieldByIndex and Field among them;
-// a name that is no constant; a result passed on, stored twice, or read through Elem or Interface.
-// A func field's captured values are out of reflect's reach, so a func type counts as holding
-// nothing.
+// a guard holding its type to P (packageGuarded), whose result is only the receiver of methods that
+// answer nothing or closed values - booleans, numbers other than uintptr, strings, and slices and
+// arrays of them (closedValue) - or one variable's value used only so (resultReceiver, fieldRead).
+// P's import closure must hold neither the box's package nor an external error type's, and P must
+// declare no generic type (closureClean), so no type P declares can name the box. P's source is
+// type-checked for the build being read (sourceChecked), every named type it declares at package
+// level or in a function body among it, and in every struct type of those each field of the name
+// that FieldByName can reach (fieldsNamed) - the struct's own, and those of every struct it embeds,
+// by value or by pointer, from any package, at any depth, another package's read with its
+// unexported fields from that package's export data, and one FieldByName does not return, shadowed
+// by a shallower one or ambiguous at its depth, among them - must be typed with no interface and no
+// type parameter at any depth (through a pointer, a slice, an array, a map, a channel or a struct's
+// fields), and at least one struct type must reach such a field: only an interface or a type
+// parameter could hold the box at run time. Not covered, so refused: any other reflect call,
+// FieldByIndex and Field among them; a name that is no constant; a result passed on, stored twice,
+// or the receiver of a method that answers a reflect.Value, a reflect.Type, an interface, a func, a
+// pointer or a uintptr (Elem, Interface, Call, CallSlice, Method, MethodByName, Type, Index and
+// Addr among them), each of which reaches past the field's own value. A func type counts as holding
+// nothing and a type's methods are not read: a func's captured values are out of reflect's reach,
+// and its results and a method's only such a method reaches.
 func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function string) {
 	kind, what := "", ""
 	if callee := w.callee(call); reflectionMethods[callee] {
@@ -1008,12 +1012,12 @@ func (w *walker) closureClean(pkg string) (bool, string) {
 }
 
 // fieldRead reports whether call, a guarded reflect.Value.FieldByName on a value of a type of pkg,
-// is the one read guarded_package admits, and says why: a constant name, a result that is only a
-// method call's receiver, other than Elem's and Interface's (resultReceiver), and, in every struct
-// type pkg declares, every field of that name FieldByName can reach (fieldsNamed: the struct's own,
-// and those of each struct it embeds, from any package, by value or by pointer, at any depth) typed
-// with no interface and no type parameter at any depth (holdsDynamic), with at least one struct type
-// that reaches such a field.
+// is the one read guarded_package admits, and says why: a constant name, a result that is only the
+// receiver of methods that answer closed values (resultReceiver), and, in every struct type pkg
+// declares, every field of that name FieldByName can reach (fieldsNamed: the struct's own, and those
+// of each struct it embeds, from any package, by value or by pointer, at any depth) typed with no
+// interface and no type parameter at any depth (holdsDynamic), with at least one struct type that
+// reaches such a field.
 func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (bool, string) {
 	tv := w.info.Types[call.Args[0]]
 	if tv.Value == nil || tv.Value.Kind() != constant.String {
@@ -1021,7 +1025,7 @@ func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (
 	}
 	name := constant.StringVal(tv.Value)
 	if why := w.resultReceiver(call, parents); why != "" {
-		return false, "guarded_package admits a FieldByName whose result is only a method call's receiver, other than Elem's and Interface's: " + why
+		return false, "guarded_package admits a FieldByName whose result is only the receiver of methods that answer nothing or closed values (booleans, numbers other than uintptr, strings, and slices and arrays of them): " + why
 	}
 	declared := w.g.sourceChecked(pkg)
 	if declared.err != "" {
@@ -1059,7 +1063,7 @@ func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (
 	case len(dynamic) > 0:
 		return false, pkg + " types the field " + name + " with an interface or a type parameter, which can hold the box at run time: " + strings.Join(dynamic, "; ")
 	}
-	return true, fmt.Sprintf("FieldByName(%q) reaches no interface and no type parameter in any of the %d struct types %s declares that hold a field of that name, promoted ones from any package at any depth included, and its result is only a method call's receiver", name, found, pkg)
+	return true, fmt.Sprintf("FieldByName(%q) reaches no interface and no type parameter in any of the %d struct types %s declares that hold a field of that name, promoted ones from any package at any depth included, and its result is only the receiver of methods that answer closed values", name, found, pkg)
 }
 
 // reachedField is a field FieldByName can reach in a struct type, and the embedded fields it is
@@ -1103,19 +1107,36 @@ func fieldsNamed(s *types.Struct, name string, through []*types.Var, seen map[*t
 	return out
 }
 
-// resultReceiver is "" where call's result is only a method call's receiver, other than Elem's and
-// Interface's, or the value of one variable stored once whose every use is such a receiver; else
-// why not.
+// resultReceiver is "" where call's result is only the receiver of methods that answer nothing or
+// closed values (closedValue), or the value of one variable stored once whose every use is such a
+// receiver; else why not. A method that answers a reflect.Value, a reflect.Type, an interface, a
+// func, a pointer or a uintptr reaches past the field's own value: Elem and Interface what an
+// interface or a pointer holds; Call and CallSlice a func field's results; Method and MethodByName
+// a method's, and Type the same through its Method(i).Func; Index, MapIndex, MapKeys, MapRange,
+// Seq, Seq2, Recv and Slice an element; Addr and Convert another view of the field, whose own
+// methods the census would not read; Pointer, UnsafeAddr and UnsafePointer an address. So each is
+// refused, and the field's value is read only as a closed value.
 func (w *walker) resultReceiver(call *ast.CallExpr, parents []ast.Node) string {
 	if len(parents) == 0 {
 		return "its result has no use the census reads"
 	}
 	receiver := func(sel *ast.SelectorExpr) string {
-		if s := w.info.Selections[sel]; s == nil || s.Kind() != types.MethodVal {
+		s := w.info.Selections[sel]
+		if s == nil || s.Kind() != types.MethodVal {
 			return "its result's ." + sel.Sel.Name + " is no method"
 		}
-		if sel.Sel.Name == "Elem" || sel.Sel.Name == "Interface" {
-			return "its result's " + sel.Sel.Name + " reaches what the field holds"
+		sig, _ := s.Type().(*types.Signature)
+		if sig == nil {
+			return "its result's ." + sel.Sel.Name + " has no signature the census reads"
+		}
+		var open []string
+		for i := range sig.Results().Len() {
+			if t := sig.Results().At(i).Type(); !closedValue(t) {
+				open = append(open, typeString(t))
+			}
+		}
+		if len(open) > 0 {
+			return "its result's " + sel.Sel.Name + " reaches what the field holds, or past it: it answers " + strings.Join(open, ", ") + ", which is no closed value"
 		}
 		return ""
 	}
@@ -1184,7 +1205,10 @@ func (w *walker) resultReceiver(call *ast.CallExpr, parents []ast.Node) string {
 
 // holdsDynamic reports whether a value of t can hold a value of a type t does not name: t, or what
 // a pointer, slice, array, map, channel or struct field of it holds, is an interface or a type
-// parameter. A func's captured values are out of reflect's reach, so a func type holds none.
+// parameter. A func type counts as holding none, and a type's methods are not read: a func's
+// captured values are out of reflect's reach, and its results and a method's are reached from a
+// guarded read's result only by a method that answers no closed value (Call, CallSlice, Method,
+// MethodByName, Type and Interface among them), which resultReceiver refuses.
 func holdsDynamic(t types.Type, seen map[types.Type]bool) bool {
 	t = types.Unalias(t)
 	if seen[t] {
@@ -1212,6 +1236,28 @@ func holdsDynamic(t types.Type, seen map[types.Type]bool) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// closedValue reports whether a value of t is closed: it holds no value of another type and no
+// address, so a method of a guarded read's result that answers only closed values reaches nothing
+// past the field (resultReceiver). A boolean, a number other than a uintptr, a string, a defined
+// type over one (reflect.Kind), and a slice or an array of closed values are; a reflect.Value, an
+// interface (reflect.Type among them), a func, a pointer, a map, a channel, a struct, a uintptr and
+// an unsafe.Pointer are not.
+func closedValue(t types.Type) bool {
+	switch t := t.Underlying().(type) {
+	case *types.Basic:
+		switch t.Kind() {
+		case types.Uintptr, types.UnsafePointer, types.UntypedNil, types.Invalid:
+			return false
+		}
+		return true
+	case *types.Slice:
+		return closedValue(t.Elem())
+	case *types.Array:
+		return closedValue(t.Elem())
 	}
 	return false
 }

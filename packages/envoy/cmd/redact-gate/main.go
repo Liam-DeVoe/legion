@@ -133,13 +133,15 @@ type holderRow struct {
 // fields. GuardedPackage names a reflection of a value whose type no static type names (a
 // library's unexported type behind an interface): a reflect.Value.FieldByName with a constant name,
 // which runs only where a guard holds that type to the one package GuardedPackage names, and whose
-// result is only a method call's receiver, other than Elem's and Interface's. In place of the types
-// it reaches, the census checks the guard (an unexported guard variable, stored once), that neither
-// the box's package nor an external error type's is in that package's import closure, that the
-// package declares no generic type, and that every field of that name FieldByName can reach in a
-// struct type the package declares, promoted through embedded structs of any package at any depth
-// included, is typed with no interface and no type parameter at any depth (structural.go,
-// reflection).
+// result is only the receiver of methods that answer nothing or closed values (booleans, numbers
+// other than uintptr, strings, and slices and arrays of them): no Elem, Interface, Call, CallSlice,
+// Method, MethodByName, Type, Index, Addr or other method that answers a value past the field's
+// own. In place of the types it reaches, the census checks the guard (an unexported guard variable,
+// stored once), that neither the box's package nor an external error type's is in that package's
+// import closure, that the package declares no generic type, and that every field of that name
+// FieldByName can reach in a struct type the package declares, promoted through embedded structs
+// of any package at any depth included, is typed with no interface and no type parameter at any
+// depth (structural.go, reflection).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`

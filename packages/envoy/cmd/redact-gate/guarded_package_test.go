@@ -14,13 +14,14 @@ import (
 )
 
 // reflectStub is the part of package reflect a guarded read calls, so the census reads the same
-// callee names (types.Func.FullName) it reads in a real tree.
+// callee names (types.Func.FullName) and the same method signatures it reads in a real tree.
 const reflectStub = `package reflect
 
 type Kind uint
 
 const (
 	Invalid Kind = iota
+	Bool
 	Pointer
 	Struct
 )
@@ -29,16 +30,24 @@ type Type interface{ PkgPath() string }
 
 type Value struct{ p *int }
 
-func ValueOf(i any) Value                    { return Value{} }
-func TypeFor[T any]() Type                   { return nil }
-func (v Value) Kind() Kind                   { return Invalid }
-func (v Value) IsNil() bool                  { return false }
-func (v Value) Elem() Value                  { return v }
-func (v Value) Type() Type                   { return nil }
-func (v Value) FieldByName(name string) Value { return v }
+func ValueOf(i any) Value                      { return Value{} }
+func TypeFor[T any]() Type                     { return nil }
+func (v Value) Kind() Kind                     { return Invalid }
+func (v Value) IsNil() bool                    { return false }
+func (v Value) Elem() Value                    { return v }
+func (v Value) Type() Type                     { return nil }
+func (v Value) FieldByName(name string) Value  { return v }
 func (v Value) FieldByIndex(index []int) Value { return v }
-func (v Value) Bool() bool                   { return false }
-func (v Value) Interface() any               { return nil }
+func (v Value) Bool() bool                     { return false }
+func (v Value) String() string                 { return "" }
+func (v Value) Interface() any                 { return nil }
+func (v Value) Call(in []Value) []Value        { return nil }
+func (v Value) CallSlice(in []Value) []Value   { return nil }
+func (v Value) Method(i int) Value             { return v }
+func (v Value) MethodByName(name string) Value { return v }
+func (v Value) Addr() Value                    { return v }
+func (v Value) Index(i int) Value              { return v }
+func (v Value) Pointer() uintptr               { return 0 }
 `
 
 // libStub stands for a library whose handle the read reflects on: an exported type to name its
@@ -112,6 +121,35 @@ func libWithInner(decl string) string {
 func libKvsEmbeds(embedded, field string) string {
 	return "package lib\n\nimport \"example.com/inner\"\n\ntype Conn struct{ n int }\n\ntype KeyValue interface{ Bucket() string }\n\n" +
 		"type kvs struct{ " + embedded + " }\n\ntype other struct{ " + field + " bool }\n"
+}
+
+// libFuncFieldStub keeps the field the read names, exported, as the func type funcType: holdsDynamic
+// counts a func type as holding nothing, while Call or CallSlice on the result reaches what the func
+// answers.
+func libFuncFieldStub(funcType string) string {
+	return "package lib\n\ntype Conn struct{ n int }\n\ntype KeyValue interface{ Bucket() string }\n\ntype kvs struct{ UseDirect " + funcType + " }\n"
+}
+
+// libMethodStub keeps the field the read names, exported, as a struct with no interface field
+// whose exported method answers an interface: Method or MethodByName, then Call, on the result
+// reaches that answer.
+const libMethodStub = `package lib
+
+type Conn struct{ n int }
+
+type KeyValue interface{ Bucket() string }
+
+type opts struct{ n int }
+
+func (opts) Held() any { return nil }
+
+type kvs struct{ UseDirect opts }
+`
+
+// resultRead is guardedRead reading the field named field, its result then used as use reads it.
+func resultRead(field, use string) string {
+	read := strings.Replace(guardedRead, `kvs.FieldByName("useDirect")`, `kvs.FieldByName("`+field+`")`, 1)
+	return strings.Replace(read, "return useDirect.Bool()", use, 1)
 }
 
 // libLocalTypeStub declares, inside a function, a struct type that keeps it as an interface: a
@@ -259,8 +297,9 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 
 // TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage: a guarded_package entry
 // passes main's read of a library handle's unexported field, behind an interface, only where it is
-// a FieldByName with a constant name whose result is only a method call's receiver (Elem and
-// Interface aside), its guard holds the handle's type to the named package through an unexported
+// a FieldByName with a constant name whose result is only the receiver of methods that answer
+// nothing or closed values (no Elem, Interface, Call, CallSlice, Method, MethodByName, Type, Index,
+// Addr or Pointer), its guard holds the handle's type to the named package through an unexported
 // variable, that package's import closure holds neither the box's package nor an external error
 // type's, it declares no generic type, and every struct type it declares with that field types it
 // with no interface or type parameter at any depth; every other shape is refused, each with its
@@ -302,6 +341,10 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 		{"a field name that is no constant", edit(`kvs.FieldByName("useDirect")`, "kvs.FieldByName(fieldName)") + "\nvar fieldName = \"useDirect\"\n", entry, clean, false, "whose name is a constant"},
 		{"Elem on the result", edit("return useDirect.Bool()", "return useDirect.Elem().Bool()"), entry, clean, false, "its result's Elem reaches what the field holds"},
 		{"Interface on the result", edit("return useDirect.Bool()", "return useDirect.Interface() != nil"), entry, clean, false, "its result's Interface reaches what the field holds"},
+		{"Kind and Bool on the result, as kv.go reads it", edit("\treturn useDirect.Bool()", "\tif useDirect.Kind() != reflect.Bool {\n\t\treturn true\n\t}\n\treturn useDirect.Bool()"), entry, clean, true, "its guard holds its value's type to example.com/lib"},
+		{"String on the result, which answers a closed value", edit("return useDirect.Bool()", `return useDirect.String() != ""`), entry, clean, true, "its guard holds its value's type to example.com/lib"},
+		{"Pointer on the result, which answers an address", edit("return useDirect.Bool()", "return useDirect.Pointer() != 0"), entry, clean, false, "its result's Pointer reaches what the field holds, or past it: it answers uintptr"},
+		{"Type on the result, whose Method(i).Func calls the field's methods", edit("return useDirect.Bool()", `return useDirect.Type().PkgPath() != ""`), entry, clean, false, "its result's Type reaches what the field holds, or past it: it answers reflect.Type"},
 		{"the result passed on", edit("return useDirect.Bool()", "return use(useDirect)") + "\nfunc use(reflect.Value) bool { return false }\n", entry, clean, false, "used 1 times, 0 of them as a method call's receiver"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -319,8 +362,11 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 	// lib type embeds, by value or by pointer, at any depth, or is defined over, since reflect's
 	// FieldByName matches a name's text whatever package declares it, beside a lib type that keeps
 	// a bool by that name, and one FieldByName does not return, shadowed or ambiguous, is held all
-	// the same; and a package none of whose struct types has that field leaves the census nothing to
-	// read.
+	// the same; a package none of whose struct types has that field leaves the census nothing to
+	// read; and a field with no interface in it still reaches a value of any type through its
+	// result's Call or CallSlice (an exported func field), its Method or MethodByName (an exported
+	// method of the field's type), or Addr or Index first, so each is refused on the result, the read
+	// as the result's receiver and through the variable that holds it alike.
 	fieldByName := strings.Replace(strings.Replace(genericRead, "kvs.FieldByIndex([]int{0, 0})", `kvs.FieldByName("V")`, 1), "text.IsNil()", "text.Bool()", 1)
 	for _, c := range []struct{ name, lib, source, why string }{
 		{"a generic type of the guarded package holds the box, read by FieldByIndex", genericLibStub, genericRead, "admits a reflect.Value.FieldByName with a constant name alone"},
@@ -338,6 +384,13 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 		{"a lib type defined over another package's struct keeps the field as an interface", libWithInner("type wrapped inner.S"), guardedRead, "wrapped.useDirect (any)"},
 		{"a field FieldByName does not return, shadowed by a shallower one, is held all the same", libWithInner("type wrapped struct {\n\tuseDirect bool\n\tinner.S\n}"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.S"},
 		{"two fields of the name at one depth, which FieldByName does not return, are held all the same", libWithInner("type wrapped struct {\n\tinner.S\n\tplain\n}\n\ntype plain struct{ useDirect bool }"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.S"},
+		{"Call on an exported func field answering an interface", libFuncFieldStub("func() any"), resultRead("UseDirect", "return useDirect.Call(nil)[0].IsNil()"), "its result's Call reaches what the field holds, or past it: it answers []reflect.Value"},
+		{"Call on the read's result itself, held by no variable", libFuncFieldStub("func() any"), strings.Replace(guardedRead, "useDirect := kvs.FieldByName(\"useDirect\")\n\treturn useDirect.Bool()", `return kvs.FieldByName("UseDirect").Call(nil)[0].IsNil()`, 1), "its result's Call reaches what the field holds"},
+		{"CallSlice on an exported variadic func field", libFuncFieldStub("func(...any) any"), resultRead("UseDirect", "return useDirect.CallSlice(nil)[0].IsNil()"), "its result's CallSlice reaches what the field holds"},
+		{"MethodByName and Call on a field whose method answers an interface", libMethodStub, resultRead("UseDirect", `return useDirect.MethodByName("Held").Call(nil)[0].IsNil()`), "its result's MethodByName reaches what the field holds, or past it: it answers reflect.Value"},
+		{"Method and Call on a field whose method answers an interface", libMethodStub, resultRead("UseDirect", "return useDirect.Method(0).Call(nil)[0].IsNil()"), "its result's Method reaches what the field holds"},
+		{"Addr, then MethodByName and Call on the field's address", libMethodStub, resultRead("UseDirect", `return useDirect.Addr().MethodByName("Held").Call(nil)[0].IsNil()`), "its result's Addr reaches what the field holds"},
+		{"Index, then Call on an element of a slice of funcs", libFuncFieldStub("[]func() any"), resultRead("UseDirect", "return useDirect.Index(0).Call(nil)[0].IsNil()"), "its result's Index reaches what the field holds"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := guardedCensusOf(t, c.lib, c.source, entry, clean)

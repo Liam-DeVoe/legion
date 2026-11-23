@@ -7810,6 +7810,20 @@
       "package": "./cmd/redact-gate",
       "test": "TestAcceptanceTheCheckStatesTheBoundTheVerificationNames",
       "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection and both known-residual forms"
+    },
+    {
+      "id": "gate-guarded-package-refusals",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage",
+      "production": "cmd/redact-gate reflection census (structural.go, reflection): a guarded_package entry passes a reflect.Value.FieldByName with a constant name only under a guard holding its value's type to a package whose import closure holds no box and no external error type, which declares no generic type, every field of that name FieldByName reaches typed with no interface and no type parameter, and a result that is only the receiver of methods that answer closed values; every other shape is refused"
+    },
+    {
+      "id": "gate-guarded-package-export-data",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestAGuardedReadReadsAnotherPackagesEmbeddedStructFromItsExportData",
+      "production": "cmd/redact-gate reflection census (structural.go, fieldsNamed and sourceChecked): another package's struct a guarded package embeds is read with its unexported fields from that package's export data, as the gate lists a module, and an interface field of it is refused"
     }
   ],
   "bun": [

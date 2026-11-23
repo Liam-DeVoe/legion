@@ -552,14 +552,18 @@ to a library function that takes it by its own type and prints it - which review
 that a guarded_package entry names holds at run time beyond what the reflection census reads in
 place of the types the read reaches - a reflect.Value.FieldByName with a constant name, run only
 under a guard that holds the value's type to the named package (the package path itself, or an
-unexported variable stored once), whose result is only a method call's receiver other than
-Elem's and Interface's, of a field that every struct type the package declares types with no
-interface and no type parameter at any depth wherever reflect reaches a field of that name in it,
-through embedded structs of any package at any depth included, in a package type-checked from its
-source that declares no generic type and whose import closure holds neither the box's package
-nor an external error type's - a census that refuses any other reflect call, a name that is no
-constant, a result passed on or read through Elem or Interface, and a package with cgo files,
-and counts a func field as holding nothing, since reflect does not reach its captured values;
+unexported variable stored once), whose result is only the receiver of methods that answer
+nothing or closed values (booleans, numbers other than uintptr, strings, and slices and arrays of
+them), of a field that every struct type the package declares types with no interface and no type
+parameter at any depth wherever reflect reaches a field of that name in it, through embedded
+structs of any package at any depth included, in a package type-checked from its source that
+declares no generic type and whose import closure holds neither the box's package nor an external
+error type's - a census that refuses any other reflect call, a name that is no constant, a result
+passed on or used as the receiver of a method that answers a reflect.Value, a reflect.Type, an
+interface, a func, a pointer or a uintptr (Elem, Interface, Call, CallSlice, Method, MethodByName,
+Type, Index and Addr among them), and a package with cgo files, and counts a func field as holding
+nothing and reads no type's methods, since a func's captured values are out of reflect's reach
+and its results and a method's are reached only through such a method;
 and that the list of remote fields, which the spec's census and review settle, is complete. The
 two forms the fixture's known-residual rows pin print by design: a bare "label: secret@host",
 with no scheme and no key before it (split-user-info-bare), and the same form as a JSON key's
