@@ -143,7 +143,9 @@ func (h *helperRun) orphan(subreaper bool) error {
 
 // together runs rounds in which a guarded child and the orphan it leaves end at the same moment,
 // and reports, for every round, the guarded child's status as its own wait read it, how many of the
-// reaper's passes reaped the orphan, and whether any reaped the guarded child.
+// reaper's passes reaped the orphan, and whether any reaped the guarded child. The orphan is
+// started by a subshell that exits at once, so it comes to this process long before it ends and is
+// never the guarded shell's child when it ends, which the shell's own waits would otherwise reap.
 func (h *helperRun) together() error {
 	if err := h.serve(); err != nil {
 		return err
@@ -151,7 +153,7 @@ func (h *helperRun) together() error {
 	const rounds = 20
 	failures := 0
 	for round := range rounds {
-		first, pid, waited := h.guarded("/bin/sleep 0.2 </dev/null >/dev/null 2>&1 & echo $!; /bin/sleep 0.2; exit 5")
+		first, pid, waited := h.guarded("(/bin/sleep 0.2 </dev/null >/dev/null 2>&1 & echo $!); /bin/sleep 0.2; exit 5")
 		var exit *exec.ExitError
 		status := "not an exit"
 		if errors.As(waited, &exit) {
