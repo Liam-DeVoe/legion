@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/queries";
 import type { EvalListResponse } from "../../api/types";
 import { CiHealth } from "./CiHealth";
+import { DeploysSection } from "./DeploysSection";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
@@ -88,6 +89,8 @@ function drawSection(
       return (views) => <LegionSection project={project} repos={scope.repos} views={views} />;
     case "ci":
       return (views) => <CiHealth scope={scope} views={views} />;
+    case "deploys":
+      return (views) => <DeploysSection project={project} views={views} />;
     default:
       return undefined;
   }

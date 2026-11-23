@@ -641,6 +641,16 @@ export const itemsViewQuery = (params: ItemsViewParams) => {
   });
 };
 
+/** One eval's detail read at its `version` (`GET /api/v1/projects/{key}/evals/{slug}`, the newest
+ *  version alone): its method (`doc_text`). Keyed by the version the evals view answers, so a
+ *  register write that writes a new version, which the view's delta carries, reads it again
+ *  (plan D11a). */
+export const evalDetailQuery = (project: string, slug: string, version: number) =>
+  queryOptions({
+    queryKey: ["evals", "detail", project, slug, version],
+    queryFn: () => api.getEval(project, slug, { limit: 1 }),
+  });
+
 /** The delivery timeline's configuration record, or `null` until someone sets it: the Settings
  *  section's form reads it, while the Delivery page's setup form starts from the `null` the
  *  timeline's `DELIVERY_NOT_CONFIGURED` already implies and reads nothing. */

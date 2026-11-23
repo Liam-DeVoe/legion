@@ -1744,6 +1744,17 @@ export class DispatchApiClient {
     return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
+  /** One eval's versions, newest first, `{items, total, limit, offset}` with `doc_text`, the method
+   *  its section of the project's evals document holds (null for none); `limit` 1 reads the
+   *  newest version alone. */
+  getEval(
+    project: string,
+    slug: string,
+    query: Query<"/api/v1/projects/{key}/evals/{slug}", "get"> = {}
+  ) {
+    return this.read("/api/v1/projects/{key}/evals/{slug}", { key: project, slug }, query);
+  }
+
   /** One page of the rows behind an eval's numbers over a window and a compare range, `{items,
    *  total, limit, offset}`: each row's `row_key`, `row_kind`, `cols` and `href`. `row_kind` keeps
    *  one kind (`issue` for unowned-p0's open P0 issues with no owner); `limit` is 1 to 200. */
