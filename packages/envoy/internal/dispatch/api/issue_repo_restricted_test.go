@@ -43,8 +43,9 @@ func newIssueRepoAccessServer(t *testing.T) (http.Handler, *store.Store) {
 // clearing alike, with 403 RESTRICTED_MEMBER (the deployment's class, refuseDeploymentWrite), and
 // ACC keeps acme/widgets. alice, a full member, sets it.
 //
-// Control: the route classed scopeProject in writeClasses, under which erin's write reaches the
-// handler and changes ACC's default.
+// Control: the route classed scopeProject in writeClasses, under which erin's writes reach the
+// handler: her clear ({"repo": null}) then changes ACC's default, and her acme/gadgets is 403
+// REPOSITORY_NOT_AVAILABLE rather than RESTRICTED_MEMBER.
 func TestARestrictedMemberSetsNoProjectsDefaultRepository(t *testing.T) {
 	handler, database := newIssueRepoAccessServer(t)
 	stored := func() string {

@@ -157,8 +157,8 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after a backfill whose mark a pod of the previous release drained, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after a backfill whose mark a pod of the previous release drained, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }
 

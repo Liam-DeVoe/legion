@@ -437,6 +437,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
 	}
+	// Projects is set below only when the rig holds a Dispatch client: config.projectAccess is a
+	// *projectaccess.Client, and a nil one put in the interface field is a non-nil Access that
+	// panics at its first read, so a rig with no client would ask Dispatch on every enrollment.
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,

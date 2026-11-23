@@ -145,6 +145,10 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			refused, _ := url.Parse(withQuery(callback, "code", ""))
 			return fresh.Get(t, withQuery(refused, "error", "access_denied"))
 		}, http.StatusForbidden, "SIGN_IN_PROVIDER_REFUSED"},
+		{"a code longer than 2048 bytes", func(t *testing.T) ciphertest.Response {
+			fresh, callback := started(t, person(ada))
+			return fresh.Get(t, withQuery(callback, "code", strings.Repeat("c", 2049)))
+		}, http.StatusBadRequest, "SIGN_IN_CODE_INVALID"},
 		{"a forged code", func(t *testing.T) ciphertest.Response {
 			fresh, callback := started(t, person(ada))
 			return fresh.Get(t, withQuery(callback, "code", "forged-code"))
@@ -195,8 +199,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 21 {
-		t.Fatalf("the table drove %d of the page's 21 refusals", driven)
+	if driven != 22 {
+		t.Fatalf("the table drove %d of the page's 22 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

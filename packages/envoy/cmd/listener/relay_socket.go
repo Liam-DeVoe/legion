@@ -168,6 +168,8 @@ const (
 
 	relaySocketReasonExpired           = "credential_expired"
 	relaySocketReasonRefused           = "credential_refused"
+	relaySocketReasonMembershipHeld    = "membership_held"
+	relaySocketReasonDeadlinePassed    = "deadline_passed"
 	relaySocketReasonBrokerUnavailable = "broker_unavailable"
 	relaySocketReasonNATSUnavailable   = "nats_unavailable"
 	relaySocketReasonSlowConsumer      = "slow_consumer"
@@ -447,6 +449,10 @@ type relaySocket struct {
 	// strayLogged is set once this socket has logged a message on its relay subject that was no
 	// relay frame.
 	strayLogged atomic.Bool
+	// unknownNaks counts the GitHub frames this socket has answered nak for want of a fresh
+	// repository answer since a fresh answer last decided one (withhold, endUnknownNaks), so a run
+	// of them is logged when it starts and when it ends, not at every delivery the relay makes again.
+	unknownNaks atomic.Int64
 
 	endOnce sync.Once
 	done    chan struct{}
@@ -682,7 +688,9 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	// Whoever published it, a frame reaches the client only for a project of the token the
 	// socket was opened with, which edgeFrameVerdict holds to the broker's live answer.
 	subject := msg.Header.Get(relayHeaderSubject)
-	if verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data); verdict.action != framePass {
+	verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data)
+	socket.endUnknownNaks(verdict)
+	if verdict.action != framePass {
 		socket.withhold(msg, subject, verdict)
 		return
 	}
@@ -696,7 +704,9 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 // itself (onReply); neither is counted, since it is not yet withheld for good, and a done would clear
 // a gap mark on a frame that never reached the client. Every other is answered done, so the relay
 // acknowledges its message undelivered, and counted under reason. A frame no relay sent has a receipt
-// no relay awaits, and that answer reaches nobody.
+// no relay awaits, and that answer reaches nobody. A frame withheld for want of an answer is logged
+// only when it starts a run of them (unknownNaks): the relay delivers it again at each nak, 1 s
+// rising to 30 s apart, for as long as this replica has no fresh answer.
 func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frameVerdict) {
 	answer := relayReplyDone
 	switch {
@@ -707,11 +717,30 @@ func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frame
 			socket.repositories.withheld.Inc([2]string{"reason", verdict.reason})
 		}
 	}
-	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
-		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	switch {
+	case verdict.action != frameAnswerUnknown:
+		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
+			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	case socket.unknownNaks.Add(1) == 1:
+		socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session for want of a fresh repository answer; it answers each such frame nak, unlogged, until a fresh answer decides a GitHub frame of its session, which is logged",
+			slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
+	}
 	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
 		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
 			slog.String("session_id", socket.session), slog.String("error", err.Error()))
+	}
+}
+
+// endUnknownNaks ends the socket's run of frames answered nak for want of a fresh repository answer
+// (unknownNaks) once a fresh answer decides a GitHub frame of its session (frameVerdict.answered),
+// and logs the end with the count of naks it answered.
+func (socket *relaySocket) endUnknownNaks(verdict frameVerdict) {
+	if !verdict.answered {
+		return
+	}
+	if naked := socket.unknownNaks.Swap(0); naked > 0 {
+		socket.sockets.logger.Info("listener: the relay socket decides its session's GitHub frames by a fresh repository answer again",
+			slog.String("session_id", socket.session), slog.Int64("given_back", naked))
 	}
 }
 
@@ -934,24 +963,43 @@ func (socket *relaySocket) subscribed() bool {
 //     answers it live with an exp that has passed: the broker writes exp as the whole second at
 //     or before the true expiry, and holds the token live until that true expiry, up to a second
 //     later, which the expiry's timer (watch) would otherwise miss until the next tick;
+//   - the broker answers the token's person held (ciphertoken.Caller.Held): 4403 membership_held,
+//     the class apiAuth refuses such a token's upgrade 401 MEMBERSHIP_HELD under
+//     (refuseHeldBrokerToken), so a socket closes at its next check after the broker answers the
+//     hold, as Dispatch's own socket closes at its next heartbeat;
+//   - the broker answers the person not held only until a deadline that has passed
+//     (ciphertoken.Verifier.Lapsed): 1013 deadline_passed, the class apiAuth answers such a
+//     token's upgrade 503 under (refuseLapsedBrokerToken), so the client comes back rather than
+//     discards a token that works again once the broker answers a later deadline;
 //   - the broker no longer holds it live before its expiry (a revoke, a login ended early), or
 //     holds it as something no session's token is: 4403;
 //   - the answer names another caller than the one the socket was admitted as (its session, its
 //     person or service, its project scope and its projects): 4403. The admitted caller passed the
 //     edge's admission (EdgeAdmits) in apiAuth, which reads no field but these, so an answer equal
-//     to it passes that admission too;
+//     to it passes that admission too, and one that also passes the two checks above passes every
+//     check apiAuth makes of the broker's answer;
 //   - the broker could not be asked: 1013, and every upgrade meanwhile is refused 503 by apiAuth.
 func (socket *relaySocket) verdict() (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), relaySocketCheckWait)
 	defer cancel()
-	caller, until, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
+	verifier := socket.sockets.brokers.verifier.Load()
+	caller, until, err := verifier.LiveUntil(ctx, socket.check)
 	var why string
 	switch {
 	case err == nil:
 		if !until.IsZero() && !socket.sockets.now().Before(until) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
-		if sameRelayCaller(caller, socket.admitted) {
+		switch {
+		case caller.Held:
+			socket.sockets.logger.Warn("listener: the broker answers the relay socket's person held; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonMembershipHeld))
+			return relaySocketCloseRefused, relaySocketReasonMembershipHeld
+		case verifier.Lapsed(caller):
+			socket.sockets.logger.Warn("listener: whether the relay socket's person may still act could not be read; it is closed",
+				slog.String("session_id", socket.session), slog.String("reason", relaySocketReasonDeadlinePassed))
+			return websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed
+		case sameRelayCaller(caller, socket.admitted):
 			return 0, ""
 		}
 		why = "the broker's answer names another caller than the socket was opened as"

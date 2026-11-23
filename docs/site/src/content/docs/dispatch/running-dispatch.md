@@ -829,10 +829,13 @@ sees: a private project needs a token that lists it.
   lists projects is refused a write of the whole deployment, such as a new project, a repository
   mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
   person is refused it only while some project is private.
-- A restricted member's token that lists projects sees those of them its person sees and nothing
-  else; one that lists none sees the public projects its person sees. Of what belongs to no
-  project it reads only the people and sessions of those projects, its own, and its person's
-  direct conversations with those sessions.
+- A restricted member's token, their personal token or one the secrets broker issued for their
+  agent, holds no scope and lists exactly one project; one of theirs that lists none or several
+  acts for nobody, `403 RESTRICTED_MEMBER`. It sees its project if its person sees it, and
+  nothing else. Of what belongs to no project it reads only the people and sessions of that
+  project, its own, and its person's direct conversations with those sessions. Their browser's
+  mint in Settings gives a personal token that shape, and a stored one holding a scope acts with
+  none.
 - A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
   service-account token, sees the public projects and the private projects its list names.
 

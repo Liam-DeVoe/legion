@@ -1,12 +1,13 @@
 /** How `e2e/acceptance/access-lib.sh` holds the blob driver's `main_additions`: the members main
  *  added to an answer after the commit the blob driver's base is pinned to. An entry admits an
  *  answer only where the base answers no member at its path and this build answers it with the
- *  entry's value, and nothing else differs, byte for byte: a member planted beside it, the member
- *  with another value, at another path or on another route, or a byte a JSON value does not show,
- *  such as the order of two members, still differs. An entry is in force only while this build
- *  holds its commit and the base does not; a build without the commit fails the run, a base with
- *  it leaves the entry admitting nothing, and an entry in force that admitted no answer fails the
- *  run once its report is read.
+ *  entry's value, and nothing else differs, byte for byte, once the members at its path are taken
+ *  out of this build's answer alone: a member planted beside it, the member with another value, at
+ *  another path or on another route, the same text moved or repeated outside the path, or a byte a
+ *  JSON value does not show, such as the order of two members, still differs. An entry is in force
+ *  only while this build holds its commit and the base does not; a build without the commit fails
+ *  the run, a base with it leaves the entry admitting nothing, and an entry in force that admitted
+ *  no answer fails the run once its report is read.
  *
  *  Each row sources the library alone in bash, with a work directory of its own and no server.
  *  The rows of an entry's force read a repository the row writes, its commits made with
@@ -22,7 +23,8 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const library = fileURLToPath(new URL("../acceptance/access-lib.sh", import.meta.url));
 const scratch = temporaryDirectories("access-lib-main-additions");
 
-/** The one entry the driver names, as it writes it, for a commit the row chooses. */
+/** An entry as the driver writes one, for a commit the row chooses: the member main's b537812fb5
+ *  (#3995) gave each design gate, which the driver named while its base was older than that commit. */
 const holdsEntry = (commit: string) =>
   `${commit}\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull`;
 const holds = holdsEntry("b537812fb53d1e42b5cfe629404aeeb38a708218");
@@ -169,6 +171,37 @@ test(
     });
   },
   rowLimit("short")
+);
+
+test(
+  "the member outside the path in both answers is left as it is, and the one main added is admitted",
+  async () => {
+    // Taking the text out of both answers, or out of this build's wherever it stands, would part
+    // these two: only the member at the path is taken out, and of this build's answer alone.
+    const outside = `,"x":{"holds":null}`;
+    expect(await judged(issue(gate, outside), issue(gateHolding("null"), outside))).toMatchObject({
+      differed: 0,
+      uses: 1,
+    });
+  },
+  rowLimit("short")
+);
+
+test(
+  "the member moved or repeated outside the path differs, though each pair is one JSON value",
+  async () => {
+    const moved = await judged(
+      issue(gate, `,"x":{"a":1,"holds":null}`),
+      issue(gateHolding("null"), `,"x":{"holds":null,"a":1}`)
+    );
+    expect(moved).toMatchObject({ differed: 1, uses: 0 });
+    const repeated = await judged(
+      issue(gate, `,"x":{"holds":null}`),
+      issue(gateHolding("null"), `,"x":{"holds":null,"holds":null}`)
+    );
+    expect(repeated).toMatchObject({ differed: 1, uses: 0 });
+  },
+  rowLimit("short", "short")
 );
 
 test(
@@ -370,4 +403,60 @@ test(
     }
   },
   rowLimit("short", "short", "short", "short", "short")
+);
+
+test(
+  "an empty list puts nothing in force, admits no answer and fails nothing",
+  async () => {
+    const { directory, root } = repository();
+    const work = scratch();
+    mkdirSync(join(work, "answers"));
+    writeFileSync(join(work, "route-index-head"), `${routeIndex.join("\n")}\n`);
+    writeFileSync(
+      join(work, "headers"),
+      ["HTTP/1.1 200 OK", "Content-Type: application/json", "", ""].join("\r\n")
+    );
+    const script = `
+      set -euo pipefail
+      fail() { echo "FAIL: $*" >&2; exit 1; }
+      note() { echo "   $*"; }
+      work=$3
+      run_epoch=$(date +%s)
+      source "$2"
+      : >"$work/ids-main.tsv"
+      readonly main_additions=()
+      main_additions_in_force "$1" "$4"
+      status=200
+      printf '%s' "$5" >"$work/body"
+      keep_answer base main
+      printf '%s' "$6" >"$work/body"
+      keep_answer head main
+      same_answers "the row" base head '' '' "GET /api/v1/issues/PUB-1"
+      main_additions_report
+      main_additions_used
+      echo "live \${#main_additions_live[@]} differed $differed"
+    `;
+    const run = await runBounded({
+      argv: [
+        "bash",
+        "-c",
+        script,
+        "main-additions",
+        directory,
+        library,
+        work,
+        root,
+        issue(gate),
+        issue(gateHolding("null")),
+      ],
+      bound: "short",
+      cwd: directory,
+      from: import.meta.url,
+    });
+    expect(run.stderr).toBe("");
+    expect(run.code).toBe(0);
+    expect(run.stdout).not.toContain("main addition");
+    expect(run.stdout).toContain("live 0 differed 1");
+  },
+  rowLimit("short")
 );

@@ -549,7 +549,11 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
 //     the asks the settlement opens are followed), before it writes a node, a tuple or a
 //     projection row, so two passes over one document queue at the fence and the one that loses
-//     it has written nothing.
+//     it has written nothing. A write that creates the document - a new document, or a new
+//     issue's spec - finds no such row to take: its version's insert makes it
+//     (document_block_versions_owe), after the owner lock and before the block nodes and rows, and
+//     no other transaction can hold a row that does not exist yet (the lockstep tests hold that
+//     table's writes in its place, store_writer_lock_steps_test.go's newFenceStep).
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,

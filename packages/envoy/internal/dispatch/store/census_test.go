@@ -1403,11 +1403,13 @@ func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
 // 20261119021826 sets the two clock guards' search_path in a DO block, built from current_schema()
 // as it runs. The census cannot read what a DO block runs, so it exempts none: it answers the
 // migration with no exemption, but the DO block names no table, so the census measures and refuses
-// nothing, even at a limit of one byte. The base is 20261119020600, the version before it (the last
-// of the seven concurrent indexes that sort before it, requireCensusAdmitsConcurrentIndexes).
+// nothing, even at a limit of one byte. The base is 20261119020200, the version before it
+// (agent_tokens_canonical_owner, the concurrent index that sorts before it,
+// TestCensusAdmitsTheCanonicalOwnerIndex); the four erase indexes that sorted between them
+// (20261119020300 to 020600) left with the erase (#3178 at 5a51d205a8).
 func TestCensusAnswersTheClockGuardsSearchPathMigration(t *testing.T) {
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261119020600)
+	migrateThrough(t, store, 20261119020200)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261119021826), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
