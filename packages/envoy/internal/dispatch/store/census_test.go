@@ -895,8 +895,7 @@ func TestCensusRefusesATouchedTableAboveTheLimit(t *testing.T) {
 // artifact_versions) passes over a database at 0121 with the limit at one byte, and the report
 // prints artifact_versions above that limit with why the migration is exempt.
 func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 121)
+	store := openMigratedTestStore(t, 121)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 122), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -941,8 +940,7 @@ func TestCensusExemptsTheEventsInboxOwedTriggerAtAnyTableSize(t *testing.T) {
 // migration is exempt.
 func requireTriggerMigrationExempt(t *testing.T, before, migration int, name string) {
 	t.Helper()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, before)
+	store := openMigratedTestStore(t, before)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, migration), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -979,8 +977,7 @@ func requireTriggerMigrationExempt(t *testing.T, before, migration int, name str
 // limit with why the migration is exempt.
 func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261103085451)
+	store := openMigratedTestStore(t, 20261103085451)
 	report, err := census(ctx, store.Pool.Config().ConnString(), migrationsThrough(t, 20261103085452), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1023,8 +1020,7 @@ func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
 // applies to, at any size. Their later neighbour 20261105084017 is catalog-only too: nullable
 // text columns, unvalidated CHECK constraints, functions and triggers read no existing row.
 func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102122400)
+	store := openMigratedTestStore(t, 20261102122400)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261105084017), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1054,8 +1050,7 @@ func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T
 // The one-byte limit is the existing size fixture: every nonempty table is over it, so admission
 // proves the rule is independent of size, including a production embeddings table over 1 GiB.
 func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261102122400)
+	store := openMigratedTestStore(t, 20261102122400)
 	set := migrationsThrough(t, 20261102233630)
 	for _, oldShape := range []bool{false, true} {
 		candidate := make(fstest.MapFS, len(set))
@@ -1113,8 +1108,7 @@ func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.
 // migration on embeddings' size - which is a refused deploy (cmd/dispatch/README.md). That is
 // the whole reason the index is a migration of its own.
 func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261108070100)
+	store := openMigratedTestStore(t, 20261108070100)
 	set := migrationsThrough(t, 20261110155257)
 	for _, oldShape := range []bool{false, true} {
 		candidate := make(fstest.MapFS, len(set))
@@ -1173,8 +1167,7 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 // table the limit would not have refused anyway.
 func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261111212235)
+	store := openMigratedTestStore(t, 20261111212235)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1250,8 +1243,7 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 // less, which no limit the tests set could refuse.
 func blockRefsIndexCensus(t *testing.T, version int, options pgmigrate.CensusOptions) *pgmigrate.MigrationCensus {
 	t.Helper()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeBlockRefsSourceIndex)
+	store := openMigratedTestStore(t, beforeBlockRefsSourceIndex)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, dropBlockRefsTargetIndex), options)
 	if err != nil {
 		t.Fatalf("census: %v", err)
@@ -1545,30 +1537,28 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // below N once per census after it, a cost that grows with the square of the set.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	ctx := context.Background()
-	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
+	migrations := shippedMigrations(t)
 	store := openEmptyTestStore(t)
-	if err := store.prepareVersionTable(ctx, migrations); err != nil {
-		t.Fatalf("prepare schema migrations table: %v", err)
-	}
 	url := store.Pool.Config().ConnString()
 	answered := 0
+	// The one database moves forward from census to census, applying only the migrations
+	// between, so each migration of the history is applied once rather than judged again before
+	// every later census.
+	through := 0
 	for i, migration := range migrations {
-		if migration.Census != "" {
-			report, err := censusOf(ctx, url, migrations[:i+1], pgmigrate.CensusOptions{})
-			if err != nil {
-				t.Fatalf("census of %s: %v", migration.CensusName, err)
-			}
-			if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
-				t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
-			}
-			answered++
+		if migration.Census == "" {
+			continue
 		}
-		if err := store.applyMigration(ctx, migrations, migration); err != nil {
-			t.Fatalf("apply %s: %v", migration.Name, err)
+		migrateAbove(t, store, through, migration.Version-1)
+		through = migration.Version - 1
+		report, err := censusOf(ctx, url, migrations[:i+1], pgmigrate.CensusOptions{})
+		if err != nil {
+			t.Fatalf("census of %s: %v", migration.CensusName, err)
 		}
+		if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
+			t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
+		}
+		answered++
 	}
 	if answered == 0 {
 		t.Fatal("the set declares no census")
@@ -1887,8 +1877,7 @@ func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T
 // since at boot the migration's cascade would wait on either until its lock timeout.
 func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 55)
+	store := openMigratedTestStore(t, 55)
 	for _, statement := range []string{
 		`insert into projects (key, name) values ('CORE', 'Core')`,
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U')`,
@@ -1948,10 +1937,7 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 // On a database carrying every migration the census has nothing pending and passes.
 func TestCensusOnAMigratedDatabaseHasNothingPending(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	report, err := Census(ctx, store.Pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("census: %v", err)
