@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -983,7 +984,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 		"  AGENT_KEY:--no-request) echo '{\"key\":\"AGENT_KEY\",\"tier\":\"agent\"}' ;;\n" +
 		"  AGENT_KEY:--value) echo 'agent-value' ;;\n" +
 		"  *) exit 9 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	o := fakeRuntime(fake.NewRuntime(), &built{})

@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -346,7 +347,7 @@ done
 printf '%s\n' "$?" > "$d/code.tmp"
 mv "$d/code.tmp" "$d/code"
 `
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+	if err := testexec.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, binary)

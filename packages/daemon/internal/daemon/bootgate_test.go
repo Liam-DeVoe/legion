@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -345,11 +346,11 @@ no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 120 ;;
 esac
 `
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	prefix := filepath.Join(dir, "launch-prefix")
-	if err := os.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >"+shellprefix.Literal(filepath.Join(dir, "prefixed"))+"\nexec \"$@\"\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >"+shellprefix.Literal(filepath.Join(dir, "prefixed"))+"\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatalf("write the launch prefix: %v", err)
 	}
 	return fakeOmp{dir: dir, path: path, prefix: prefix, invocation: shellprefix.Word(path)}
@@ -1111,7 +1112,7 @@ case "$2:$3" in
   *) exit 99 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(stub, "secrets"), []byte(secrets), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(stub, "secrets"), []byte(secrets), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()

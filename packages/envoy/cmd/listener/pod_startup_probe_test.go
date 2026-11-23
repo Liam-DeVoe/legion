@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // hubStartupProbe is the exec command of the startup probe of the session listener's pod that
@@ -80,7 +81,7 @@ func runHubStartupProbe(t *testing.T, command []string, scrape string) (int, str
 		t.Fatalf("write the scrape: %v", err)
 	}
 	fake := "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$CURL_ARGS\"\ncat \"$SCRAPE\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(fake), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "curl"), []byte(fake), 0o700); err != nil {
 		t.Fatalf("write the fake curl: %v", err)
 	}
 	cmd := exec.Command(command[0], command[1:]...)

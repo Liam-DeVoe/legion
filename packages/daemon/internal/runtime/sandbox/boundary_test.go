@@ -34,6 +34,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -221,7 +222,7 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 	}
 	rig.cpus = podCPUs(opts.Resources.Issue.Limits[corev1.ResourceCPU])
 	askpass := filepath.Join(root, "any-host-askpass")
-	if err := os.WriteFile(askpass, []byte(anyHostAskpass), 0o700); err != nil {
+	if err := testexec.WriteFile(askpass, []byte(anyHostAskpass), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"git", "jj"} {
@@ -233,7 +234,7 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 		// its real tool must not rediscover this defeated-tool wrapper and recurse into it.
 		script := strings.NewReplacer("@NAME@", name, "@REAL@", shellprefix.Literal(real),
 			"@ASKPASS@", shellprefix.Literal(askpass), "@PATH@", shellprefix.Literal(os.Getenv("PATH"))).Replace(defeatedTool)
-		if err := os.WriteFile(filepath.Join(rig.bin, name), []byte(script), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(rig.bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -264,7 +265,7 @@ func (rig *initRig) script(what, tail string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		rig.t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+rig.probe(what)+"\n"+tail+"\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(path, []byte("#!/bin/sh\n"+rig.probe(what)+"\n"+tail+"\n"), 0o755); err != nil {
 		rig.t.Fatal(err)
 	}
 	return path
@@ -746,7 +747,7 @@ func (rig *initRig) plantHooks(dir string, hooks ...string) {
 		rig.t.Fatal(err)
 	}
 	for _, hook := range hooks {
-		if err := os.WriteFile(filepath.Join(dir, hook), []byte(rig.hookBody(hook)), 0o755); err != nil {
+		if err := testexec.WriteFile(filepath.Join(dir, hook), []byte(rig.hookBody(hook)), 0o755); err != nil {
 			rig.t.Fatal(err)
 		}
 	}
@@ -1195,7 +1196,7 @@ func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
 	// The stand-in for the Go legion appends one line for each init container that runs it.
 	record := filepath.Join(t.TempDir(), "record")
 	standIn := filepath.Join(t.TempDir(), "legion")
-	if err := os.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	rig := newInitRig(t, standIn)

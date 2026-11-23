@@ -553,6 +553,22 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A file a test runs
+
+A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
+writes it with `testexec.WriteFile` (`packages/envoy/testexec`), which every module reaches, not
+`os.WriteFile`. While a file is open for writing, a fork of the test process copies the write
+descriptor into the child, which holds it until its own exec closes it, and the kernel refuses to
+exec a file any process holds open for writing: the run fails with `ETXTBSY` ("text file busy").
+A test running beside it (`t.Parallel`) forks each time it starts a command, so once
+`internal/daemon`'s tests ran beside each other a gate test failed so under load
+(`TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses`, one run in 660).
+`testexec.WriteFile` holds `syscall.ForkLock` for reading while the file is open, which every fork
+of a Go process takes for writing, so no fork falls inside the write. Each module's
+`internal/textcheck` names, by `testexec.Unguarded`, each write of a file with an execute bit by
+`os.WriteFile` or `os.OpenFile` in a test file of a package whose tests call `Parallel`, and in
+any file of a test-support package (a package whose name begins or ends with `test`).
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`

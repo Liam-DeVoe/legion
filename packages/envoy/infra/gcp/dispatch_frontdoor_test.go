@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -306,7 +307,7 @@ func TestDispatchCertPublishPutsNoCredentialInACommandLine(t *testing.T) {
 	require.NoError(t, err)
 	shim := t.TempDir()
 	record := filepath.Join(shim, "arguments")
-	require.NoError(t, os.WriteFile(filepath.Join(shim, "curl"),
+	require.NoError(t, testexec.WriteFile(filepath.Join(shim, "curl"),
 		[]byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >>%q\nexec %q \"$@\"\n", record, realCurl)), 0o755))
 
 	p.publish(t, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -385,7 +386,7 @@ func TestDispatchCertPublishReplacesACertificateForAnotherNameWhenCheckhostExits
 	real, err := exec.LookPath("openssl")
 	require.NoError(t, err)
 	shim := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(shim, "openssl"), []byte(fmt.Sprintf(`#!/bin/sh
+	require.NoError(t, testexec.WriteFile(filepath.Join(shim, "openssl"), []byte(fmt.Sprintf(`#!/bin/sh
 for arg in "$@"; do
   if [ "$arg" = "-checkhost" ]; then
     %[1]q "$@"
@@ -486,7 +487,7 @@ func startCertPublish(t *testing.T, paths dispatchCertPaths, killGate, realPubli
 		publishPause = fmt.Sprintf("exec %q 60", realSleep)
 	}
 	shim := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(shim, "sleep"), []byte(fmt.Sprintf(`#!/bin/sh
+	require.NoError(t, testexec.WriteFile(filepath.Join(shim, "sleep"), []byte(fmt.Sprintf(`#!/bin/sh
 case "$1" in
 60) %[3]s ;;
 30) %[2]s ;;

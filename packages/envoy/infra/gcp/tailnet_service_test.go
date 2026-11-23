@@ -14,6 +14,7 @@ import (
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -146,7 +147,7 @@ func newTailnetRig(t *testing.T, selfID string, configure ...func(*tailnetServic
 		"tailscale": fakeTailnetTailscale, "sleep": fakeTailnetSleep,
 		"date": fakeTailnetDate, "timeout": fakeTailnetTimeout,
 	} {
-		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(fill.Replace(body)), 0o755))
+		require.NoError(t, testexec.WriteFile(filepath.Join(bin, name), []byte(fill.Replace(body)), 0o755))
 	}
 	r.set(t, "clock", strconv.Itoa(tailnetRigStart))
 	r.set(t, "limit", strconv.Itoa(1<<30))
@@ -290,7 +291,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	// records its PID, so the test ends it.
 	sleep := "#!/bin/sh\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 30 >/dev/null 2>&1\n"
 	sleep = strings.NewReplacer("FAKE", r.fake, "REALSLEEP", realSleep).Replace(sleep)
-	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
+	require.NoError(t, testexec.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
 	t.Cleanup(func() {
 		if b, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid")); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {

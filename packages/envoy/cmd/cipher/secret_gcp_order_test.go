@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // startGoogleTokenServer answers Google's JWT-bearer grant, as oauth2.googleapis.com/token does
@@ -204,7 +205,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		"esac",
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(bin, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)

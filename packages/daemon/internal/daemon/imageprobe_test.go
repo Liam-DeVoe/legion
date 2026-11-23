@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
@@ -92,7 +93,7 @@ esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	return imageOmp{dir: dir, path: path, invocation: shellprefix.Word(path)}

@@ -28,6 +28,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // gcloudTestDeadline is the deadline on each store call (storeCallDeadline) these tests give a
@@ -68,7 +69,7 @@ func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; exec sleep 3600' &` + "\n" +
 		last + "\n"
 	gcloud := gcloudCommand{path: filepath.Join(dir, "gcloud")}
-	if err := os.WriteFile(gcloud.path, []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(gcloud.path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { child.cleanUp(t) })
