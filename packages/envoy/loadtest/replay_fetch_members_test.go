@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -341,4 +342,79 @@ func bundleReaderErrors(b *replayBundle) string {
 		}
 	}
 	return strings.Join(errs, "\n")
+}
+
+// TestABundlesMembersOfNoShapePrintNowhere: a bundle keeps members of Dispatch's answers that have
+// no one shape Dispatch gives them, so replay-fetch cannot refuse the others: an actor's kind
+// (Dispatch names no closed list of kinds), a typed ask block's id (any text a pasted block names;
+// pmdoc's storedBlockID), a document's name, and an event's type (each feature adds its own).
+// Whatever answers in Dispatch's place can make each echo the fetch's bearer and quote a
+// credential's URL, and the bundle's readers printed each as it came: the seed's refusal of an actor
+// it cannot act as (actor-kind) and of a typed block no ask was indexed from (block-id),
+// replay-check-seed's difference lines and its -out file (check-document), replay-fetch's counts
+// and bundle.meta.json (window-type), and the plan's counts of the events it does not send
+// (plan-type). Each now names the member's object by its id, in Dispatch's shape, an event's type
+// only where the package names it (shownEventType), or the member not at all. The controls: each
+// still names what it refused or counted. Captures loadtest.answer-members/bundle-text-<case>.
+func TestABundlesMembersOfNoShapePrintNowhere(t *testing.T) {
+	echo := memberBearer + "-" + redacttest.Code
+	const askID = "a5000000-0000-4000-8000-000000000005"
+	t.Run("actor-kind", func(t *testing.T) {
+		_, _, err := actorOf(&replayActor{Kind: echo, ID: "x"})
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/bundle-text-actor-kind", errorText(err), memberBearer)
+		if !strings.Contains(errorText(err), "cannot be acted as") {
+			t.Errorf("actorOf = %v, want the refusal of an actor the seed cannot act as", err)
+		}
+	})
+	t.Run("block-id", func(t *testing.T) {
+		pool, _ := loopTestDBAt(t)
+		ctx := context.Background()
+		if _, err := pool.Exec(ctx, `create table public.asks (id uuid primary key, issue_key text not null, block_id text,
+			created_at timestamptz not null default now())`); err != nil {
+			t.Fatal(err)
+		}
+		s := &replaySeeder{pool: pool, ids: newIDStore(nil, nil)}
+		_, err := s.ensureAsk(ctx, "PRJ-1", nil, &replayAsk{ID: askID, Kind: "question", State: "answered", BlockID: &echo})
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/bundle-text-block-id", errorText(err), memberBearer)
+		if !strings.Contains(errorText(err), "ask "+askID+": no ask was indexed from its typed block") {
+			t.Errorf("ensureAsk = %v, want the refusal naming the ask %s", err, askID)
+		}
+	})
+	t.Run("check-document", func(t *testing.T) {
+		const docID = "d0c00000-0000-4000-8000-000000000001"
+		is := &replayIssue{Key: "PRJ-1", Number: 1, Exists: true, Artifacts: []replayArtifact{{ID: docID, Name: echo, Kind: "doc", Version: 1}}}
+		r, err := checkSeed(context.Background(), nil, &replayBundle{}, []seedIssuePlan{{Key: "PRJ-1", Number: 1, Issue: is}}, map[[2]string]string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, _ := json.Marshal(checkResult{DifferenceList: r.Differences})
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/bundle-text-check-document", fmt.Sprintf("%v\n%s", r.Differences, file), memberBearer)
+		if len(r.Differences) != 1 || r.Differences[0].Artifact != docID || r.Differences[0].What != "mapping" {
+			t.Errorf("differences %+v, want the unmapped document %s", r.Differences, docID)
+		}
+	})
+	t.Run("window-type", func(t *testing.T) {
+		const commentID = "c0000000-0000-4000-8000-00000000000c"
+		c := stateCounts(replayState{}, []replayEvent{mkEvent(t, 1, "PRJ-1", echo, mins(5), sess("s0"), map[string]any{}),
+			mkEvent(t, 2, "PRJ-1", evCommentCreated, mins(6), sess("s0"), comment(commentID, nil))})
+		meta, _ := json.Marshal(c)
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/bundle-text-window-type", string(meta), memberBearer)
+		if c.WindowByType[notAReplayEventType] != 1 || c.WindowByType[evCommentCreated] != 1 {
+			t.Errorf("window by type %v, want the comment by its type and the other by %q", c.WindowByType, notAReplayEventType)
+		}
+	})
+	t.Run("plan-type", func(t *testing.T) {
+		keyless := map[string]any{}
+		if err := json.Unmarshal([]byte(rpEvent(2, echo, "ACME-1", rpSession, time.Second, map[string]any{})), &keyless); err != nil {
+			t.Fatal(err)
+		}
+		keyless["issue_key"] = nil
+		line, _ := json.Marshal(keyless)
+		p := rpPlan(t, rpOptions(), []string{rpEvent(1, echo, "ACME-1", rpSession, time.Second, map[string]any{}), string(line)}, nil)
+		counts, _ := json.Marshal(p.Counts)
+		redacttest.RequireNoPiece(t, "loadtest.answer-members/bundle-text-plan-type", string(counts), memberBearer)
+		if p.Counts.NotSent["unhandled:"+notAReplayEventType] != 1 || p.Counts.NotSent["no_issue:"+notAReplayEventType] != 1 {
+			t.Errorf("not sent %v, want the events of a type the replay does not name counted under %q", p.Counts.NotSent, notAReplayEventType)
+		}
+	})
 }

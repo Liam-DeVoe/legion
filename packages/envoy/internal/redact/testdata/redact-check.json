@@ -5897,6 +5897,41 @@
       "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose window event names an issue key out of an issue key's shape (eventInShape), so bundle.meta.json's created_specs names none"
     },
     {
+      "id": "loadtest-answer-members-bundle-text-actor-kind",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/actor-kind",
+      "production": "loadtest actorOf: an actor of a kind the seed cannot act as is refused naming no kind, since a kind has no shape"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-block-id",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/block-id",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replaySeeder).ensureAsk: a typed ask block no ask was indexed from is named by its ask's id alone, never by its block id, which has no shape"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-check-document",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/check-document",
+      "production": "loadtest checkSeed and checkSizesAndAnchors: replay-check-seed's difference and size-mismatch lines and its -out file name a document by its id, never by its name"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-window-type",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/window-type",
+      "production": "loadtest stateCounts: replay-fetch's window_by_type counts a type the package does not name under notAReplayEventType (shownEventType)"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-text-plan-type",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundlesMembersOfNoShapePrintNowhere/plan-type",
+      "production": "loadtest planReplay and (*github.com/sjawhar/envoy/loadtest.replayPlanner).planWrite: a not_sent reason names an event's type only where the package names it (shownEventType)"
+    },
+    {
       "id": "loadtest-answer-members-refs-etag",
       "requirement": "r3-each-site",
       "package": "./loadtest",
@@ -8669,6 +8704,31 @@
       "site": "loadtest replay-fetch: a window event's issue key, decoded into a plain string and written raw to bundle.meta.json's created_specs",
       "source": "the class search of the review of #4368 at de683f95d2, finding 4",
       "guard": "loadtest-answer-members-bundle-window-key"
+    },
+    {
+      "site": "loadtest actorOf: an actor's kind from the bundle, decoded into a plain string, quoted raw by the seed's refusal of an actor it cannot act as",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-actor-kind"
+    },
+    {
+      "site": "loadtest replay-seed ensureAsk: a typed ask block's id from the bundle printed raw when no ask was indexed from it",
+      "source": "the review of #4368 at de683f95d2, finding 4 (replay_seed_asks.go:51)",
+      "guard": "loadtest-answer-members-bundle-text-block-id"
+    },
+    {
+      "site": "loadtest replay-check-seed: a document's name from the bundle printed raw in the difference and size-mismatch lines and written raw to the -out file",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-check-document"
+    },
+    {
+      "site": "loadtest replay-fetch stateCounts: a window event's type, decoded into a plain string, a key of window_by_type in the printed counts and bundle.meta.json",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-window-type"
+    },
+    {
+      "site": "loadtest replay-plan: a window event's type in the derived:, no_issue: and unhandled: reasons of the printed and written not_sent counts",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-text-plan-type"
     },
     {
       "site": "loadtest refs-fetch: a references answer's ETag header written raw to the TSV it records",

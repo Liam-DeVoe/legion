@@ -306,7 +306,9 @@ func jsonBody(v any) rawBody {
 }
 
 // actorOf is how the seed acts as a logged actor: a session through the agent bearer with the
-// session named in the body, a user through the identity header.
+// session named in the body, a user through the identity header. Any other kind is refused, and not
+// named: Dispatch names no closed list of kinds, so a kind has no shape a line could hold it to, and
+// whatever answered in Dispatch's place may have written anything there.
 func actorOf(a *replayActor) (who, map[string]any, error) {
 	if a == nil {
 		return who{}, sessionActor(replaySeedActorID), nil
@@ -318,7 +320,7 @@ func actorOf(a *replayActor) (who, map[string]any, error) {
 	case "user":
 		return who{person: a.ID}, nil, nil
 	}
-	return who{}, nil, fmt.Errorf("actor kind %q cannot be acted as", a.Kind)
+	return who{}, nil, errors.New("an actor of a kind other than session or user cannot be acted as")
 }
 
 // withActor adds the body's actor when the request acts as a session.

@@ -530,7 +530,7 @@ func stateCounts(st replayState, window []replayEvent) replayCounts {
 	}
 	written := map[string]bool{}
 	for _, ev := range window {
-		c.WindowByType[ev.Type]++
+		c.WindowByType[shownEventType(ev.Type)]++
 		switch ev.Type {
 		case evCommentCreated:
 			var p struct {

@@ -302,7 +302,8 @@ type replayCounts struct {
 	// AsksResolvedBlocks counts the resolved typed ask blocks the state keeps.
 	AsksResolvedBlocks int `json:"asks_resolved_blocks"`
 	WindowEvents       int `json:"window_events"`
-	// WindowByType counts window events per event type.
+	// WindowByType counts window events per event type: a type this package names under its name,
+	// any other under notAReplayEventType (shownEventType), since replay-fetch prints the counts.
 	WindowByType          map[string]int `json:"window_by_type"`
 	CreatedDocs           int            `json:"created_docs"`
 	CreatedDocsUnreadable int            `json:"created_docs_unreadable"`
