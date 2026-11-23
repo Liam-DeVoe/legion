@@ -8,8 +8,8 @@ import {
   useState,
 } from "react";
 
-import { stepIndex } from "../features/shell/roving";
-import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
+import { focusOnDocument, stepIndex } from "../features/shell/roving";
+import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import {
   borderDefault,
   borderStrong,
@@ -80,6 +80,50 @@ function stepTo(
   return step === undefined ? undefined : rows[step];
 }
 
+/** A key of the digit row, by which an open list that takes D5's rules writes a choice at once
+ *  (`ListMenu`). */
+export type MenuDigit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+function isMenuDigit(key: string): key is MenuDigit {
+  return key.length === 1 && key >= "0" && key <= "9";
+}
+
+/** The digits of `keys` whose choice `options` holds now, as a menu's foot line names them: a
+ *  run ("1–4", "0–3"), else each; empty where it holds none. */
+function digitsText(keys: ListMenu["keys"], options: readonly string[]): string {
+  const digits = Object.entries(keys)
+    .flatMap(([digit, value]) =>
+      value !== undefined && options.includes(value) ? [Number(digit)] : []
+    )
+    .sort((a, b) => a - b);
+  const first = digits[0];
+  const last = digits.at(-1);
+  if (first === undefined || last === undefined) return "";
+  if (first === last) return `${first}`;
+  return digits.every((digit, index) => digit === first + index)
+    ? `${first}–${last}`
+    : digits.join(" ");
+}
+
+/** Whether the reader's primary pointer is coarse, a finger on a phone's screen, where a text box
+ *  that takes the focus opens the on-screen keyboard over the choices under it. */
+function coarsePointer(): boolean {
+  return window.matchMedia("(pointer: coarse)").matches;
+}
+
+/** Hands the focus back to `to` as a list closes, noting while it does that a focus arriving
+ *  there is the list's hand-back (`handing`): to the page itself where `to` is the body, which
+ *  only taking the focus off the element that holds it gives back. */
+function focusBack(to: HTMLElement | null, handing: { current: boolean }): void {
+  if (to === document.body) {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    return;
+  }
+  handing.current = true;
+  to?.focus();
+  handing.current = false;
+}
+
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -93,6 +137,52 @@ export interface ListMarks {
 }
 
 /**
+ * The rules of a single pick that stands in a menu's place (dispatch://INFRA-2160, its decision
+ * D5, and R4, R5 and R15): the Inbox's Snooze, and the priority and the status, which a key opens
+ * (`b`, `h`, `p`, `s`) and each of whose picks is a write. One prop carries every rule, so a host
+ * takes all of them or none; a host that passes none keeps the plain pick.
+ *
+ * - The list opens highlighted on its first choice or on the value held (`opensOn`), whatever
+ *   opened it: a key, a click, a tap, Enter or Space.
+ * - ArrowDown, ArrowUp, Home and End move the highlight and write nothing; ArrowLeft and
+ *   ArrowRight still move the text box's caret.
+ * - A digit writes its own choice at once, whatever the text box has narrowed (`keys`); a digit no
+ *   choice has writes nothing, and no digit is typed into the box. A letter narrows the list,
+ *   Enter writes the highlighted choice, and a click or a tap writes the choice it hits.
+ * - Escape, Tab, Shift+Tab and a press outside close the list and write nothing, and every close,
+ *   a pick's among them, gives the focus back to the element that had it as the list opened, or
+ *   to the one the host names (`returnFocus`). A press outside gives it back in the panel's
+ *   capture-phase `pointerdown` that closes the list, before the browser's own focus on the press,
+ *   so a press on another control focuses that control; a press on nothing that takes the focus
+ *   has it given back again once the press is over.
+ * - Each choice with a digit draws it, hidden from assistive technology so the option's name stays
+ *   its words and named as the option's `aria-keyshortcuts`, and a foot line draws the list's keys.
+ * - On a coarse pointer (a phone) opening focuses no text box, so no on-screen keyboard covers the
+ *   choices: the list takes the focus, and a tap on the box gives the box the focus. The panel is
+ *   tall enough for a menu's choices, each 44 px high, under the box and over the foot line.
+ * - While the host's write is out (`ariaDisabled`), a digit, Enter or a press of a choice writes
+ *   nothing and the list stays open, and the closed trigger opens on nothing, a press included.
+ */
+export interface ListMenu {
+  /** The value each digit writes, by its digit: the snooze's `1` to `4` and Un-snooze's `0`, the
+   *  priority's `0` to `3`, the status's none. A digit whose value the options do not hold now -
+   *  Un-snooze on an item not snoozed - writes nothing, and its row and the foot line draw no
+   *  digit for it. */
+  readonly keys: Readonly<Partial<Record<MenuDigit, string>>>;
+  /** Which row the list opens highlighted: its first choice (a snooze, whose choices are acts),
+   *  or the value the pick holds (a priority, a status). */
+  readonly opensOn: "first" | "value";
+  /** Where each close gives the focus back, read as the list closes: an element the host knows
+   *  better than the focus did as the list opened, while it is on the page. Where this answers
+   *  null or is not given, it goes back to the element that had the focus as the list opened: a
+   *  key's press of the trigger (a click with no pointer, `detail` 0: the page's binding pressing
+   *  it from a row, or Enter or Space on it) leaves that where the key was pressed - the row, or
+   *  the page itself where nothing had the focus - and a pointer's press leaves it on the trigger.
+   *  An element gone from the page since gives it to the trigger. */
+  readonly returnFocus?: () => HTMLElement | null;
+}
+
+/**
  * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
  * colour has: the trigger is the page's header control (its rule and muted words on the
  * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
@@ -100,7 +190,8 @@ export interface ListMarks {
  * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
  * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
  * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
- * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * scheme, under the 4.5:1 its words need; and so are a menu's digits, on the same rows, and its
+ * foot line of keys, on the paper (`ListMenu`). The search box keeps `main`'s focus rule, the one
  * focus indicator of the application.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
@@ -145,7 +236,8 @@ interface SharedProps {
    *  trigger keeps its focus and its Tab stop. No key on the closed trigger opens the list then
    *  (`openFromKey`), and a press still does, unless the host refuses the open in
    *  `onOpenChange`: the Agents page's Issue list, and each host whose write is out
-   *  (`AssigneeControl`, `RepoControl`, `AskHandOn`). */
+   *  (`AssigneeControl`, `RepoControl`, `AskHandOn`). A single pick in a menu's place (`menu`)
+   *  opens on no press either, and while its list stands open no pick writes. */
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
@@ -170,8 +262,9 @@ interface SharedProps {
   /** The focus arriving on the trigger from outside the list, with the element it came from
    *  (the focus event's `relatedTarget`, null where it came from nowhere): a host that keeps
    *  where the reader came from, for a way back there, records it here. The list handing the
-   *  focus back to its trigger is no arrival and calls nothing: a pick, Escape, Tab, or a press
-   *  of the trigger while the list is open. So the record outlives the reader's use of the list. */
+   *  focus back to its trigger is no arrival and calls nothing: a pick, Escape, Tab, a press
+   *  of the trigger while the list is open, or a menu's press outside, once it is over. So the
+   *  record outlives the reader's use of the list. */
   readonly onTriggerFocus?: (from: Element | null) => void;
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
@@ -223,7 +316,8 @@ interface MultipleProps extends SharedProps {
   readonly selected: readonly string[];
 }
 
-/** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger. */
+/** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger, or
+ *  where a menu's goes (`menu`). */
 interface SingleProps extends SharedProps {
   /** The closed trigger takes the list's keys, as a focused `<select>` does: ArrowDown, ArrowUp,
    *  Home, End, Page Down and Page Up open the list on the value picked and move the highlight by
@@ -237,6 +331,10 @@ interface SingleProps extends SharedProps {
    *  option when Escape closes its open list, which the keyboard-step rule of the live header's
    *  selects (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. */
   readonly keysOnTrigger?: boolean;
+  /** D5's rules, for a pick that stands in a menu's place: every one of them, or, absent, none
+   *  (`ListMenu`). A host that passes it passes no `keysOnTrigger`, whose closed-trigger keys are
+   *  R6's controls' (`MultiSelect.hosts.test.ts` holds who takes which). */
+  readonly menu?: ListMenu;
   readonly mode: "single";
   /** Enables the `createLabel` row for a search that matches no option, which hands the typed
    *  value, trimmed, to the host: `true` takes it, and the list closes as a pick does; `false`
@@ -280,6 +378,11 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * `keysOnTrigger` also takes the keys a `<select>` takes there - ArrowDown, ArrowUp, Home, End,
  * Page Down and Page Up open it with the highlight moved by that key - so those keys, too, only
  * move the highlight.
+ *
+ * A single pick that stands in a menu's place - the Inbox's Snooze, the priority, the status -
+ * passes `menu`, which carries each rule of dispatch://INFRA-2160's D5 at once (`ListMenu`): it
+ * opens on its first choice or on its value, its digits write their choices, every close gives the
+ * focus back where it was as the list opened, and on a phone no text box takes the focus.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -333,11 +436,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listboxRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
-  // The panel's sticky text box at its top, and a multi-select's sticky Clear foot at its bottom,
-  // which a row scrolled into sight is kept clear of.
+  // The panel's sticky text box at its top, and its sticky foot at its bottom - a multi-select's
+  // Clear, a menu's line of keys - which a row scrolled into sight is kept clear of.
   const searchHostRef = useRef<HTMLDivElement>(null);
-  const clearHostRef = useRef<HTMLDivElement>(null);
+  const footHostRef = useRef<HTMLDivElement>(null);
   // What an open reads of this render: the value it starts on, and the options a move key that
   // opened it steps through. A host may build its options only while the list stands open (an
   // ask's hand-on), so the step is taken in the open render's options, not the closed trigger's.
@@ -348,6 +452,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // trigger opens it as a click does, on the value picked with an empty search.
   const openedBy = useRef<{ readonly key?: string; readonly query: string } | undefined>(undefined);
   const keysOnTrigger = props.mode === "single" && props.keysOnTrigger === true;
+  // D5's rules, which a single pick takes whole or not at all (`ListMenu`).
+  const menu = props.mode === "single" ? props.menu : undefined;
+  // Where a menu's closes give the focus back unless its host names another element: the one
+  // that had it as the list opened, read by the press or the key that opened it (`ListMenu`),
+  // and forgotten as the list closes.
+  const returnTo = useRef<HTMLElement | null>(null);
+  // Whether the focus arriving on the trigger now is the list handing it back, which is no
+  // arrival (`onTriggerFocus`).
+  const handingBack = useRef(false);
+  // Whether a menu's list opened on a coarse pointer, where no text box takes the focus as it
+  // opens: read by the render that opens it, and held while it stands open.
+  const opensBare = useRef(false);
+  if (open && !wasOpen.current) opensBare.current = menu !== undefined && coarsePointer();
+  const bare = open && opensBare.current;
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -381,20 +499,41 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // rather than adding a second spelling.
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   // A single pick opens on the option its value picks - in the option's own spelling, which is
-  // the one the arrows find in the list - or on the value itself while no option has come yet.
-  // Only the render that opens the list reads it.
+  // the one the arrows find in the list - or on the value itself while no option has come yet;
+  // a menu of acts on its first choice, whatever the pick holds. Only the render that opens the
+  // list reads it.
   opensOn.current =
-    open && props.mode === "single" ? (options.find(isPicked) ?? props.value) : undefined;
+    open && props.mode === "single"
+      ? menu?.opensOn === "first"
+        ? options[0]
+        : (options.find(isPicked) ?? props.value)
+      : undefined;
   opensWith.current = options;
-  // A single pick puts the focus on the trigger before it hands the value over, so a pick that
-  // takes the trigger away - the search bar's Project list, gone once its narrowing is on - takes
-  // it from the trigger's own place, from which the panel around it hands the focus on
-  // (`useFocusPlace`), rather than from a list portalled outside that panel.
+  // Where a close gives the focus back: the trigger; for a menu, the element its host names, else
+  // the one that had the focus as the list opened, each while it is on the page.
+  const returnTarget = (): HTMLElement | null => {
+    const named = menu?.returnFocus?.();
+    if (named?.isConnected) return named;
+    const recorded = menu === undefined ? null : returnTo.current;
+    return recorded?.isConnected ? recorded : triggerRef.current;
+  };
+  const handBack = (to: HTMLElement | null = returnTarget()) => focusBack(to, handingBack);
+  // The hand-back of the latest render, for the close's effect below.
+  const handBackNow = useRef(handBack);
+  handBackNow.current = handBack;
+  // A single pick gives the focus back - to the trigger, or where a menu's goes - before it hands
+  // the value over, so a pick that takes the trigger away - the search bar's Project list, gone
+  // once its narrowing is on - takes it from the trigger's own place, from which the panel around
+  // it hands the focus on (`useFocusPlace`), rather than from a list portalled outside that
+  // panel; and a snooze whose write folds the row a key opened its menu from takes the focus from
+  // that row, which the Inbox's hand-off reads (R8). A menu whose host's write is out writes
+  // nothing and stays open (`ariaDisabled`).
   const choose = (value: string) => {
+    if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
     if (props.mode === "single") {
       onOpenChange(false, "pick");
-      triggerRef.current?.focus();
+      handBack();
       props.onPick(value);
       return;
     }
@@ -408,25 +547,51 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // hands it to the host, which answers whether it took it: taken, the list closes as a pick
   // does; refused, the list stays open with the text in its box for the reader to correct.
   const create = (value: string) => {
+    if (menu !== undefined && ariaDisabled) return;
     setActiveValue(value);
     if (props.mode !== "single") {
       props.onCreate?.(value);
       setQuery("");
     } else if (props.onCreate?.(value) === true) {
       onOpenChange(false, "pick");
-      triggerRef.current?.focus();
+      handBack();
     }
+  };
+  // A menu's press outside, in the panel's capture-phase `pointerdown` that closes the list
+  // (`AnchoredPanel`): the focus goes back at once, before the browser's own focus on the press,
+  // which is the default action of its `mousedown`, after. So a press on a text box, a button or
+  // a link focuses that control and acts on that one press, and a press on nothing that takes the
+  // focus, which leaves the focus on the document, has it given back again once the press is
+  // over, by its `mouseup`, a finger's too. A press the browser cancels (a scroll) moves no focus,
+  // and the next press is another press, so either ends the wait.
+  const handBackOverPress = () => {
+    const to = returnTarget();
+    handBack(to);
+    const settle = () => {
+      stop();
+      if (focusOnDocument()) handBack(to);
+    };
+    const stop = () => {
+      document.removeEventListener("mouseup", settle, true);
+      document.removeEventListener("pointercancel", stop, true);
+      document.removeEventListener("pointerdown", stop, true);
+    };
+    document.addEventListener("mouseup", settle, true);
+    document.addEventListener("pointercancel", stop, true);
+    document.addEventListener("pointerdown", stop, true);
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
   // opened it says: the character typed on the closed trigger in the text box, or the row a move
   // key steps to (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
-  // it in itself (`focusOnOpen`). Closing returns the focus to the trigger when the close left it
-  // nowhere - the list that held it is gone - and leaves a focus that is somewhere. Whether it is
-  // nowhere is the page's one check for a lost focus (`focusLost`, whose doc says where each
-  // engine leaves the focus of an element taken away), so a Tab out of the text box the close
-  // took away puts the reader on the trigger rather than leave the focus to the page's rescue. A
-  // press outside moves the focus after this runs, so the focus ends where that press put it.
+  // it in itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list
+  // rather than to the box. Closing gives the focus back - to the trigger, or where a menu's goes
+  // - when the close left it nowhere - the list that held it is gone - and leaves a focus that is
+  // somewhere. Whether it is nowhere is the page's one check for a lost focus (`focusLost`, whose
+  // doc says where each engine leaves the focus of an element taken away), so a Tab out of the
+  // text box the close took away puts the reader back rather than leave the focus to the page's
+  // rescue. A press outside moves the focus after this runs, so the focus ends where that press
+  // put it.
   useEffect(() => {
     if (open) {
       const by = openedBy.current;
@@ -435,8 +600,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       setActiveValue(
         by?.key === undefined ? opensOn.current : stepTo(by.key, opensWith.current, opensOn.current)
       );
-    } else if (wasOpen.current && focusLost()) {
-      triggerRef.current?.focus();
+      if (opensBare.current) listboxRef.current?.focus();
+    } else if (wasOpen.current) {
+      if (focusLost()) handBackNow.current();
+      returnTo.current = null;
     }
     wasOpen.current = open;
   }, [open]);
@@ -446,9 +613,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // the panel holds about five rows and the highlight is drawn on the row alone: End, Page Down
   // or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter then picks
   // unseen. `nearest` scrolls only as far as the row needs to stand inside the panel's box, where
-  // the sticky text box at its top, or a multi-select's sticky Clear foot at its bottom, can still
-  // stand over it, so the panel scrolls on until the row stands clear of both. Laid out before the
-  // browser paints, so the row is never drawn out of sight first.
+  // the sticky text box at its top, or the sticky foot at its bottom (a multi-select's Clear, a
+  // menu's keys), can still stand over it, so the panel scrolls on until the row stands clear of
+  // both. Laid out before the browser paints, so the row is never drawn out of sight first.
   useLayoutEffect(() => {
     const row = activeId === undefined ? null : document.getElementById(activeId);
     const panel = document.getElementById(panelId);
@@ -457,8 +624,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     const { bottom, top } = row.getBoundingClientRect();
     const underSearch = (searchHostRef.current?.getBoundingClientRect().bottom ?? top) - top;
     if (underSearch > 0) panel.scrollTop -= underSearch;
-    const underClear = bottom - (clearHostRef.current?.getBoundingClientRect().top ?? bottom);
-    if (underClear > 0) panel.scrollTop += underClear;
+    const underFoot = bottom - (footHostRef.current?.getBoundingClientRect().top ?? bottom);
+    if (underFoot > 0) panel.scrollTop += underFoot;
   }, [activeId, panelId]);
 
   // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
@@ -472,7 +639,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // handled key, never reads it, and the character is not typed a second time into the text box
   // the focus moves to. Space is left to the button, which opens the list with an empty search. A
   // disabled or busy trigger opens on none of these keys; a key held with Ctrl or Meta is the
-  // browser's, and a key that ends or moves an IME composition is the input method's.
+  // browser's, and a key that ends or moves an IME composition is the input method's. A menu's
+  // closes give the focus back to the trigger a key on it opened the list from.
   const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
     if (event.nativeEvent.isComposing) return;
@@ -486,6 +654,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         ? { key: event.key, query: "" }
         : undefined;
     if (typed) onQueryChange?.(event.key);
+    if (menu !== undefined) returnTo.current = event.currentTarget;
     onOpenChange(true);
   };
 
@@ -545,11 +714,30 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (pressed && focusLost()) inputRef.current?.focus();
   });
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  // The text box's keys, and a menu's list's own while it holds the focus (on a coarse pointer).
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
     // composed text into the box and picks nothing, and Tab leaves the list open.
     if (event.nativeEvent.isComposing) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+    // A menu's digit is the list's before the text box takes it: it writes its own choice at
+    // once, whatever the box has narrowed, and a digit no choice has writes nothing.
+    if (menu !== undefined && plain && isMenuDigit(event.key)) {
+      event.preventDefault();
+      const value = menu.keys[event.key];
+      if (value !== undefined && options.includes(value)) choose(value);
+      return;
+    }
+    // The arrows move the highlight, and in a menu Home and End do too, where they would move the
+    // caret; ArrowLeft and ArrowRight stay the caret's.
+    if (
+      event.key === "ArrowDown" ||
+      event.key === "ArrowUp" ||
+      (menu !== undefined &&
+        plain &&
+        !event.shiftKey &&
+        (event.key === "Home" || event.key === "End"))
+    ) {
       const next = stepTo(event.key, rows, activeRow);
       if (next !== undefined) {
         event.preventDefault();
@@ -566,10 +754,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       }
       return;
     }
-    // Tab and Shift+Tab close the list and leave the reader on its trigger, as Escape does. The
-    // close puts the focus back on the trigger before the browser's own Tab would run, which
-    // would carry it on past the trigger: out of a filter panel altogether from its first
-    // control, where a list inside the panel is to be left for its trigger (`useNestedPanels`).
+    // Tab and Shift+Tab close the list and give the focus back, as Escape does. The close puts
+    // the focus back - on the trigger, or where a menu's goes - before the browser's own Tab would
+    // run, which would carry it on past the trigger: out of a filter panel altogether from its
+    // first control, where a list inside the panel is to be left for its trigger
+    // (`useNestedPanels`).
     if (event.key === "Tab") {
       event.preventDefault();
       onOpenChange(false, "tab");
@@ -604,6 +793,15 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     : triggerText === triggerName
       ? nameId
       : `${nameId} ${shownId}`;
+  // A menu's digit of each choice, by its value, which the choice's row draws, and the digits its
+  // foot line names: those whose choice the options hold now.
+  const digitOf = new Map<string, string>();
+  if (open && menu !== undefined) {
+    for (const [digit, value] of Object.entries(menu.keys)) {
+      if (value !== undefined) digitOf.set(value, digit);
+    }
+  }
+  const menuDigits = open && menu !== undefined ? digitsText(menu.keys, options) : "";
 
   return (
     <>
@@ -624,15 +822,29 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         data-control={control}
         {...marks?.trigger}
         disabled={disabled}
-        onClick={() => {
+        onClick={(event) => {
           openedBy.current = undefined;
-          if (open) onOpenChange(false, "trigger");
-          else onOpenChange(true);
+          if (open) {
+            onOpenChange(false, "trigger");
+            if (menu !== undefined) handBack();
+            return;
+          }
+          if (menu !== undefined) {
+            if (ariaDisabled) return;
+            // A click with no pointer is a key's - the page's binding pressing the trigger from a
+            // row, or Enter or Space on it - so the focus is still where the key was pressed; a
+            // pointer's click is on the trigger.
+            const focused = document.activeElement;
+            returnTo.current =
+              event.detail === 0 && focused instanceof HTMLElement ? focused : event.currentTarget;
+          }
+          onOpenChange(true);
         }}
         onFocus={(event) => {
           // The focus comes back from the list while the list is open and until its close has
-          // run the effect above, which is while `wasOpen` holds.
-          if (!wasOpen.current) onTriggerFocus?.(event.relatedTarget);
+          // run the effect above, which is while `wasOpen` holds, and as a menu's press outside
+          // is over (`handingBack`).
+          if (!wasOpen.current && !handingBack.current) onTriggerFocus?.(event.relatedTarget);
         }}
         onKeyDown={openFromKey}
         ref={triggerRef}
@@ -672,10 +884,14 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
-          focusOnOpen={focusOnOpen}
+          className={`${menu === undefined ? "max-h-72" : "max-h-96"} w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          focusOnOpen={focusOnOpen && !bare}
           id={panelId}
-          onDismiss={(how) => onOpenChange(false, how)}
+          onDismiss={(how) => {
+            if (menu !== undefined && how === "press") handBackOverPress();
+            onOpenChange(false, how);
+          }}
+          returnFocus={menu === undefined ? undefined : returnTarget}
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}
@@ -704,18 +920,24 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             />
           </div>
           <div
+            aria-activedescendant={bare ? activeId : undefined}
             aria-label={`${label} options`}
             aria-multiselectable={single ? undefined : "true"}
             id={listboxId}
+            onKeyDown={bare ? handleKeyDown : undefined}
+            ref={listboxRef}
             role="listbox"
+            tabIndex={bare ? -1 : undefined}
           >
             {visibleOptions.map((option) => {
               const isSelected = isPicked(option);
               const label = labelOf(option);
               const detail = optionDetail?.(option);
               const spokenDetail = optionDetailLabel?.(option) ?? detail;
+              const digit = digitOf.get(option);
               return (
                 <button
+                  aria-keyshortcuts={digit}
                   aria-label={spokenDetail === undefined ? undefined : `${label}, ${spokenDetail}`}
                   aria-selected={isSelected}
                   className={rowClassName(activeRow === option)}
@@ -756,6 +978,21 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                       {detail}
                     </span>
                   )}
+                  {digit === undefined ? null : (
+                    // For the eye alone: assistive technology hears the digit as the option's
+                    // `aria-keyshortcuts`, and the option's name stays its words.
+                    <span aria-hidden="true" className="shrink-0">
+                      <kbd
+                        className={
+                          tooltips
+                            ? digitKbdClass
+                            : `rounded px-1.5 font-mono text-xs ${ON_PAGE.detail}`
+                        }
+                      >
+                        {digit}
+                      </kbd>
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -790,10 +1027,22 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               {error}
             </p>
           )}
+          {menu === undefined ? null : (
+            // The list's keys, for the eye: each choice's digit is named to assistive technology
+            // as its own `aria-keyshortcuts`.
+            <div
+              aria-hidden="true"
+              className={`sticky bottom-0 border-t px-3 py-1.5 text-xs ${tooltips ? `${card} ${textMutedOnSurface}` : `${ON_PAGE.panel} ${ON_PAGE.detail}`}`}
+              ref={footHostRef}
+            >
+              ↑ ↓ Home End to move · Enter{menuDigits === "" ? "" : ` or ${menuDigits}`} to choose ·
+              Esc to close
+            </div>
+          )}
           {props.mode === "single" || selected.length === 0 ? null : (
             <div
               className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}
-              ref={clearHostRef}
+              ref={footHostRef}
             >
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}

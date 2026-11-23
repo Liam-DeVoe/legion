@@ -3,11 +3,12 @@ import { expect, spyOn, test } from "bun:test";
 // user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { type KeyboardEvent as ReactKeyboardEvent, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { highlightedRow, panelOf, pickNamed } from "../__tests__/list-picks";
-import { type ListMarks, MultiSelect } from "./MultiSelect";
+import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -1591,6 +1592,755 @@ test("a single pick tells its host where a focus arriving on its trigger came fr
     act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
     await user.click(trigger);
     expect(arrivals).toEqual(["Elsewhere", "Elsewhere"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// D5: a single pick in a menu's place (`menu`), the state table of plan task t21 of
+// dispatch://INFRA-2160, one test to a row and named by it. "The target" is where each close
+// gives the focus back: the row a key opened the list from, else the trigger a press opened it
+// from. The rows that only a browser can read (the drawer's Escape) are the browser checks'.
+// ---------------------------------------------------------------------------------------------
+
+const SNOOZE_LABELS: Readonly<Record<string, string>> = {
+  clear: "Until I clear it",
+  later: "Later today",
+  "next-week": "Next week",
+  tomorrow: "Tomorrow",
+  unsnooze: "Un-snooze",
+};
+
+/** The three menus D5 draws: the snooze's digits, with Un-snooze's `0` held only by a snoozed
+ *  item's options; the priority's; and the status's, which has none. */
+const MENUS = {
+  priority: {
+    keys: { "0": "P0", "1": "P1", "2": "P2", "3": "P3" },
+    opensOn: "value",
+  },
+  snooze: {
+    keys: { "0": "unsnooze", "1": "later", "2": "tomorrow", "3": "next-week", "4": "clear" },
+    opensOn: "first",
+  },
+  status: { keys: {}, opensOn: "value" },
+} as const satisfies Readonly<Record<string, ListMenu>>;
+
+type MenuKind = keyof typeof MENUS;
+
+const LABELS: Readonly<Record<MenuKind, string>> = {
+  priority: "Priority",
+  snooze: "Snooze",
+  status: "Status",
+};
+
+function optionsOf(kind: MenuKind, snoozed: boolean): string[] {
+  if (kind === "priority") return ["Unset", "P0", "P1", "P2", "P3"];
+  if (kind === "status") return ["Todo", "In progress", "Done"];
+  return ["later", "tomorrow", "next-week", "clear", ...(snoozed ? ["unsnooze"] : [])];
+}
+
+/** A row's `b`, which presses the list's trigger as the page's binding does: a click with no
+ *  pointer, with the focus still on the row. */
+function pressTriggerOnB(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.key !== "b") return;
+  event.preventDefault();
+  document.querySelector<HTMLElement>("[data-menu-trigger]")?.click();
+}
+
+const MENU_MARKS: ListMarks = { trigger: { "data-menu-trigger": "" } };
+
+/** A pick that takes D5's rules as a host draws one: a row the reader is on, whose `b` opens the
+ *  list; the pick, a snooze's, a priority's or a status's; every value it handed its host; what
+ *  closed it each time; another control, which counts its own presses; and words on the page,
+ *  which take no focus. */
+function MenuHost({
+  ariaDisabled,
+  kind = "snooze",
+  snoozed = false,
+  value,
+}: {
+  ariaDisabled?: boolean;
+  kind?: MenuKind;
+  snoozed?: boolean;
+  value?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [handed, setHanded] = useState<string[]>([]);
+  const [closings, setClosings] = useState<string[]>([]);
+  const [presses, setPresses] = useState(0);
+  return (
+    <>
+      <button onKeyDown={pressTriggerOnB} type="button">
+        Row
+      </button>
+      <MultiSelect
+        ariaDisabled={ariaDisabled}
+        emptyMessage="Nothing here."
+        label={LABELS[kind]}
+        marks={MENU_MARKS}
+        menu={MENUS[kind]}
+        mode="single"
+        onOpenChange={(next, closedBy) => {
+          setOpen(next);
+          if (!next) setClosings((before) => [...before, closedBy ?? "nothing"]);
+        }}
+        onPick={(picked) => setHanded((before) => [...before, picked])}
+        open={open}
+        optionLabel={kind === "snooze" ? (option) => SNOOZE_LABELS[option] : undefined}
+        options={optionsOf(kind, snoozed)}
+        searchLabel={`Search ${LABELS[kind].toLocaleLowerCase()}`}
+        value={value}
+      />
+      <output data-testid="handed">{handed.join(",")}</output>
+      <output data-testid="closings">{closings.join(",")}</output>
+      <button onClick={() => setPresses((before) => before + 1)} type="button">
+        Other
+      </button>
+      <output data-testid="presses">{presses}</output>
+      <p>Words on the page</p>
+    </>
+  );
+}
+
+/** The open list's text box. */
+function menuBox(): HTMLInputElement {
+  return screen.getByRole("combobox") as HTMLInputElement;
+}
+
+/** Whether the list highlights the choice named `name`. */
+function highlights(name: string): boolean {
+  return (
+    menuBox().getAttribute("aria-activedescendant") === screen.getByRole("option", { name }).id
+  );
+}
+
+function handed(): string {
+  return screen.getByTestId("handed").textContent ?? "";
+}
+
+function menuTrigger(kind: MenuKind = "snooze"): HTMLElement {
+  return screen.getByRole("button", { name: pickNamed(LABELS[kind]) });
+}
+
+/** Opens the list by the row's `b`, with the focus on the row; answers the row. */
+async function openFromRow(user: UserEvent, name = "Row"): Promise<HTMLElement> {
+  const row = screen.getByRole("button", { name });
+  act(() => row.focus());
+  await user.keyboard("b");
+  return row;
+}
+
+/** Makes the reader's primary pointer a coarse one, a finger on a phone's screen, until what it
+ *  answers is called. */
+function onCoarsePointer(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+/** A finger's tap on `target`. */
+function tap(user: UserEvent, target: Element): Promise<void> {
+  return user.pointer({ keys: "[TouchA]", target });
+}
+
+test("an opener opens the list on its first or current choice", async () => {
+  const user = userEvent.setup();
+  // The snooze opens on its first choice whatever the pick holds, the priority on the value it
+  // holds.
+  for (const [kind, value, first] of [
+    ["snooze", "next-week", "Later today"],
+    ["priority", "P2", "P2"],
+  ] as const) {
+    const view = render(<MenuHost kind={kind} value={value} />);
+    try {
+      const trigger = menuTrigger(kind);
+      const openers: readonly (readonly [string, () => Promise<void>])[] = [
+        ["a key from a row", () => openFromRow(user).then(() => undefined)],
+        [
+          "Enter on the trigger",
+          async () => {
+            act(() => trigger.focus());
+            await user.keyboard("{Enter}");
+          },
+        ],
+        [
+          "Space on the trigger",
+          async () => {
+            act(() => trigger.focus());
+            await user.keyboard(" ");
+          },
+        ],
+        ["a click", () => user.click(trigger)],
+        ["a tap", () => tap(user, trigger)],
+      ];
+      for (const [opener, press] of openers) {
+        await press();
+        expect(menuBox(), `${kind}: ${opener} puts the focus in the list's box`).toHaveFocus();
+        expect(highlights(first), `${kind}: ${opener} highlights ${first}`).toBe(true);
+        await user.keyboard("{Escape}");
+        expect(screen.queryByRole("listbox"), `${kind}: ${opener}`).not.toBeInTheDocument();
+      }
+      expect(handed()).toBe("");
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
+test("on a coarse pointer the list opens with no focused box", async () => {
+  const user = userEvent.setup();
+  const restore = onCoarsePointer();
+  const view = render(<MenuHost />);
+  try {
+    await tap(user, menuTrigger());
+    const list = screen.getByRole("listbox", { name: "Snooze options" });
+    expect(menuBox(), "the tap opened the phone's keyboard over the choices").not.toHaveFocus();
+    expect(list).toHaveFocus();
+    expect(highlights("Later today")).toBe(true);
+    // The list's own keys still work on it.
+    await user.keyboard("{ArrowDown}");
+    expect(highlights("Tomorrow")).toBe(true);
+    await user.keyboard("{Escape}");
+    expect(menuTrigger()).toHaveFocus();
+
+    // Whatever opened it: a key from the row too.
+    await openFromRow(user);
+    expect(menuBox()).not.toHaveFocus();
+    expect(screen.getByRole("listbox", { name: "Snooze options" })).toHaveFocus();
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("a tap on the box focuses it", async () => {
+  const user = userEvent.setup();
+  const restore = onCoarsePointer();
+  const view = render(<MenuHost />);
+  try {
+    await tap(user, menuTrigger());
+    const box = menuBox();
+    expect(box).not.toHaveFocus();
+    await tap(user, box);
+    expect(box).toHaveFocus();
+    expect(screen.getByRole("listbox", { name: "Snooze options" })).toBeInTheDocument();
+    await user.keyboard("to");
+    expect(screen.getAllByRole("option").map((option) => option.getAttribute("id"))).toEqual([
+      screen.getByRole("option", { name: "Later today" }).id,
+      screen.getByRole("option", { name: "Tomorrow" }).id,
+    ]);
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// happy-dom lays nothing out, so the row reads what places the panel and sizes its rows: the
+// panel's left edge, which `AnchoredPanel` keeps 8 px inside a 390 px window for a trigger at its
+// right edge, and its 256 px width (`w-64`, no wider than the window less 1rem); each row's
+// 44 px floor (`min-h-11`) with no breakpoint's class over it; and a panel tall enough to hold
+// every choice with the text box above them and the foot line below them, so no choice is
+// scrolled out of it. The text box's row is its 44 px box inside `p-2` over a 1 px rule, 61 px;
+// the foot line is a 16 px line of `text-xs` inside `py-1.5` under a 1 px rule, 29 px. The
+// browser check k-phone measures the same rectangles in a phone's window.
+test("on a phone every choice is inside the viewport and 44 px high", async () => {
+  const user = userEvent.setup();
+  const restore = onCoarsePointer();
+  const width = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const height = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 664 });
+  const view = render(<MenuHost snoozed />);
+  try {
+    for (const kind of ["snooze", "priority"] as const) {
+      view.rerender(
+        <MenuHost kind={kind} snoozed value={kind === "priority" ? "P2" : undefined} />
+      );
+      const trigger = menuTrigger(kind);
+      trigger.getBoundingClientRect = () => new DOMRect(330, 300, 52, 44);
+      await tap(user, trigger);
+      const panel = panelOf(trigger);
+      const left = Number.parseFloat(panel.style.left);
+      expect(left, `${kind}: the panel's left edge`).toBeGreaterThanOrEqual(8);
+      expect(left + 256, `${kind}: the panel's right edge`).toBeLessThanOrEqual(390 - 8);
+      expect(panel.className.split(" ")).toEqual(
+        expect.arrayContaining(["w-64", "max-w-[calc(100vw-1rem)]"])
+      );
+      const options = screen.getAllByRole("option");
+      expect(options).toHaveLength(5);
+      for (const option of options) {
+        const classes = option.className.split(" ");
+        expect(classes, `${kind}: ${option.textContent}`).toEqual(
+          expect.arrayContaining(["min-h-11", "w-full"])
+        );
+        expect(classes.filter((token) => /^[\w-]+:(?:min-)?h-/.test(token))).toEqual([]);
+      }
+      const cap = /(?:^| )max-h-(\d+)(?: |$)/.exec(panel.className)?.[1];
+      expect(Number(cap) * 4, `${kind}: the panel's height cap`).toBeGreaterThanOrEqual(
+        options.length * 44 + 61 + 29
+      );
+      await user.keyboard("{Escape}");
+    }
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+    restore();
+    for (const [name, descriptor] of [
+      ["innerWidth", width],
+      ["innerHeight", height],
+    ] as const) {
+      if (descriptor === undefined) Reflect.deleteProperty(window, name);
+      else Object.defineProperty(window, name, descriptor);
+    }
+  }
+});
+
+test("the arrows, Home and End move the highlight and write nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    await user.click(menuTrigger());
+    for (const [key, to] of [
+      ["ArrowDown", "Tomorrow"],
+      ["ArrowUp", "Later today"],
+      ["End", "Until I clear it"],
+      ["Home", "Later today"],
+      ["ArrowUp", "Until I clear it"],
+    ] as const) {
+      await user.keyboard(`{${key}}`);
+      expect(highlights(to), `${key} highlights ${to}`).toBe(true);
+      expect(menuBox(), key).toHaveFocus();
+    }
+    // The caret is the text box's: ArrowLeft and ArrowRight move it, and Home and End, which are
+    // the list's, leave it.
+    await user.keyboard("ek");
+    const box = menuBox();
+    expect(box.value).toBe("ek");
+    await user.keyboard("{ArrowLeft}");
+    expect(box.selectionStart).toBe(1);
+    await user.keyboard("{ArrowRight}");
+    expect(box.selectionStart).toBe(2);
+    await user.keyboard("{Home}");
+    expect(box.selectionStart).toBe(2);
+    expect(highlights("Next week")).toBe(true);
+    expect(screen.getByRole("listbox", { name: "Snooze options" })).toBeInTheDocument();
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a letter narrows the list", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    const row = await openFromRow(user);
+    await user.keyboard("to");
+    expect(menuBox().value).toBe("to");
+    expect(screen.getAllByRole("option").map((option) => option.id)).toEqual([
+      screen.getByRole("option", { name: "Later today" }).id,
+      screen.getByRole("option", { name: "Tomorrow" }).id,
+    ]);
+    expect(menuBox()).toHaveFocus();
+    expect(row).not.toHaveFocus();
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a digit writes its own choice whatever the narrowing", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    // Narrowed to Next week, `2` still writes Tomorrow, which the narrowing hides.
+    const row = await openFromRow(user);
+    await user.keyboard("next");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    await user.keyboard("2");
+    expect(handed()).toBe("tomorrow");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+
+    await openFromRow(user);
+    await user.keyboard("4");
+    expect(handed()).toBe("tomorrow,clear");
+    expect(row).toHaveFocus();
+
+    // A snoozed item's list holds Un-snooze, which `0` writes.
+    view.rerender(<MenuHost snoozed />);
+    await openFromRow(user);
+    await user.keyboard("0");
+    expect(handed()).toBe("tomorrow,clear,unsnooze");
+    expect(row).toHaveFocus();
+    expect(screen.getByTestId("closings").textContent).toBe("pick,pick,pick");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a digit with no choice writes nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    await user.click(menuTrigger());
+    // `0` is Un-snooze's, which the list of an item not snoozed does not hold; `7` names no
+    // choice. Neither is typed into the box either.
+    for (const digit of ["0", "7"]) {
+      await user.keyboard(digit);
+      expect(screen.getByRole("listbox", { name: "Snooze options" }), digit).toBeInTheDocument();
+      expect(menuBox(), digit).toHaveFocus();
+      expect(menuBox().value, digit).toBe("");
+      expect(screen.getAllByRole("option"), digit).toHaveLength(4);
+    }
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Enter writes the highlighted choice", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost kind="priority" value="P2" />);
+  try {
+    const row = await openFromRow(user);
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(handed()).toBe("P1");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a click on a choice writes it", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    const row = await openFromRow(user);
+    await user.click(screen.getByRole("option", { name: "Next week" }));
+    expect(handed()).toBe("next-week");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+
+    // A tap writes the choice it hits as a click does.
+    await openFromRow(user);
+    await tap(user, screen.getByRole("option", { name: "Tomorrow" }));
+    expect(handed()).toBe("next-week,tomorrow");
+    expect(row).toHaveFocus();
+
+    // From a press of the trigger the target is the trigger.
+    await user.click(menuTrigger());
+    await user.click(screen.getByRole("option", { name: "Later today" }));
+    expect(handed()).toBe("next-week,tomorrow,later");
+    expect(menuTrigger()).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Escape writes nothing and gives the focus back", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    const row = await openFromRow(user);
+    await user.keyboard("{ArrowDown}{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+
+    await user.click(menuTrigger());
+    await user.keyboard("{Escape}");
+    expect(menuTrigger()).toHaveFocus();
+
+    // A key pressed with nothing focused opened it from the page itself, which gets it back.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    act(() => menuTrigger().click());
+    expect(menuBox()).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(document.body).toHaveFocus();
+
+    expect(handed()).toBe("");
+    expect(screen.getByTestId("closings").textContent).toBe("escape,escape,escape");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Tab and Shift+Tab write nothing and give the focus back", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    for (const shift of [false, true]) {
+      const row = await openFromRow(user);
+      await user.keyboard("{ArrowDown}");
+      await user.tab({ shift });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(row, shift ? "Shift+Tab" : "Tab").toHaveFocus();
+    }
+    expect(handed()).toBe("");
+    expect(screen.getByTestId("closings").textContent).toBe("tab,tab");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a press on another control closes the list and focuses that control", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  const other = screen.getByRole("button", { name: "Other" });
+  // Where the focus is as the browser's own focus on the press comes, at its `mousedown`.
+  const seen: { atMouseDown: Element | null } = { atMouseDown: null };
+  const read = () => {
+    seen.atMouseDown = document.activeElement;
+  };
+  other.addEventListener("mousedown", read);
+  try {
+    const row = await openFromRow(user);
+    await user.click(other);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(seen.atMouseDown, "the close gave the focus back before the press's own").toBe(row);
+    expect(other).toHaveFocus();
+    expect(screen.getByTestId("presses").textContent).toBe("1");
+    expect(handed()).toBe("");
+    expect(screen.getByTestId("closings").textContent).toBe("press");
+  } finally {
+    other.removeEventListener("mousedown", read);
+    view.unmount();
+  }
+});
+
+test("a press on the page gives the focus back", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    const words = screen.getByText("Words on the page");
+    const row = await openFromRow(user);
+    await user.click(words);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+
+    await openFromRow(user);
+    await tap(user, words);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
+
+    await user.click(menuTrigger());
+    await user.click(words);
+    expect(menuTrigger()).toHaveFocus();
+    expect(handed()).toBe("");
+    expect(screen.getByTestId("closings").textContent).toBe("press,press,press");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a pick while a write is out writes nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    await user.click(menuTrigger());
+    // The item's write goes out from elsewhere while its list stands open.
+    view.rerender(<MenuHost ariaDisabled />);
+    for (const [pick, press] of [
+      ["a digit", () => user.keyboard("2")],
+      ["Enter", () => user.keyboard("{Enter}")],
+      ["a click", () => user.click(screen.getByRole("option", { name: "Next week" }))],
+    ] as const) {
+      await press();
+      expect(screen.getByRole("listbox", { name: "Snooze options" }), pick).toBeInTheDocument();
+      expect(menuBox(), pick).toHaveFocus();
+    }
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a trigger whose write is out opens nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost ariaDisabled />);
+  try {
+    const row = screen.getByRole("button", { name: "Row" });
+    const trigger = menuTrigger();
+    const onTrigger = (keys: string) => async () => {
+      act(() => trigger.focus());
+      await user.keyboard(keys);
+    };
+    for (const [opener, press, stays] of [
+      ["a key from a row", () => openFromRow(user), row],
+      ["a click", () => user.click(trigger), trigger],
+      ["a tap", () => tap(user, trigger), trigger],
+      ["Enter", onTrigger("{Enter}"), trigger],
+      ["Space", onTrigger(" "), trigger],
+      ["ArrowDown", onTrigger("{ArrowDown}"), trigger],
+      ["a letter", onTrigger("t"), trigger],
+    ] as const) {
+      await press();
+      expect(screen.queryByRole("listbox"), opener).not.toBeInTheDocument();
+      expect(trigger, opener).toHaveAttribute("aria-expanded", "false");
+      expect(stays, opener).toHaveFocus();
+    }
+    expect(handed()).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A host whose pick is a write, out until the test settles it (`writes`, the settle of each
+ *  write, `true` where the server takes it), as the Inbox's and the issue page's are: a snooze
+ *  that lands takes the row it was for out of the list and hands the focus to the row after it,
+ *  R8's hand-off; a priority that lands is drawn as the value; a refused write shows its refusal.
+ *  The list's trigger stands outside the rows, as the reading pane's head's does, and each row's
+ *  `b` opens it. */
+function WriteHost({
+  kind,
+  writes,
+}: {
+  kind: "priority" | "snooze";
+  writes: ((taken: boolean) => void)[];
+}) {
+  const [rows, setRows] = useState(["ask-a", "ask-b"]);
+  const [value, setValue] = useState<string | undefined>(kind === "priority" ? "P2" : undefined);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {rows.map((row) => (
+        <button data-row={row} key={row} onKeyDown={pressTriggerOnB} type="button">
+          {row}
+        </button>
+      ))}
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label={LABELS[kind]}
+        marks={MENU_MARKS}
+        menu={MENUS[kind]}
+        mode="single"
+        onOpenChange={setOpen}
+        onPick={(picked) => {
+          writes.push((taken) => {
+            if (!taken) {
+              setRefusal(`The server refused ${picked}.`);
+            } else if (kind === "priority") {
+              setValue(picked);
+            } else {
+              flushSync(() => setRows(["ask-b"]));
+              document.querySelector<HTMLElement>('[data-row="ask-b"]')?.focus();
+            }
+          });
+        }}
+        open={open}
+        optionLabel={kind === "snooze" ? (option) => SNOOZE_LABELS[option] : undefined}
+        options={optionsOf(kind, false)}
+        searchLabel={`Search ${LABELS[kind].toLocaleLowerCase()}`}
+        value={value}
+      />
+      {refusal === null ? null : <p role="alert">{refusal}</p>}
+    </>
+  );
+}
+
+test("a snooze that lands hands the focus to the next row", async () => {
+  const user = userEvent.setup();
+  const writes: ((taken: boolean) => void)[] = [];
+  const view = render(<WriteHost kind="snooze" writes={writes} />);
+  try {
+    const row = await openFromRow(user, "ask-a");
+    await user.keyboard("1");
+    expect(writes).toHaveLength(1);
+    // While the write is out the reader is back on the row.
+    expect(row).toHaveFocus();
+    act(() => writes[0]?.(true));
+    expect(row.isConnected).toBe(false);
+    expect(screen.getByRole("button", { name: "ask-b" })).toHaveFocus();
+    expect(writes).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a priority that lands keeps the focus on the target", async () => {
+  const user = userEvent.setup();
+  const writes: ((taken: boolean) => void)[] = [];
+  const view = render(<WriteHost kind="priority" writes={writes} />);
+  try {
+    const row = await openFromRow(user, "ask-a");
+    await user.keyboard("1");
+    expect(row).toHaveFocus();
+    act(() => writes[0]?.(true));
+    expect(menuTrigger("priority")).toHaveTextContent("P1");
+    expect(row).toHaveFocus();
+    expect(writes).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a refused pick keeps the focus and shows the refusal", async () => {
+  const user = userEvent.setup();
+  const writes: ((taken: boolean) => void)[] = [];
+  const view = render(<WriteHost kind="priority" writes={writes} />);
+  try {
+    const row = await openFromRow(user, "ask-a");
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(row).toHaveFocus();
+    act(() => writes[0]?.(false));
+    expect(screen.getByRole("alert")).toHaveTextContent("The server refused P3.");
+    expect(menuTrigger("priority")).toHaveTextContent("P2");
+    expect(row).toHaveFocus();
+    expect(writes).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the list shows its keys", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuHost />);
+  try {
+    for (const [props, keys, digits] of [
+      [{ kind: "snooze" }, "1–4", { "Later today": "1", Tomorrow: "2", "Until I clear it": "4" }],
+      [{ kind: "snooze", snoozed: true }, "0–4", { "Un-snooze": "0", "Next week": "3" }],
+      [{ kind: "priority", value: "P2" }, "0–3", { P0: "0", P3: "3", Unset: undefined }],
+      [{ kind: "status", value: "Todo" }, undefined, { Done: undefined, Todo: undefined }],
+    ] as const) {
+      view.rerender(<MenuHost {...props} />);
+      await user.click(menuTrigger(props.kind));
+      const foot = screen.getByText(
+        `↑ ↓ Home End to move · Enter${keys === undefined ? "" : ` or ${keys}`} to choose · Esc to close`
+      );
+      expect(foot, `${props.kind}'s foot line`).toHaveAttribute("aria-hidden", "true");
+      for (const [name, digit] of Object.entries(digits)) {
+        // The option's name stays its words; its digit is drawn for the eye alone and named
+        // to assistive technology as the option's key.
+        const option = screen.getByRole("option", { name });
+        const drawn = option.querySelector("kbd");
+        if (digit === undefined) {
+          expect(drawn, `${name} draws no digit`).toBeNull();
+          expect(option).not.toHaveAttribute("aria-keyshortcuts");
+          continue;
+        }
+        expect(drawn?.textContent, `${name}'s digit`).toBe(digit);
+        expect(drawn?.closest('[aria-hidden="true"]'), `${name}'s digit is hidden`).not.toBeNull();
+        expect(option).toHaveAttribute("aria-keyshortcuts", digit);
+      }
+      await user.keyboard("{Escape}");
+    }
   } finally {
     view.unmount();
   }
