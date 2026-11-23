@@ -184,6 +184,30 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
   }
 });
 
+// A pointer over the holder's name, most of the chip, shows the claim's own tooltip: the nearest
+// element with a `title` above the name is the chip, so what a claim is and when it was taken
+// are not hidden behind the bare name.
+test("over the holder's name the claim chip's own tooltip shows, not the name alone", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+  ]);
+  const view = header({ ...base, claim });
+  try {
+    const chip = await screen.findByTestId("issue-claim");
+    const name = within(chip).getByRole("link", { name: "Implementer" });
+    const tooltipOver = name.closest("[title]");
+    expect(tooltipOver).toBe(chip);
+    expect(tooltipOver?.getAttribute("title")).toMatch(
+      /^Claimed by Implementer · since .*two agents never take the same work/
+    );
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
 test("an unclaimed issue shows no holder and nothing to release", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);

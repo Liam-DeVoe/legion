@@ -124,12 +124,13 @@ export function claimIsTakeable(
  * server uses. The judgement is remade on each render, so it follows the registry poll and the
  * issue read rather than a timer of the chip's own.
  *
- * A session title can be any length, and no name may widen the page. `pillClassName` sets
- * `shrink-0`, and no class reliably beats it: `shrink` is in the same Tailwind group, and
- * `[flex-shrink:1]` measured a computed `flex-shrink` of 0 on the built page, so the shrink is an
- * inline style, which cannot lose whatever the stylesheet order. The chip also caps itself at the
- * row's width. Only the holder's name ellipsizes, inside `TruncatedText`, whose `title` is the
- * whole name:
+ * The chip is one group: "Claimed by", the holder, the age, then what the liveness adds (lapsed,
+ * not running). A session title can be any length, and no name may widen the page.
+ * `pillClassName` sets `shrink-0`, and no class reliably beats it: `shrink` is in the same
+ * Tailwind group, and `[flex-shrink:1]` measured a computed `flex-shrink` of 0 on the built page,
+ * so the shrink is an inline style, which cannot lose whatever the stylesheet order. The chip also
+ * caps itself at the row's width. Only the holder's name ellipsizes, inside `TruncatedText`; the
+ * chip's own `title`, which opens with "Claimed by" and the whole name, shows over it too.
  * "Claimed by", the age and "not running" stay whole, because a chip reading "Claimed…" would
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
  *
@@ -239,7 +240,7 @@ export function ClaimChip({
         </span>
       )}
       {page === null ? (
-        <TruncatedText title={text.label(claim.actor)}>
+        <TruncatedText>
           <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
         </TruncatedText>
       ) : (
