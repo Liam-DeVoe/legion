@@ -181,12 +181,13 @@ function cellsOf(
 
 /**
  * The model of an `architecture` (plan D10) from its spec and the readings of its value series,
- * its second reading and its eval's edges. Its first series is the value series: one place per
- * part and kernel of the window (a place has no value, so no row), in the order of their cells,
- * named by its label (else its id), whose value is its newest reading's with one, with that
- * reading's note; "no data" with the reason its reading gives where it has none. Its second, where
- * the spec names a second reading, is that series at the same parts. With a compare range, each
- * part's values there and their change, "no data" where that range holds no value of it.
+ * its second reading and its eval's edges. Its first series is the value series: one row of the
+ * table for each part and kernel of the window (a place has no value, so no row), in the order of
+ * their cells, named by its label (else its id), whose value is its newest reading's with one,
+ * with that reading's note; "no data" with the reason its reading gives where it has none. Its
+ * second, where the spec names a second reading, is that series at the same parts. With a compare
+ * range, each part's values there and their change, "no data" where that range holds no value of
+ * it.
  */
 export function architectureModel(spec: DeclaredSpec, input: DeclaredInput): ArchitectureModel {
   const valueSeries = specText(spec.value_series) ?? "";
