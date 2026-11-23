@@ -87,11 +87,11 @@ func TestEdgeFrameVerdict(t *testing.T) {
 // message and the plugin as another project's event, repeated keys, and "Topic", "TOPIC" and
 // "tOpIc" beside "topic" on the generic, GitHub, role and agent branches. A frame with a top-level
 // "__proto__" key, in either spelling, whose fields the plugin's zod read takes as the envelope's
-// own, is withheld under prototype_key. A frame or a GitHub payload that encoding/json does not
-// read is withheld, as main withheld it. The controls, each with one exact key, get the verdict
-// main gives them. A row that names goTopic, goRole or goRepo first checks that encoding/json, the
-// read main judged by, reads the frame that way, so no row passes on a frame that does not split
-// the readers as it says.
+// own, is withheld under prototype_key. A frame on an agent subject, and a GitHub envelope or
+// payload, that encoding/json does not read is withheld, as main withheld it. The controls, each
+// with one exact key, get the verdict main gives them. A row that names goTopic, goRole or goRepo
+// first checks that encoding/json, the read main judged by, reads the frame that way, so no row
+// passes on a frame that does not split the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
@@ -187,10 +187,14 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 			data: []byte(`{"source":"agent","topic":"` + own + `","payload":"hi"} x`), want: notHeld},
 		{name: "the session's own message with a misspelt literal", subject: own,
 			data: []byte(`{"source":"agent","topic":"` + own + `","payload":tru}`), want: notHeld},
-		{name: "the token's project's event with text after it", subject: ownIssue,
-			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `"} x`), want: notHeld},
+		{name: "the token's project's event with text after it (control: judged by its subject, as main)", subject: ownIssue,
+			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `"} x`), want: framePasses()},
+		{name: "another project's event with text after it, under the token's project", subject: ownIssue,
+			data: []byte(`{"source":"dispatch","topic":"` + otherIssue + `"} x`), want: notHeld},
 		{name: "a GitHub event of the token's repository with text after it", subject: github,
-			data: append(object(field{"topic", text(github)}, field{"payload", pubRepo}), " x"...), want: notHeld},
+			data: append(object(field{"topic", text(github)}, field{"payload", pubRepo}), " x"...), want: notInProject},
+		{name: "control: a frame that is no JSON, under the token's project, passes by its subject as on main", subject: ownIssue,
+			data: []byte("xxxxxxxx"), want: framePasses()},
 
 		{name: "another project's role mark and a later Role of the token's project", subject: own,
 			data: object(field{"topic", text(own)}, field{"role", text(pubRole)}, field{"Role", text(privRole)}), want: ambiguous, goRole: privRole},

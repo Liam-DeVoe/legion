@@ -42,17 +42,12 @@ const withheldPrototypeKey = "prototype_key"
 
 // frameKeyWithheld is the verdict on a frame whose read of a field the edge judges by answered err
 // (exactFrameField): withheld, counted under withheldPrototypeKey for a "__proto__" key and under
-// withheldAmbiguousKey for a key readers disagree on, so the log and the count say why, and under
-// withheldProjectNotHeld for a frame that is no JSON object encoding/json reads
-// (errUnreadableJSON), as an envelope that did not decode was withheld before.
+// withheldAmbiguousKey for a key readers disagree on, so the log and the count say why.
 func frameKeyWithheld(err error) frameVerdict {
-	switch {
-	case errors.Is(err, errPrototypeFrameKey):
+	if errors.Is(err, errPrototypeFrameKey) {
 		return frameDrops(withheldPrototypeKey)
-	case errors.Is(err, errAmbiguousFrameKey):
-		return frameDrops(withheldAmbiguousKey)
 	}
-	return frameDrops(withheldProjectNotHeld)
+	return frameDrops(withheldAmbiguousKey)
 }
 
 // withheldNotAdmitted is why the relay withholds, unacknowledged and uncounted, a frame of a
@@ -115,8 +110,8 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //     another project's role's message on the session's own subject; any other frame passes by
 //     the topic its envelope names: the session's own agent subject is a message to the session,
 //     a send or a dead letter, which passes, and any other topic is judged as a frame of that
-//     topic. A forward of a GitHub event or of another agent subject, and an envelope that names
-//     no topic, are withheld;
+//     topic. A forward of a GitHub event or of another agent subject, an envelope that names no
+//     topic, and a frame encoding/json does not read (frameIsJSON), are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
@@ -137,7 +132,7 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		return repositories.relayVerdict(projects, subject, data)
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
-		if !ownFrameAgentSubject(sessionID, projects, subject) || !named {
+		if !ownFrameAgentSubject(sessionID, projects, subject) || !named || !frameIsJSON(data) {
 			return frameDrops(withheldProjectNotHeld)
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
@@ -180,13 +175,12 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 }
 
 // exactFrameTopic is the topic of the envelope that data holds, read by its exact top-level key
-// (exactFrameField), and false when its object names no topic. It answers errUnreadableJSON for a
-// frame that is no JSON object encoding/json reads, errAmbiguousFrameKey for a frame whose topic
-// readers disagree on: the session's plugin reads the last "topic" key (JSON.parse), and
-// encoding/json, which the edge read the topic with before, the last key equal to "topic" ignoring
-// case, so a later "Topic" key passed a frame under one topic that the session then read under
-// another. It answers errPrototypeFrameKey for a frame with a top-level "__proto__" key, whose
-// "topic" the plugin reads when the frame holds none.
+// (exactFrameField), and false when data holds no JSON object or its object names no topic. It
+// answers errAmbiguousFrameKey for a frame whose topic readers disagree on: the session's plugin
+// reads the last "topic" key (JSON.parse), and encoding/json, which the edge read the topic with
+// before, the last key equal to "topic" ignoring case, so a later "Topic" key passed a frame under
+// one topic that the session then read under another. It answers errPrototypeFrameKey for a frame
+// with a top-level "__proto__" key, whose "topic" the plugin reads when the frame holds none.
 func exactFrameTopic(data []byte) (string, bool, error) {
 	return exactFrameField(data, "topic")
 }
@@ -228,11 +222,15 @@ var errAmbiguousFrameKey = errors.New("a frame names the field under more than o
 // payload - is read through it: a field no reader of the frame's own keys can see.
 var errPrototypeFrameKey = errors.New(`a frame holds a "__proto__" key, whose fields the plugin reads as the envelope's own`)
 
-// errUnreadableJSON is exactJSONString's answer for a document that is no JSON object
-// encoding/json reads (json.Valid): text JSON.parse refuses too, such as an object with text after
-// it or a misspelt literal, which the plugin shows raw, and a document nested deeper than 10,000.
-// encoding/json refused each of these before, so the edge withheld them.
-var errUnreadableJSON = errors.New("the document is no JSON object encoding/json reads")
+// frameIsJSON reports whether data, past one leading byte order mark, is JSON encoding/json reads
+// (json.Valid). A frame it is not is either text JSON.parse refuses too, such as an object with
+// text after it or a misspelt literal, or a document nested deeper than 10,000. The edge withholds
+// such a frame on an agent subject and names no repository for such a GitHub event, as it did
+// when it read both with encoding/json; on any other subject it judges such a frame by the topic
+// exactFrameTopic reads, or by its subject when it names none, as it judged it then.
+func frameIsJSON(data []byte) bool {
+	return json.Valid(bytes.TrimPrefix(data, frameByteOrderMark))
+}
 
 // exactFrameField is the string value of the top-level field key of the JSON object that data
 // holds past one leading byte order mark, as the plugins read a frame, and whether data names it
@@ -242,18 +240,15 @@ func exactFrameField(data []byte, key string) (string, bool, error) {
 }
 
 // exactJSONString is the string value of the top-level field key of the JSON object doc, read by
-// its exact key as JSON.parse reads one, and whether doc names it: false for a doc that has no key,
-// or whose value under it is null, empty or no string. A doc that is no JSON object encoding/json
-// reads is errUnreadableJSON. A doc whose top-level keys hold key more than once, or hold a key
-// that equals key ignoring case as encoding/json matches a key into a struct field
-// (strings.EqualFold) and is not key, is errAmbiguousFrameKey whatever its values: JSON.parse
-// takes the last key, encoding/json the last of any case, and another reader the first, so no read
-// of such a field is the one every reader of the frame makes. A doc with a top-level "__proto__"
-// key is errPrototypeFrameKey, whichever field is asked for.
+// its exact key as JSON.parse reads one, and whether doc names it: false for a doc that is no JSON
+// object (topLevelJSONFields), that has no key, or whose value under it is null, empty or no
+// string. A doc whose top-level keys hold key more than once, or hold a key that equals key
+// ignoring case as encoding/json matches a key into a struct field (strings.EqualFold) and is not
+// key, is errAmbiguousFrameKey whatever its values: JSON.parse takes the last key, encoding/json
+// the last of any case, and another reader the first, so no read of such a field is the one
+// every reader of the frame makes. A doc with a top-level "__proto__" key is errPrototypeFrameKey,
+// whichever field is asked for.
 func exactJSONString(doc []byte, key string) (string, bool, error) {
-	if !json.Valid(doc) {
-		return "", false, errUnreadableJSON
-	}
 	var value []byte
 	found, ambiguous, prototype := false, false, false
 	object := topLevelJSONFields(doc, func(name string, raw []byte) {
@@ -272,7 +267,7 @@ func exactJSONString(doc []byte, key string) (string, bool, error) {
 	})
 	switch {
 	case !object:
-		return "", false, errUnreadableJSON
+		return "", false, nil
 	case prototype:
 		return "", false, errPrototypeFrameKey
 	case ambiguous:
@@ -287,10 +282,15 @@ func exactJSONString(doc []byte, key string) (string, bool, error) {
 	return text, true, nil
 }
 
-// topLevelJSONFields calls visit with each top-level key of the JSON document doc, which
-// json.Valid has accepted, its escapes read, and the raw text of the key's value, in the order doc
-// holds them, a repeated key each time, and reports whether doc is a JSON object. It finds each
-// value's end by its brackets and strings alone.
+// topLevelJSONFields calls visit with each top-level key of the JSON object doc, its escapes read,
+// and the raw text of the key's value, in the order doc holds them, a repeated key each time, and
+// reports whether doc reads as a JSON object: past JSON whitespace, an opening brace, then string
+// keys, each followed by a colon and a value, separated by commas, up to the closing brace. It
+// finds each value's end by its brackets and strings alone, with no limit on depth: encoding/json
+// refuses a document nested deeper than 10,000 and JSON.parse does not, so a reader with that limit
+// names no topic for a frame whose topic the plugin reads. It checks no more of a value than where
+// it ends, and nothing after the closing brace, so it reads some documents JSON.parse refuses; the
+// plugin reads no field of such a document, and the edge withholds it where frameIsJSON says.
 func topLevelJSONFields(doc []byte, visit func(key string, value []byte)) bool {
 	i := skipTopLevelJSONSpace(doc, 0)
 	if i == len(doc) || doc[i] != '{' {
