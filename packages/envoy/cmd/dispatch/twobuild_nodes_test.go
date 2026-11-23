@@ -86,7 +86,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		removeUntouchedDocument(t, previous, document)
-		orphaned := "artifact " + document.ref + ": orphaned; no in-band cure: a delete outside the builds made it"
+		orphaned := "artifact " + document.ref + ": orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "orphaned=1")
 		if !requireIncompleteLinesNaming(t, census, document.ref, orphaned) {

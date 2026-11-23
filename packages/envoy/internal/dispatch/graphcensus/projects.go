@@ -387,8 +387,9 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
 // node naming neither a project nor parties (backfillCure), but for a row that names a party the
 // store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); none
-// in band for an orphaned node, which a delete outside the builds made, since no backfill reads a
-// node no row stands behind (orphanedCure); and none for a node that names another project or
+// in band for an orphaned node, since no backfill reads a node no row stands behind, unless an
+// older build's removal made it during a two-build roll, whose node this build's block-index tick
+// then states gone (orphanedCure); and none for a node that names another project or
 // other parties than its row, since the backfill walks no node naming either and only a person can
 // tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
@@ -400,7 +401,10 @@ const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
 	differsCure  = "; no command cures it: compare the row with its node"
 	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
-	orphanedCure = "; no in-band cure: a delete outside the builds made it"
+	// orphanedCure: an orphaned node an older build's removal left during a two-build roll is
+	// stated gone by this build's block-index tick (docs/block_index_roll.go:424-436, its sweep of
+	// graphcensus.OrphanedDocumentNodes through StateOrphanedGone); no pass cures any other.
+	orphanedCure = "; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is

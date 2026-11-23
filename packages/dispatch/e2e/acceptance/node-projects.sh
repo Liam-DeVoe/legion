@@ -413,7 +413,7 @@ for run in census backfill; do
   line="$(census_line artifact)"
   [[ "$line" =~ missing=0\ gone=0\ differs=0\ unscoped=0\ orphaned=1$ ]] ||
     fail "$section" "the artifact census after the $run reads one orphaned node" "${line:-no line for artifact}"
-  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure: a delete outside the builds made it" "$work/census" ||
+  grep -qxF "census: project incomplete artifact $scratch_ref: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone" "$work/census" ||
     fail "$section" "the census after the $run names $scratch_ref orphaned, with no in-band cure" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 done
 pass "$section" "the census names the live node of $scratch_ref, which no row stands behind, orphaned with no in-band cure, and the backfill leaves it"

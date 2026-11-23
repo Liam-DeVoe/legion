@@ -1,6 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactElement, type ReactNode } from "react";
 
+import { countEngineParses } from "../../__tests__/display-trees";
 import type {
   Artifact,
   ArtifactBlock,
@@ -28,7 +31,9 @@ import { withEntries } from "../issue/decision-entries";
 import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
@@ -44,7 +49,15 @@ import {
 import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
-import { nameOf, namesOf, nodeLineOf, projectedNames, publishingNames } from "./projection-fixture";
+import {
+  nameOf,
+  namesOf,
+  nodeLineOf,
+  Publisher,
+  projectedNames,
+  publishedNames,
+  publishingNames,
+} from "./projection-fixture";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import { storedReading } from "./stored-reading";
 import { blockNodeId, checkStanding, nodeIdOf, treeContext } from "./tree-drafts";
@@ -1580,7 +1593,7 @@ test("a chip, a published name and a row's link name a child issue by its whole 
     ]);
     const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
     expect(
-      links.map((link) => rowReferenceWords(link, names)),
+      links.map((link) => rowReferenceWords(link, names, reads.issue.key)),
       title
     ).toEqual([{ key: "CORE-2", words: name }]);
   }
@@ -3593,6 +3606,23 @@ test("a node's words keep the bare address its line reads", () => {
   }
 });
 
+// A caller that names each reference itself reads words in which no address is written short,
+// or it finds no address left to name: the line of a reading keeps a bare address as written,
+// and the words of a stored text's reading keep each bare address and each autolink's URL as
+// written, its marks gone. The name the store projects from that reading writes each address as
+// its target's short form, as a name reads no other name.
+test("the raw words of a reading and of a stored text keep each address as written", () => {
+  const reading = "Do it as dispatch://CORE-2 says.";
+  const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
+  expect(task?.tree).toBeDefined();
+  expect(task === undefined ? "" : nodeLineOf(task)).toBe(reading);
+  const tree = storedReading("Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.");
+  expect(wordsOf(tree)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
+  expect(projectedNames(new Map([["stored", { tree }]])).get("stored")).toBe(
+    "Do it as CORE-2 says, see CORE-3."
+  );
+});
+
 // A span that only looks like an address - a path no route reads, a key in lower case, or the
 // scheme alone - names nothing, so a node's line keeps it as its author wrote it, as it keeps an
 // address that names a target it has not named yet.
@@ -3608,10 +3638,10 @@ test("a string that only looks like an address stays as written in a node's line
   }
 });
 
-// A node whose read sent no reading takes its line from its stored text, which the projection
-// parses: the first line of it that holds words, a heading to its own line, its marks no word of
-// it and each bare address as written until it is named. A plan task is read both ways, the
-// reading the read sent and its stored text, and a decision with none from its stored text.
+// A node whose read sent no reading takes its line from its stored text, which the page parses:
+// the first line of it that holds words, a heading to its own line, its marks no word of it and
+// each bare address as written until it is named. A plan task is read both ways, the reading the
+// read sent and its stored text, and a decision with none from its stored text.
 test("a node with no reading takes its line from its stored text's first line of words", () => {
   const words = "Do it as dispatch://CORE-2 says.";
   for (const [sent, read] of [
@@ -3636,6 +3666,60 @@ test("a node with no reading takes its line from its stored text's first line of
     const node = nodeOf(root, blockNodeId(SPEC, row.block_id));
     expect(node?.tree, row.block_id).toBeUndefined();
     expect(node === undefined ? "" : nodeLineOf(node), row.block_id).toBe(line);
+  }
+});
+
+/** One node's line as a row draws it (`useNodeLine`), and the reads of its references. */
+function DrawnLine({ node }: { node: Parameters<typeof useNodeLine>[0] }): ReactNode {
+  const { line, reads } = useNodeLine(node, { surface: "node-row-first-line" });
+  return createElement("p", { "data-line": node.id }, line, reads);
+}
+
+// A page draws its rows again on every read that lands and every event, and a row's line is read
+// from its stored text where the node has no reading, as a result's is from a server that sends
+// none. The texts a draw parsed are not parsed again on the next: 900 distinct stored texts, each
+// line drawn once, are drawn again - the page's batched read lands and publishes its names anew,
+// the tree built again from the same records - and no text is parsed again. Each line holds its
+// own parse, so no count of texts drops one parse for another.
+test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
+  const texts = Array.from(
+    { length: 900 },
+    (_, at) =>
+      `The run \`bun run test:web web/src/case-${at}.test.ts\` ends with **0 fail**, and names each test below as passed.\n` +
+      `- the first named test of case ${at}: pass\n- the second named test of case ${at}: pass\n` +
+      `${"It held at the head, read with the junit report. ".repeat(12)}`
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = (names: ReadonlyMap<string, string>): ReactElement =>
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(
+        ReferenceNamesProvider,
+        null,
+        createElement(Publisher, { published: publishedNames(names) }),
+        ...texts.map((text, at) =>
+          createElement(DrawnLine, {
+            key: at,
+            node: { id: `result-${at}`, text, type: "result" },
+          })
+        )
+      )
+    );
+  const view = render(page(new Map()));
+  try {
+    expect(view.container.querySelector('[data-line="result-899"]')?.textContent).toBe(
+      "The run bun run test:web web/src/case-899.test.ts ends with 0 fail, and names each test below as…"
+    );
+    const parses = countEngineParses();
+    try {
+      view.rerender(page(new Map([["dispatch://CORE-9", "Warm the cache"]])));
+      expect(parses.count()).toBe(0);
+    } finally {
+      parses.restore();
+    }
+  } finally {
+    view.unmount();
   }
 });
 

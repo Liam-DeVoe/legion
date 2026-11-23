@@ -11,6 +11,7 @@ import {
   textOptionDescription,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { AgentName } from "./AgentName";
 import { RefKindIcon } from "./kind-icons";
 import { PlainText } from "./plain-text";
 import {
@@ -18,6 +19,7 @@ import {
   REF_PICKER_PARTY_WORDS,
   REF_PICKER_TEXT_MAX,
   REF_PICKER_WORDS,
+  type RefPickerAgent,
   type RefPickerInsertion,
   type RefPickerRow,
 } from "./ref-picker";
@@ -54,6 +56,15 @@ export function RefPickerParties({ picker }: { picker: RefPicker }): ReactNode {
  * two ways.
  */
 export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
+  // While the agent list refills or could not be read, the picker cannot know which agent and
+  // role rows match, so it never says that no row matches: the list's own line above stands in
+  // its place, as the mention suggestions it replaced drew that line alone. Every door lists the
+  // agent and role rows (`kindOrder`), so this holds behind each of them.
+  const partiesUnknown = picker.parties === "refilling" || picker.parties === "unreachable";
+  const state =
+    picker.state === "rows" || (picker.state === "empty" && partiesUnknown)
+      ? undefined
+      : picker.state;
   return (
     <>
       {picker.instruction === undefined ? null : (
@@ -70,16 +81,16 @@ export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
         </p>
       )}
       <RefPickerParties picker={picker} />
-      {picker.state === "rows" ? null : picker.state === "unreachable" ? (
+      {state === undefined ? null : state === "unreachable" ? (
         <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="ref-picker-unreachable">
           {REF_PICKER_WORDS.unreachable}
         </p>
       ) : (
         <p
           className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
-          data-testid={`ref-picker-${picker.state}`}
+          data-testid={`ref-picker-${state}`}
         >
-          {REF_PICKER_WORDS[picker.state]}
+          {REF_PICKER_WORDS[state]}
         </p>
       )}
     </>
@@ -115,16 +126,34 @@ export function RefPartsControl({
 }
 
 /**
- * A row's words, in both the hosts that draw the picker's rows. A row worded with a record's own
- * text - a hit's matched words, the head of a block - draws that text's plain-text projection
- * from the tree the server read it into (`PlainText`), since a row is an option the reader takes,
- * which holds no link: its formatting gone and each reference read as its target's name, never
- * the Markdown it is written in. Until the reader's engine answers, and for a row the server sent
- * no tree for, it draws `label`, the words as written, which `headRefs` cut where no reference
- * crosses the cut.
+ * The agent a party's row names (`RefPickerAgent`), drawn through `AgentName` with its running
+ * state and no link, because a row is an option and a listbox owns only options. To assistive
+ * technology it is one image named by the row's own words for the agent, whose state mark is no
+ * part of it: that mark would otherwise put the state into the row's accessible name, before the
+ * agent's name.
+ */
+function RowAgent({ agent, className }: { agent: RefPickerAgent; className?: string }): ReactNode {
+  return (
+    <span aria-label={agent.words} className={className} role="img">
+      <AgentName kind="static" sessionId={agent.sessionId} storedTitle={agent.storedTitle} />
+    </span>
+  );
+}
+
+/**
+ * A row's words, in both the hosts that draw the picker's rows. A session's row is its session,
+ * drawn as an agent (`RowAgent`). A row worded with a record's own text - a hit's matched words,
+ * the head of a block - draws that text's plain-text projection from the tree the server read it
+ * into (`PlainText`), since a row is an option the reader takes, which holds no link: its
+ * formatting gone and each reference read as its target's name, never the Markdown it is written
+ * in. Until the reader's engine answers, and for a row the server sent no tree for, it draws
+ * `label`, the words as written, which `headRefs` cut where no reference crosses the cut.
  */
 export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
   const className = `truncate font-medium ${textPrimaryOnSurface}`;
+  if (row.kind === "agent" && row.agent !== undefined) {
+    return <RowAgent agent={row.agent} className={className} />;
+  }
   if (row.prose === undefined) return <span className={className}>{row.label}</span>;
   return (
     <PlainText
@@ -136,6 +165,20 @@ export function RefRowLabel({ row }: { row: RefPickerRow }): ReactNode {
     >
       {(line) => <span className={className}>{line ?? row.label}</span>}
     </PlainText>
+  );
+}
+
+/**
+ * A row's detail line, in both the hosts that draw the picker's rows. A role's row starts its
+ * line with the session that holds the role, which it draws as an agent (`RowAgent`).
+ */
+export function RefRowDetail({ row }: { row: RefPickerRow }): ReactNode {
+  if (row.kind !== "role" || row.agent === undefined) return row.detail;
+  return (
+    <>
+      <RowAgent agent={row.agent} />
+      {row.detail.slice(row.agent.words.length)}
+    </>
   );
 }
 
@@ -169,7 +212,10 @@ export function RefPickerList({
   };
   const row = (one: RefPickerRow) => (
     // A row is a `div`, not a `button`: a row that holds parts carries the control that lists
-    // them, and a button inside a button is no button at all.
+    // them, and a button inside a button is no button at all. A session's row has the session's
+    // full id as its title, which is its tooltip and, beside the words that name the row, its
+    // accessible description: its name can be the short form `session:<8>…`, which two sessions
+    // may share.
     <div
       aria-selected={one.id === picker.activeId}
       className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${
@@ -187,6 +233,7 @@ export function RefPickerList({
       onMouseEnter={() => picker.highlight(one.id)}
       role="option"
       tabIndex={-1}
+      title={one.kind === "agent" ? one.agent?.sessionId : undefined}
     >
       <RefKindIcon kind={one.kind} />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -195,7 +242,7 @@ export function RefPickerList({
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
           <TruncatedText className={`text-xs ${textOptionDescription}`} title={one.detail}>
-            {one.detail}
+            <RefRowDetail row={one} />
           </TruncatedText>
         )}
       </span>
