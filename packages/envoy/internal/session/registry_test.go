@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -210,9 +212,15 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 	}
 }
 
+// A row leaves the registry one TTL after its record was written, on the registry's own clock, and
+// not before: the deadline is the record's Created, nats-server's stamp of the write, a TTL on
+// (expiryFor). The bucket's age is far past the run, so nats-server keeps the record while the row
+// runs, and the clock the row sets is the one that judges the deadline.
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
+	const ttl = time.Hour
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	clk := clocktest.New(time.Now())
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clk.Now))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -226,38 +234,94 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 		t.Fatalf("expected entry to exist immediately: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(500 * time.Millisecond)
-		if _, err := reg.Get("ses_expiry"); err != nil {
-			return
-		}
+	// The registry takes the record's Created for the row's deadline once it has the record from
+	// the bucket, which Refresh reads and applies as the watch would, so the row does not wait on
+	// the watch. At that deadline the entry still answers; a millisecond past it, it is gone.
+	written := sessionRecord(t, reg, "ses_expiry")
+	if _, err := reg.Refresh(context.Background(), "ses_expiry"); err != nil {
+		t.Fatalf("read ses_expiry back into the registry: %v", err)
 	}
-	t.Fatal("session entry did not expire within 5s (TTL was 2s)")
+	clk.Set(written.Created().Add(ttl))
+	if got, err := reg.Get("ses_expiry"); err != nil {
+		t.Fatalf("Get(ses_expiry) at its deadline, one TTL after its record was written at %s, = %+v, %v; want the entry until the deadline has passed",
+			written.Created().Format(time.RFC3339Nano), got, err)
+	}
+	clk.Set(written.Created().Add(ttl + time.Millisecond))
+	testwait.Until(t, "Get(ses_expiry) to answer the entry gone once the registry's clock passed its record's write by the TTL", func() (string, bool) {
+		got, err := reg.Get("ses_expiry")
+		return fmt.Sprintf("Get(ses_expiry) = %+v, %v, the registry's clock at %s, the record written at %s", got, err, clk.Now().Format(time.RFC3339Nano), written.Created().Format(time.RFC3339Nano)), err != nil
+	})
 }
 
+// A refresh renews an entry's life: the registry measures a row's deadline from its record's
+// Created, nats-server's stamp of the write (expiryFor), so a second write of the same id carries a
+// later Created, and the row outlives one written beside the first write and never refreshed. The
+// bucket's age is far past the run, so nats-server drops neither record while the row runs, and
+// the registry's own clock, which the row sets, judges both deadlines.
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
+	const ttl = time.Hour
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	clk := clocktest.New(time.Now())
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(ttl), WithSessionClock(clk.Now))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
 
 	entry := SessionEntry{Port: 13381, MachineID: "test-machine", Dir: "/test"}
-	if err := reg.Put("ses_refresh", entry); err != nil {
-		t.Fatalf("put failed: %v", err)
+	// ses_control is written beside the first write and never refreshed, so its deadline is the
+	// one the first write would have kept.
+	for _, sessionID := range []string{"ses_refresh", "ses_control"} {
+		if err := reg.Put(sessionID, entry); err != nil {
+			t.Fatalf("put %s failed: %v", sessionID, err)
+		}
 	}
-
-	time.Sleep(1500 * time.Millisecond)
+	first, control := sessionRecord(t, reg, "ses_refresh"), sessionRecord(t, reg, "ses_control")
+	// nats-server stamps Created by the machine's wall clock, the one this process reads, so the
+	// refresh is written once that clock has passed the control's stamp: it then carries a later
+	// one.
+	testwait.Until(t, "the wall clock nats-server stamps a write by to pass the control record's stamp", func() (string, bool) {
+		now := time.Now()
+		return fmt.Sprintf("the wall clock at %s, the control's stamp %s", now.Format(time.RFC3339Nano), control.Created().Format(time.RFC3339Nano)), now.After(control.Created())
+	})
 	if err := reg.Put("ses_refresh", entry); err != nil {
 		t.Fatalf("refresh put failed: %v", err)
 	}
+	refreshed := sessionRecord(t, reg, "ses_refresh")
+	if refreshed.Revision() <= first.Revision() || !refreshed.Created().After(control.Created()) {
+		t.Fatalf("the refresh left ses_refresh at revision %d written %s (its first write was revision %d at %s, the control's %s); want a later revision written after both",
+			refreshed.Revision(), refreshed.Created().Format(time.RFC3339Nano), first.Revision(), first.Created().Format(time.RFC3339Nano), control.Created().Format(time.RFC3339Nano))
+	}
+	// The registry takes each record's Created for its row's deadline once it has the record from
+	// the bucket, which Refresh reads and applies as the watch would, so neither row waits on the
+	// watch.
+	for _, sessionID := range []string{"ses_refresh", "ses_control"} {
+		if _, err := reg.Refresh(context.Background(), sessionID); err != nil {
+			t.Fatalf("read %s back into the registry: %v", sessionID, err)
+		}
+	}
 
-	time.Sleep(1500 * time.Millisecond)
+	// Past the control's deadline on the registry's clock and short of the refresh's: halfway
+	// between the two records' stamps, a TTL on.
+	clk.Set(control.Created().Add(ttl + refreshed.Created().Sub(control.Created())/2))
+	testwait.Until(t, "Get(ses_control), written beside the first write and never refreshed, to answer it gone", func() (string, bool) {
+		got, err := reg.Get("ses_control")
+		return fmt.Sprintf("Get(ses_control) = %+v, %v", got, err), err != nil
+	})
 
 	if _, err := reg.Get("ses_refresh"); err != nil {
 		t.Fatalf("expected entry to still exist after TTL refresh, got: %v", err)
 	}
+}
+
+// sessionRecord is sessionID's record as the session bucket holds it, with its revision and
+// nats-server's stamp of its write.
+func sessionRecord(t *testing.T, reg *SessionRegistry, sessionID string) natsgo.KeyValueEntry {
+	t.Helper()
+	record, err := reg.watcher.KV().Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's record from the bucket: %v", sessionID, err)
+	}
+	return record
 }
 
 func TestSessionRegistry_Delete(t *testing.T) {
@@ -441,9 +505,8 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
-		return strings.Contains(logs.String(), "session registry deleting a malformed value under a conditional delete")
-	})
+	waitForLogged(t, logs, "DeleteIf's WARN line for the malformed value it deletes",
+		"session registry deleting a malformed value under a conditional delete")
 }
 
 // Both conditional deletes lose to a write that lands under them, and the answer says only that:
@@ -544,9 +607,7 @@ func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 	return reg
@@ -594,19 +655,17 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 
 func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), standingClock())
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := registry.WaitForCacheReady(ctx); err != nil {
+	if err := registry.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for initial cache: %v", err)
 	}
 
 	url := client.Conn.ConnectedUrl()
 	client.Close()
-	waitFor(t, 5*time.Second, func() bool { return registry.WatchErr() != nil })
+	testwait.Eventually(t, "the watcher to report its end once its connection closed", func() bool { return registry.WatchErr() != nil })
 	if err := registry.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the registry unhealthy")
 	}
@@ -639,22 +698,23 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	if _, err := kv.Put("ses_after_rewatch", value); err != nil {
 		t.Fatalf("put replacement entry: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Until(t, "the rewatched watcher to deliver ses_after_rewatch's put", func() (string, bool) {
 		got, err := registry.Get("ses_after_rewatch")
-		return err == nil && reflect.DeepEqual(got, entry)
+		return fmt.Sprintf("Get(ses_after_rewatch) = %+v, %v", got, err), err == nil && reflect.DeepEqual(got, entry)
 	})
 }
 
+// The registry's clock stands still (standingClock), so ses_malformed's 10 s TTL never answers it
+// absent: only the watcher's eviction of the malformed value ends the wait for its eviction, as
+// main's 5 s bound, inside that TTL, required.
 func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	logs := captureSessionRegistryLogs(t)
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second), standingClock())
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -666,29 +726,20 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
-	waitForSessionEviction(t, reg, sessionID, 5*time.Second)
+	waitForSessionEviction(t, reg, sessionID)
 
-	for _, want := range []string{
-		"level=WARN",
-		"key=" + sessionID,
-		"revision=" + strconv.FormatUint(revision, 10),
-	} {
-		waitFor(t, 5*time.Second, func() bool {
-			return strings.Contains(logs.String(), want)
-		})
-	}
+	waitForLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
+		"level=WARN", "key="+sessionID, "revision="+strconv.FormatUint(revision, 10))
 	t.Logf("session watcher malformed-value warning: %s", strings.TrimSpace(logs.String()))
 }
 
 func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second), standingClock())
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -705,9 +756,9 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 			if _, err := raw.Put(sessionID, buf); err != nil {
 				t.Fatalf("put remote entry: %v", err)
 			}
-			waitFor(t, 5*time.Second, func() bool {
+			testwait.Until(t, "the watcher to deliver the remote write of "+sessionID, func() (string, bool) {
 				got, err := reg.Get(sessionID)
-				return err == nil && got.Port == remote.Port
+				return fmt.Sprintf("Get(%s) = %+v, %v", sessionID, got, err), err == nil && got.Port == remote.Port
 			})
 		},
 	})
@@ -730,9 +781,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -769,8 +818,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 // the only writer there is.
 func useKV(t *testing.T, r *SessionRegistry, kv natsgo.KeyValue) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	r.mu.RLock()
 	previous := r.watcher
 	r.mu.RUnlock()
@@ -855,18 +903,30 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 	return nil, kv.err
 }
 
+// waitFor is main's bounded wait. A2's callers still use this; A2 deletes it with its last caller.
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
 }
 
-func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
+// waitForSessionEviction waits until the cache answers sessionID with an error and lists no
+// session at all. A give-up prints what Get and List last answered.
+func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string) {
 	t.Helper()
-	waitFor(t, timeout, func() bool {
-		_, getErr := reg.Get(sessionID)
+	testwait.Until(t, "the watcher to evict "+sessionID+", so Get fails and List answers no session", func() (string, bool) {
+		got, getErr := reg.Get(sessionID)
 		entries, listErr := reg.List()
-		return getErr != nil && listErr == nil && len(entries) == 0
+		return fmt.Sprintf("Get(%s) = %+v, %v; List() = %+v, %v", sessionID, got, getErr, entries, listErr),
+			getErr != nil && listErr == nil && len(entries) == 0
 	})
+}
+
+// standingClock is a registry clock that stands at the moment it was made, so no session's TTL
+// passes while a row waits on the watcher (Get, List and the expiry timer read this clock): what the
+// row waits for is the watcher's doing, and the wall clock decides none of it.
+func standingClock() SessionRegistryOption {
+	at := time.Now()
+	return WithSessionClock(func() time.Time { return at })
 }
 
 func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
@@ -874,6 +934,21 @@ func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
 	var logs lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	return &logs
+}
+
+// waitForLogged waits until the captured log holds each of wants, the parts of the line what names.
+// A give-up prints the first part the log lacks, and the log.
+func waitForLogged(t *testing.T, logs *lockedBuffer, what string, wants ...string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		logged := logs.String()
+		for _, want := range wants {
+			if !strings.Contains(logged, want) {
+				return fmt.Sprintf("no %q in the log %q", want, logged), false
+			}
+		}
+		return logged, true
+	})
 }
 
 type lockedBuffer = logtest.Buffer
