@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
@@ -46,10 +47,11 @@ import { CONTROL_LABELS, EMPTY_STATE_LINES, FILE_WORDS } from "./page-words";
  * items of it; a file picked or dropped on the open menu is staged, as one dropped on the list
  * was: its name, an optional summary of the version it makes, and Upload and Cancel.
  *
- * The file input lives beside the menu rather than inside it, so a picker opened from a menu
- * item outlives the menu closing. The staged file and the title form New document opens are
- * beside the menu for the same reason: each takes the line under the preset row, the form with
- * the caret in its Title.
+ * The file input is drawn at the end of the page's body, outside the menu and outside the view
+ * row: a picker opened from a menu item outlives the menu closing, and the row, whose every
+ * control is at least 24 px, holds no 1 px chooser of its own. The staged file and the title
+ * form New document opens are beside the menu for the first reason: each takes the line under
+ * the preset row, the form with the caret in its Title.
  *
  * Its control is one small control, like Keys (ruling 5 of
  * dispatch://INFRA-1196/artifact/build-rulings-md): at the right end of the filter row from
@@ -233,16 +235,21 @@ export function NodeMenu({
             </div>
           </div>
         ) : null}
-        {/* The chooser the item above opens, beside the menu rather than inside it, so a pick
-          outlives the menu closing. */}
-        <input
-          aria-label={CONTROL_LABELS.upload_file}
-          className="sr-only left-0"
-          disabled={upload.refusal !== null}
-          onChange={upload.selectFile}
-          ref={upload.fileInputRef}
-          type="file"
-        />
+        {/* The chooser the item above opens, in the page's body rather than in the menu or the
+          view row (above), so a pick outlives the menu closing. The menu's Upload is the way to
+          it, so it takes no stop of Tab's at the page's end. */}
+        {createPortal(
+          <input
+            aria-label={CONTROL_LABELS.upload_file}
+            className="sr-only left-0"
+            disabled={upload.refusal !== null}
+            onChange={upload.selectFile}
+            ref={upload.fileInputRef}
+            tabIndex={-1}
+            type="file"
+          />,
+          document.body
+        )}
         {upload.pendingFile === null ? <ArtifactUploadStatus upload={upload} /> : null}
         {/* Closed, the strip holds nothing but what the last write said where it landed with no
           answer to open, which stays beside the control that made it. */}

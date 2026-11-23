@@ -11,9 +11,10 @@ import type { IssueRoute } from "../web/src/features/refs/routes";
 import { getIssue } from "./api";
 import { connectedDot, documentEditor } from "./editor";
 import { issuePage, openMenu, outlineControl } from "./issue-page";
-import { drawnRows, nodeRows } from "./issue-page-g";
+import { nodeRows } from "./issue-page-g";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
+import { expandedState, settledState } from "./settled";
 import { assertPageFits } from "./unclipped";
 
 /** The address that opens an issue's spec with its editor: the spec's own address,
@@ -50,6 +51,8 @@ const SELECTORS = {
   branchMore: "[data-branch-more]",
   details: '[data-testid="desktop-margin-shell"]',
   childRow: "[data-child-row]",
+  /** One crumb of the line a zoomed outline draws above its rows; none while it is not zoomed. */
+  crumb: "[data-crumb]",
   /** The whole filter row: the five controls or the one control, Outline, and the small
    *  controls at its right end (`IssuePresets.tsx`). */
   filterRow: "[data-filter-row]",
@@ -93,6 +96,12 @@ export function nodeMenuItems(page: Page): Locator {
   return openMenu(page).getByRole("menuitem");
 }
 
+/** The crumbs of the outline's zoom: none while the outline draws the whole issue, and at least
+ *  one once a twisty below 1024 px has zoomed it into a node. */
+export function zoomCrumbs(page: Page): Locator {
+  return issuePage(page).locator(SELECTORS.crumb);
+}
+
 /** The hidden file input the upload opens, which is how a test hands it a file. */
 export function uploadInput(page: Page): Locator {
   return page.locator('input[type="file"]');
@@ -125,11 +134,17 @@ export function versionControlButton(page: Page): Locator {
 
 /** Opens the version control as a reader does, unless it is open: from its small control at the
  *  right end of the filter row, or, at 760 px and below where the row draws none, by opening the
- *  Outline sheet that holds it. */
+ *  Outline sheet that holds it. Which of the three the page shows is read once it shows one: a
+ *  read taken before the row is drawn finds neither control. Between 761 and 1023 px the row
+ *  draws both controls, and the version control's own comes first. */
 export async function openVersionControl(page: Page): Promise<void> {
-  if (await versionControl(page).isVisible()) return;
-  const own = versionControlButton(page);
-  await ((await own.count()) > 0 ? own : outlineControl(page)).click();
+  const shown = await settledState("the version control", [
+    ["open", versionControl(page)],
+    ["own control", versionControlButton(page)],
+    ["Outline sheet", outlineControl(page)],
+  ]);
+  if (shown === "open") return;
+  await (shown === "own control" ? versionControlButton(page) : outlineControl(page)).click();
   await expect(versionControl(page), "the version control did not open").toBeVisible();
 }
 
@@ -295,22 +310,20 @@ export function scrollersOutsideAuthorText(page: Page): Promise<string[]> {
 }
 
 /** Every row of the tree that holds none of those three, which is the set c-reflow walks with
- *  `assertWhole`. */
+ *  `assertWhole`. Both facts of each row are read in one pass over the page, so each index is a
+ *  row of the same drawing: a row drawn between two reads would move every index after it. */
 export async function rowsWithoutAuthorScrollers(page: Page): Promise<Locator[]> {
-  const rows = await drawnRows(page);
-  const held = await page.evaluate(
+  const walked = await page.evaluate(
     ({ scrollers, selectors }) =>
-      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)].map(
-        (row) => row.querySelector(scrollers.join(", ")) !== null
+      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)].flatMap(
+        (row, index) =>
+          row.querySelector(scrollers.join(", ")) === null && row.getClientRects().length > 0
+            ? [index]
+            : []
       ),
     { scrollers: AUTHOR_SCROLLERS, selectors: SELECTORS }
   );
-  const walked: Locator[] = [];
-  rows.forEach((row, index) => {
-    if (held[index] === true || !row.visible) return;
-    walked.push(nodeRows(page).nth(index));
-  });
-  return walked;
+  return walked.map((index) => nodeRows(page).nth(index));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -333,7 +346,7 @@ export async function openIssueAddress(page: Page, tab: string): Promise<void> {
  *  the actions on screen rather than hiding them again. */
 export async function openIssueActions(page: Page): Promise<void> {
   const control = offered(page, "button", CONTROL_LABELS.issue_actions);
-  if ((await control.getAttribute("aria-expanded")) !== "true") {
+  if ((await expandedState("the issue's actions control", control)) === "shut") {
     await control.click();
   }
 }
@@ -587,7 +600,9 @@ export interface CarriedOptions {
    */
   readonly parentRows?: Readonly<Record<string, ParentRowMapping>>;
   /** Puts the page where the outline draws the rows a parent-row mapping names, both of them:
-   *  the walk's own views leave the page wherever the last one did. */
+   *  the walk's own views leave the page wherever the last one did. It returns once that outline
+   *  is drawn - a load whose reads went quiet with every branch open, or below 1024 px the
+   *  parent's own zoom drawn - since its rows are read the moment it returns. */
   readonly outline?: (mapping: ParentRowMapping) => Promise<void>;
   /** Which recorded state this is (`open-1440`), named in every failure. */
   readonly state: string;
@@ -625,6 +640,8 @@ async function parentRowMissing(
   mapping: ParentRowMapping
 ): Promise<string | undefined> {
   const rows = page.getByRole("treeitem");
+  // The outline callback returns once the outline it opens is drawn (`CarriedOptions.outline`),
+  // so one read lists every row it draws.
   const drawn = await rows.evaluateAll((items) =>
     items.map((item) => ({
       level: Number(item.getAttribute("aria-level")),
@@ -648,6 +665,8 @@ async function parentRowMissing(
   await rows.nth(under.at).focus();
   for (let press = 0; press < LEFT_ARROW_PRESSES; press += 1) {
     await page.keyboard.press("ArrowLeft");
+    // Where the whole tree is drawn the arrow moves the focus inside its own keydown, and in the
+    // parent's zoom the callback opened below 1024 px it moves none, so one read is settled.
     const reached = await rows
       .nth(under.parent)
       .evaluate((row) => row === document.activeElement || row.contains(document.activeElement));
