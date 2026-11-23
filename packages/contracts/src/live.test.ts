@@ -14,11 +14,15 @@ import heartbeat from "../fixtures/live/heartbeat.json";
 import itemsAfter from "../fixtures/live/items_after.json";
 import itemsDelta from "../fixtures/live/items_delta.json";
 import itemsSnapshot from "../fixtures/live/items_snapshot.json";
+import projectTimelineAfter from "../fixtures/live/project_timeline_after.json";
+import projectTimelineDelta from "../fixtures/live/project_timeline_delta.json";
+import projectTimelineSnapshot from "../fixtures/live/project_timeline_snapshot.json";
 import snapshot from "../fixtures/live/snapshot.json";
 import subscribeAgent from "../fixtures/live/subscribe_agent.json";
 import subscribeEvals from "../fixtures/live/subscribe_evals.json";
 import subscribeEvents from "../fixtures/live/subscribe_events.json";
 import subscribeItems from "../fixtures/live/subscribe_items.json";
+import subscribeProjectTimeline from "../fixtures/live/subscribe_project_timeline.json";
 import subscribeTimeline from "../fixtures/live/subscribe_timeline.json";
 import unsubscribe from "../fixtures/live/unsubscribe.json";
 import { AGENT_STREAM_PROTOCOL, type AgentStreamResponder } from "./agent-stream";
@@ -58,6 +62,7 @@ import {
   type LiveSubscribe,
   type LiveUnsubscribe,
   type LiveView,
+  type ProjectTimelineResponse,
 } from "./dispatch-api";
 
 // The frames Dispatch sends, in fixtures/live, are written by the Dispatch server's own diff and
@@ -118,6 +123,7 @@ const VIEW_KINDS = allOf<LiveView["kind"]>()([
   "legion",
   "evals",
   "items",
+  "project-timeline",
   "events",
   "agent",
 ]);
@@ -223,6 +229,30 @@ const ITEM_ROW_KEYS = allOf<keyof EvalItemRow>()([
   "links",
   "range",
 ]);
+const PROJECT_TIMELINE_KEYS = allOf<keyof ProjectTimelineResponse>()([
+  "items",
+  "total",
+  "limit",
+  "offset",
+  "window",
+  "waiting",
+  "facet_counts",
+  "color_counts",
+  "components",
+  "issue_titles",
+  "session_groups",
+  "session_titles",
+  "session_pr_counts",
+  "freshness",
+]);
+/** A project timeline's lists: its rows and its session groups. */
+const PROJECT_TIMELINE_LISTS = [
+  "items",
+  "session_groups",
+] as const satisfies readonly DeliveryLiveList[];
+/** A project timeline's fields sent whole, and its window, sent with any change that moves it. */
+const PROJECT_TIMELINE_FIELDS = ["limit", "offset", "total", "waiting", "window"];
+const PROJECT_TIMELINE_ROW_KINDS = ["merge", "deploy", "failed_run"];
 
 const REVISION = /^[0-9a-f]{16}$/;
 
@@ -377,6 +407,56 @@ test("an items delta sets the rows whole, with the fields that moved beside them
   for (const revision of leaves(itemsDelta.revs.fields, 1)) expect(revision).toMatch(REVISION);
 });
 
+test("a project timeline snapshot is its route's body, rows newest first by id, and no measures", () => {
+  for (const frame of [projectTimelineSnapshot, projectTimelineAfter]) {
+    expect(keysOf(frame)).toEqual(sorted(SNAPSHOT_KEYS));
+    expect(frame.type).toBe("snapshot");
+    expect(keysOf(frame.body)).toEqual(sorted(PROJECT_TIMELINE_KEYS));
+    expect(keysOf(frame.revs.items)).toEqual(sorted(PROJECT_TIMELINE_LISTS));
+    expect(keysOf(frame.revs.maps)).toEqual(sorted(MAPS));
+    expect(keysOf(frame.revs.counts)).toEqual(sorted(COUNTS));
+    expect(keysOf(frame.revs.fields)).toEqual(PROJECT_TIMELINE_FIELDS);
+    const ids = frame.body.items.map((row: { id: string | number }) => String(row.id));
+    expect(sorted(ids)).toEqual(keysOf(frame.revs.items.items));
+    const times: number[] = [];
+    for (const row of frame.body.items as readonly Record<string, unknown>[]) {
+      expect(PROJECT_TIMELINE_ROW_KINDS).toContain(row.kind as string);
+      expect(row).not.toHaveProperty("measures");
+      // A run's row names its repository and when GitHub created it, which orders it.
+      if (row.kind !== "merge") expect(Object.keys(row)).toEqual(expect.arrayContaining(["repo", "created_at"]));
+      times.push(Date.parse(String(row.kind === "merge" ? row.merged_at : row.created_at)));
+    }
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    for (const revision of [
+      ...leaves(frame.revs.items, 2),
+      ...leaves(frame.revs.maps, 2),
+      ...leaves(frame.revs.counts, 3),
+      ...leaves(frame.revs.fields, 1),
+    ]) {
+      expect(revision).toMatch(REVISION);
+    }
+  }
+  // The page of two rows does not reach the window's start, so it holds no waiting line; grown to
+  // every row, it does.
+  expect(projectTimelineSnapshot.body.waiting).toBeNull();
+  expect(projectTimelineAfter.body.waiting).not.toBeNull();
+});
+
+test("a project timeline's growth sends the rows the page lacked and the fields that moved", () => {
+  expect(keysOf(projectTimelineDelta)).toEqual(sorted(DELTA_KEYS));
+  expect(keysOf(projectTimelineDelta.items)).toEqual(["items"]);
+  // The page held the two newest rows; the growth upserts the two older ones, in the body's
+  // order, and removes none.
+  expect(projectTimelineDelta.items.items.upsert.map((row) => row.id)).toEqual([
+    "acme/widgets#2",
+    "acme/widgets#1",
+  ]);
+  expect(projectTimelineDelta.items.items.remove).toEqual([]);
+  expect(projectTimelineDelta.maps).toEqual({});
+  expect(projectTimelineDelta.counts).toEqual({});
+  expect(keysOf(projectTimelineDelta.set)).toEqual(["limit", "waiting"]);
+});
+
 test("an error frame names its code and its message", () => {
   expect(keysOf(error)).toEqual(sorted(SERVER_FRAME_KEYS.error));
   expect(error).toEqual({
@@ -472,6 +552,9 @@ test("the page's frames carry every key of their types, and the socket reads eac
     "window",
     "query",
   ]);
+  const projectTimelineViewKeys = allOf<
+    keyof Extract<DeliveryLiveView, { kind: "project-timeline" }>
+  >()(["kind", "project", "window", "query"]);
   const eventsViewKeys = allOf<keyof EventsLiveView>()(["kind"]);
   const agentViewKeys = allOf<keyof AgentLiveView>()(["kind", "session_id"]);
   const subscribeKeys = sorted(CLIENT_FRAME_KEYS.subscribe);
@@ -486,6 +569,9 @@ test("the page's frames carry every key of their types, and the socket reads eac
   expect(keysOf(subscribeItems)).toEqual(subscribeKeys);
   expect(keysOf(subscribeItems.view)).toEqual(sorted(itemsViewKeys));
   expect(keysOf(subscribeItems.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
+  expect(keysOf(subscribeProjectTimeline)).toEqual(subscribeKeys);
+  expect(keysOf(subscribeProjectTimeline.view)).toEqual(sorted(projectTimelineViewKeys));
+  expect(keysOf(subscribeProjectTimeline.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
   expect(keysOf(subscribeEvents)).toEqual(subscribeKeys);
   expect(keysOf(subscribeEvents.view)).toEqual(sorted(eventsViewKeys));
   expect(keysOf(subscribeEvents.resume)).toEqual(sorted(EVENTS_RESUME_KEYS));

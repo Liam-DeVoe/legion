@@ -363,15 +363,31 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
+	if err := h.nameShown(ctx, read); err != nil {
+		return nil, err
+	}
+	body := deliveryLiveCompute(spec, read.settings, read.pop, from, to, now)
+	if spec.preset > 0 {
+		read.expiry = nextExpiry(read.pop, spec.days(), now)
+	}
+	read.from = from
+	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
+	read.unfetchable = read.pop.unfetchable
+	return body, nil
+}
+
+// nameShown records on read what its population shows that an event can move: each issue its pull
+// requests and waiting entries name, with the ancestors of each, and each session they name with
+// the title it shows. A population read without its labels (a measures view selecting nothing)
+// shows no fact of the issues its pull requests name and no session by its title, so no write of
+// those issues, of their ancestors or of a session's title moves its answer: it records none of
+// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves with a
+// P0's write, which showsIssue's p0 rule marks every view showing that list for.
+func (h *deliveryHub) nameShown(ctx context.Context, read *deliveryViewRead) error {
 	read.issues = map[string]struct{}{}
 	read.sessions = map[string]string{}
 	labeled := read.pop.labeled()
 	name := func(issue *string, sessions []string) {
-		// A population read without its labels (a measures view selecting nothing) shows no fact
-		// of the issues its pull requests name and no session by its title, so no write of those
-		// issues, of their ancestors or of a session's title moves its answer: it records none of
-		// them, and so reads no ancestors. The one issue fact it shows, the unowned P0 list, moves
-		// with a P0's write, which showsIssue's p0 rule marks every view showing that list for.
 		if !labeled {
 			return
 		}
@@ -388,17 +404,9 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	for _, pr := range read.pop.waiting {
 		name(pr.IssueKey, pr.Sessions)
 	}
-	if read.ancestors, err = delivery.IssueAncestors(ctx, pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap); err != nil {
-		return nil, err
-	}
-	body := deliveryLiveCompute(spec.kind, read.settings, read.pop, from, to, now)
-	if spec.preset > 0 {
-		read.expiry = nextExpiry(read.pop, spec.days(), now)
-	}
-	read.from = from
-	read.prs, read.runs = len(read.pop.prs), len(read.pop.applyRuns)+len(read.pop.windowRuns)
-	read.unfetchable = read.pop.unfetchable
-	return body, nil
+	var err error
+	read.ancestors, err = delivery.IssueAncestors(ctx, h.server.deps.Store.Pool, slices.Sorted(maps.Keys(read.issues)), parentDepthCap)
+	return err
 }
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
@@ -427,7 +435,7 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	} else {
 		from = now.Add(-spec.days())
 		narrowed := pop.narrowedTo(settings, from)
-		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, now, now)
+		body = deliveryLiveCompute(spec, settings, narrowed, from, now, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}
@@ -457,10 +465,15 @@ func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, start
 	h.note(deliveryHubNote{what: "recompute end", view: spec.key, cause: cause, sent: sent})
 }
 
-// deliveryLiveCompute is the timeline's or the measures' body for [from, to).
-func deliveryLiveCompute(kind string, settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) any {
-	if kind == deliveryLiveTimeline {
+// deliveryLiveCompute is a timeline's, a measures' or a project timeline's body for [from, to),
+// from a population read for that window or narrowed to it: a project timeline's population is its
+// project's (projectTimelinePopulation), cut to the view's limit from its newest row.
+func deliveryLiveCompute(spec deliveryLiveSpec, settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) any {
+	switch spec.kind {
+	case deliveryLiveTimeline:
 		return deliveryTimelineCompute(settings, pop, from, to, now)
+	case deliveryLiveProjectTimeline:
+		return projectTimelineCompute(settings, pop, from, to, spec.projectTimelineLimit(), 0)
 	}
 	return deliveryMeasuresCompute(settings, pop, from, to, now)
 }

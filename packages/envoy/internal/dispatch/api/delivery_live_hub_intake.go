@@ -578,10 +578,11 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 		return true
 	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
-		case deliveryLiveTimeline, deliveryLiveMeasures:
+		case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline:
 			// The timeline's waiting line reads merges before the window, and the measures'
 			// deploys_with_prs counts a deploy of the window that ships a pull request merged before
-			// it (delivery.Deploys.ShippedBy), so every merge before the window's end can move either.
+			// it (delivery.Deploys.ShippedBy), which also decides the projects a project timeline's
+			// deploy counts for, so every merge before the window's end can move any of them.
 			return len(times) == 0 || some(func(t time.Time) bool { return t.Before(to) })
 		default:
 			return some(atOrAfterFrom)
@@ -592,11 +593,12 @@ func (view *deliveryView) touchedByDeliveryRow(change delivery.Change, now time.
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))
 		case string(delivery.DeliveryRunKindDeploy):
 			switch view.spec.kind {
-			case deliveryLiveTimeline, deliveryLiveMeasures:
+			case deliveryLiveTimeline, deliveryLiveMeasures, deliveryLiveProjectTimeline:
 				// The timeline's waiting line at the window's start reads deploy runs of any age,
 				// and the measures' deploys_with_prs reads the runs created before the window too:
 				// a run of any age whose production job lands late can ship a pull request a deploy
-				// of the window shipped first until then (pop.windowShipped).
+				// of the window shipped first until then (pop.windowShipped), and so move the
+				// project a project timeline's deploy counts for.
 				return true
 			default:
 				return len(times) == 0 || some(atOrAfterFrom)

@@ -4480,6 +4480,17 @@ Each item below names a path with its method and identity, then its purpose.
   The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
+- `/api/v1/projects/{key}/timeline?from=&to=&q=&<facets>&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  One page of the delivery timeline's rows that the project its path names counts, newest first, in the envelope `{items, total, limit, offset}`: `limit` is 1 to 500 (default 200), `offset` from 0, and the window, the search and the facets are the delivery timeline's.
+  A row is a merge (`kind` `merge`, every field of the delivery timeline's `prs[]`) or a deploy run started in the window (`kind` `deploy`, or `failed_run` for a run with a failed job or a failed production job, every field of its `runs[]`, with `repo`, the repository the run is in, and `created_at`).
+  The rows are in one order: by the row's time (a merge's `merged_at`, a run's `created_at`), newest first, then by kind (`merge`, `deploy`, `failed_run`), then by id.
+  The rows are those the project counts as the eval registry's day rows count them (`evals.Attribution`): a pull request for its issue's project, a deploy run for the projects of the pull requests it ships first; a run that ships none counts for no project.
+  Beside them, `facet_counts` and `color_counts` over the whole window on every page; `waiting`, the project's pull requests waiting at the window's start, on the page that reaches that start and `null` on every other; `issue_titles`, `session_titles`, `session_pr_counts`, `components` and `session_groups` on the first page and `null` on every other; `window` and `freshness`.
+  It carries no measures: the eval routes answer those.
+  The `/ws/live` `project-timeline` view (project, window, query: the search, the facets and `limit`, 1 up to the most rows a window holds, and no `offset`) carries the same body for its limit of rows from the newest; a page grows it by subscribing the same `sub` again with a higher `limit` and a resume holding its rows, and is sent only the rows it lacks.
+  `400 INVALID_PROJECT` for a key that is not a project key, `400 INVALID_QUERY` for a malformed query, `404 PROJECT_NOT_FOUND`, `404 DELIVERY_NOT_CONFIGURED` without a `delivery_settings` row.
+
 - `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).

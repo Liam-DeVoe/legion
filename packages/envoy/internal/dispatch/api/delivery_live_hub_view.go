@@ -16,10 +16,10 @@ import (
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion, evals or items")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion, evals, items or project-timeline")
 	}
-	if view.Project != nil && !classes.reads.namesProject() {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion, an evals or an items view names a project")
+	if view.Project != nil && !classes.namesProject() {
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion, an evals, an items or a project-timeline view names a project")
 	}
 	if view.Slug != nil && !classes.reads.namesEval() {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only an items view names a slug")

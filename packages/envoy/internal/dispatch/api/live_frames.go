@@ -23,18 +23,20 @@ import (
 // key, counts two levels deep, and the other fields whole. The events view is the event feed,
 // event by event, and the agent view one session's live conversation.
 
-// The six delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
+// The seven delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
 // three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
 // project (legion_board.go), which has no window: it shows what the daemon's state says now; the
 // fifth is one project's evals (evals.go), the list read over a window and a compare range; the
-// sixth is the rows behind one eval's numbers (evals_items.go), the items read over the same.
+// sixth is the rows behind one eval's numbers (evals_items.go), the items read over the same; the
+// seventh is one project's timeline rows (project_timeline.go), newest first, as many as its limit.
 const (
-	deliveryLiveTimeline = "timeline"
-	deliveryLiveMeasures = "measures"
-	deliveryLivePipeline = "pipeline"
-	legionBoardView      = "legion"
-	evalsView            = "evals"
-	evalItemsView        = "items"
+	deliveryLiveTimeline        = "timeline"
+	deliveryLiveMeasures        = "measures"
+	deliveryLivePipeline        = "pipeline"
+	legionBoardView             = "legion"
+	evalsView                   = "evals"
+	evalItemsView               = "items"
+	deliveryLiveProjectTimeline = "project-timeline"
 )
 
 // The two views beside the delivery views: the event feed, and one session's live conversation.
@@ -56,10 +58,13 @@ type DeliveryLiveWindow struct {
 // facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
 // since the board has no window; an evals view names its Project, its Window and its Query, the
 // query string the page would send to GET /api/v1/projects/{key}/evals without from/to (the
-// compare range, the repositories, the kind and the page); and an items view names its Project,
-// the Slug of the eval whose rows it shows, its Window and its Query, what the page would send to
+// compare range, the repositories, the kind and the page); an items view names its Project, the
+// Slug of the eval whose rows it shows, its Window and its Query, what the page would send to
 // GET /api/v1/projects/{key}/evals/{slug}/items without from/to (the compare range, the series, the
-// row kind and row, the repositories, the sort and the page).
+// row kind and row, the repositories, the sort and the page); and a project-timeline view names its
+// Project, its Window and its Query, the query string the page would send to
+// GET /api/v1/projects/{key}/timeline without from/to and offset (the search, every facet and the
+// limit).
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
@@ -277,11 +282,16 @@ const (
 	viewReadsEvalItems
 )
 
-// namesProject is whether a subscribed view that reads r names the project it shows: the Legion
-// board, the evals list and an eval's items are each one project's, and the delivery views are
-// the deployment's.
-func (r viewReads) namesProject() bool {
-	return r == viewReadsLegion || r == viewReadsEvals || r == viewReadsEvalItems
+// namesProject is whether a subscribed view of these classes names the project it shows: the
+// Legion board, the evals list and an eval's items are each one project's by what they read, the
+// project timeline is one project's rows of the deployment's delivery rows (oneProject), and every
+// other delivery view is the deployment's.
+func (c deliveryLiveClasses) namesProject() bool {
+	switch c.reads {
+	case viewReadsLegion, viewReadsEvals, viewReadsEvalItems:
+		return true
+	}
+	return c.oneProject
 }
 
 // namesEval is whether a subscribed view that reads r names, by its slug, the eval whose rows it
@@ -335,6 +345,9 @@ type deliveryLiveClasses struct {
 
 	// reads is what the view's answer is read from (viewReads).
 	reads viewReads
+	// oneProject is whether a view that reads the deployment's delivery rows shows one
+	// project's rows of them, and names that project (namesProject): the project timeline.
+	oneProject bool
 	// unownedP0 is whether the view shows the unowned P0 list, so a write of a P0 issue moves it
 	// even where its own population does not name the issue.
 	unownedP0 bool
@@ -470,6 +483,30 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads: viewReadsEvalItems,
 		parse: parseEvalItemsLiveView,
 		read:  (*deliveryHub).readEvalItemsView,
+	},
+	// One project's timeline rows: the body of GET /api/v1/projects/{key}/timeline from its first
+	// row, as many as the view's limit, read by the route's own function (readProjectTimeline). A
+	// page grows by subscribing its sub again with a higher limit and a resume holding the rows it
+	// has, so the growth's delta carries only the rows it lacks: its rows are sent row by row, by
+	// id (a merge's pull request id, a run's id). The maps, counts, session groups, window and
+	// freshness are a timeline view's, and sent as its are; the envelope's numbers and the waiting
+	// line, which is null until the view's limit reaches the window's total, are sent whole. It
+	// carries no measures, so it shows no unowned P0 list and judges by no eval's target, and a
+	// delivery change marks it as it marks a timeline view (touchedByDeliveryRow).
+	deliveryLiveProjectTimeline: {
+		body:  reflect.TypeFor[projectTimelineResponse](),
+		lists: []string{"items", "session_groups"},
+		maps: map[string][]string{
+			"issue_titles": nil, "session_titles": nil, "session_pr_counts": nil, "components": nil,
+		},
+		counts:      []string{"facet_counts", "color_counts"},
+		whole:       map[string][]string{"total": nil, "limit": nil, "offset": nil, "waiting": nil},
+		withChanges: []string{"window"},
+		out:         []string{"freshness"},
+		reads:       viewReadsDelivery,
+		oneProject:  true,
+		parse:       parseProjectTimelineLiveView,
+		read:        (*deliveryHub).readProjectTimelineView,
 	},
 }
 

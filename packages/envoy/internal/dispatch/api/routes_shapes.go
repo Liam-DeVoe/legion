@@ -170,6 +170,41 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// projectTimelineQuery is GET /api/v1/projects/{key}/timeline's query: the delivery timeline's
+// window, search and repeatable facets (deliveryWindowQuery's keys), and the page. The `session`
+// facet is read with the others and named here by no field, as deliveryWindowQuery names none.
+type projectTimelineQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// Q keeps the merges whose pull request's title or id holds it; like every facet, it keeps
+	// every run.
+	Q string `query:"q"`
+	// Repo selects pull requests of these repositories.
+	Repo []string `query:"repo"`
+	// ParentAgent selects pull requests whose first session belongs to these parents;
+	// __no_session__ selects those whose commits name no session.
+	ParentAgent []string `query:"parent_agent"`
+	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
+	Issue []string `query:"issue"`
+	// Priority selects P0-P3; __no_priority__ selects an issue with none.
+	Priority []string `query:"priority"`
+	// Component selects these components, a parent including its children;
+	// __no_component__ selects an issue with none.
+	Component []string `query:"component"`
+	// Author selects these pull-request authors.
+	Author []string `query:"author"`
+	// Rework selects by whether the work was rework.
+	Rework []string `query:"rework"`
+	// Deployed selects by deployed_status: deployed, waiting or not_tracked.
+	Deployed []string `query:"deployed"`
+	// Limit is the page size, 1 to 500, default 200.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, from the newest row.
+	Offset int `query:"offset"`
+}
+
 // issueResultsQuery is GET /api/v1/issues/{key}/results's query.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
@@ -818,6 +853,9 @@ var routeShapes = map[string]routeShape{
 	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
 	"GET /api/v1/projects/{key}/legion/board": {
 		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
+	"GET /api/v1/projects/{key}/timeline": {
+		Status: http.StatusOK, Response: projectTimelineResponse{}, Params: projectTimelineQuery{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
