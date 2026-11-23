@@ -547,6 +547,39 @@ test("a binding two mounted instances register is described once, enabled when e
   expect([spec.fired(), runbook.fired()]).toEqual([0, 1]);
 });
 
+// dispatch://INFRA-2160, R13: `?` over a dialog says what a key does there. While a dialog is open
+// the registry reads its scope alone, so over the Inbox drawer the shell's `c` and the page's own
+// keys are disabled. An action that the page beneath and the drawer both register is one row,
+// under the action's own scope, enabled since the drawer's registration applies. A `beforeScopes`
+// binding is read before every scope, so its `when` alone decides.
+test("with a dialog open, describe() disables the shell's and the page's bindings and enables the dialog's, and an action the page and the dialog both register is one enabled row under its own scope", () => {
+  const { keymap } = harness();
+  keymap.register("global", [
+    actionBinding({ action: "global.create", run: () => undefined }, NO_PERSON_KEYS),
+    binding("copy-link", "y", { beforeScopes: true }).definition,
+  ]);
+  // The Inbox page, beneath its drawer.
+  keymap.register("inbox", [
+    actionBinding({ action: "inbox.next", run: () => undefined }, NO_PERSON_KEYS),
+    actionBinding({ action: "inbox.snooze", run: () => undefined }, NO_PERSON_KEYS),
+  ]);
+  keymap.pushScope("inbox");
+  // The drawer: the Inbox's `j` again, and its own Escape.
+  keymap.register(DIALOG_SCOPE, [
+    actionBinding({ action: "inbox.next", run: () => undefined }, NO_PERSON_KEYS),
+    binding("close", "Escape", { inEditable: true }).definition,
+  ]);
+  keymap.pushScope(DIALOG_SCOPE);
+
+  expect(keymap.describe().map((entry) => [entry.scope, entry.id, entry.enabled])).toEqual([
+    ["global", "create", false],
+    ["global", "copy-link", true],
+    ["inbox", "next", true],
+    ["inbox", "snooze", false],
+    ["dialog", "close", true],
+  ]);
+});
+
 test("actions() lists each scope below the innermost dialog once, innermost scope first", () => {
   const { keymap } = harness();
   const create = binding("create", "c");

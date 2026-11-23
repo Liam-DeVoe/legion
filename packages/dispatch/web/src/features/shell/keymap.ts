@@ -72,8 +72,8 @@ export interface KeyBinding {
    *  works on every page and in every dialog. */
   beforeScopes?: boolean;
   /** The catalogue action the binding stands for, which `actionBinding` names; a binding written
-   *  out whole names none. `?` lists the binding under the action's own scope, whatever scope
-   *  registered it: the Inbox drawer registers the Inbox's actions under `dialog`. */
+   *  out whole names none. `describe()` lists the binding under the action's own scope, whatever
+   *  scope registered it: the Inbox drawer registers the Inbox's actions under `dialog`. */
   catalogueAction?: KeymapActionId;
 }
 
@@ -86,10 +86,9 @@ export interface ActionBinding {
   when?: () => boolean;
 }
 
-/** A binding as `?` describes it: keys as typed, the scope it was registered in, the catalogue
- *  action it stands for if any, and whether it applies right now. */
+/** A binding as `?` lists it (`Keymap.describe`): its keys as typed, the scope it is listed
+ *  under, and whether a press of its keys would run it right now. */
 export interface KeyBindingDescription {
-  catalogueAction?: KeymapActionId;
   enabled: boolean;
   id: string;
   keys: readonly string[];
@@ -406,10 +405,21 @@ export interface Keymap {
   actions(): KeymapAction[];
   /** The unfinished chord, or one with no keys; the same object until the chord changes. */
   chord(): PendingChord;
-  /** Every registered binding with its `when()` evaluated now, under the scope it was registered
-   *  in — the source for `?`. One component mounted twice registers its bindings twice (an
-   *  issue's hidden Spec beside another of its documents), and they are one row, enabled when
-   *  either instance's `when()` holds. */
+  /**
+   * Every registered binding, the source for `?`. A binding that names a catalogue action is
+   * listed under the action's own scope (`catalogueEntry`), whatever scope registered it; any
+   * other binding is listed under the scope that registered it. So the Inbox's actions, which
+   * the Inbox drawer registers under `dialog`, are listed under Inbox.
+   *
+   * A binding is enabled when a press of its keys would reach it now: a key is read through the
+   * scope that registered it (`consulted`), and its `when()` is not false. While a dialog is
+   * open, the bindings of the shell and of the page beneath the dialog are disabled. A
+   * `beforeScopes` binding is read before every scope, so its `when()` alone decides.
+   *
+   * Bindings with the same id under the same listed scope are one row, enabled when any of them
+   * is: an action that the Inbox page and its drawer both register, or the bindings of one
+   * component mounted twice (an issue's hidden Spec beside another of its documents).
+   */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
   pushScope(scope: KeymapScope): () => void;
@@ -441,8 +451,8 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   const matches = (combos: readonly KeyCombo[], presses: readonly KeyPress[]) =>
     presses.every((press, index) => matchesCombo(combos[index] as KeyCombo, press, isMac));
 
-  /** The scopes a key is read through, outermost first. A modal owns the keyboard: nothing
-   *  beneath it fires, however the scopes are ordered. */
+  /** The scopes a key is read through, outermost first, which `describe()` reads too. A modal
+   *  owns the keyboard: nothing beneath it fires, however the scopes are ordered. */
   const consulted = (): readonly KeymapScope[] =>
     scopes.includes(DIALOG_SCOPE) ? [DIALOG_SCOPE] : ["global", ...scopes];
 
@@ -655,19 +665,24 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       return chord;
     },
     describe() {
+      const read = consulted();
       const described = new Map<string, KeyBindingDescription>();
       for (const { binding, scope } of registrations) {
-        const enabled = binding.when?.() !== false;
-        const key = `${scope}\u0000${binding.id}`;
+        const listedUnder =
+          binding.catalogueAction === undefined
+            ? scope
+            : catalogueEntry(binding.catalogueAction).scope;
+        const enabled =
+          (binding.beforeScopes === true || read.includes(scope)) && binding.when?.() !== false;
+        const key = `${listedUnder}\u0000${binding.id}`;
         const seen = described.get(key);
         if (seen === undefined) {
           described.set(key, {
-            catalogueAction: binding.catalogueAction,
             enabled,
             id: binding.id,
             keys: keysOf(binding),
             label: binding.label,
-            scope,
+            scope: listedUnder,
           });
         } else {
           seen.enabled ||= enabled;

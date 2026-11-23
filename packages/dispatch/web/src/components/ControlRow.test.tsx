@@ -953,7 +953,8 @@ test("each scope's row registers its own scope's actions, the drawer's the Inbox
     }
   };
   expect(registered("inbox")).toEqual(["inbox filter Shift+F", "inbox display Shift+V"]);
-  expect(registered("dialog")).toEqual(["dialog filter Shift+F", "dialog display Shift+V"]);
+  // The drawer registers the Inbox's actions under `dialog`, and `?` lists them under Inbox.
+  expect(registered("dialog")).toEqual(["inbox filter Shift+F", "inbox display Shift+V"]);
   expect(registered("project")).toEqual(["project filter Shift+F", "project display Shift+V"]);
   expect(registered("board")).toEqual(["board filter Shift+F"]);
   expect(registered("agents")).toEqual(["agents filter Shift+F"]);

@@ -811,6 +811,9 @@ interface ChoiceControl {
   readonly letter: string;
   /** The body of the write of the choice the control shows as `choice`. */
   readonly body: (choice: string) => unknown;
+  /** The rows of the list a click opens, as `MultiSelect` draws each: its label after the `✓` of
+   *  the item's value. Unset where the row does not read them. */
+  readonly choices?: readonly string[];
 }
 
 /** What a choice control shows: a native select's own value; else, while its list is open, the
@@ -935,6 +938,12 @@ async function choiceWritesOnEnter(page: Page, choice: ChoiceControl): Promise<v
 
   // The keys in the list a click opened, then Escape.
   await choice.control.click();
+  if (choice.choices !== undefined) {
+    await expect(
+      listOf(choice.control).getByRole("option"),
+      `${say}: a click opens the list of ${choice.choices.join(", ")}`
+    ).toHaveText([...choice.choices]);
+  }
   await pressChoiceKeys(page, choice, rest, "the keys in the list a click opened");
   await pressToItemValue(
     page,
@@ -993,6 +1002,8 @@ test("k-choice-writes-on-enter: on the issue page the repository's keys only cha
   await openIssue(page, issueKey, title);
   await choiceWritesOnEnter(page, {
     body: (choice) => ({ repo: choice }),
+    // Inherit, CORE's default and the issue's own, which the issue holds (`seedChoices`).
+    choices: ["Inherit", "acme/widgets", "✓acme/gadgets"],
     control: page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
     letter: "a",
     what: "the repository",
@@ -1764,8 +1775,8 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
   ).toBe(before);
 });
 
-// SLOW(>=2s): the spec and a project document each opened twice, two new pages loaded, and two
-// moves in place.
+// SLOW(>=2s): the spec and a project document each opened once, a new tab loaded by a Ctrl+click
+// in each, and one move in place from each.
 test("k-link-click: in the spec the reader edits and in a project document, a plain click on a link opens it after a Ctrl+click on that link opened it in a new tab", async ({
   context,
   page,

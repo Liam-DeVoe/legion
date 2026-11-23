@@ -193,7 +193,8 @@ test("? lists an Inbox action the drawer registers in the dialog scope under Inb
 });
 
 // R13: with the drawer open over the Inbox page, the page and the drawer both register the
-// Inbox's actions, in two scopes; `?` lists each once, enabled when either applies.
+// Inbox's actions, in two scopes; `describe()` lists each once, under Inbox, enabled when either
+// registration applies, and the help draws that row as it comes.
 test("? lists an action the page and the drawer over it both register once, enabled when either applies", () => {
   const keymap = createKeymap();
   // The page beneath, where no row is in hand.
@@ -203,10 +204,12 @@ test("? lists an action the page and the drawer over it both register once, enab
       NO_PERSON_KEYS
     ),
   ]);
+  keymap.pushScope("inbox");
   keymap.register(DIALOG_SCOPE, [
     actionBinding({ action: "inbox.snooze", run: () => undefined }, NO_PERSON_KEYS),
     dialogClose,
   ]);
+  keymap.pushScope(DIALOG_SCOPE);
   const { labels, rows, sections, view } = drawHelp(keymap);
   try {
     expect(sections()).toEqual(["Inbox", "Dialog"]);
