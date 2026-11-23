@@ -1130,12 +1130,13 @@ And a person's revoke ends the grant at once.
 The broker cannot tell an operator moving pods from one account to another from an attack, so a
 pair of service accounts is the operator's word that the move is intended.
 While it stands, a pod of either account can claim any session name the other holds, not only its
-own role's, so a pod of one project's account can claim a name a shared account holds for another
-project's role.
+own claim's, so a pod of one project's account can claim a name a shared account holds for another
+project's claim.
 It takes none of what that session holds, because a pair moves what a session holds only between
 the two accounts' pods one daemon launched (`enroll.go`, `adopt`).
-Two things bound this for Legion's pods: the daemon gives each role only its own name, and a name
-leaves the shared account once its role's pod has moved.
+Two things bound this for Legion's pods: the daemon gives each claim only its own session's name,
+the name of the session its agent keeps whatever role its step is on, and a name leaves the shared
+account once that claim's pod has moved.
 Remove a pair once no live pod runs as the old account.
 
 A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,

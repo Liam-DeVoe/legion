@@ -8585,8 +8585,8 @@ each issue's pod (every role of it alike) and the image probe's.
   A pair works both ways, so moving the pods back needs no change of the setting.
   A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
   the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
-  While a pair stands, a pod of either account can claim any session name the other holds, not only its own role's, so where several projects' pods shared the old account, a pod of one project's new account can claim a name the old account holds for another project's role, and takes none of what that role's session holds, which another daemon's login enrolled.
-  Two things bound this: the daemon gives each role only its own name, and a name leaves the old account once its role's pod has moved.
+  While a pair stands, a pod of either account can claim any session name the other holds, not only its own claim's, so where several projects' pods shared the old account, a pod of one project's new account can claim a name the old account holds for another project's claim, and takes none of what that claim's session holds, which another daemon's login enrolled.
+  Two things bound this: the daemon gives each claim only its own session's name, the name of the session its agent keeps whatever role its step is on (the claim's session, `supervise`'s enrollment, `internal/supervise/secrets.go`), and a name leaves the old account once that claim's pod has moved.
   So move the pods' account alone: a daemon whose own login moves to another account in the same change enrols the new pods under another launcher, and they take none of what the old pods held.
   Remove the pairs with the old account once no live pod runs as it.
 
