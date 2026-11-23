@@ -41,10 +41,13 @@
 # not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
 # or `.toMatch(`. Wherever `.toBe(` is named here, `.toEqual(` and `.toStrictEqual(` count too,
 # since on a string, a boolean or an element they compare what `.toBe(` does. Each shape counts
-# whether or not `expect` carries a message after the value it reads, a string, a template literal
-# or a name: `expect(document.activeElement, "why").toBe(el)` is the same site as
-# `expect(document.activeElement).toBe(el)`, and when the message argument was first counted, 29
-# such sites in 6 files had come in unseen. The suite's sites of those hand-written shapes, and of
+# whether or not `expect` carries a message after the value it reads, whatever expression that
+# message is: `expect(document.activeElement, "why").toBe(el)` and
+# `expect(document.activeElement, open ? "why" : "how").toBe(el)` are the same site as
+# `expect(document.activeElement).toBe(el)`. When the message argument was first counted, 29 such
+# sites in 6 files had come in unseen, and when a message became any expression rather than a
+# string, a template literal or a name, 1 more had, a conditional message from
+# cybermonklabs/legion#4985. The suite's sites of those hand-written shapes, and of
 # their `.not` forms, were
 # rewritten, and nothing but this keeps a new test from writing them again: between the merge that
 # moved the suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus
@@ -131,12 +134,15 @@ for _ in range(4):
     BALANCED = rf"(?:[^()]|\({BALANCED}*\))"
 # A message `expect` carries after the value it reads (`expect(el.hasAttribute(name), "why")`)
 # leaves the site what it is, so where a read must end `expect`'s argument, a message may follow
-# it: a string, a template literal or a name. Only those: a read followed by anything else, such as
-# the second item of `expect([a.getAttribute(x), b.getAttribute(y)])` or the next key of an object,
+# it, and a message is any expression: a run of string and template literals, parenthesised groups
+# whose own parentheses balance, and characters other than a parenthesis, a bracket, a brace, a
+# comma or a quote, so a conditional (`open ? "why" : "how"`), a call (`describe(key)`) or a
+# concatenation (`"why " + key`) counts. A bracket, a brace or a comma outside a group or a literal
+# ends it: a read followed by the second item of `expect([a.getAttribute(x), b.getAttribute(y)])`
+# or the next key of an object reaches the `]` or `}` that closes it before `expect`'s own `)`, and
 # is not the whole value `expect` reads.
 LITERAL = "|".join((r'"(?:[^"\\\n]|\\.)*"', r"'(?:[^'\\\n]|\\.)*'", r"`(?:[^`\\]|\\.)*`"))
-NAME = r"[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*"
-MESSAGE = rf"(?:\s*,\s*(?:{LITERAL}|{NAME})\s*,?)?"
+MESSAGE = rf"(?:\s*,(?:{LITERAL}|\({BALANCED}*\)|[^()\[\]{{}},\"'`])*(?:,\s*)?)?"
 # The focused element compared by hand: read as `expect`'s whole argument and compared with
 # `.toBe(`; named as what `.toBe(` compares with; or compared with `===`, `!==`, `==` or `!=`, on
 # either side, at the top level of `expect`'s argument. A read of a property of the focused element

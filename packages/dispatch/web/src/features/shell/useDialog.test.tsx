@@ -308,6 +308,7 @@ for (const staysMounted of [false, true]) {
       frames.run();
       await user.keyboard("{Escape}");
       expect(view.queryByRole("dialog", { name: "Search" }), "Escape left Search open").toBeNull();
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case staysMounted picks.
       expect(
         document.activeElement,
         staysMounted

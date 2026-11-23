@@ -12,9 +12,11 @@
 # hand-written attribute read fails whether it is compared with `.toBe(`, `.toBeNull(`,
 # `.not.toBeNull(`, `.toContain(` or `.toMatch(`, and also when Biome has wrapped it onto lines of
 # its own, where it is named at its `expect(`; a focus, `getAttribute` or `hasAttribute` read whose
-# `expect` carries a message, a string or a template literal, fails as it does without one, while
-# with a message a matcher, a property of the focused element, a read nested in a call and a read
-# inside an array or an object are still not counted; a kept site passes only with a
+# `expect` carries a message fails as it does without one, whatever expression the message is, a
+# string, a template literal, a conditional on one line or wrapped as Biome wraps it, a call or a
+# concatenation, while with a message a matcher, a property of the focused element, a read nested
+# in a call and a read inside an array or an object, a conditional after it included, are still
+# not counted; a kept site passes only with a
 # `// jest-dom: <reason>` line of at least four words, each holding a letter, on the line directly
 # above its `expect(`, so an ordinary comment there fails, and so do a marker with code or a blank
 # line between it and the read, a block comment, a marker on the read's own line or wrapped onto a
@@ -331,7 +333,9 @@ check "names the expect's line" "$(contains "$out" 'rows.test.tsx:2')"
 check "counts it once" "$(contains "$out" '1 of 1 hand-written focus and attribute assertions')"
 
 # `expect`'s second argument is a message, and a site's form is the same with it: a pattern that
-# wanted the read to close `expect(` straight after it saw none of these.
+# wanted the read to close `expect(` straight after it saw none of these, and one that took only a
+# string, a template literal or a name as the message saw none of the conditionals, the call or the
+# concatenation, so cybermonklabs/legion#4985's conditional came in unmarked.
 echo "case: a focus or attribute read whose expect carries a message is refused at its line"
 root=$(fixture message)
 rows "$root" <<'EOF'
@@ -346,11 +350,34 @@ test("a row", () => {
     hidden?.hasAttribute("tabindex"),
     "the link the cut hid has no tab stop once the words are whole"
   ).toBe(false);
+  expect(document.activeElement, open ? "the press kept the focus" : "no press").toBe(row);
+  expect(row.getAttribute("aria-current"), open ? "still current" : "not current").toBe("true");
+  expect(shown?.hasAttribute("tabindex"), open ? "a tab stop" : "no tab stop").toBe(false);
+  expect(
+    document.activeElement,
+    staysMounted
+      ? "Search gave the focus back to its own opener in the closed sheet, not to Menu"
+      : "Search gave the focus back to no opener"
+  ).toBe(menu);
+  expect(
+    row.getAttribute("aria-current"),
+    open
+      ? "the row the open sheet points at lost its aria-current once the sheet drew"
+      : "the row lost its aria-current once the closed sheet drew"
+  ).toBe("true");
+  expect(
+    hidden?.hasAttribute("tabindex"),
+    open
+      ? "the link the open sheet hid kept its tab stop once the words were whole"
+      : "the link the cut hid kept its tab stop once the words were whole"
+  ).toBe(false);
+  expect(document.activeElement, describe(key, "the focus")).toBe(row);
+  expect(row.getAttribute("aria-current"), "the row at " + path + " is not current").toBe("true");
 });
 EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "counts all seven" "$(contains "$out" '7 of 7 hand-written focus and attribute assertions')"
+check "counts all fifteen" "$(contains "$out" '15 of 15 hand-written focus and attribute assertions')"
 check "names the focus read with a string message" "$(contains "$out" 'rows.test.tsx:2:')"
 check "names the focus read with a template message" "$(contains "$out" 'rows.test.tsx:3:')"
 check "names the getAttribute read with a string message" "$(contains "$out" 'rows.test.tsx:4:')"
@@ -358,6 +385,14 @@ check "names the getAttribute read with a template message" "$(contains "$out" '
 check "names the hasAttribute read with a string message" "$(contains "$out" 'rows.test.tsx:6:')"
 check "names the hasAttribute read with a template message" "$(contains "$out" 'rows.test.tsx:7:')"
 check "names the wrapped read with a message at its expect" "$(contains "$out" 'rows.test.tsx:8:')"
+check "names the focus read with a conditional message" "$(contains "$out" 'rows.test.tsx:12:')"
+check "names the getAttribute read with a conditional message" "$(contains "$out" 'rows.test.tsx:13:')"
+check "names the hasAttribute read with a conditional message" "$(contains "$out" 'rows.test.tsx:14:')"
+check "names the wrapped focus read with a conditional message at its expect" "$(contains "$out" 'rows.test.tsx:15:')"
+check "names the wrapped getAttribute read with a conditional message at its expect" "$(contains "$out" 'rows.test.tsx:21:')"
+check "names the wrapped hasAttribute read with a conditional message at its expect" "$(contains "$out" 'rows.test.tsx:27:')"
+check "names the focus read with a call message" "$(contains "$out" 'rows.test.tsx:33:')"
+check "names the getAttribute read with a concatenated message" "$(contains "$out" 'rows.test.tsx:34:')"
 
 echo "case: with a message, what the rule leaves out is still left out"
 root=$(fixture message_left_out)
@@ -370,6 +405,10 @@ test("a row", () => {
   expect(rows.map((item) => item.getAttribute("data-turn")), "the turns").toEqual(["a", "b"]);
   expect([row.getAttribute("data-a"), row.getAttribute("data-b")]).toEqual(["1", "2"]);
   expect({ a: row.getAttribute("data-a"), b: "2" }).toEqual({ a: "1", b: "2" });
+  expect([row.getAttribute("data-a"), open ? "1" : "2"]).toEqual(["1", "1"]);
+  expect({ a: row.getAttribute("data-a"), b: open ? "1" : "2" }).toEqual({ a: "1", b: "1" });
+  expect([row.hasAttribute("hidden"), open ? "1" : "2"]).toEqual([false, "1"]);
+  expect({ a: row.hasAttribute("hidden"), b: open ? "1" : "2" }).toEqual({ a: false, b: "1" });
 });
 EOF
 run_check "$root"
