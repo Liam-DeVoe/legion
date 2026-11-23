@@ -43,14 +43,16 @@ type Hook struct {
 
 // DefaultWorkBackPrompt is the words of the one hook a deployment that writes no `hooks:` key
 // runs (DefaultHooks). It is prose for the role that reads it, and it asks for one thing: that
-// the worker says what is in its way, so the architect can read all three answers together.
+// the worker says what is in its way, so the architect can read the answers of the task's workers
+// together.
 const DefaultWorkBackPrompt = "We read no progress on this issue: its work has gone back the number of times recorded below. Report to the architect what is in your way, in your own words. The architect takes a step back, reads what each of you says, and decides the path. Carry on with the work while you wait, and say so if you read it as on track."
 
 // DefaultHooks is the hook a deployment that names no `hooks:` key runs: every fifth move back of
-// any kind puts DefaultWorkBackPrompt in front of the three roles that do the work of a round.
-// The architect is not among them, and no hook may name it: the daemon's own wake to an architect
-// is a notice. The answer is a fresh slice, so a caller that sorts or trims it leaves the next
-// caller's answer whole.
+// any kind puts DefaultWorkBackPrompt in front of the three roles that do the work of a round in
+// the default steps, the implementer, the tester and the reviewer, each where the task has its
+// step. No hook may name the architect: the daemon's own wake to an architect is a notice; where
+// the architect does one of those steps itself, the hook reaches it there. The answer is a fresh
+// slice, so a caller that sorts or trims it leaves the next caller's answer whole.
 func DefaultHooks() []Hook {
 	return []Hook{{
 		Name:   "work-back",
