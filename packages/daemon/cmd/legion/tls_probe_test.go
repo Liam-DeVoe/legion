@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1724,7 +1725,7 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 
 	bin := t.TempDir()
 	record := filepath.Join(bin, "first-arguments")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + record + "'\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> " + shellprefix.Literal(record) + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2198,7 +2199,7 @@ func shTLSClient(name string, runs *standInLog, script string, answer func(tlsSi
 		limitClock: runs.clock,
 		command: func(site tlsSite) (string, []string, []string) {
 			output, status := answer(site)
-			return "sh", []string{"-c", `printf '%s %s\n' "$0" "$1" >>'` + runs.path + `'; ` + script, name, site.name, runs.dir(), output, strconv.Itoa(status)}, nil
+			return "sh", []string{"-c", `printf '%s %s\n' "$0" "$1" >>` + shellprefix.Literal(runs.path) + `; ` + script, name, site.name, runs.dir(), output, strconv.Itoa(status)}, nil
 		},
 	}
 }
@@ -2407,7 +2408,7 @@ func loggedStandInTo(c tlsCommandClient, log *standInLog) tlsCommandClient {
 			panic(fmt.Sprintf("%s's stand-in at %s runs %s %q, not sh -c: it cannot log its start first", c.clientName, site.name, program, args))
 		}
 		args = slices.Clone(args)
-		args[1] = `printf '%s\n' "$LEGION_TLS_STANDIN_RUN" >>'` + log.path + `'; ` + args[1]
+		args[1] = `printf '%s\n' "$LEGION_TLS_STANDIN_RUN" >>` + shellprefix.Literal(log.path) + `; ` + args[1]
 		return program, args, append(slices.Clone(set), "LEGION_TLS_STANDIN_RUN="+c.clientName+" "+site.name)
 	}
 	c.limitClock = log.clock
@@ -2422,7 +2423,7 @@ func logFirst(t *testing.T, script, name string, log *standInLog) string {
 	if !ok {
 		t.Fatalf("the stand-in %q does not begin #!/bin/sh: it cannot log its start first", script)
 	}
-	return "#!/bin/sh\nprintf '%s\\n' \"" + name + " $LEGION_TLS_URL\" >>'" + log.path + "'\n" + body
+	return "#!/bin/sh\nprintf '%s\\n' \"" + name + " $LEGION_TLS_URL\" >>" + shellprefix.Literal(log.path) + "\n" + body
 }
 
 // deadlineOnceLogged is a probe context that the probe's deadline ends once log holds line one
@@ -2532,7 +2533,7 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	standIn := func(name, firstRun, refusal string) string {
 		path := filepath.Join(stubs, name)
 		script := "#!/bin/sh\n" +
-			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; " + firstRun + "; fi\n" +
+			"if [ ! -e " + shellprefix.Literal(path+".ran") + " ]; then : >" + shellprefix.Literal(path+".ran") + "; " + firstRun + "; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || exit 0\n" +
 			"echo '" + refusal + "' >&2\nexit 1\n"
 		if err := os.WriteFile(path, []byte(logFirst(t, script, name, stubRuns)), 0o755); err != nil {
@@ -2583,8 +2584,8 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	t.Run("the positive controls get no second run", func(t *testing.T) {
 		path := filepath.Join(stubs, "positive-control")
 		script := "#!/bin/sh\n" +
-			"printf '%s\\n' \"$LEGION_TLS_URL\" >>'" + path + ".runs'\n" +
-			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; exec sleep 30; fi\n" +
+			"printf '%s\\n' \"$LEGION_TLS_URL\" >>" + shellprefix.Literal(path+".runs") + "\n" +
+			"if [ ! -e " + shellprefix.Literal(path+".ran") + " ]; then : >" + shellprefix.Literal(path+".ran") + "; exec sleep 30; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || { echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2; exit 60; }\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -2882,7 +2883,7 @@ func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	runs := standInRuns(t)
-	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs.path+"'\nexec sleep 30\n")
+	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>"+shellprefix.Literal(runs.path)+"\nexec sleep 30\n")
 	previous := tlsPositiveControlSpec
 	t.Cleanup(func() { tlsPositiveControlSpec = previous })
 	tlsPositiveControlSpec.timeout, tlsPositiveControlSpec.limitClock = time.Second, runs.clock
