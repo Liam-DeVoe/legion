@@ -181,8 +181,9 @@ func TestParseLevelReadsAComponentsTableWhereverThePartHoldsIt(t *testing.T) {
 }
 
 // A row of a Components table that reads as no component or interface - a table of another number
-// of columns, a kind that is neither `component` nor `interface`, an empty id - is refused as a
-// node the approved spec cannot hold (SPEC_NODE_INVALID), naming the row, and never left out.
+// of columns, a kind that is neither `component` nor `interface`, an empty id, a parent or joins
+// that names no id and not `none` - is refused as a node the approved spec cannot hold
+// (SPEC_NODE_INVALID), naming the row, and never left out.
 func TestParseLevelRefusesAComponentRowItCannotRead(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -192,6 +193,8 @@ func TestParseLevelRefusesAComponentRowItCannotRead(t *testing.T) {
 			level: "# Level\n\n## Components\n\n| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n| billing | component | Billing | It bills. |\n"},
 		{name: "a kind of no component", node: "billing", level: componentsTable("| billing | service | Billing | It bills. | none |\n")},
 		{name: "an empty id", node: "-", level: componentsTable("|  | component | Billing | It bills. | none |\n")},
+		{name: "an empty parent or joins", node: "billing", level: componentsTable("| billing | component | Billing | It bills. |  |\n")},
+		{name: "a parent or joins of commas alone", node: "billing", level: componentsTable("| billing | component | Billing | It bills. | , |\n")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -343,9 +346,10 @@ func TestImportRefusesALevelIDTheStoreCannotHold(t *testing.T) {
 
 // A note writes each of a statement's fields, and `none` is a value: About or Supports `none` is an
 // approved relation to nothing, and the statement is written. A field its note leaves out, or writes
-// with no value, supplies nothing, so the statement is held for it as for a field the reader cannot
-// place: the level is read and imported, and the import holds the statement lacking that field and
-// writes the rest. A statement no note names is held for its kind alone, as before.
+// with a value that names no id and not `none`, supplies nothing, so the statement is held for it as
+// for a field the reader cannot place: the level is read and imported, and the import holds the
+// statement lacking that field and writes the rest. A statement no note names is held for its kind
+// alone, as before.
 func TestImportHoldsAStatementForEachFieldItsNoteLeavesOut(t *testing.T) {
 	const level = "# Level\n\n## Statements\n\n:::requirement{#a-bill-is-sent}\nA bill is sent.\n:::\n\n## Components\n\n" +
 		"| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n| billing | component | Billing | It bills each order. | none |\n"
@@ -357,6 +361,7 @@ func TestImportHoldsAStatementForEachFieldItsNoteLeavesOut(t *testing.T) {
 		{name: "no about", note: "- Kind: behavior\n- Supports: none\n", lacks: []string{"about"}},
 		{name: "no supports", note: "- Kind: behavior\n- About: billing\n", lacks: []string{"supports"}},
 		{name: "an about with no value", note: "- Kind: behavior\n- About:\n- Supports: none\n", lacks: []string{"about"}},
+		{name: "an about of commas alone", note: "- Kind: behavior\n- About: ,\n- Supports: none\n", lacks: []string{"about"}},
 		{name: "neither about nor supports", note: "- Kind: behavior\n", lacks: []string{"about", "supports"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
