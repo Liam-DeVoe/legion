@@ -728,12 +728,20 @@ export default defineConfig({
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
   // .github/scripts/dispatch-browser-shard-suite.sh, dispatch-browser-alone-suite.sh and
-  // dispatch-browser-host-suite.sh name this file in theirs. With E2E_MEASURE_FILE set, the
-  // timing fixture's reporter writes one row per test beside the list reporter's own output
-  // (e2e/measure-reporter.ts); without it the run is untouched.
+  // dispatch-browser-host-suite.sh name this file in theirs. `shard-reporter.ts` does nothing in
+  // a run without `--shard`, and in one with it places the files on the legs by measured row time
+  // in place of Playwright's split by count (e2e/shard-split.ts says why), so a local `--shard`
+  // run under the same DISPATCH_E2E_QUARANTINE holds the rows the CI leg of that number holds;
+  // the shard job names it in its own list for the same reason as above. What it places is what
+  // each project selects after its own `grep` and the `grepInvert` that `quarantined` adds below,
+  // which Playwright applies before the reporter reads the selection, so a quarantined row is on
+  // no leg. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test
+  // beside the list reporter's own output (e2e/measure-reporter.ts); without it the run is
+  // untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    [fileURLToPath(new URL("./shard-reporter.ts", import.meta.url))],
     ...(measuring
       ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
       : []),

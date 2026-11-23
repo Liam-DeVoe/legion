@@ -13,13 +13,16 @@
  *  exactly what the config's own pattern selects, so an entry whose row it does not hold names
  *  no row of the suite. `fixtures/quarantine.config.ts` lists planted rows the same way, under
  *  each of the three selections, which is what shows the pattern takes the rows its entries name
- *  and nothing that only looks like one.
+ *  and nothing that only looks like one. Its listing under `exclude` is split again through
+ *  `e2e/shard-reporter.ts` over the shard job's four legs, which shows the split by row time
+ *  places the rows the pattern leaves, each on one leg, and brings no quarantined row back.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { rowsOfListing } from "../configurations";
+import { legRowFaults } from "../leg-rows";
 import realConfig from "../playwright.config";
 import {
   entryLines,
@@ -244,4 +247,41 @@ test(
     ]);
   },
   rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+);
+
+// The shard job's browser step runs under `exclude`, and its legs place the selection
+// e2e/shard-reporter.ts reads in `preprocess`, which Playwright builds after each project's own
+// `grepInvert` - the one `quarantined` adds - and from which the reporter only takes rows away.
+// So the planted listing under `exclude`, split over the job's four legs through the reporter,
+// must hold each row it holds on exactly one leg (`legRowFaults`, the merge job's check), and no
+// leg a quarantined row. The legs are listed one after another, each of the planted file alone.
+test(
+  "the shard legs place the rows the pattern leaves, each on one leg, and no quarantined row",
+  async () => {
+    const left = rowsOfListing(await plantedExcluded).map(rowName);
+    const quarantinedNames = plantedQuarantine.map(rowName);
+    const legs = [];
+    for (let leg = 1; leg <= 4; leg += 1) {
+      const listed = await listing(
+        import.meta.url,
+        plantedConfig,
+        { DISPATCH_E2E_QUARANTINE: "exclude" },
+        [`--shard=${leg}/4`, "--pass-with-no-tests"],
+        ["./e2e/shard-reporter.ts"]
+      );
+      legs.push({ leg: `shard-${leg}`, ran: rowsOfListing(listed).map(rowName), selection: left });
+    }
+    expect(left.length).toBeGreaterThan(0);
+    expect(legRowFaults(legs)).toEqual([]);
+    expect(
+      legs.flatMap((leg) => leg.ran.filter((name) => quarantinedNames.includes(name)))
+    ).toEqual([]);
+  },
+  rowLimit(
+    { atOnce: ["listing", "listing", "listing", "listing", "listing"] },
+    "listing",
+    "listing",
+    "listing",
+    "listing"
+  )
 );
