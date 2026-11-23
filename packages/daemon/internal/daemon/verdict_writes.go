@@ -459,11 +459,10 @@ func headConclusion(at []verdictDecision) verdict.Conclusion {
 // /commits/{sha}/pulls).
 func (w *workflowRuntime) openPullRequestsAt(ctx context.Context, repository ghrepo.Repository, head string) ([]int, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.ReadToken(ctx, serving.Owner())
+	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
 		return nil, fmt.Errorf("mint the read token for %s: %w", serving, err)
 	}
-	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	pulls, err := githubrest.GetPages[githubrest.PullRequest](read, client, "/commits/"+head+"/pulls?per_page=100")
@@ -758,11 +757,10 @@ const changeCommitsListed = 250
 // reading of the change, and an error.
 func (w *workflowRuntime) changeSessions(ctx context.Context, repository ghrepo.Repository, number int, head string) (map[string]bool, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.ReadToken(ctx, serving.Owner())
+	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
 		return nil, fmt.Errorf("mint the read token for %s: %w", serving, err)
 	}
-	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	commits, err := githubrest.GetPages[listedCommit](read, client, "/pulls/"+strconv.Itoa(number)+"/commits")
@@ -845,11 +843,10 @@ func reviewsOf(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, num
 // read token (GET /pulls/{number}).
 func (w *workflowRuntime) readVerdictPullRequest(ctx context.Context, repository ghrepo.Repository, number int) (githubrest.PullRequest, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.ReadToken(ctx, serving.Owner())
+	client, err := readClient(ctx, w.tokens, w.githubAPI, serving)
 	if err != nil {
 		return githubrest.PullRequest{}, fmt.Errorf("mint the read token for %s: %w", serving, err)
 	}
-	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	var pull githubrest.PullRequest
