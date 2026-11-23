@@ -554,99 +554,110 @@ func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
 // write's commit and its publish, with task B's append of the delete held. The second flush waits
 // for that append, and the write's lost operations name the one bob removed. The write loads no
 // room on task A, publishing into none.
+//
+// The write runs on a goroutine of its own, and every wait of the row is the test goroutine's: the
+// write's hook parks it once it has committed, before its publish, until the test has made bob's
+// delete and lets it go (letGo, which a test that ended first calls in its cleanup). The publish's
+// loss check is bounded on task A's clock, this fake, which never moves here, so the check ends
+// only once task B answers; a check that never does fails the row's wait for the write by name.
 func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(t *testing.T) {
 	pair, clock := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
-	var once sync.Once
+	committed, proceed := make(chan struct{}), make(chan struct{})
+	var once, proceeded sync.Once
+	letGo := func() { proceeded.Do(func() { close(proceed) }) }
+	t.Cleanup(letGo)
+	t.Cleanup(pair.gateB.release)
 	pair.taskA.afterLiveCommit = func(string) {
 		once.Do(func() {
-			pair.heldEditOnB(t, 1, bob, withoutFirstTopLevelBlock)
-			// Task B's append opens once the publish's flush waits for it: an append that landed
-			// before that wait would be in the fork the write reads, not the loss this row reads.
-			// The release runs on a goroutine of its own, since this hook runs on the write's own
-			// goroutine, which arms that wait only once the hook returns. A give-up of its wait
-			// opens the gate all the same, so the write is never left parked behind it. The
-			// goroutine touches no t: its give-up and the cleanup's wait for it end at the same
-			// moment, and a t.Error from it once the test has ended panics the binary. It hands
-			// the cleanup its give-up, which the cleanup fails the test with, and what its wait
-			// last read, which the cleanup's own give-up names.
-			//
-			// What the hook reads armed can still hold task B's answer to the write's join flush:
-			// its flush timeout and its send's bound (roomQueries.query, send), each armed before
-			// that answer left task B and let go only as its goroutine returns, which can be after
-			// task A read the answer, committed and reached this hook. Neither is armed again, and
-			// the publish asks no other query first, so the wait is for a deadline the hook's
-			// reading does not hold (armedBeyond), which no arm let go of ever makes, in whatever
-			// order those two go and the publish's two come: task A's wait for the publish's
-			// answers and task B's flush timeout. Each of those is answerWait from the fake's
-			// moment, which never moves here, and answerWait is what is left of the shared wait:
-			// read after the hook's reading, it is shorter than every one read before it, and it
-			// equals a send's roomSyncSendTimeout only when read 2 s before the shared wait gives up.
-			before := queryArms(clock)
-			var last struct {
-				sync.Mutex
-				read queryArmsReading
-			}
-			lastRead := func() queryArmsReading {
-				last.Lock()
-				defer last.Unlock()
-				return last.read
-			}
-			released := make(chan error, 1)
-			t.Cleanup(func() {
-				testwait.Until(t, "the release of task B's append to return", func() (string, bool) {
-					select {
-					case err := <-released:
-						if err != nil {
-							t.Errorf("%v; last read: %v", err, lastRead())
-						}
-						return "the release returned", true
-					default:
-					}
-					return fmt.Sprintf("the release still waits for the publish's flush; it last read %v", lastRead()), false
-				})
-			})
-			go func() {
-				err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (a room query's timer armed on the fake clock beyond the %v the hook read)", before), func() bool {
-					read := queryArmsReading{now: clock.Now(), all: clock.Armed(), arms: queryArms(clock)}
-					last.Lock()
-					last.read = read
-					last.Unlock()
-					return len(armedBeyond(before, read.arms)) > 0
-				})
-				pair.gateB.release()
-				released <- err
-			}()
+			close(committed)
+			<-proceed
 		})
 	}
-	lost, verdict := committedEdit(t, pair.taskA, pair.artifactID, model.EditOp{Op: "replace", Find: "Alpha paragraph.", With: "Alpha paragraph, extended."})
-	if !verdict || !reflect.DeepEqual(lost, []int{0}) {
-		t.Fatalf("the published write's lost operations = %v (verdict %t), want [0]: bob's delete on task B removed its text", lost, verdict)
+	edited := make(chan publishedEdit, 1)
+	go func() {
+		lost, verdict, err := committedEdit(pair.taskA, pair.artifactID, model.EditOp{Op: "replace", Find: "Alpha paragraph.", With: "Alpha paragraph, extended."})
+		edited <- publishedEdit{lost: lost, verdict: verdict, err: err}
+	}()
+	testwait.Eventually(t, "the agent's edit through task A to commit", func() bool {
+		select {
+		case got := <-edited:
+			t.Fatalf("the agent's edit through task A ended (%+v) before its commit's hook ran", got)
+		default:
+		}
+		select {
+		case <-committed:
+			return true
+		default:
+			return false
+		}
+	})
+	pair.heldEditOnB(t, 1, bob, withoutFirstTopLevelBlock)
+	// Task B's append opens once the publish's flush waits for it: an append that landed before
+	// that wait would be in the fork the write reads, not the loss this row reads.
+	//
+	// What the fake holds armed here can still hold task B's answer to the write's join flush: its
+	// flush timeout and its send's bound (roomQueries.query, send), each armed before that answer
+	// left task B and let go only as its goroutine returns, which can be after task A read the
+	// answer and committed. Neither is armed again, and the publish asks no other query first, so
+	// the wait is for a deadline this reading does not hold (armedBeyond), which no arm let go of
+	// ever makes, in whatever order those two go and the publish's two come: task A's wait for the
+	// publish's answers and task B's flush timeout. Each of those is answerWait from the fake's
+	// moment, which never moves here, and answerWait is what is left of the shared wait: read after
+	// this reading, it is shorter than every one read before it, and it equals a send's
+	// roomSyncSendTimeout only when read 2 s before the shared wait gives up. A write that returns
+	// before either is armed published without waiting for task B's flush.
+	before := queryArms(clock)
+	letGo()
+	testwait.Until(t, fmt.Sprintf("the publish's wait for task B's flush (a room query's timer armed on the fake clock beyond the %v read at the commit)", before), func() (queryArmsReading, bool) {
+		select {
+		case got := <-edited:
+			t.Fatalf("the agent's edit published (%+v) without waiting for task B's flush of bob's held delete", got)
+		default:
+		}
+		read := queryArmsReading{now: clock.Now(), all: clock.Armed(), arms: queryArms(clock)}
+		return read, len(armedBeyond(before, read.arms)) > 0
+	})
+	pair.gateB.release()
+	got := testwait.Receive(t, "the agent's edit through task A to return once its publish judged its loss (recordPublishedLoss)", edited)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if !got.verdict || !reflect.DeepEqual(got.lost, []int{0}) {
+		t.Fatalf("the published write's lost operations = %v (verdict %t), want [0]: bob's delete on task B removed its text", got.lost, got.verdict)
 	}
 	if pair.taskA.roomHeld(pair.artifactID) {
 		t.Fatal("the cold write's publish loaded a room on task A")
 	}
 }
 
+// publishedEdit is what committedEdit returned.
+type publishedEdit struct {
+	lost    []int
+	verdict bool
+	err     error
+}
+
 // committedEdit commits op as the agent's edit of artifactID through service and returns the
-// published write's lost operations and whether it reached a verdict (Ledger.LostOps).
-func committedEdit(t *testing.T, service *Service, artifactID string, op model.EditOp) (lost []int, verdict bool) {
-	t.Helper()
+// published write's lost operations, whether it reached a verdict (Ledger.LostOps), and why the
+// edit failed. It touches no t, so it runs off the test goroutine.
+func committedEdit(service *Service, artifactID string, op model.EditOp) (lost []int, verdict bool, err error) {
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the edit: %v", err)
+		return nil, false, fmt.Errorf("begin the edit: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{op}, lostEditAgent, nil); err != nil {
-		t.Fatalf("the agent's edit: %v", err)
+		return nil, false, fmt.Errorf("the agent's edit: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit the agent's edit: %v", err)
+		return nil, false, fmt.Errorf("commit the agent's edit: %w", err)
 	}
-	return ledger.LostOps(artifactID)
+	lost, verdict = ledger.LostOps(artifactID)
+	return lost, verdict, nil
 }
 
 // withoutFirstTopLevelBlock deletes the document's first top-level block, whatever its text: a

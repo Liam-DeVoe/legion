@@ -356,6 +356,10 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 // pool opened outside it could not touch again (its Close panics, "close of synctest channel from
 // outside bubble"). The row opens that pool itself and closes it directly: storetest's pools close
 // through the shared wait, which reads the test's deadline, and t.Deadline panics inside a bubble.
+// The bubbled service's Shutdown, in a cleanup of the bubble, cannot go through the shared wait
+// either, for the same reason, and synctest's deadlock check does not name it, since a Shutdown
+// waiting on a Postgres socket is not durably blocked: a Shutdown that never returns hangs the row
+// to go test's alarm, whose dump names the row and the line.
 func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")

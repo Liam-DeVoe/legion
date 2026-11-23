@@ -99,7 +99,8 @@ type Deps struct {
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
 	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
-	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
+	// a published write's loss check (publishedLossTimeout, recordPublishedLoss), VerifyMark's
+	// wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
 	// edit notice sweep's gaps and due times (RunEditNotices), the settlement resumption's ticks
 	// (RunSettlementResumption), Shutdown's drain budget (ShutdownDrainBudget) and each room's
 	// settlement timer (scheduleSettleAfterLocked); nil means the real clock. A test hands a
@@ -175,10 +176,11 @@ type Service struct {
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
 	// clock is Deps.Clock, the real clock when that is nil: what a room query's wait, its flush
-	// answer's timeout and an answer's send bound run on (roomQueries), VerifyMark's wait for a
-	// mark (markWait), the compaction queue's waits (compactionQueue), the edit notice sweep's gaps
-	// and due times (RunEditNotices) and each room's settlement timer (scheduleSettleAfterLocked),
-	// so on a fake every settlement waits until the test moves the fake past its delay.
+	// answer's timeout and an answer's send bound run on (roomQueries), a published write's loss
+	// check (publishedLossTimeout), VerifyMark's wait for a mark (markWait), the compaction queue's
+	// waits (compactionQueue), the edit notice sweep's gaps and due times (RunEditNotices) and each
+	// room's settlement timer (scheduleSettleAfterLocked), so on a fake every settlement waits until
+	// the test moves the fake past its delay.
 	clock clock.Clock
 	// excerptClock is Deps.Clock as the caller set it, nil in production: the clock the reference
 	// excerpt reconciliation reads the moment it hands its statements off (excerptMoment), where
