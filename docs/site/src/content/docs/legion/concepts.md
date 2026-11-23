@@ -261,12 +261,13 @@ still in the workflow is held before its retro until the last one leaves.
 Legion works only the issues handed to it with the Dispatch label **`legion`** (in any case), so it
 can share a Dispatch project with people and other agents. A root issue is admitted when it carries
 the label, is in `todo`, and a slot is free. A slot is one issue the daemon has started, a root or a
-child, so a tree of four started issues holds four of them. The number of slots is `admission_cap`
+child, in a phase that holds one, so a tree of four started issues holds at most four of them. The number of slots is `admission_cap`
 in the daemon's configuration, four by default; an issue that finds no free slot waits in line, and
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
+architect, a child at the start of its first step, where that step's phase holds one; a child whose
+first step is an acceptance starts it on no slot, and the slot goes to the next issue in line. An issue holds one of the cap's slots from the
 moment the daemon starts it until it is done or Dispatch takes it out of the workflow, in every
 phase but `accepting`, `retro` and `merging`, which hold none, and except while it waits on another
 issue in a phase that holds one.
@@ -298,8 +299,9 @@ that child is the tree's own work.
 
 An issue holding a slot starts its next phase whatever the cap says, and so does an issue whose
 next phase is `accepting`, `retro` or `merging`, which hold none. An issue that holds none and is
-owed a start, a child an architect
-has just released among them, waits in line while the project stands at the cap.
+owed a start in a phase that holds one, a child an architect
+has just released among them, waits in line while the project stands at the cap; a released child
+whose first step is an acceptance starts it at once, whatever the cap says.
 A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
