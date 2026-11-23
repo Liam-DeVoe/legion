@@ -341,26 +341,23 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	})
 }
 
-// runningRefusal is the refusal of a version that removes task a while it runs, or changes more of
-// it than its text.
+// runningRefusal is the refusal of a version that removes task a while it runs, or changes its
+// steps.
 func runningRefusal() *intake.Refusal {
 	return intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged("a")})
 }
 
-// A later version changes a task that waits or is stopped, and of a running task its text alone.
-// While task a runs, a version that changes its steps is refused naming a, and writes nothing. A
-// version that changes only a's text is taken: a goes on at its step on its steps with its counts,
-// the issue does not move, the one row queued is the run's plan node, which sends the running
-// agent nothing, the stored start task of the implementer's entry holds the new text and not the
-// old, and the fact's result names step 1, the implementer, as the act that runs. A version that
-// leaves a's block as it is, and changes only the prose outside it, is taken the same way. A
-// version at or below the one in force, and a version of another document, are refused. A version
-// given while a is stopped that leaves its block as it is
+// A later version changes a task that waits or is stopped, and of a running task its text alone
+// (TestALaterVersionChangesTheTextOfARunningTaskAlone). While task a runs, a version that changes
+// its steps is refused naming a, and writes nothing. A version that leaves a's block as it is, and
+// changes only the prose outside it, is taken, a goes on at its step, and the run's plan node is
+// written again at that version. A version at or below the one in force, and a version of another
+// document, are refused. A version given while a is stopped that leaves its block as it is
 // is taken and a stays stopped; one with other steps is taken, and starts a again at its first
 // step on the new steps: the hold is cleared, the issue stands in that step's phase, its role is
 // started at a raised entry told why, the pass rises by one, and no pair, round or hook is counted.
 // A version that changes a task that is done, or one whose issue left the workflow, is refused.
-func TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText(t *testing.T) {
+func TestALaterVersionChangesAWaitingOrStoppedTask(t *testing.T) {
 	t.Run("while a runs, then after it is stopped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -372,53 +369,23 @@ func TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText(t *testin
 		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
 
 		before := planStandingOf(t, pool, engine, key, gen)
-		started := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-		if !strings.Contains(started.EntryTask, "\nBuild the widget.\n") {
-			t.Fatalf("the implementer's stored start task %q holds no text of version 1", started.EntryTask)
-		}
 		id := planID(key, gen, 2)
 		assertPlanRefusal(t, pool, engine, key, gen, id,
 			apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))), runningRefusal(), before)
 
-		manual := givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer")
-		retexted := apply(planID(key, gen, 3), ownersPlan(t, key, gen, 3, manual))
-		mustTake(t, "version 3 with a's text alone changed", retexted)
-		implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
-		if !reflect.DeepEqual(retexted.Running, implementing) {
-			t.Fatalf("version 3 answered the running steps %+v, want %+v: step 1, the implementer", retexted.Running, implementing)
-		}
-		kept := planStandingOf(t, pool, engine, key, gen)
-		if !reflect.DeepEqual(kept.versions, []string{"1 owner", "3 owner"}) {
-			t.Fatalf("the versions after version 3 = %v, want 1 and 3", kept.versions)
-		}
-		if task, was := kept.task(t), before.task(t); task.State != record.TaskRunning || task.Place != was.Place || task.BlockText != manual.Text ||
-			!reflect.DeepEqual(kept.plan.Steps, before.plan.Steps) || !sameReturnCounts(task.Counts, was.Counts) {
-			t.Fatalf("task a after version 3 = %+v, want it running at %+v on its steps with version 3's text, its counts as they were", task, was.Place)
-		}
-		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
-			t.Fatalf("version 3 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
-		}
-		retold := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-		retask, _ := WithTaskText(started.EntryTask, manual.Text)
-		if retold.Entry != started.Entry || retold.EntryTask != retask ||
-			!strings.Contains(retold.EntryTask, "\nBuild the widget, and its manual.\n") || strings.Contains(retold.EntryTask, "\nBuild the widget.\n") {
-			t.Fatalf("the implementer's stored start task after version 3 = entry %d %q, want entry %d holding version 3's text and not version 1's",
-				retold.Entry, retold.EntryTask, started.Entry)
-		}
-
 		// The control: the same block, with only the prose outside it changed, which no
 		// plan.Plan holds, is taken, and a goes on at its step.
-		mustTake(t, "version 4 with a's block as it is", apply(planID(key, gen, 4), ownersPlan(t, key, gen, 4, manual)))
-		kept = planStandingOf(t, pool, engine, key, gen)
-		if !reflect.DeepEqual(kept.versions, []string{"1 owner", "3 owner", "4 owner"}) {
-			t.Fatalf("the versions after version 4 = %v, want 1, 3 and 4", kept.versions)
+		mustTake(t, "version 4 with a's block as it is", apply(planID(key, gen, 4), ownersPlan(t, key, gen, 4, built)))
+		kept := planStandingOf(t, pool, engine, key, gen)
+		if !reflect.DeepEqual(kept.versions, []string{"1 owner", "4 owner"}) {
+			t.Fatalf("the versions after version 4 = %v, want 1 and 4", kept.versions)
 		}
 		if task, was := kept.task(t), before.task(t); task.State != record.TaskRunning || task.Place != was.Place ||
 			!reflect.DeepEqual(kept.plan.Steps, before.plan.Steps) || !sameReturnCounts(task.Counts, was.Counts) {
 			t.Fatalf("task a after version 4 = %+v, want it running at %+v on its steps, its counts as they were", task, was.Place)
 		}
-		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+2 {
-			t.Fatalf("version 4 moved %s or queued %d outbox rows since version 1, want no move and two rows, the plan nodes", key, kept.outbox-before.outbox)
+		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
+			t.Fatalf("version 4 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
 		}
 		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 4},
@@ -432,7 +399,7 @@ func TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText(t *testin
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))),
 			&intake.Refusal{Status: 409, Code: "PLAN_VERSION_OLD",
 				Message: "the plan in force of LEGION-208 is version 4, and Legion takes only a later version: version 2 changed nothing."}, kept)
-		other := ownersPlan(t, key, gen, 5, manual)
+		other := ownersPlan(t, key, gen, 5, built)
 		other.Plan.ArtifactID = "0b6a2d4e-9f1c-4c3a-8e5d-7a6b5c4d3e2f"
 		otherID := fmt.Sprintf("plan:%s:%d:%s:%d", key, gen, other.Plan.ArtifactID, 5)
 		assertPlanRefusal(t, pool, engine, key, gen, otherID, apply(otherID, other), &intake.Refusal{Status: 409, Code: "PLAN_DOCUMENT_CHANGED",
@@ -447,7 +414,7 @@ func TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText(t *testin
 
 		// A version that leaves the stopped task's block as it is changes no task: a stays stopped,
 		// and the one row queued is the run's plan node at version 5.
-		mustTake(t, "version 5 with a's block as it is", apply(planID(key, gen, 5), ownersPlan(t, key, gen, 5, manual)))
+		mustTake(t, "version 5 with a's block as it is", apply(planID(key, gen, 5), ownersPlan(t, key, gen, 5, built)))
 		still := planStandingOf(t, pool, engine, key, gen)
 		if task := still.task(t); task.State != record.TaskStopped || task.Place != stopped.task(t).Place || still.issue.Phase != phase.Held ||
 			still.outbox != stopped.outbox+1 {

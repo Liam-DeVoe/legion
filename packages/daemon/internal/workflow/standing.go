@@ -84,22 +84,22 @@ const ownersOpening = " " + taskTextLabel + ": the text of the task's block, whi
 
 // WithTaskText is task, a start's task as a store keeps it, with the owners part it ends with
 // holding text, the text of the task's block as the plan in force gives it now, in place of the
-// text it was composed with, and whether task holds an owners part at all (ownersPart). It is the
-// one rewrite of a start's task whose task's text a later version of the plan changed while the
-// task ran (plan.RunningChange takes such a version): the stored task of the running step's entry
-// (record.PhaseRow.EntryTask, retext), which the send of an owed entry sends again, and a task a
-// claim holds that is sent again (the daemon's send-time read of a held task, supervise's
-// Deps.TaskText). A task that holds text already, as a task composed after the version does, is
-// answered as it is, with no copy made.
-func WithTaskText(task, text string) (string, bool) {
+// text it was composed with (ownersPart). It is the one rewrite of a start's task whose task's text
+// a later version of the plan changed while the task ran (plan.RunningChange takes such a
+// version): the stored task of the running step's entry (record.PhaseRow.EntryTask, retext), which
+// the send of an owed entry sends again, and a task a claim holds that is sent again (the daemon's
+// send-time read of a held task, supervise's Deps.TaskText). A task that holds text already, as a
+// task composed after the version does, and a task that holds no owners part (HoldsTaskText), are
+// answered as they are, with no copy made.
+func WithTaskText(task, text string) string {
 	before, held, round, ok := ownersPart(task)
 	if !ok {
-		return task, false
+		return task
 	}
 	if text = strings.TrimSpace(text); text == held {
-		return task, true
+		return task
 	}
-	return before + ownersText(text) + round, true
+	return before + ownersText(text) + round
 }
 
 // HoldsTaskText says whether task ends with an owners part (ownersPart), the part WithTaskText

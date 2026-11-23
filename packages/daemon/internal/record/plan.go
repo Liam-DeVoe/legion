@@ -176,12 +176,17 @@ type RunningStep struct {
 	Role  claim.Role
 }
 
+// builtinRoles is the roles a step of this release runs as (plan.BuiltinRoles), read once: Running
+// reads a step's phase from it, as the workflow's walk does.
+var builtinRoles = plan.BuiltinRoles()
+
 // Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
 // of p's tasks, which is the order of their ids; nil where no task runs. A step runs as the phase
-// of its role (plan.BuiltinRoles, the roles a step of this release names), the retro as retro and
-// the merge as merging. A step whose place p's steps do not hold, or whose role runs as no phase,
-// is named with no role.
-func (p *StoredPlan) Running() []RunningStep {
+// of its role (builtinRoles), the retro as retro and the merge as merging. A running task at no
+// act, at a step its steps do not hold, or at a step whose role runs as no phase is an error, as
+// the workflow's walk of such a plan is: no plan this release takes writes one, and no answer names
+// a running task with no role.
+func (p *StoredPlan) Running() ([]RunningStep, error) {
 	var running []RunningStep
 	for _, task := range p.Tasks {
 		if task.State != TaskRunning {
@@ -195,12 +200,16 @@ func (p *StoredPlan) Running() []RunningStep {
 			runsAs = phase.Merging
 		case PlaceStep:
 			if steps := p.Steps[task.Task]; task.Place.Position >= 1 && task.Place.Position <= len(steps) {
-				runsAs = plan.BuiltinRoles()[steps[task.Place.Position-1].Role].Phase
+				runsAs = builtinRoles[steps[task.Place.Position-1].Role].Phase
 			}
 		}
-		running = append(running, RunningStep{Task: task.Task, Place: task.Place, Role: phase.RoleFor(runsAs)})
+		role := phase.RoleFor(runsAs)
+		if role == "" {
+			return nil, fmt.Errorf("task %s of %s runs at %q %d, which no role of this release works", task.Task, task.Issue, task.Place.Kind, task.Place.Position)
+		}
+		running = append(running, RunningStep{Task: task.Task, Place: task.Place, Role: role})
 	}
-	return running
+	return running, nil
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the

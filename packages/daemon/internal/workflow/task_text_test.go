@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -497,17 +498,76 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 			if tc.retold == (before == after) {
 				t.Fatalf("the task composed with each text = %q and %q, want them to differ %v", before, after, tc.retold)
 			}
-			if got, holds := WithTaskText(before, now); got != after || holds != tc.retold {
-				t.Fatalf("WithTaskText(%q) = %q, %v,\nwant the task composed with the later text %q, %v", before, got, holds, after, tc.retold)
+			if got := WithTaskText(before, now); got != after || HoldsTaskText(before) != tc.retold {
+				t.Fatalf("WithTaskText(%q) = %q, holding an owner's part %v,\nwant the task composed with the later text %q, %v", before, got, HoldsTaskText(before), after, tc.retold)
 			}
-			if got, holds := WithTaskText(after, now); got != after || holds != tc.retold {
-				t.Fatalf("WithTaskText of the task that holds the later text = %q, %v, want it as it is, %v", got, holds, tc.retold)
+			if got := WithTaskText(after, now); got != after {
+				t.Fatalf("WithTaskText of the task that holds the later text = %q, want it as it is", got)
 			}
 		})
 	}
 	unplanned := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Implementing}
 	today := task(unplanned, WorkingCopy(unplanned, dir), handoff, nil, reason)
-	if got, holds := WithTaskText(today, now); got != today || holds {
-		t.Fatalf("WithTaskText of the task of an issue with no plan rows = %q, %v, want it whole, false", got, holds)
+	if got := WithTaskText(today, now); got != today || HoldsTaskText(today) {
+		t.Fatalf("WithTaskText of the task of an issue with no plan rows = %q, holding an owner's part %v, want it whole, false", got, HoldsTaskText(today))
+	}
+}
+
+// ownersPart finds the owner's part of a stored start task (record.PhaseRow.EntryTask) and of a
+// task a claim holds by the exact words of ownersOpening. A release that rewords them parses no task
+// stored before it, and a later version's text then never reaches that task. So the words are
+// pinned here, as every task composed before this test stores them.
+func TestTheOwnersOpeningKeepsTheWordsEveryStoredTaskHolds(t *testing.T) {
+	const stored = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default), " +
+		"between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
+	if ownersOpening != stored {
+		t.Fatalf("ownersOpening = %q, want %q: every start task stored before the change (a phases row's entry task, a claim's held delivery) "+
+			"holds these words, and ownersPart finds its owner's part by them, so a change of them leaves each such task unparsed, "+
+			"and a later version's text never reaches it", ownersOpening, stored)
+	}
+}
+
+// A later version that changes only the text of a running task is taken (plan.RunningChange): the
+// task goes on at its step on its steps with its counts, the issue does not move, the one row
+// queued is the run's plan node, which sends the running agent nothing, the stored start task of
+// the implementer's entry holds the new text and not the old (retext), and the fact's result names
+// step 1, the implementer, as the act that runs (record.StoredPlan.Running).
+func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester", "reviewer"))))
+	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+
+	before := planStandingOf(t, pool, engine, key, gen)
+	started := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
+	if !strings.Contains(started.EntryTask, "\nBuild the widget.\n") {
+		t.Fatalf("the implementer's stored start task %q holds no text of version 1", started.EntryTask)
+	}
+	manual := givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer")
+	retexted := apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, manual))
+	mustTake(t, "version 2 with a's text alone changed", retexted)
+	implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
+	if !reflect.DeepEqual(retexted.Running, implementing) {
+		t.Fatalf("version 2 answered the running steps %+v, want %+v: step 1, the implementer", retexted.Running, implementing)
+	}
+	kept := planStandingOf(t, pool, engine, key, gen)
+	if !reflect.DeepEqual(kept.versions, []string{"1 owner", "2 owner"}) {
+		t.Fatalf("the versions after version 2 = %v, want 1 and 2", kept.versions)
+	}
+	if task, was := kept.task(t), before.task(t); task.State != record.TaskRunning || task.Place != was.Place || task.BlockText != manual.Text ||
+		!reflect.DeepEqual(kept.plan.Steps, before.plan.Steps) || !sameReturnCounts(task.Counts, was.Counts) {
+		t.Fatalf("task a after version 2 = %+v, want it running at %+v on its steps with version 2's text, its counts as they were", task, was.Place)
+	}
+	if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
+		t.Fatalf("version 2 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
+	}
+	retold := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
+	if retold.Entry != started.Entry || retold.EntryTask != WithTaskText(started.EntryTask, manual.Text) ||
+		!strings.Contains(retold.EntryTask, "\nBuild the widget, and its manual.\n") || strings.Contains(retold.EntryTask, "\nBuild the widget.\n") {
+		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d holding version 2's text and not version 1's",
+			retold.Entry, retold.EntryTask, started.Entry)
 	}
 }

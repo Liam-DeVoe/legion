@@ -68,7 +68,7 @@ func (w *workflowRuntime) taskText(ctx context.Context, c supervise.Claim, d sup
 	if !found {
 		return d.Task, d.News, nil
 	}
-	rewritten, _ := workflow.WithTaskText(own, text)
+	rewritten := workflow.WithTaskText(own, text)
 	if len(d.News) == 0 {
 		return rewritten, d.News, nil
 	}

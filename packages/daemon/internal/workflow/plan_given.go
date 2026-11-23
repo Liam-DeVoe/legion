@@ -48,21 +48,24 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if err != nil || stored == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{Running: stored.Running()}, nil
+	running, err := stored.Running()
+	if err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{Running: running}, nil
 }
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil
 // for one it does not), whether the version is of the issue's own generation (recorded, false for
-// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), the
-// tasks the version changes, adds or removes over it (plan.ChangedTasks), and of those the running
-// tasks whose text alone it changes (retexted, plan.RunningChange), which keep their steps and go
-// on where they stand.
+// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), and
+// the tasks the version changes, adds or removes over it (plan.ChangedTasks), but a running task
+// whose text alone it changes (plan.RunningChange), which keeps its steps and where it stands, as a
+// task the version leaves as it was does.
 type givenVersion struct {
 	issue    *record.Issue
 	recorded bool
 	stored   *record.StoredPlan
 	changed  []string
-	retexted []string
 }
 
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
@@ -107,25 +110,21 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusal, nil
 		}
 		held := heldPlan(given.stored)
-		given.changed = plan.ChangedTasks(held, fact.Plan)
 		var running []plan.Refusal
-		for _, id := range given.changed {
-			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
-			if at < 0 {
-				continue
+		for _, id := range plan.ChangedTasks(held, fact.Plan) {
+			if at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id }); at >= 0 {
+				state := given.stored.Tasks[at].State
+				if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+					return givenVersion{}, refusal, nil
+				}
+				if state == record.TaskRunning {
+					if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
+						running = append(running, *refusal)
+					}
+					continue
+				}
 			}
-			state := given.stored.Tasks[at].State
-			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
-				return givenVersion{}, refusal, nil
-			}
-			if state != record.TaskRunning {
-				continue
-			}
-			if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
-				running = append(running, *refusal)
-				continue
-			}
-			given.retexted = append(given.retexted, id)
+			given.changed = append(given.changed, id)
 		}
 		if len(running) > 0 {
 			return givenVersion{}, intake.PlanRefused(running), nil
@@ -163,7 +162,7 @@ type writtenVersion struct {
 // each other task it changes takes the steps its block now names, and each task it removes is
 // deleted. It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given.stored, given.changed, given.retexted, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -215,7 +214,7 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 			return err
 		}
 	}
-	if err := e.retext(ctx, tx, issue, given.retexted); err != nil {
+	if err := e.retext(ctx, tx, issue, w); err != nil {
 		return err
 	}
 	if !ends {
@@ -228,43 +227,39 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	return e.restartTask(ctx, tx, issue, w, reason)
 }
 
-// retext writes again the stored start task of the act each task of retexted runs at, a running
-// task whose text alone the version just written changed, with the text its block now holds
-// (WithTaskText): the task the phases row of the role whose agent works that act holds for the
-// entry it is on (record.PhaseRow.EntryTask, record.StoredPlan.Running), which the send of an owed
-// entry sends again (sendOwedEntry), to a fresh session among others. It writes in the transaction
-// that takes the version and sends nothing: the agent at work read its start already, and its owner
-// tells it by message of a decision for the act it works. A start composed after the version reads
-// the text from the plan in force (standingPart), and a task a claim holds takes it where the claim's
-// machine sends that task again (supervise's Deps.TaskText).
-func (e *Engine) retext(ctx context.Context, tx pgx.Tx, issue record.Issue, retexted []string) error {
-	if len(retexted) == 0 {
+// retext writes again the stored start task of the act w's task runs at, where that task runs,
+// with the text its block holds in the version just written (WithTaskText): the task the phases
+// row of the role whose agent works that act holds for the entry it is on
+// (record.PhaseRow.EntryTask), which the send of an owed entry sends again (sendOwedEntry), to a
+// fresh session among others. A version that leaves the text as it was writes nothing. It writes in
+// the transaction that takes the version and sends nothing: the agent at work read its start
+// already, and its owner tells it by message of a decision for the act it works. A start composed
+// after the version reads the text from the plan in force (standingPart), and a task a claim holds
+// takes it where the claim's machine sends that task again (supervise's Deps.TaskText). A running
+// task stands at an act, a step, its retro or its merge, so the role is that act's, never the
+// architect's of admitted.
+func (e *Engine) retext(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
+	if !w.Stored || w.State != record.TaskRunning {
 		return nil
 	}
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-	if err != nil || stored == nil {
+	role := RoleFor(issuePhaseOf(w, w.Place, w.State))
+	if role == "" {
+		return fmt.Errorf("retext %s: task %s runs at %+v, which no role works", issue.Key, w.Task, w.Place)
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
 		return err
 	}
-	for _, running := range stored.Running() {
-		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == running.Task })
-		if running.Role == "" || at < 0 || !slices.Contains(retexted, running.Task) {
-			continue
-		}
-		row, err := e.phaseRow(ctx, tx, issue.Key, running.Role)
-		if err != nil {
-			return err
-		}
-		task, _ := WithTaskText(row.EntryTask, stored.Tasks[at].BlockText)
-		if task == row.EntryTask {
-			continue
-		}
-		row.EntryTask = task
-		if err := e.store.PutPhase(ctx, tx, row); err != nil {
-			return err
-		}
-		e.logOnCommit(ctx, "workflow: the stored start task of a running task takes the text of its task's block a later version wrote",
-			"issue", issue.Key, "task", running.Task, "role", running.Role, "entry", row.Entry, "version", stored.Version.Version)
+	task := WithTaskText(row.EntryTask, w.Text)
+	if task == row.EntryTask {
+		return nil
 	}
+	row.EntryTask = task
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: the stored start task of a running task takes the text of its task's block a later version wrote",
+		"issue", issue.Key, "task", w.Task, "role", role, "entry", row.Entry, "version", w.Version.Version)
 	return nil
 }
 
@@ -321,14 +316,12 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 }
 
 // givenRows is the rows of fact's version, given at now over stored, the plan in force (nil for
-// none), of which changed are the tasks it changes, adds or removes, and retexted the running
-// tasks of changed whose text alone it changes. Each task takes the version's block, and a task new
-// to the generation waits at no act (PutPlan keeps where a task the generation holds stands). A
-// task the version leaves as it was, or a running task whose text alone it changes, keeps its
-// stored steps, so its place stays the place of the step it runs; any other task takes the steps
-// its block names (StepsOf), or, for a block that names none, defaults, the project's default
-// steps (Config.DefaultSteps), each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed, retexted []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// none), of which changed are the tasks it changes, adds or removes. Each task takes the
+// version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
+// the generation holds stands). A task the version leaves as it was keeps its stored steps; any
+// other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
+// the project's default steps (Config.DefaultSteps), each with the type of its role (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -337,7 +330,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed, retext
 		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
 			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, OwnerRole: given.Owner, Merges: given.Merges,
 			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
-		if stored != nil && (!slices.Contains(changed, given.ID) || slices.Contains(retexted, given.ID)) {
+		if stored != nil && !slices.Contains(changed, given.ID) {
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}

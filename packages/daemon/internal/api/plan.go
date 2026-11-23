@@ -218,7 +218,11 @@ func (s *server) runningAt(ctx context.Context, issue string, generation uint64)
 	if err != nil || stored == nil {
 		return nil, err
 	}
-	return stored.Running(), tx.Commit(ctx)
+	running, err := stored.Running()
+	if err != nil {
+		return nil, err
+	}
+	return running, tx.Commit(ctx)
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
