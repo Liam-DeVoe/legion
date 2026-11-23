@@ -33,7 +33,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 ## Steps
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
+   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the newest review (`--phase review`) where it has a reviewer step: your task's `Handoff:` line names its last step's handoff.
    A step of a role of the deployment writes no handoff: `dispatch steps --issue <issue>` shows how each of its runs ended.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
