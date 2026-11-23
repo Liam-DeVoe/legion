@@ -379,8 +379,8 @@ export function legionToolDescription(host: {
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger and a step of the role acceptance, or of a role " +
-    "of the deployment or of the plan, write no handoff record: each reports the commit the workspace stands on. So does a phase you left with no " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger, the role acceptance and each role " +
+    "of the deployment or of the plan write no handoff record. Each reports the commit the workspace stands on. So does a phase you left with no " +
     "record, or with an implement record naming no head. It " +
     "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +

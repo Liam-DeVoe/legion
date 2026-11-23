@@ -207,8 +207,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
   "and reports it with `commit`, the head that record's body names " +
   "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger and a step of the role acceptance, or of a role " +
-  "of the deployment or of the plan, write no handoff record: each reports the commit the workspace stands on. So does a phase you left with no " +
+  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger, the role acceptance and each role " +
+  "of the deployment or of the plan write no handoff record. Each reports the commit the workspace stands on. So does a phase you left with no " +
   "record, or with an implement record naming no head. It " +
   "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
   "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
@@ -260,8 +260,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
   "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
   "is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance); a task that names none runs the " +
-  "project's default steps. Legion adds the retro, done by the agent of the task's last step of the type implementation, or by you " +
-  "where it has none or that step is yours, and the merge where the issue has a pull request. Give it before the issue's " +
+  "project's default steps. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
+  "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
   "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
