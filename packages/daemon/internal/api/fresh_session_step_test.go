@@ -177,10 +177,14 @@ func TestAControllersFreshSessionWhoseStepMovesUnderItRestartsNoOtherAgentsStep(
 // worker, is left as it was, suspended on its session. The named claim works no step, so no start
 // of the tester's step is queued for it, and the answer says the phase was not restarted. Naming
 // no claim still reaches the step's worker. A body naming a claim of another issue, or a claim
-// that holds another role, is refused, and nothing of either claim changes.
+// that holds another role, is refused, and nothing of either claim changes: so is a body naming the
+// implementer with key a's agent's own token, `…-implementer`, the token the implementer's role
+// would reach, since that claim holds the tester's role now.
 func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		// role is the role the body names, the tester's where it is "".
+		role claim.Role
 		// named is the claim the body names, as a function of the tester's own claim and key a's.
 		named func(own, keyed claim.Token) string
 		code  int
@@ -195,6 +199,9 @@ func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 			code: http.StatusBadRequest, fresh: func(_, _ claim.Token) claim.Token { return "" }},
 		{name: "a claim of the issue that holds another role", named: func(_, _ claim.Token) string { return "legion-legion-legion-209-reviewer" },
 			code: http.StatusConflict, fresh: func(_, _ claim.Token) claim.Token { return "" }},
+		{name: "key a's agent's own token, named as the implementer it no longer is", role: claim.RoleImplementer,
+			named: func(_, keyed claim.Token) string { return string(keyed) },
+			code:  http.StatusConflict, fresh: func(_, _ claim.Token) claim.Token { return "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -230,8 +237,12 @@ func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 				machines[token] = m
 			}
 
+			role := tc.role
+			if role == "" {
+				role = claim.RoleTester
+			}
 			recorder := h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
-				ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-209", Role: string(claim.RoleTester),
+				ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-209", Role: string(role),
 					Claim: tc.named(own, keyed)}, nil)
 			if recorder.Code != tc.code {
 				t.Fatalf("the fresh session = %d (%s), want %d", recorder.Code, recorder.Body, tc.code)

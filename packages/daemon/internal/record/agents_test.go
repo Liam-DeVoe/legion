@@ -1,6 +1,7 @@
 package record
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -74,5 +75,113 @@ func TestARowWrittenBeforeTheColumnReadsAsItsRole(t *testing.T) {
 	}
 	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
 		t.Errorf("AgentName = %q, want the name the row holds", got)
+	}
+}
+
+// ofGeneration is steps as rows of generation gen of an issue's plan.
+func ofGeneration(gen uint64, steps []PlanStep) []PlanStep {
+	rows := make([]PlanStep, len(steps))
+	for i, step := range steps {
+		step.Generation = gen
+		rows[i] = step
+	}
+	return rows
+}
+
+// agentNames is the name of each step of named, in order.
+func agentNames(named []PlanStep) []claim.Agent {
+	got := make([]claim.Agent, len(named))
+	for i, step := range named {
+		got[i] = step.Agent
+	}
+	return got
+}
+
+// A key that a version no longer names frees its name, and another key of a later generation takes
+// it. When the first key comes back beside it, both would hold one name from the rows of the two
+// generations, which the generation's copy keeps: the key named first in the version keeps it, and
+// the other gets none, so the version is refused rather than run as one agent in one session.
+func TestTwoKeysThatInheritOneNameAreNotBothNamed(t *testing.T) {
+	first := ofGeneration(1, NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	second := ofGeneration(2, NameAgents(first, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
+		{Task: "t", Position: 2, Role: "tester"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	if second[0].Agent != "implementer" {
+		t.Fatalf("key b, with key a dropped: name %q, want implementer, the name key a freed", second[0].Agent)
+	}
+	earlier := append(slices.Clone(first), second...)
+	got := NameAgents(earlier, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "b"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer", "", "reviewer"}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q: key b keeps implementer, and key a, whose generation-1 name key b holds, gets none", agentNames(got), want)
+	}
+}
+
+// A key's name is its newest: rows of an earlier generation that named it otherwise do not move it
+// within a generation. The project's default steps name key a for its first role, implementer, with
+// no earlier rows (defaultRows); the owner's version of that generation keeps that name, and not the
+// name tester that key a had in generation 1.
+func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
+	first := ofGeneration(1, NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "implementer"},
+	}))
+	defaults := ofGeneration(2, NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	earlier := append(slices.Clone(first), defaults...)
+	got := NameAgents(earlier, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer", "implementer", "reviewer"}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q: key a keeps the name its generation's default steps gave it", agentNames(got), want)
+	}
+}
+
+// A key the version drops frees its name for an agent of the version with no key, which takes it in
+// pass 4 with the name's claim and session.
+func TestADroppedKeysNameGoesToAnotherAgent(t *testing.T) {
+	first := ofGeneration(1, NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	got := NameAgents(first, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer"},
+		{Task: "t", Position: 2, Role: "tester"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer", "tester", "reviewer"}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q", agentNames(got), want)
+	}
+}
+
+// Rows of the key owner in earlier name no agent: the owner's step of a later version still has no
+// name, and no other key or step takes a name from the owner's rows.
+func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
+	earlier := ofGeneration(1, NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer"},
+		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
+	}))
+	earlier[1].Agent = "acceptance"
+	got := NameAgents(earlier, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
+	})
+	if want := []claim.Agent{"implementer", ""}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q: the owner has no name whatever its earlier rows hold", agentNames(got), want)
 	}
 }

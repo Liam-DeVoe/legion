@@ -162,10 +162,12 @@ func lastEndOfStep(t *testing.T, pool *pgxpool.Pool, key string, step int) recor
 }
 
 // Two steps of roles the deployment defines are two places of one phase: in `implementer checker
-// linter` the checker's pass starts the linter, the issue stays at step with the linter running, a
-// late completion of the checker moves nothing, and the linter's fail naming step 2 starts the
-// checker again. In `implementer checker linter critic`, the critic's fail naming step 3 starts the
-// linter again, and the critic's step ends failed, returned to 3.
+// linter` the checker's pass starts the linter, the issue stays at step with the linter running, the
+// linter's row and the record of its step name the linter's own claim and not the checker's (the
+// place the task stands at, not the first place that runs as step), a late completion of the
+// checker moves nothing, and the linter's fail naming step 2 starts the checker again. In
+// `implementer checker linter critic`, the critic's fail naming step 3 starts the linter again, and
+// the critic's step ends failed, returned to 3.
 func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 	types := map[string]string{"checker": "testing", "linter": "testing", "critic": "review"}
 
@@ -182,6 +184,22 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 		}
 		if starts := roleStartsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
 			t.Fatalf("the linter's starts = %+v, want one", starts)
+		}
+		linter, err := stepClaim(root, root.Key, "linter")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := workerOr(t, pool, root.Key, "linter", ""); got != linter {
+			t.Fatalf("the linter's row names the claim %q, want the linter's own, %q", got, linter)
+		}
+		var started []string
+		for _, write := range writesAt(stepWrites(t, pool, root.Key), "step", 3) {
+			if isStart(write) {
+				started = append(started, write.Agent)
+			}
+		}
+		if len(started) != 1 || started[0] != string(linter) {
+			t.Fatalf("the starts of step 3 name the agents %q, want one, the linter's claim %q", started, linter)
 		}
 
 		fact := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: "checker", Claim: "checker-claim", Summary: "Checked again.", Commit: stepHead, Verdict: "pass"}
