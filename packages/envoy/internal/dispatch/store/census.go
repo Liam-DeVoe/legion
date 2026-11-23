@@ -25,6 +25,12 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
+	return censusOf(ctx, databaseURL, migrations, options)
+}
+
+// censusOf is census of a set already loaded: a test that takes the census of many prefixes of
+// one set slices the set it loaded once rather than loading each prefix again.
+func censusOf(ctx context.Context, databaseURL string, migrations []pgmigrate.Migration, options pgmigrate.CensusOptions) (*pgmigrate.Report, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse Postgres URL: %w", err)
