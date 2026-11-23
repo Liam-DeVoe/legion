@@ -446,15 +446,6 @@ controller_notices() {
 }
 
 # ---- the listener's log ------------------------------------------------------------------------------
-# listener_handoffs EVENT: how many hand-offs the listener published for the envelope EVENT (its
-# "listener handed a message to its legion daemon" lines). Each is published with the envelope's
-# dedupe key in its MsgId, `legion.handoff.<dedupe key>:<subject>`, so however many are published
-# for one key the stream stores one message (cmd/listener/legion_handoff.go).
-listener_handoffs() {
-  jq -R -s --arg e "$1" \
-    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .event_id == $e)] | length' \
-    "$evidence/logs/listener.log"
-}
 # listener_handoffs_to SESSION: how many hand-offs the listener published for SESSION's own
 # daemon, whatever the envelope ("listener handed a message to its legion daemon" naming it).
 listener_handoffs_to() {

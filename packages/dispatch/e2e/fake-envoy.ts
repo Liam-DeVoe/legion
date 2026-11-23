@@ -413,6 +413,14 @@ function liveHolder(role: string): FakeSession | undefined {
   );
 }
 
+/** The real listener's unclaimed refusal: the answer for a role with no live holder. */
+function unclaimedRefusal(role: string): Response {
+  return Response.json(
+    { claim_revision: 0, error: `no holder for role ${role}`, reason: "unclaimed" },
+    { status: 404 }
+  );
+}
+
 /** The bus the harness's Dispatch server publishes through: DISPATCH_E2E_NATS_URLS, which
  *  e2e/run-server.sh hands that server as its NATS_URLS, and which this listener inherits from the
  *  harness that starts both. Empty for a run with no bus. */
@@ -482,11 +490,7 @@ const server = Bun.serve({
       const holder = liveHolder(role);
       // No holder is the real listener's unclaimed refusal, reason and claim revision included:
       // Dispatch reads a role lookup's 404 as no holder only where its body names a reason.
-      if (holder === undefined)
-        return Response.json(
-          { claim_revision: 0, error: `no holder for role ${role}`, reason: "unclaimed" },
-          { status: 404 }
-        );
+      if (holder === undefined) return unclaimedRefusal(role);
       const holderState = stateOf(holder.session_id);
       // An unresponsive holder keeps the role: the lookup refuses to answer with it unless the
       // caller asked for that state, and it releases nothing either way, as the real listener's
@@ -675,10 +679,7 @@ const server = Bun.serve({
         });
       }
       if (published.keep === false) {
-        return Response.json(
-          { claim_revision: 0, error: `no holder for role ${role}`, reason: "unclaimed" },
-          { status: 404 }
-        );
+        return unclaimedRefusal(role);
       }
       return Response.json(
         {

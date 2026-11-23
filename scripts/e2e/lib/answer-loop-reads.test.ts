@@ -845,16 +845,6 @@ describe("the asker's inbox", () => {
 });
 
 describe("the listener's log", () => {
-  test("listener_handoffs counts the hand-offs of one envelope", () => {
-    expect(read("listener_handoffs event-one").text).toBe("1");
-    expect(read("listener_handoffs event-three").text).toBe("0");
-    expect(read("listener_handoffs event-never").text).toBe("0");
-    expect(read("evidence=$empty_evidence; listener_handoffs event-one")).toEqual({
-      code: 0,
-      text: "0",
-    });
-  });
-
   test("listener_handoffs_to counts every hand-off for a session's daemon", () => {
     expect(read("listener_handoffs_to session-tester-old").text).toBe("2");
     expect(read("listener_handoffs_to session-architect").text).toBe("1");
