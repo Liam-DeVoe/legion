@@ -754,6 +754,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	m.anchorTake(first)
 	m.restoredTake = false
 	m.setTurnUnseen(false)
+	m.cutTurnOf = ""
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)

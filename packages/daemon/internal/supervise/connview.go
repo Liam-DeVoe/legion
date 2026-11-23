@@ -110,7 +110,7 @@ const (
 	// viewClosed is a claim whose connection closed, its shim's next hello still to come (closeView).
 	viewClosed
 	// viewAsked is a reconnect hello over a claim holding a pending task, neither the agent's answer
-	// to whether it is in a turn nor a turn frame on that connection come yet (askView).
+	// to whether it is in a turn nor a turn frame on that connection come yet (helloView).
 	viewAsked
 )
 
@@ -425,14 +425,14 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	return nil
 }
 
-// reconnectDeadline is the reconnect deadline (connview.go): of a claim a daemon start restored
-// with its agent ready, idle or working (NewMachine), or whose connection closed while it held a
-// pending task, no earlier than a whole bound from that close (closeView, reconnectFromClose), or
-// whose agent said it is ready over a connection whose view was not whole (readyView), or which was
-// given a pending task over a connection closed since its last hello (armReconnectForTask), its
-// shim not having said hello since; or of a reconnect hello of a claim holding a pending task whose
-// agent has not answered whether it is in a turn, nor sent a turn frame, since (helloView), a hello
-// whose decision failed after it opened that view included.
+// reconnectDeadline is the reconnect deadline: of a claim a daemon start restored with its agent
+// ready, idle or working (NewMachine), or whose connection closed while it held a pending task, no
+// earlier than a whole bound from that close (closeView, reconnectFromClose), or whose agent said
+// it is ready over a connection whose view was not whole (readyView), or which was given a pending
+// task over a connection closed since its last hello (armReconnectForTask), its shim not having
+// said hello since; or of a reconnect hello of a claim holding a pending task whose agent has not
+// answered whether it is in a turn, nor sent a turn frame, since (helloView), a hello whose
+// decision failed after it opened that view included.
 //
 // With no hello, it probes and retires as the registration deadline does (registrationDeadline,
 // retireNeverReady). A process found gone takes the death path (judge, died). A process found

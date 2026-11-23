@@ -936,6 +936,8 @@ type controllerSandboxShim struct {
 	// tasks is the generation's plugin taking the claim's task once the generation is registered
 	// (takeTasks).
 	tasks *takeDriver
+	// taking counts the goroutine of takeTasks, which run waits for before it returns (run).
+	taking sync.WaitGroup
 
 	mu   sync.Mutex
 	conn net.Conn
@@ -968,7 +970,10 @@ func (s *controllerSandboxShim) isEnded() bool {
 	return s.ended
 }
 
-// run dials until the generation's process has ended or the pod is gone.
+// run dials until the generation's process has ended or the pod is gone. Before it returns, it
+// ends the shim and waits for its take of the claim's tasks to stop (takeTasks), so nothing of the
+// generation answers the daemon once the pod's removal, which waits for run, is done. That wait
+// lasts at most the pass of takeTasks in flight, each request of which the shim's client bounds.
 func (s *controllerSandboxShim) run(ctx context.Context) {
 	var watching sync.WaitGroup
 	stop := make(chan struct{})
@@ -995,6 +1000,8 @@ func (s *controllerSandboxShim) run(ctx context.Context) {
 	defer func() {
 		close(stop)
 		watching.Wait()
+		s.end()
+		s.taking.Wait()
 	}()
 	for !s.isEnded() {
 		err := s.connect()
@@ -1112,7 +1119,11 @@ func (s *controllerSandboxShim) register() error {
 		_, err := s.post(path, body, answer)
 		return err
 	}, s.send, claim.AgentCaller{ClaimToken: registration.ClaimToken, SessionID: controllerSandboxSession, Secret: registration.Secret}, s.generation)
-	go s.takeTasks()
+	s.taking.Add(1)
+	go func() {
+		defer s.taking.Done()
+		s.takeTasks()
+	}()
 	s.mu.Lock()
 	s.registered = true
 	s.mu.Unlock()

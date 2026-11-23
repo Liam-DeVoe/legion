@@ -343,6 +343,43 @@ func TestTakeTheCompactionGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *te
 	}
 }
 
+// Row 26 after a later take: the operator's compaction took a take awaiting its turn back as a
+// cut turn while a hello's ask waited for its answer, and kept the process; the agent's answer
+// then makes the view whole, and the worker takes the task again. A death before that take's turn
+// starts cuts off no turn of the task: the worker ran nothing of that take, and the view showed
+// every frame of its turns, so the let-go's record says the task's turn was not cut off
+// (EndedWork.TaskTurn). The mark the compaction's take-back left (Machine.cutTurnOf) ends with the
+// acceptance of the task's next take (accept). The claim ran a turn first, so the let-go writes
+// its record. The negative control is the head before this change (3399439b), where only letGo
+// cleared the mark, and the record said the task's turn was cut off for a take that never ran.
+func TestTakeAcceptedAgainAfterTheCompactionGaveItBackAsACutTurnIsInNoTurnCutOffAtALaterDeath(t *testing.T) {
+	h := boundsHarness(t)
+	h.takeRunsItsOwnTurn("the first task", 1, false)
+	number := h.takeOf("implement the plan")
+	h.reconnectLater()
+	h.helloOf(true, false)
+	compactedByTheOperator(t, h)
+	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+		t.Fatalf("the compaction left %+v, want task %d taken back with the note of a cut turn", p, number)
+	}
+	h.answerAsk(false)
+	h.mustTake()
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
+		t.Fatalf("the take again left %+v, want task %d's take awaiting its turn", p, number)
+	}
+
+	h.observe(runtime.Gone)
+
+	h.wantState(StateLaunching)
+	ended := h.claim().EndedWork
+	if ended.Cause == "" {
+		t.Fatalf("the let-go recorded %+v, want a record of the process's end", ended)
+	}
+	if ended.TaskTurn {
+		t.Fatalf("the let-go recorded %+v, want no turn of the task recorded as cut off", ended)
+	}
+}
+
 // Row 28: a take awaiting its turn, its turn's start frame lost in the socket's send buffer as the
 // connection broke. The shim keeps only a frame whose write failed, so its hello says the backlog
 // is whole, and the replay carries that turn's end alone, a turn this daemon never saw begin

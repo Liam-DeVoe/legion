@@ -459,9 +459,10 @@ func TestTakeOfARestoredWorkingClaimIsBoundedByTheReconnectDeadlineArmedAtItsFir
 // later of the one standing and the close plus the reconnect bound, never earlier, and a close
 // over no pending task disarms it, as a ready over a closed view does (closeView, readyView,
 // reconnectFromClose); before the agent is ready, a close leaves the registration deadline as it
-// stands. The tester's tests of test round 11 (reconnectclose_test.go) hold the first and third
-// cases up to the close's deadline; these are the row's cases under c2, and the first goes on to
-// the hello.
+// stands. TestACloseAfterAnUnansweredHelloArmsAWholeReconnectBoundFromTheClose and
+// TestACloseOverNoTaskAfterAnUnansweredHelloRetiresNothing (reconnectclose_test.go) hold the first
+// and third cases up to the close's deadline; these are the row's cases under c2, and the first
+// goes on to the hello.
 //
 //   - A hello asks over the take and its ask goes unanswered, which arms the deadline at that
 //     hello; the connection closes half a minute before it, and the next hello comes half a bound
@@ -594,8 +595,8 @@ func TestTakeOfAReadyClaimWhoseConnectionClosesHasAWholeReconnectBoundFromTheClo
 // fails:
 //
 //   - the claim write of a fresh enrollment (ensureEnrolled), at the hello of a ready claim
-//     (reconnected), the tester's case of test round 11, and at the hello of a working one
-//     (reconnectedMidTurn);
+//     (reconnected), which TestAHelloWhoseDecisionFailsOnTheStoreLeavesTheClaimBounded holds too,
+//     and at the hello of a working one (reconnectedMidTurn);
 //   - the claim write of a revocation (revokeUnheld), at the first hello after a daemon start of
 //     a claim whose session another claim holds now;
 //   - the delivery write of a put-back on the producer's word (bindRestoredAnchor, readHello), at
