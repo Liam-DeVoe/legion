@@ -706,10 +706,14 @@ the issue. A held phase worker is its architect's to retry or escalate to the co
 architect that runs out goes to the controller, which restarts a running tree when it finds no
 cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
 that runs out holds nothing: the architect above it is told and takes the child's notices, all but
-an `owner-step`, which waits for the child's own architect, and the daemon starts the child's
-architect again, with fresh budgets, at the child's next phase start. Where the child stands at a
-step or a retro its architect does itself, `legion state` names that architect under `retry`
-among the claims nothing will wake, and a retry tells it the step again.
+an `owner-step`, which goes to the child's own architect alone, is dropped while that architect's
+claim has failed, and is told again by the catch-up of its next launch. The daemon starts the
+child's architect again, with fresh budgets, at the child's next phase start. Where the child
+stands at a step its architect does itself, other than an acceptance, or at a retro its architect
+does, no phase start follows until that architect reports it, so the daemon starts it again at
+once, at most three times in that step's run; after that `legion state` names it under `retry`
+among the claims nothing will wake, and an operator's retry relaunches it and tells it the step
+again.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
@@ -728,8 +732,9 @@ in the admission line. Where the pull request's head is red, the issue goes on t
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session. At a step or a retro the architect does itself, none of
-these starts a worker: the architect is told the step again with an `owner-step` notice. A
-restart, the root set to `backlog` and then to
+these starts a worker: each tells the architect the step again with an `owner-step` notice, and
+`legion claims retry` of the architect's claim relaunches that claim first. A restart, the root
+set to `backlog` and then to
 `todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
 
