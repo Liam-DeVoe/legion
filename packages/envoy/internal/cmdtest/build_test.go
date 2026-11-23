@@ -66,9 +66,7 @@ func TestBuildChild(t *testing.T) {
 // through another open of it, as another process's sweep takes one, would block (EWOULDBLOCK).
 func requireOwnDirLocked(t *testing.T) {
 	t.Helper()
-	process.mu.Lock()
-	dir := process.dir
-	process.mu.Unlock()
+	dir := builds
 	if dir == "" {
 		t.Fatal("the process has no directory of builds: its tests do not run under Main")
 	}
@@ -182,18 +180,13 @@ func TestATestProcessUnderMainBuildsEachCommandOnce(t *testing.T) {
 	requireGone(t, processDir)
 }
 
-// TestATestProcessWithoutMainBuildsInEachTest: without Main, each test builds its own binary in a
-// directory of its own, gone when that test ends, as before Main.
-func TestATestProcessWithoutMainBuildsInEachTest(t *testing.T) {
+// TestABuildWithoutMainFailsNamingMain: a test process whose TestMain does not run Main or Run has
+// no directory of builds, so a build fails the test that asked, naming cmdtest.Main, and runs no go
+// build.
+func TestABuildWithoutMainFailsNamingMain(t *testing.T) {
 	run := runBuildChild(t, "plain")
-	if run.exit != 0 || len(run.paths) != 2 {
-		t.Fatalf("the process exited %d with paths %q; want 0 and two:\n%s", run.exit, run.paths, run.out)
-	}
-	if run.paths[0] == run.paths[1] || len(run.builds) != 2 {
-		t.Fatalf("two tests were handed %q after %d builds; want two binaries, two builds", run.paths, len(run.builds))
-	}
-	for _, path := range run.paths {
-		requireGone(t, path)
+	if run.exit != 1 || len(run.paths) != 0 || len(run.builds) != 0 || !strings.Contains(run.out, "does not run its tests through cmdtest.Main or cmdtest.Run") {
+		t.Fatalf("the process exited %d with paths %q after %d builds; want 1, no path, no build, and the failure naming cmdtest.Main:\n%s", run.exit, run.paths, len(run.builds), run.out)
 	}
 }
 
@@ -210,19 +203,20 @@ func TestAnotherEnvironmentIsAnotherBuildUnderMain(t *testing.T) {
 	}
 }
 
-// TestAFailedBuildIsBuiltAgainByTheNextTestUnderMain: under Main, a build that fails fails the
-// test that asked, with go's own output, and the next test that asks builds again.
-func TestAFailedBuildIsBuiltAgainByTheNextTestUnderMain(t *testing.T) {
+// TestAFailedBuildFailsEveryTestThatAsksUnderMain: under Main, a build that fails fails the test
+// that asked with go's own output, and every later test that asks for the same build with that
+// output too, without building it again.
+func TestAFailedBuildFailsEveryTestThatAsksUnderMain(t *testing.T) {
 	failOnce := filepath.Join(t.TempDir(), "fail-once")
 	if err := os.WriteFile(failOnce, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	run := runBuildChild(t, "main", goFailOnceEnv+"="+failOnce)
-	if run.exit != 1 || !strings.Contains(run.out, "--- FAIL: TestBuildChild/first") || !strings.Contains(run.out, "--- PASS: TestBuildChild/second") || !strings.Contains(run.out, "go stand-in: this build fails, once") {
-		t.Fatalf("the process exited %d; want 1, the first test failing with go's output and the second passing:\n%s", run.exit, run.out)
+	if run.exit != 1 || !strings.Contains(run.out, "--- FAIL: TestBuildChild/first") || !strings.Contains(run.out, "--- FAIL: TestBuildChild/second") || strings.Count(run.out, "go stand-in: this build fails, once") != 2 {
+		t.Fatalf("the process exited %d; want 1, both tests failing, each with go's output:\n%s", run.exit, run.out)
 	}
-	if len(run.builds) != 2 || len(run.paths) != 1 {
-		t.Fatalf("%d builds, paths %q; want two builds, the second test's path alone", len(run.builds), run.paths)
+	if len(run.builds) != 1 || len(run.paths) != 0 {
+		t.Fatalf("%d builds, paths %q; want one build and no path", len(run.builds), run.paths)
 	}
 }
 
