@@ -31,9 +31,10 @@ import (
 // the application name (daemonDSN), the test's own transaction holds an access exclusive lock on
 // `claims` — a table the state projection reads (source.State's ClaimsTx) — and a
 // GET /legion/v1/state sent from a goroutine waits for that lock inside the transaction the route
-// holds that connection with. The test reads pg_stat_activity on its own pool to see the daemon's
-// one backend waiting on a lock before it asks, and checks that the state request is still
-// unanswered after, so the connection was busy for the whole of the readiness read. A route that
+// holds that connection with. The test reads pg_locks on its own pool to see the daemon's one
+// backend's lock request queued before it asks, and again after, and checks that the state request
+// is still unanswered, so the connection was busy for the whole of the readiness read
+// (backendWaitingOnALock). A route that
 // touched the pool would wait there with everything else, and the test's client bounds every
 // request at ten seconds (startDaemon), so such a regression fails this test rather than hanging
 // the package.

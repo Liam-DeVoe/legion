@@ -30,30 +30,45 @@ import (
 // Such a place is a call of os.WriteFile or os.OpenFile whose mode has an execute bit. It is also
 // a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
 // function gives an execute bit with a Chmod: os.Chmod of the path the call names, spelled the
-// same way, os.Chmod of the Name of the variable that os.Create, os.OpenFile or os.CreateTemp
-// assigned the file to, or that variable's Chmod method. A mode the check cannot read as holding
-// no execute bit is named too: one that is neither a constant nor masked by one, as perm&^0o111
-// is (withoutExecuteBit). So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
+// same way, or of a path an os.Rename of the function moved it to, or the Chmod method of the
+// variable or field the open assigned its file to, or os.Chmod of that one's Name(). The open may
+// be the value assigned or an argument of a call that wraps it, as must(os.CreateTemp(dir, ""))
+// does. A mode the check cannot read as holding no execute bit, in the open or in the Chmod, is
+// named too: one that is neither a constant nor masked by one, as perm&^0o111 is
+// (withoutExecuteBit). So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
 // os.Chmod as a function value, whose file and mode it cannot follow, and a dot import of os,
 // whose calls it cannot tell from the file's own functions. The one place left out is
 // programfile.Write itself: the files of a package named programfile that are no test files. A
 // directory below root that holds a go.mod of its own is another module, which that module's
 // check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
-// module. A root under which the walk finds no Go file is an error, not a pass: the check read
-// nothing.
+// module.
+//
+// Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
+// or one of its subdirectories does, and when it read no test file under root: a root that holds
+// none, or whose every directory that holds one is another module. A check of such a root would
+// name no write and pass while it read nothing, or read only part of its module.
 //
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
 //   - a Chmod in another function than the open, or of the same path spelled another way, as a
-//     variable that holds the filepath.Join the open spelled out;
-//   - a file opened by any function but os's four (io/ioutil.WriteFile, syscall.Open, unix.Openat,
-//     a helper of another package) or written by another program, such as cp, go build or an
-//     archive a command unpacks;
+//     variable that holds the filepath.Join the open spelled out, or the file's Name() kept in a
+//     variable;
+//   - a file opened inside a function that returns it, such as a helper that calls os.CreateTemp
+//     and returns the file, which its caller then gives an execute bit;
+//   - a file written by another function of package os (os.CopyFS) or by a function of another
+//     package (io/ioutil.WriteFile, syscall.Open, a helper of a package that is neither of the two
+//     kinds above);
 //   - a test file of a package whose tests run one at a time, and is not a test-support package:
 //     its test binary runs one test at a time, so only that test's own goroutines can fork beside
 //     its write.
+//
+// A file a command such as cp writes is open in that command's process, not in the test's, so no
+// fork of the test copies its descriptor, and the check has nothing to name there.
 func Unguarded(root string) ([]string, error) {
-	dirs := map[string][]string{}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return nil, fmt.Errorf("read no module at %s: it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", root, err)
+	}
+	dirs, tests := map[string][]string{}, 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -73,14 +88,17 @@ func Unguarded(root string) ([]string, error) {
 		}
 		if strings.HasSuffix(path, ".go") {
 			dirs[filepath.Dir(path)] = append(dirs[filepath.Dir(path)], path)
+			if strings.HasSuffix(path, "_test.go") {
+				tests++
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if len(dirs) == 0 {
-		return nil, fmt.Errorf("no Go file under %s: the check read nothing", root)
+	if tests == 0 {
+		return nil, fmt.Errorf("read no Go test file under %s: it holds none, or each directory below it that holds one has a go.mod of its own and is another module, so no write a test makes was read", root)
 	}
 	var offences []string
 	for _, paths := range dirs {
@@ -200,15 +218,15 @@ func executableWrites(files *token.FileSet, file *ast.File) []int {
 // calls, rather than uses as a value, joins called.
 func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called map[*ast.SelectorExpr]bool) []*ast.CallExpr {
 	var opens, chmods []*ast.CallExpr
-	byPath := map[string][]*ast.CallExpr{}   // the opens of each path, as the call spells it
-	byHandle := map[string][]*ast.CallExpr{} // the opens whose *os.File each variable was given
+	// byPath keys the opens of each file by how the declaration names its path: as an open or an
+	// os.Rename spells it, or <file>.Name() for the file an open assigned to <file>. byHandle keys
+	// the opens by the variable or field each assigned its *os.File to.
+	byPath, byHandle := map[string][]*ast.CallExpr{}, map[string][]*ast.CallExpr{}
 	assigned := func(target, value ast.Expr) {
-		call, isCall := value.(*ast.CallExpr)
-		name, isName := target.(*ast.Ident)
-		if isCall && isName && name.Name != "_" {
-			if function := osFunc(call.Fun); function == "Create" || function == "OpenFile" || function == "CreateTemp" {
-				byHandle[name.Name] = append(byHandle[name.Name], call)
-			}
+		open := fileOpen(value, osFunc)
+		if handle := types.ExprString(target); open != nil && handle != "_" {
+			byHandle[handle] = append(byHandle[handle], open)
+			byPath[handle+".Name()"] = append(byPath[handle+".Name()"], open)
 		}
 	}
 	ast.Inspect(declaration, func(node ast.Node) bool {
@@ -236,6 +254,11 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 			case function == "Create" && len(node.Args) == 1:
 				path := types.ExprString(node.Args[0])
 				byPath[path] = append(byPath[path], node)
+			case function == "Rename" && len(node.Args) == 2:
+				// The opens of the old path, as far as the declaration has made them, are now
+				// opens of the new one.
+				from, to := types.ExprString(node.Args[0]), types.ExprString(node.Args[1])
+				byPath[to] = append(byPath[to], byPath[from]...)
 			case function == "Chmod" && len(node.Args) == 2 && !withoutExecuteBit(node.Args[1]):
 				chmods = append(chmods, node)
 			case function == "" && len(node.Args) == 1:
@@ -249,30 +272,30 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 	for _, chmod := range chmods {
 		if osFunc(chmod.Fun) == "Chmod" {
 			opens = append(opens, byPath[types.ExprString(chmod.Args[0])]...)
-			if handle := nameOf(chmod.Args[0]); handle != "" {
-				opens = append(opens, byHandle[handle]...)
-			}
-		} else if handle, ok := chmod.Fun.(*ast.SelectorExpr).X.(*ast.Ident); ok {
-			opens = append(opens, byHandle[handle.Name]...)
+		} else {
+			opens = append(opens, byHandle[types.ExprString(chmod.Fun.(*ast.SelectorExpr).X)]...)
 		}
 	}
 	return opens
 }
 
-// nameOf is the variable a path is the Name of, as in os.Chmod(file.Name(), 0o755), or "".
-func nameOf(path ast.Expr) string {
-	call, ok := path.(*ast.CallExpr)
-	if !ok || len(call.Args) != 0 {
-		return ""
+// fileOpen is the call of os.Create, os.CreateTemp or os.OpenFile whose *os.File value holds: the
+// value itself, or one argument of a call that wraps it, as must(os.CreateTemp(dir, "")) does. It
+// is nil for any other value.
+func fileOpen(value ast.Expr, osFunc func(ast.Expr) string) *ast.CallExpr {
+	call, ok := value.(*ast.CallExpr)
+	if !ok {
+		return nil
 	}
-	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Name" {
-		return ""
+	candidates := append([]ast.Expr{call}, call.Args...)
+	for _, candidate := range candidates {
+		if open, ok := candidate.(*ast.CallExpr); ok {
+			if function := osFunc(open.Fun); function == "Create" || function == "CreateTemp" || function == "OpenFile" {
+				return open
+			}
+		}
 	}
-	if handle, ok := selector.X.(*ast.Ident); ok {
-		return handle.Name
-	}
-	return ""
+	return nil
 }
 
 // withoutExecuteBit says whether mode holds no execute bit: a constant that holds none, or any

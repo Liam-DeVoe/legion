@@ -12,15 +12,17 @@ import (
 )
 
 // CountLockWaits counts the sessions of database waiting on a lock whose statement matches the LIKE
-// pattern like. It reads through the pool, never through a transaction: a transaction's first read
-// of pg_stat_activity freezes the view for the rest of it, and a poll inside one spins until it
+// pattern like: a session pg_locks holds an ungranted request of, which stays true for the whole
+// wait, where pg_stat_activity's wait_event_type reads no Lock each time the waiting backend is
+// woken. It reads through the pool, never through a transaction: a transaction's first read of
+// pg_stat_activity freezes the view for the rest of it, and a poll inside one spins until it
 // times out. It returns its error rather than failing the test, so a hook running off the test's
 // goroutine, such as a settlement's, can report it and let the code under test go on.
 func CountLockWaits(ctx context.Context, database *store.Store, like string) (int, error) {
 	var waiting int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and query like $1
+		where datname = current_database() and pid in (select pid from pg_locks where not granted) and query like $1
 	`, like).Scan(&waiting); err != nil {
 		return 0, fmt.Errorf("inspect database locks: %w", err)
 	}
@@ -38,10 +40,10 @@ func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid 
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*), count(*) filter (where backend_xid is not null)
 		from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'
+		where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'advisory')
 		  and query like '%owner_lock%' and pid <> pg_backend_pid()
 	`).Scan(&waiting, &holdingXid); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting, holdingXid
 }

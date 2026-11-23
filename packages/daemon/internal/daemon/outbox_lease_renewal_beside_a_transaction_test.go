@@ -59,7 +59,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 
 	testwait.Eventually(t, "the row's read of its hand-over to wait on the test's lock", func() bool {
 		var waiting int
-		if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and pid in (select pid from pg_locks where not granted)").Scan(&waiting); err != nil {
 			t.Fatalf("count the backends waiting on a lock: %v", err)
 		}
 		return waiting == 1

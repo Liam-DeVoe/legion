@@ -545,7 +545,7 @@ func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}

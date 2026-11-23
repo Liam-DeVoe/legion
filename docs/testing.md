@@ -553,6 +553,21 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+## A test reads a lock wait from pg_locks
+
+A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads
+`pg_locks`: `pid in (select pid from pg_locks where not granted)`, with `and locktype = '…'` for
+one kind of lock, or `pg_blocking_pids`, which reads the same queue. It never reads
+`pg_stat_activity`'s `wait_event_type` or `wait_event`. A waiting backend's request stays queued
+in `pg_locks` until the lock is granted or the wait is cancelled. Its wait event reads `Lock` only
+while the backend sleeps on its latch. Each time the backend is woken, by its deadlock check at
+`deadlock_timeout` or by a signal, the wait event reads nothing until it sleeps again. Beside the
+whole of `internal/daemon` under `-race`, one waiting backend read so 1.007 to 1.011 s into its
+wait, with `deadlock_timeout` at its default of 1 s. `TestReadyzIsFalseUntilTheDaemonServes` took
+one such read and counted 0 of the daemon's backends waiting while its one connection waited (CI
+run 45206462019). Each module's `internal/textcheck` (`lock_wait_reads_test.go`) fails on a
+comparison of `wait_event_type` with `Lock`, or of `wait_event` with a lock type.
+
 ## A file a test runs
 
 A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
@@ -578,19 +593,45 @@ for writing itself, and skips the test, saying why, on a kernel that does not re
 
 Three kinds of file write such a file with `programfile.Write`, or with `testexec.WriteFile` in a
 test: every file that is no test file (the code a deployment runs, and a test-support package, a
-package whose name begins or ends with `test`), the test files of a package whose tests call
-`Parallel`, and the test files of a test-support package. Each module's `internal/textcheck`
-names, by `testexec.Unguarded`, each place in those files that opens a file by `os.WriteFile`,
-`os.OpenFile`, `os.Create` or `os.CreateTemp` and gives it an execute bit, in the open's own mode
-or by a `Chmod` of the same file in the same function, and refuses a walk that read no Go file.
-It names a mode it cannot read as holding no execute bit too, so a writer of data whose callers
-choose its mode masks it where it opens or chmods the file (`perm&^0o111`).
-The comment on `Unguarded` lists what it cannot see, such as a file another program writes. A
-package whose tests run one at a time can still write such a file with `os.WriteFile` in its
-tests. Its test binary runs one test at a time, and a fork in another process copies none of its
-descriptors, so only a goroutine of the running test can fork while the file is open. Once its
-tests call `Parallel`, the check names its writes. A test that starts a command from another
-goroutine while it writes such a file writes it with `testexec.WriteFile` wherever it is.
+package whose name begins or ends with `test`, since tests of any package call it), the test files
+of a package whose tests call `Parallel`, and the test files of a test-support package. A test
+that starts a command from another goroutine while it writes such a file writes it with
+`testexec.WriteFile` wherever it is. A package whose tests run one at a time can still write such
+a file with `os.WriteFile` in its tests. Its test binary runs one test at a time, and a fork in
+another process copies none of its descriptors, so only a goroutine of the running test can fork
+while the file is open.
+
+Each module's `internal/textcheck` holds those three kinds of file to the rule with
+`testexec.Unguarded`, and fails on each place it names, as file and line. It names:
+
+- an `os.WriteFile` or `os.OpenFile` whose mode has an execute bit, or a mode it cannot read as
+  holding none: one that is neither a constant nor masked by one, so a writer of data whose
+  callers choose its mode masks it where it opens or chmods the file (`perm&^0o111`);
+- an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
+  function gives an execute bit, or a mode it cannot read as holding none, with a `Chmod`:
+  `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
+  the function moved it to, or the file's own `Chmod` method, or `os.Chmod` of the file's
+  `Name()`. The last two follow the variable or field the open's own call assigns the file to,
+  and an open wrapped in a call, as `must(os.CreateTemp(dir, ""))`;
+- a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
+- a dot import of `os`.
+
+It leaves out `programfile.Write` itself. It reads each file's syntax alone, with no types, so it
+does not see:
+
+- a `Chmod` in another function than the open, or of the same path spelled another way, such as
+  a variable that holds the open's `filepath.Join` or its file's `Name()`;
+- a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
+  and returns the file, which its caller then gives an execute bit;
+- a file written by another function of `os` (`os.CopyFS`) or by another package's function
+  (`syscall.Open`, `unix.Openat`, a helper of another package);
+- a test file of a package whose tests run one at a time and that is not a test-support package.
+
+A write in one of those forms needs `programfile.Write`, or `testexec.WriteFile` in a test, by
+hand. A file that a command such as `cp` writes needs nothing: it is open in the command's
+process, not in the writer's, so no fork of the writer copies its descriptor. The check also
+fails when the directory it reads holds no `go.mod`, or when it read no test file there, so a
+check pointed at the wrong directory cannot pass while it reads nothing.
 
 ## A Go test that opens a NATS client
 

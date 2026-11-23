@@ -202,7 +202,7 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
-			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
+			where datname = current_database() and application_name = $1 and pid in (select pid from pg_locks where not granted)`, application)
 		if err != nil {
 			t.Fatal(err)
 		}

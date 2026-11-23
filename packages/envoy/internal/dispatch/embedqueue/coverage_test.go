@@ -1447,7 +1447,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'transactionid'`).Scan(&waiting); err != nil {
+			where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'transactionid')`).Scan(&waiting); err != nil {
 			t.Fatalf("count lock waiters: %v", err)
 		}
 		if waiting == 1 {
