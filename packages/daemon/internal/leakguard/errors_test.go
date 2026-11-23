@@ -87,7 +87,8 @@ func TestNoAnswerPrintsACredentialThePushsNameCarries(t *testing.T) {
 }
 
 // A part of an answer that holds both a credential in a URL and a control byte is written with
-// neither: the URL rule runs on the text as it is, and the escaping after it.
+// neither: the URL rule runs on the text as it is, writing the URL's userinfo as its mark, and the
+// escaping after it.
 func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 	const token = "FAKEtok3nZQ9x"
 	what := PushName("https://x-access-token:" + token + "@github.com/acme/wid\x1b[2Kgets.git")
@@ -101,8 +102,8 @@ func TestAnAnswerWritesNeitherACredentialNorAControlByte(t *testing.T) {
 			if strings.Contains(printed, token) {
 				t.Errorf("Error() holds the token: %s", strings.ReplaceAll(printed, token, "<the token>"))
 			}
-			if !strings.Contains(printed, "the push to https://github.com/acme/wid\\x1b[2Kgets.git: ") {
-				t.Errorf("Error() = %q, want the push named by its URL, its control byte escaped", strings.ReplaceAll(printed, token, "<the token>"))
+			if want := "the push to https://" + redact.URLWithCredentials + "/acme/wid\\x1b[2Kgets.git: "; !strings.Contains(printed, want) {
+				t.Errorf("Error() = %q, want the push named by its URL, its userinfo the mark and its control byte escaped", strings.ReplaceAll(printed, token, "<the token>"))
 			}
 			for _, r := range printed {
 				if r != '\n' && !unicode.IsPrint(r) {
