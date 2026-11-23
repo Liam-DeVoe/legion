@@ -49,7 +49,7 @@ func fixAndCIHolds(t *testing.T) State {
 // contract (fieldArrivals.heldBack), which is FixBesideReviewContract only until the next bump:
 // from then on such a reason would be held back from a caller at FixBesideReviewContract, whose
 // reader admits it.
-func TestAnOlderCallerIsServedNoFixOrCIHoldReason(t *testing.T) {
+func TestAnOlderCallerIsServedNoFixHoldOrCIHoldReason(t *testing.T) {
 	const remote = "192.0.2.1:41000"
 	state := fixAndCIHolds(t)
 	handler := stateServer(t, state, podClaims(DaemonAPIVersion))
