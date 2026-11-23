@@ -256,3 +256,13 @@ func TestTheAcceptancePromptGivesTheRedTeamTheDiffOfATaskWithNoPullRequest(t *te
 		{"acceptance.md", "Give the goal red team those in place of the body and the diff."},
 	})
 }
+
+// An implementer completes against the issue's open pull request, and opens one only where none
+// is open or merged (HANDOFF_NO_PULL_REQUEST, api's implementationPullRequest).
+func TestTheImplementerCoreOpensAPullRequestOnlyWhereTheIssueHasNone(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"core/implementer.md", "Open the PR where the issue has none open, and write its body as you go."},
+	}, [][2]string{
+		{"core/implementer.md", "Open the PR; write the PR body as you go."},
+	})
+}
