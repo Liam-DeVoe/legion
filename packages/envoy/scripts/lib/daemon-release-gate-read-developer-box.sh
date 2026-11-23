@@ -132,10 +132,13 @@ PY
 # ends when the gate does and its pipes close. A question it does not answer is UNKNOWN by name,
 # never a pass: the gate reads no silence as an answer.
 #
-# It runs under PYTHONIOENCODING=:backslashreplace, which entry_state ran under before, so a name
-# that is no UTF-8 comes back with its bytes escaped rather than failing the write; plugin_trees
-# refuses a profile whose name is no UTF-8 before it names one, so no answer of its reaches that
-# escaping.
+# A path in an answer, a plugin tree of plugin_trees, goes back as its own bytes (os.fsencode),
+# the bytes of the name on disk, whatever locale Python reads names in: under LC_ALL=C it reads
+# café as caf\udcc3\udca9, and those characters written back as text would name a path that is not
+# there, so the profile would read as empty. Text an answer explains (an entry_state reason, an
+# unresolved one, why a listing failed) is written as text under PYTHONIOENCODING=:backslashreplace,
+# the way Python writes an error, so a name in it that is no UTF-8 comes back with its bytes escaped
+# rather than failing the write.
 box_reader_started=0
 box_reader_start() {
   [ "$box_reader_started" = 0 ] || return 0
@@ -168,8 +171,12 @@ def frame():
 
 
 def answer(*parts):
+    """Each part is bytes, sent as they are, or text, sent in the locale's encoding with each
+    character it cannot write escaped."""
     for part in parts:
-        outgoing.write(part.encode(encoding, errors) + b"\0")
+        if isinstance(part, str):
+            part = part.encode(encoding, errors)
+        outgoing.write(part + b"\0")
     outgoing.write(b"\0")
     outgoing.flush()
 
@@ -221,9 +228,11 @@ def unresolved(link):
 
 
 def trees(home):
-    """The Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's; a profiles
-    directory it cannot list, a link there whose target is gone among them, and a profile whose name
-    is no UTF-8, which the gate may not get unchanged, fail instead, naming why."""
+    """The Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, and None; or, for a
+    profiles directory it cannot list (a link there whose target is gone among them) and a profile
+    whose name is no UTF-8, which the gate may not get unchanged, the trees it found before it
+    stopped, ~/.omp/plugins, and why it stopped. The caller still reads ~/.omp/plugins after such
+    a failure, so its line names every surface it could not see at once."""
     omp = os.path.join(home, ".omp")
     profiles = os.path.join(omp, "profiles")
     found = [os.path.join(omp, "plugins")]
@@ -239,10 +248,10 @@ def trees(home):
             target = os.readlink(profiles)
             why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
             shown = target.replace("\n", "\\x0a")
-            return None, f"{profiles} is a link to {shown}, which does not {why}"
+            return found, f"{profiles} is a link to {shown}, which does not {why}"
         entries = []
     except OSError as error:
-        return None, f"{profiles} cannot be listed: {error.strerror}"
+        return found, f"{profiles} cannot be listed: {error.strerror}"
     # The name's own bytes decide, whatever encoding this locale reads names with.
     for entry in entries:
         path = os.fsencode(os.path.join(profiles, entry))
@@ -250,7 +259,7 @@ def trees(home):
             os.fsencode(entry).decode("utf-8")
         except UnicodeDecodeError:
             shown = path.decode("utf-8", "backslashreplace")
-            return None, shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8"
+            return found, shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8"
     for entry in entries:
         found.append(os.path.join(profiles, entry, "plugins"))
     return found, None
@@ -275,7 +284,8 @@ while True:
         answer("no") if why is None else answer("yes", why)
     elif verb == "trees" and len(question) == 2:
         found, problem = trees(os.fsdecode(question[1]))
-        answer("fail", problem) if found is None else answer("ok", *found)
+        paths = [os.fsencode(tree) for tree in found]
+        answer("ok", *paths) if problem is None else answer("fail", problem, *paths)
     else:
         answer("fail", f"the gate asked its path reader {verb}, which it does not answer")
 PY
@@ -285,13 +295,15 @@ PY
 }
 
 # box_reader_call <verb> <argument>...: asks the reader, and sets box_answer to the tokens of its
-# answer. It returns 1 when the reader did not answer, which each reader below turns into UNKNOWN.
+# answer. It returns 1 when the reader did not answer, or is no longer there to ask (bash unsets
+# BOX_READER once it reaps the reader), which each reader below turns into UNKNOWN.
 box_answer=()
 box_reader_call() {
-  local token
+  local token to=${BOX_READER[1]-} from=${BOX_READER[0]-}
   box_answer=()
-  printf '%s\0' "$@" '' >&"${BOX_READER[1]}" || return 1
-  while IFS= read -r -d '' token <&"${BOX_READER[0]}"; do
+  [ -n "$to" ] && [ -n "$from" ] || return 1
+  printf '%s\0' "$@" '' >&"$to" || return 1
+  while IFS= read -r -d '' token <&"$from"; do
     [ -n "$token" ] || return 0
     box_answer+=("$token")
   done
@@ -336,23 +348,28 @@ unresolved() {
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
 # per NUL-terminated entry, into <out>; a profiles directory it cannot list, a link there whose
 # target is gone among them, fails, naming why, and so does a profile whose name is no UTF-8, which
-# entry_state may not get unchanged (dotfiles_clients says why).
+# entry_state may not get unchanged (dotfiles_clients says why). A failure still writes the trees
+# found before it, ~/.omp/plugins, so the caller reads that tree too and names every surface it
+# could not see in one line.
 plugin_trees() {
-  local tree
-  # <out> is written before the question, as a redirection of the reader's own output was: a
-  # caller that reads it after a failure reads an empty list, not a file that is not there.
+  local tree failed=0 trees=()
   : >"$1"
   if ! box_reader_call trees "$HOME"; then
     echo "the gate's path reader did not answer" >&2
     return 1
   fi
-  if [ "${box_answer[0]}" != ok ]; then
-    printf '%s\n' "${box_answer[1]}" >&2
-    return 1
+  if [ "${box_answer[0]}" = ok ]; then
+    trees=("${box_answer[@]:1}")
+  else
+    failed=1
+    trees=("${box_answer[@]:2}")
   fi
-  for tree in "${box_answer[@]:1}"; do
+  for tree in "${trees[@]}"; do
     printf '%s\0' "$tree" >>"$1"
   done
+  [ "$failed" = 1 ] || return 0
+  printf '%s\n' "${box_answer[1]}" >&2
+  return 1
 }
 
 # dotfiles_clients: the pi-envoy and claude-envoy of this developer box's dotfiles: the pins, and
