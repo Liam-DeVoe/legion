@@ -326,10 +326,11 @@ describe.skipIf(!envoyStackEnabled)(
       // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
       // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
       // 2026-11-22T18:21Z to 20:50Z; 116 398.78 ms in the Job infra-1580-krows-kc-g4zvc (120
-      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is 725 s,
-      // past the room above, so the room decides: 847 s less the stack's slowest start (249 s,
-      // the `beforeAll` above), the other row's worst (177 s) and the 30 s kept is 390.5 s, and
-      // 390_000 is 3.2 times the worst.
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z; 90 893.78 ms at 2712deb2 in
+      // the Job infra-1580-krows-kc-pw59w (145 busy loops, row A at 33.4 s), 2026-11-23T06:44Z
+      // to 08:35Z. Six times the worst is 725 s, past the room above, so the room decides: 847 s
+      // less the stack's slowest start (249 s, the `beforeAll` above), the other row's worst
+      // (177 s) and the 30 s kept is 390.5 s, and 390_000 is 3.2 times the worst.
     }, 390_000)
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
@@ -383,10 +384,11 @@ describe.skipIf(!envoyStackEnabled)(
       // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
       // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
       // 2026-11-22T18:21Z to 20:50Z; 118 302.75 ms in the Job infra-1580-krows-kc-g4zvc (120
-      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is
-      // 1 064 s, past the room above, so the room decides: 847 s less the stack's slowest start
-      // (249 s, the `beforeAll` above), the other row's worst (121 s) and the 30 s kept is
-      // 446.9 s, and 440_000 is 2.5 times the worst.
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z; 111 289.38 ms at 2712deb2 in
+      // the Job infra-1580-krows-kc-pw59w (145 busy loops, row A at 33.4 s), 2026-11-23T06:44Z
+      // to 08:35Z. Six times the worst is 1 064 s, past the room above, so the room decides:
+      // 847 s less the stack's slowest start (249 s, the `beforeAll` above), the other row's
+      // worst (121 s) and the 30 s kept is 446.9 s, and 440_000 is 2.5 times the worst.
     }, 440_000)
   },
 )
