@@ -490,7 +490,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-208" },
       "signoff.json",
     ],
-    // The owner's report of a step of its own (contract 227): the step by its place, and what
+    // The owner's report of a step of its own (contract 236): the step by its place, and what
     // that step's completion carries.
     [
       "completeStep",

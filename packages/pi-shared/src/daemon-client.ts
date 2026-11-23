@@ -204,7 +204,7 @@ export interface LegionDaemonClient {
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The owner's `complete_step` (contract 227): its report of a step of its own issue's running
+  /** The owner's `complete_step` (contract 236): its report of a step of its own issue's running
    * task whose key is owner, or of that task's retro where the retro is the owner's, held to the
    * rules of that place's completion. */
   readonly completeStep: (
