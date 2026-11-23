@@ -29,18 +29,18 @@ func ownersPromptText(prompt string) string {
 // between the lines that name it as the owner's (ownersPromptText). A launch reads a role's
 // prompt from a file (runtime.PromptParts.RolePromptPaths), and a copy named by its text is the
 // one file every version that gives the role that text shares: two versions of one prompt read
-// one file, and a changed prompt is another file. A copy in place is used again only while its
-// text hashes to its name. A copy a crash cut short, empty or holding part of the text, hashes
-// to another name, so it is written again before the launch uses it. The write goes through a
-// file of its own beside it, synced, and a rename, so a reader finds the whole text or the copy
-// it replaces, and a crash after the rename leaves the whole text.
+// one file, and a changed prompt is another file. A copy in place is used again only while it
+// holds the very text its name is the hash of. A copy a crash cut short, empty or holding part of
+// the text, holds another text, so it is written again before the launch uses it. The write goes
+// through a file of its own beside it, synced, and a rename, so a reader finds the whole text or
+// the copy it replaces, and a crash after the rename leaves the whole text.
 func planRolePromptFile(stateDir, prompt string) (string, error) {
 	text := ownersPromptText(prompt)
 	sum := sha256.Sum256([]byte(text))
 	dir := filepath.Join(stateDir, "plan-roles")
 	path := filepath.Join(dir, hex.EncodeToString(sum[:])+".md")
 	held, err := os.ReadFile(path)
-	if err == nil && sha256.Sum256(held) == sum {
+	if err == nil && string(held) == text {
 		return path, nil
 	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
