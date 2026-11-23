@@ -34,7 +34,7 @@ func readModels(value *yaml.Node, key string) ([]string, error) {
 		case model == "":
 			return nil, fmt.Errorf("%s[%d] is empty", key, index)
 		case strings.ContainsFunc(model, unicode.IsSpace):
-			return nil, fmt.Errorf("%s[%d] is %s, which holds white space: a model's name is one word", key, index, model)
+			return nil, fmt.Errorf("%s[%d] is %q, which holds white space: a model's name is one word", key, index, model)
 		case slices.Contains(models, model):
 			return nil, fmt.Errorf("%s names %s twice", key, model)
 		}

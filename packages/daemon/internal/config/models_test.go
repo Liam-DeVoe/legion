@@ -27,8 +27,8 @@ func TestTheModelsKeyIsReadAndRefused(t *testing.T) {
 		{name: "a number", key: "models: [7]\n", refusal: "models[0] must be a model's name"},
 		{name: "a mapping entry", key: "models: [m-one, {name: m-two}]\n", refusal: "models[1] must be a model's name"},
 		{name: "an empty entry", key: "models: [\"\"]\n", refusal: "models[0] is empty"},
-		{name: "white space", key: "models: [\"a b\"]\n", refusal: "models[0] is a b, which holds white space: a model's name is one word"},
-		{name: "a missing comma", key: "models: [m-a m-b]\n", refusal: "models[0] is m-a m-b, which holds white space: a model's name is one word"},
+		{name: "white space", key: "models: [\"a b\"]\n", refusal: `models[0] is "a b", which holds white space: a model's name is one word`},
+		{name: "a missing comma", key: "models: [m-a m-b]\n", refusal: `models[0] is "m-a m-b", which holds white space: a model's name is one word`},
 		{name: "a model named twice", key: "models: [m, m]\n", refusal: "models names m twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
