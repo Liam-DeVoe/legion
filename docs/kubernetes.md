@@ -9322,6 +9322,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`runtime.kubernetes.agent_secrets.github`** puts a role's GitHub behind the secrets broker's proxy: a mapping of a role (each workflow role, and `controller`) to the broker's secret names, each a GitHub App secret served behind the proxy, whose grant that role's gh, gh extensions and git reach GitHub under.
   It needs `runtime.kubernetes.agent_secrets.github_hosts`, the hosts the broker's GitHub kind binds, as the profiles file that defines the kind lists them.
+  At each grant the forwarder logs a warning naming any host the grant binds that `github_hosts` lacks, since before a forwarder's first grant a call to that host goes out directly.
   A role it names holds no GitHub token: the daemon mints no App token for it and writes none into its role Secret, and the refresher passes it over.
   `packages/envoy/scripts/proxy-role-check.sh` runs a role's gh and git through its forwarder on the broker's local stack.
 

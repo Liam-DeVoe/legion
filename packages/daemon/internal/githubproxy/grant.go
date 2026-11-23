@@ -168,6 +168,7 @@ type keeper struct {
 	open         func() (Broker, error)
 	names        []string
 	reason       string
+	githubHosts  []string // the hosts the forwarder was told the GitHub kind binds (Config.GitHubHosts)
 	ghDir        string
 	defaultOwner string
 	renames      []ghrepo.Rename
@@ -202,9 +203,22 @@ type ask struct {
 	err   error
 }
 
-func newKeeper(open func() (Broker, error), names []string, reason, ghDir, defaultOwner string, renames []ghrepo.Rename, renewBefore time.Duration, log *slog.Logger) *keeper {
-	return &keeper{open: open, names: names, reason: reason, ghDir: ghDir, defaultOwner: defaultOwner, renames: renames,
+func newKeeper(open func() (Broker, error), names []string, reason string, githubHosts []string, ghDir, defaultOwner string, renames []ghrepo.Rename, renewBefore time.Duration, log *slog.Logger) *keeper {
+	return &keeper{open: open, names: names, reason: reason, githubHosts: githubHosts, ghDir: ghDir, defaultOwner: defaultOwner, renames: renames,
 		renewBefore: renewBefore, log: log, held: map[string]time.Time{}, changed: make(chan struct{})}
+}
+
+// unconfiguredHosts are the hosts grant binds that the configured github_hosts lack, by exact
+// entry: such a host goes out directly before a later forwarder's first grant, where it should
+// wait for that grant, so each grant that binds one is warned of.
+func (k *keeper) unconfiguredHosts(grant *Grant) []string {
+	var lacking []string
+	for _, host := range grant.Hosts {
+		if !slices.ContainsFunc(k.githubHosts, func(configured string) bool { return strings.EqualFold(configured, host) }) {
+			lacking = append(lacking, host)
+		}
+	}
+	return lacking
 }
 
 // Current is the grant held now, nil before the first.
@@ -340,6 +354,10 @@ func (k *keeper) run(a *ask, why string) {
 	default:
 		k.log.Info("forwarder: holds a grant of the role's GitHub secrets", "why", why, "grant", grant.ID,
 			"expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339), "accounts", slices.Sorted(maps.Keys(grant.Accounts)), "hosts", grant.Hosts)
+		if lacking := k.unconfiguredHosts(grant); len(lacking) > 0 {
+			k.log.Warn("forwarder: the grant binds hosts runtime.kubernetes.agent_secrets.github_hosts lacks; before a forwarder's first grant a call to one goes out directly, so add them to that key",
+				"grant", grant.ID, "lacks", lacking, "configured", k.githubHosts)
+		}
 	}
 	close(a.done)
 }

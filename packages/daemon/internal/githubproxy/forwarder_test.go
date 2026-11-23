@@ -558,6 +558,65 @@ func TestAListenerThatFailsStillRevokesTheGrants(t *testing.T) {
 	}
 }
 
+// lockedBuffer is a log sink the forwarder's goroutines and the test share.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestAGrantBindingAHostTheConfigLacksIsWarnedOf: at each grant the forwarder compares the hosts
+// the grant binds with the hosts it was told (Config.GitHubHosts, the deployment's github_hosts)
+// and logs one warning naming each host the grant binds that the configured list lacks, and the
+// key to change: such a host goes out directly before a later forwarder's first grant. A grant
+// whose hosts the list holds, a `*.` entry by its wildcard, logs no such warning.
+//
+// The named revert: drop the comparison from the keeper, and the grant with an extra host logs
+// nothing.
+func TestAGrantBindingAHostTheConfigLacksIsWarnedOf(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured []string
+		warned     bool
+	}{
+		{"the grant binds a host the config lacks", []string{"api.github.com", "github.com"}, true},
+		{"the config holds every host the grant binds", []string{"api.github.com", "github.com", "*.githubusercontent.com"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedBuffer{}
+			r := newRig(t, func(cfg *Config, _ *fakeBroker) {
+				cfg.GitHubHosts = tc.configured
+				cfg.Log = slog.New(slog.NewTextHandler(logs, nil))
+			})
+			r.awaitGrant()
+			r.shutdown()
+			lines := 0
+			for _, line := range strings.Split(logs.String(), "\n") {
+				if strings.Contains(line, "binds hosts runtime.kubernetes.agent_secrets.github_hosts lacks") {
+					lines++
+					if !strings.Contains(line, "*.githubusercontent.com") || strings.Contains(line, "lacks=\"[api.github.com") {
+						t.Errorf("the warning %q does not name the one host the config lacks", line)
+					}
+				}
+			}
+			if want := map[bool]int{true: 1, false: 0}[tc.warned]; lines != want {
+				t.Fatalf("%d warnings of a host the config lacks; want %d. Log:\n%s", lines, want, logs.String())
+			}
+		})
+	}
+}
+
 // TestAProxyThatNeverFinishesTheTLSHandshakeIsGivenUp: an https proxy that accepts the connection
 // and never answers the TLS handshake is given up within connectThrough's bound, not waited on
 // for ever while the role's call hangs.

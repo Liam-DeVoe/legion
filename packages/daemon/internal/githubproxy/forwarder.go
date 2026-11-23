@@ -103,7 +103,7 @@ func Listen(cfg Config) (*Forwarder, error) {
 	}
 	return &Forwarder{
 		cfg: cfg, listener: listener, log: log,
-		keeper: newKeeper(cfg.Open, cfg.Secrets, cfg.Reason, cfg.GHDir, cfg.DefaultOwner, cfg.Renames, cfg.RenewBefore, log),
+		keeper: newKeeper(cfg.Open, cfg.Secrets, cfg.Reason, cfg.GitHubHosts, cfg.GHDir, cfg.DefaultOwner, cfg.Renames, cfg.RenewBefore, log),
 	}, nil
 }
 
