@@ -142,8 +142,8 @@ func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *test
 		// lacks is what the refusal names, "" for a launch that goes on.
 		lacks string
 	}{
-		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "the slot checker"},
-		{"the pod lacks the role of the step", workerToken, "checker", "the role checker"},
+		{"the pod lacks the slot of the claim's agent", checkerToken, claim.RoleTester, "checker, the slot of the claim's agent"},
+		{"the pod lacks the role of the step", workerToken, "checker", "checker, the role of its step"},
 		{"the pod holds the slot and the role", workerToken, claim.RoleReviewer, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

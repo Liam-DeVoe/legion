@@ -516,28 +516,6 @@ func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
 }
 
-// templateLacks is what a pod built with held lacks of a launch whose claim runs in slot (slotOf)
-// on a step of role, as a refusal names it: "the role <role>" where the pod lacks the role (the
-// one name a claim named for its role asks), "the slot <slot>" where it lacks only the slot, "the
-// slot <slot> and the role <role>" where it lacks two names, and "" where it holds both, where a
-// token names no slot, or where held is empty (a template no launcher of this layout wrote).
-func templateLacks(held []claim.Role, slot, role claim.Role) string {
-	if len(held) == 0 {
-		return ""
-	}
-	lacksSlot := slot != "" && !slices.Contains(held, slot)
-	lacksRole := !slices.Contains(held, role)
-	switch {
-	case lacksRole && (slot == role || !lacksSlot):
-		return "the role " + string(role)
-	case lacksSlot && lacksRole:
-		return "the slot " + string(slot) + " and the role " + string(role)
-	case lacksSlot:
-		return "the slot " + string(slot)
-	}
-	return ""
-}
-
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
 // names (issuePod.launcherContainer writes one for each role of the launch,
 // controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored

@@ -3997,7 +3997,7 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // resources, its role_config_files overlays among them, and a launch into a pod that lacks either
 // would replace it, ending every role in it and taking the issue's disk with everything they did
 // not push. A keyed agent's slot and its step's role can be two names. It answers a wait, whose
-// text begins with pods.StartWaitsForPodPrefix, names what the pod lacks (podLacking), and is
+// text begins with pods.StartWaitsForPodPrefix, names what the pod lacks (runtime.PodLacks), and is
 // runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is
 // gone — released, or replaced by its update round — the start creates the claim, whose launch
 // builds the new pod with every role. A runtime with no pods answers nothing, and the start goes
@@ -4019,7 +4019,14 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	if !ok {
 		return nil
 	}
-	pod, lacking := podLacking(podRoles, issue.Key, slot, role)
+	var pod string
+	lacking := runtime.PodLacks(func(name claim.Role) bool {
+		uid, lacks := podRoles.PodLacksRole(issue.Key, name)
+		if lacks {
+			pod = uid
+		}
+		return lacks
+	}, slot, role)
 	if lacking == "" {
 		return nil
 	}
@@ -4058,27 +4065,6 @@ func (r *outbox) podWaitPrefix(ctx context.Context, row record.OutboxRow, issue,
 		return "", err
 	}
 	return startWaitToldPrefix, nil
-}
-
-// podLacking is what the issue's live pod lacks of a start whose claim runs in slot on a step of
-// role, as the wait's text and the controller's notice name it, with the pod's uid: the role's name
-// alone for a claim named for its role, whose slot and role are one name; "<role>, the role of
-// its step" or "<slot>, the slot of the claim's agent" where the pod lacks one of two names, both
-// where it lacks the two, and "" where the pod holds both or no live pod stands.
-func podLacking(podRoles runtime.IssuePodRoles, issue string, slot, role claim.Role) (string, string) {
-	slotPod, lacksSlot := podRoles.PodLacksRole(issue, slot)
-	rolePod, lacksRole := podRoles.PodLacksRole(issue, role)
-	switch {
-	case lacksRole && slot == role:
-		return rolePod, string(role)
-	case lacksSlot && lacksRole:
-		return slotPod, string(slot) + ", the slot of the claim's agent, and " + string(role) + ", the role of its step"
-	case lacksRole:
-		return rolePod, string(role) + ", the role of its step"
-	case lacksSlot:
-		return slotPod, string(slot) + ", the slot of the claim's agent"
-	}
-	return "", ""
 }
 
 // slotOfToken is the slot of the pod that token's claim runs in: its agent's name
@@ -4139,7 +4125,8 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 
 // podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
 // pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
-// the pod was made before (before: that the deployment defined what the pod lacks, podLacking's
+// the pod was made before (before: that the deployment defined what the pod lacks, in
+// runtime.PodLacks's
 // words, or that its launchers waited for a new role's credential), what is true now, and that the
 // pod's disk can hold work a role did not push. It tells nobody to take the pod away.
 func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, before string) string {

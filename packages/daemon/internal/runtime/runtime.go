@@ -244,6 +244,34 @@ type IssuePodRoles interface {
 	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
 }
 
+// PodLacks is what an issue pod lacks of a launch whose claim runs in slot (its agent's name) on a
+// step of role, where lacks says whether the pod was built without a name: the role's name alone
+// for a claim named for its role, whose slot and role are one name; "<role>, the role of its step"
+// or "<slot>, the slot of the claim's agent" where the pod lacks one of two names; both where it
+// lacks the two; and "" where it holds both. An empty slot, a token that names no agent, asks the
+// role alone. It is the one decision of what a pod lacks: the outbox's start waits on it before
+// it creates or re-roles a claim, and the Sandbox runtime refuses a launch into a kept pod on it,
+// each naming what it answers.
+func PodLacks(lacks func(name claim.Role) bool, slot, role claim.Role) string {
+	lacksRole := lacks(role)
+	if slot == role {
+		if lacksRole {
+			return string(role)
+		}
+		return ""
+	}
+	lacksSlot := slot != "" && lacks(slot)
+	switch {
+	case lacksSlot && lacksRole:
+		return string(slot) + ", the slot of the claim's agent, and " + string(role) + ", the role of its step"
+	case lacksRole:
+		return string(role) + ", the role of its step"
+	case lacksSlot:
+		return string(slot) + ", the slot of the claim's agent"
+	}
+	return ""
+}
+
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
