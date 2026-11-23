@@ -127,6 +127,8 @@ export const realStackReasons: Record<string, string> = {
     "the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
+  "evals-inventory.e2e.ts":
+    "the Evals tab draws every number from the live hub's evals views over seeded delivery rows, and each inventory reads what the server's views answer for them",
   "failed-room.e2e.ts": "a document room that fails and recovers",
   "followers.e2e.ts": "follower and subscriber writes change what the server delivers",
   "gated-step-approvals.e2e.ts":

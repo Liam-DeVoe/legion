@@ -242,6 +242,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/download-names.e2e.ts` | the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written |
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
+| `e2e/evals-inventory.e2e.ts` | the Evals tab draws every number from the live hub's evals views over seeded delivery rows, and each inventory reads what the server's views answer for them |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
 | `e2e/followers.e2e.ts` | follower and subscriber writes change what the server delivers |
 | `e2e/gated-step-approvals.e2e.ts` | gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side |
