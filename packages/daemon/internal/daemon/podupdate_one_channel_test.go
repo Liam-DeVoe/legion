@@ -157,6 +157,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 // which makes and pushes the merge of the base forward in merging (roles/merger.md), whose
 // unpushed merge commit the pod's replacement would lose.
 func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleReviewer), readyWorker(claim.RoleMerger))
 	rig.drifts(podUpdateDrift)
