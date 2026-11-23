@@ -8662,7 +8662,10 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Settings order.**
   Oh My Pi reads `PI_CONFIG_FILES` in order, each overlay outranking the ones before it and all of them outranking a repository's `.omp/config.yml`.
-  Legion writes no overlay at all: the list a role reads is the operator's own overlays, then that role's own (`role_config_files`), then the project's memory overlays (`projects.<KEY>.memory.config_files`) where the role's tree was drawn into the memory group, composed by the runtime that starts the role, and the shim passes it through untouched.
+  Legion writes no overlay at all.
+  The list a role reads is the operator's overlays, then the role's own (`role_config_files`), then the overlays of the arms its unit was drawn into.
+  An arm adds its overlays only where its experiment reaches the role (`roles`), and the memory group's (`projects.<KEY>.memory.config_files`) is one such arm.
+  The runtime that starts the role composes the list, and the shim passes it through untouched.
   So nothing of Legion's holds a repository's settings off — they reach a pod's agent as they reach any agent session, under the operator's overlay — and nothing of Legion's turns a pinned binary's own defaults off either: background work (`async.enabled`, `bash.autoBackground.enabled`) is on for every role, as it is for `--mode rpc`.
   The pod sets `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file` on the agent where the pod leaves them unset, which an operator's pod may not set, since they decide where Oh My Pi keeps the session a resume reads.
   From the pinned build on, `OMP_CONFIG_ROOT` decides it too, and outranks `PI_CONFIG_DIR`: an operator's pod may not set it either, but the pod does not set it, so a repository's `.env` that sets it moves the config root (read from Oh My Pi's source, `env.ts` and `dirs.ts`; not run).

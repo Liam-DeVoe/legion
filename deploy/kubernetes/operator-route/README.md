@@ -135,5 +135,7 @@ a Secret**, and they meet nowhere:
 - `provider_keys` names variables Oh My Pi or the extension reads that must come from the providers
   Secret. The shim exports each into the Oh My Pi child's environment only, after the pod's own
   variables, so a `provider_keys` name that collides with one of `pod.env` is refused at config load.
-- `pod.env`'s `PI_CONFIG_FILES` names the operator's overlay. Legion's own pod baseline is written
-  first in that list, so this overlay outranks it, and both outrank a repository's `.omp/config.yml`.
+- `pod.env`'s `PI_CONFIG_FILES` names the operator's overlay. Legion writes no overlay of its own.
+  A role's own overlays (`role_config_files`) and those of each experiment arm its unit was drawn
+  into follow it in the list, so each of them outranks it. All of them outrank a repository's
+  `.omp/config.yml`.
