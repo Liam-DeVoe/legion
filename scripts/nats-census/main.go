@@ -17,7 +17,6 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
@@ -90,6 +89,10 @@ var local = map[string]bool{
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: census <absolute path of the module directory>")
+		os.Exit(2)
+	}
 	dir := os.Args[1]
 	cfg := &packages.Config{Dir: dir, Tests: false, Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports}
 	pkgs, err := packages.Load(cfg, "./...")
@@ -224,7 +227,6 @@ func main() {
 		fmt.Printf("SKIP\t%s\n", path)
 	}
 	fmt.Fprintf(os.Stderr, "packages %d, left out %d, non-test files %d, request calls %d, local calls %d, function calls %d\n", len(pkgs), len(skips), files, len(requests), len(others), len(funcs))
-	_ = token.NoPos
 }
 
 // passesAckOpt reports whether call passes an argument to sig's variadic nats.AckOpt parameter. A
