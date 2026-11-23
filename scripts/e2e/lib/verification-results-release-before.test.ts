@@ -10,7 +10,8 @@ import { scriptFunctions } from "./script-functions";
 // merge of main moves it with no edit of the script; on main after the change merged, and on a
 // branch of that main, the commit of main just before the merge. The fixture is an origin whose
 // main is m1..m4 and whose branch `feature` forked at m1, added the change's first migration and
-// merged m2; and a second origin, `merged`, whose main is m4, the merge of `feature`, then m5.
+// merged m2; and a second origin, `merged`, whose main is m4, a squash of `feature` (this
+// repository merges by squash alone), then m5.
 const releaseBeforeOfHead = scriptFunctions(join(import.meta.dir, "..", "verification-results.sh"))(
   "release_before_of_head"
 );
@@ -82,12 +83,14 @@ beforeAll(() => {
   m3 = commit(origin, "m3");
   m4 = commit(origin, "m4");
   url = `file://${origin}`;
-  // main after the change merged, as a merge commit, and a commit of main after that.
+  // main after the change merged, as a squash commit, the one shape this repository merges by, and
+  // a commit of main after that.
   const merged = join(dir, "merged-origin");
   git(dir, "clone", "-q", "--branch", "main", url, merged);
   git(merged, "config", "uploadpack.allowFilter", "true");
   git(merged, "config", "uploadpack.allowAnySHA1InWant", "true");
-  git(merged, "merge", "-q", "--no-ff", "--no-edit", "origin/feature");
+  git(merged, "merge", "-q", "--squash", "origin/feature");
+  git(merged, "commit", "-q", "-m", "the change, squashed");
   commit(merged, "m5");
   mergedUrl = `file://${merged}`;
 }, gitTimeoutMs);
