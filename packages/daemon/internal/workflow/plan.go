@@ -280,13 +280,13 @@ const (
 // pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
 // reports. A held issue stands where no role works, so no role has left its phase there
 // (leftItsPhase), but a hold of an owner's plan, which stands where its issue stands: a parent held
-// for its children at its retro, and a stopped task at the step the stop ended, whose own role's
-// report is the run the stop ended and is no left phase's, so a run of a left phase is never also
-// that run. w is the walk of issue's run and row the role's row of the run the completion reports
-// (Walk.completionRow).
+// for its children at its retro, and a stopped task at the step the stop ended, whose report of
+// that step's run is the run the stop ended and is no left phase's, so a run of a left phase is
+// never also that run. w is the walk of issue's run and row the role's row of the run the
+// completion reports (Walk.completionRow).
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fact intake.HandoffComplete, reported phase.Phase,
 	row record.PhaseRow) (pastReport, error) {
-	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim, row)
+	left, err := e.leftItsPhase(ctx, tx, issue, w, fact.Role, fact.Claim, reported, row)
 	switch {
 	case err != nil:
 		return noRunReported, err
