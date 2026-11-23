@@ -268,7 +268,7 @@ func stepVariantKeptProblems(ctx context.Context, pool *Pool, issue string, roll
 		want.StepExperiment = nil
 	}
 	var runs []record.IssueStepRun
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		runs, err = record.NewStore().StepRuns(ctx, tx, []string{issue})
 		return err
