@@ -221,6 +221,95 @@ func TestTheAgentsOfTasksWithOneLastTask(t *testing.T) {
 	r.onePod(claim.RoleImplementer)
 }
 
+// conflictPlan is two tasks, a and c, that need nothing and change one line of one file, x.txt;
+// the task d that needs both, in that order; and the task e that needs d, so d does not merge and
+// its pull request is based on its join branch. Each need is written as examplePlan's.
+const conflictPlan = `:::plan_task{#a steps="implementer:i reviewer:r"}
+Change the parser of the widget.
+:::
+
+:::plan_task{#c steps="implementer:i reviewer:r"}
+Move the readers of the store.
+:::
+
+:::plan_task{#d needs="%[1]sa %[1]sc" steps="implementer:i reviewer:r"}
+Join the parser and the store.
+:::
+
+:::plan_task{#e needs="%[1]sd" steps="implementer:i tester:t"}
+Check the whole change.
+:::
+`
+
+// A join that conflicts is repaired by the first step of the task that needs it. a and c each
+// change the one line of x.txt that main holds, so GitHub refuses the merge of c into d's join
+// branch, which the join makes at a's head. d's first step's task tells its agent how to repair
+// that join, and the agent does what it says in d's working copy, which the adoption made
+// (repairAndWork): the join branch then holds a's and c's last commits and x.txt with both lines,
+// no conflict marker, and d's own work starts from that join.
+//
+// The fault: a task whose first step is not told to repair its join starts without the work of the
+// need whose merge conflicted. The control is a mutation of the release's code, run by hand:
+// workflow's joinToRepair answering nothing, so the agent, which acts on that text alone, repairs
+// no join, and the check that d's join branch holds c's last commit fails.
+func TestAJoinThatConflictsIsRepairedByTheFirstStep(t *testing.T) {
+	r := newTasksRig(t)
+	r.gh.repo.Commit(t, "main", map[string]string{"x.txt": "line 1\n"}, "the file a and c change")
+	r.givePlanText(conflictPlan)
+	r.firstStep()
+	r.waitAt("a", 1)
+	r.waitAgent("c", 1)
+	r.implementWith("a", "main", r.changeX("a"))
+	r.waitAt("c", 1)
+	r.reviewStep("a")
+	r.waitDone("a")
+	r.implementWith("c", "main", r.changeX("c"))
+	r.reviewStep("c")
+	r.waitDone("c")
+	r.waitAt("d", 1)
+
+	d := r.branchOf("d")
+	r.implementWith("d", d+claim.JoinBranchSuffix, r.repairAndWork)
+	join := r.gh.repo.Head(t, d+claim.JoinBranchSuffix)
+	for _, need := range []string{"a", "c"} {
+		if !r.copies.ancestor(r.lasts[need], join) {
+			t.Errorf("d's join branch stands at %s, which does not hold %s's last commit %s", join, need, r.lasts[need])
+		}
+	}
+	if x := r.copies.show(join, "x.txt"); x != resolvedX {
+		t.Errorf("x.txt on d's join branch = %q, want the line of each need with no conflict marker, %q", x, resolvedX)
+	}
+	if !r.copies.ancestor(join, r.starts["d"]) {
+		t.Errorf("d's own work started from %s, which does not hold its join branch's head %s", r.starts["d"], join)
+	}
+	if x := r.copies.show(r.lasts["d"], "x.txt"); x != resolvedX {
+		t.Errorf("x.txt on d's branch = %q, want the repaired join's %q", x, resolvedX)
+	}
+}
+
+// changeX is the work of task's implementer in conflictPlan: the line of x.txt changed to its own.
+func (r *tasksRig) changeX(task string) func(told, dir, branch string) (string, string) {
+	return func(_, dir, branch string) (string, string) {
+		return r.copies.commit(dir, branch, task, map[string]string{"x.txt": "from " + task + "\n"})
+	}
+}
+
+// repairAndWork is the work of d's implementer in conflictPlan, which acts on what its task, told,
+// says of the join of its needs and on nothing else: where the task tells jj commands, it runs each
+// in d's working copy dir (taskCopy.follow), repairing x.txt with the line of each need
+// (resolvedX). Its own work, d.txt, is then described and pushed on d's branch (taskCopy.work). It
+// answers the commit its own work started from and the one it pushed.
+func (r *tasksRig) repairAndWork(told, dir, branch string) (string, string) {
+	r.t.Helper()
+	d := taskCopy{t: r.t, run: fixturegit.Isolated(r.t, r.copies.home), dir: dir}
+	if jjCommand.MatchString(told) {
+		d.follow(told, map[string]string{"x.txt": resolvedX})
+	}
+	start := d.jj("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	d.work(branch, map[string]string{"d.txt": "the work of task d\n"}, "the work of task d")
+	return start, r.gh.repo.Head(r.t, branch)
+}
+
 // tasksRig is the whole daemon with one issue at admitted whose owner gives it a plan of several
 // tasks (ownerStepsRig), over the fake GitHub of a real repository (gh), with the working copy of
 // each task made for real when a step's task adopts it (copies); and, by task, the pull request its
@@ -250,6 +339,24 @@ func newTasksRig(t *testing.T) *tasksRig {
 // that counts.
 func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, titles ...string) *tasksRig {
 	t.Helper()
+	// The daemon's own log, the one a run names (liveDaemonLogEnv) or one of the test's own, is
+	// printed when the test fails.
+	logPath := os.Getenv(liveDaemonLogEnv)
+	if logPath == "" {
+		logPath = filepath.Join(t.TempDir(), "daemon.log")
+		t.Setenv(liveDaemonLogEnv, logPath)
+	}
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		written, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Logf("read the daemon's log %s: %v", logPath, err)
+			return
+		}
+		t.Logf("the daemon's log:\n%s", written)
+	})
 	gh := newTasksGitHub(t)
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
@@ -405,7 +512,7 @@ func (r *tasksRig) branchOf(task string) string {
 // copy, its branch.
 func (r *tasksRig) takeFor(role claim.Role, task string) *stepClaimant {
 	r.t.Helper()
-	c, _ := r.takeIn(role, task)
+	c, _, _ := r.takeIn(role, task)
 	return c
 }
 
@@ -413,8 +520,9 @@ func (r *tasksRig) takeFor(role claim.Role, task string) *stepClaimant {
 // WorkingCopy): its branch, then its directory, which holds no space.
 var workingCopyLine = regexp.MustCompile(` Working copy: branch (\S+), directory (\S+)\.(\s|$)`)
 
-// takeIn is takeFor that answers the directory of the working copy the task names too.
-func (r *tasksRig) takeIn(role claim.Role, task string) (*stepClaimant, string) {
+// takeIn is takeFor that answers the directory of the working copy the task names too, and the
+// task's whole text.
+func (r *tasksRig) takeIn(role claim.Role, task string) (*stepClaimant, string, string) {
 	r.t.Helper()
 	c := r.worker(role)
 	prompt := c.take()
@@ -422,7 +530,7 @@ func (r *tasksRig) takeIn(role claim.Role, task string) (*stepClaimant, string) 
 	if branch := r.branchOf(task); line == nil || line[1] != branch {
 		r.t.Fatalf("the %s's task = %q, want task %s's, naming its working copy on %s and its directory", role, prompt.Message, task, branch)
 	}
-	return c, line[2]
+	return c, line[2], prompt.Message
 }
 
 // done ends c's step: its handoff record of word (none for word ""), its completion req, which the
@@ -445,19 +553,29 @@ func (r *tasksRig) planStep(task string) {
 }
 
 // implementStep is the implementer's step of task: in the working copy its task names, which the
-// adoption of that task made (tasksCopies), it commits the task's work and pushes the task's
-// branch, opens the task's pull request against base and completes at that commit; the task then
-// stands at its next step. The commit the working copy started at, and the one it pushed, are the
-// task's start and last.
+// adoption of that task made (tasksCopies), it commits the task's work, a file of its own, and
+// pushes the task's branch, opens the task's pull request against base and completes at that
+// commit; the task then stands at its next step. The commit the working copy started at, and the
+// one it pushed, are the task's start and last.
 func (r *tasksRig) implementStep(task, base string) {
 	r.t.Helper()
-	c, dir := r.takeIn(claim.RoleImplementer, task)
+	r.implementWith(task, base, func(_, dir, branch string) (string, string) {
+		return r.copies.commit(dir, branch, task, map[string]string{task + ".txt": "the work of task " + task + "\n"})
+	})
+}
+
+// implementWith is implementStep whose work is work: what the implementer does in the working copy
+// dir of branch, as the text of its task, told, says, answering the commit its work started at and
+// the one it pushed on branch.
+func (r *tasksRig) implementWith(task, base string, work func(told, dir, branch string) (start, last string)) {
+	r.t.Helper()
+	c, dir, told := r.takeIn(claim.RoleImplementer, task)
 	branch := r.branchOf(task)
 	if made := r.copies.made()[branch]; made != dir {
 		r.t.Fatalf("task %s's implementer is told the working copy %s, want %s, the one its adoption made", task, dir, made)
 	}
 	at := r.rows()[task].position
-	r.starts[task], r.lasts[task] = r.copies.commit(dir, branch, task)
+	r.starts[task], r.lasts[task] = work(told, dir, branch)
 	r.pulls[task] = r.gh.open(branch, base)
 	r.done(c, "implement", api.HandoffCompleteRequest{Summary: "implemented " + task, Commit: r.lasts[task]})
 	r.waitTask(task, fmt.Sprintf("past its step %d", at), func(row tasksRow) bool { return row.position != at || row.state != string(record.TaskRunning) })
@@ -630,25 +748,34 @@ func (c *tasksCopies) made() map[string]string {
 	return maps.Clone(c.dirs)
 }
 
-// commit is an agent's work on task in the working copy dir: a file of its own, committed on the
-// commit the working copy stands at and pushed as branch to the repository. Nothing else is staged:
-// the working copy is a checkout of its branch. It answers the commit the working copy started at
-// and the one it pushed.
-func (c *tasksCopies) commit(dir, branch, task string) (start, last string) {
+// commit is an agent's work on task in the working copy dir: files (path to content), committed on
+// the commit the working copy stands at and pushed as branch to the repository. Nothing else is
+// staged: the working copy is a checkout of its branch. It answers the commit the working copy
+// started at and the one it pushed.
+func (c *tasksCopies) commit(dir, branch, task string, files map[string]string) (start, last string) {
 	c.t.Helper()
 	git := fixturegit.Isolated(c.t, c.home)
 	start = git.Run(dir, "git", "rev-parse", "HEAD")
-	if err := os.WriteFile(filepath.Join(dir, task+".txt"), []byte("the work of task "+task+"\n"), 0o600); err != nil {
-		c.t.Fatal(err)
+	paths := slices.Sorted(maps.Keys(files))
+	for _, path := range paths {
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(files[path]), 0o600); err != nil {
+			c.t.Fatal(err)
+		}
 	}
-	git.Run(dir, "git", "add", "--", task+".txt")
-	if staged := git.Run(dir, "git", "diff", "--cached", "--name-only"); staged != task+".txt" {
-		c.t.Fatalf("the working copy %s of task %s stages %q, want its own file alone", dir, task, staged)
+	git.Run(dir, append([]string{"git", "add", "--"}, paths...)...)
+	if staged := git.Run(dir, "git", "diff", "--cached", "--name-only"); staged != strings.Join(paths, "\n") {
+		c.t.Fatalf("the working copy %s of task %s stages %q, want its own files alone, %q", dir, task, staged, paths)
 	}
 	git.Run(dir, "git", "commit", "--quiet", "-m", "the work of task "+task)
 	last = git.Run(dir, "git", "rev-parse", "HEAD")
 	git.Run(dir, "git", "push", "--quiet", c.origin, "HEAD:refs/heads/"+branch)
 	return start, last
+}
+
+// show is path as commit holds it in the repository.
+func (c *tasksCopies) show(commit, path string) string {
+	c.t.Helper()
+	return fixturegit.Isolated(c.t, c.home).Raw(c.origin, "git", "show", commit+":"+path)
 }
 
 // ancestor says whether commit is an ancestor of, or is, of in the repository.
