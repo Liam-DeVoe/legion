@@ -1946,14 +1946,18 @@ const legionAnsweredPause = z.object({
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null.
  * Contract 224 adds each task's `needs`, the ids of the tasks it needs as register_plan resolved
- * them, an empty list for none, never null. A plan the daemon does not take is answered
- * `409 PLAN_REFUSED`, whose `error` holds every reason in order; the body's `reasons` lists them
- * by task, which `LegionErrorResponse` strips. The reader takes every field as optional, since no
- * plugin code reads one: the `legion` tool hands the answer to its agent whole. */
+ * them, an empty list for none, never null, and the plan's `added`, the ids of the tasks the
+ * version adds over the version in force, in the plan's order: every task of a generation's first
+ * version, an empty list for a version that adds none, never null, and the same list for a
+ * registration given again. A plan the daemon does not take is answered `409 PLAN_REFUSED`, whose
+ * `error` holds every reason in order; the body's `reasons` lists them by task, which
+ * `LegionErrorResponse` strips. The reader takes every field as optional, since no plugin code
+ * reads one: the `legion` tool hands the answer to its agent whole. */
 export const LegionPlanRegisterResponse = z.object({
   plan: z
     .object({
       version: z.number().int().positive().optional(),
+      added: z.array(nonEmptyString).optional(),
       tasks: z
         .array(
           z.object({

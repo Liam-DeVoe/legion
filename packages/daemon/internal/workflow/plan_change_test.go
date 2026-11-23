@@ -184,7 +184,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if !got.GivenAt.Equal(want.GivenAt) {
 			t.Fatalf("version 1 was given at %s, want the engine's clock %s", got.GivenAt, want.GivenAt)
 		}
-		if got.GivenAt = want.GivenAt; got != want {
+		if got.GivenAt = want.GivenAt; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the version in force = %+v, want %+v", got, want)
 		}
 		task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -339,6 +339,38 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
 			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}, before)
 	})
+}
+
+// The apply of a plan answers the tasks its version adds over the version in force it read
+// (intake.Result.Added), in the plan's order, for an issue the daemon has not recorded too, whose
+// plan waits at generation 0: every task of the generation's first version, then the one task a
+// later version adds and no task it keeps.
+//
+// The fault it catches is an apply that answers nothing for such an issue, whose write returns
+// before the work a version starts on a recorded issue (its control: planGiven answering the added
+// tasks only after afterVersion, under which version 1 answers none).
+func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
+	const child = "LEGION-500"
+	pool := migratedPool(t)
+	engine := returnEngine()
+	a := givenTask(t, "Build the widget.", "implementer:i", "reviewer:r")
+	b := givenTask(t, "Test the widget.", "implementer:i", "reviewer:r")
+	b.ID, b.Needs = "b", []string{"a"}
+	for _, tc := range []struct {
+		version int
+		tasks   []plan.Task
+		want    []string
+	}{
+		{1, []plan.Task{a}, []string{"a"}},
+		{2, []plan.Task{a, b}, []string{"b"}},
+	} {
+		what := fmt.Sprintf("version %d", tc.version)
+		result := applyFacts(t, pool, engine)(planID(child, 0, tc.version), ownersPlan(t, child, 0, tc.version, tc.tasks...))
+		mustTake(t, what, result)
+		if result.Added == nil || !slices.Equal(result.Added, tc.want) {
+			t.Fatalf("%s of unrecorded %s answers added %#v, want %q", what, child, result.Added, tc.want)
+		}
+	}
 }
 
 // running is the refusal of a version that changes or removes task a while it runs.

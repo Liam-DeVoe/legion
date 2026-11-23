@@ -134,14 +134,14 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 
 	for range 2 {
 		taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4)
-		if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"],"needs":[]}]}}` {
+		if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != `{"plan":{"version":4,"added":[],"tasks":[{"id":"a","steps":["implementer","reviewer"],"needs":[]}]}}` {
 			t.Fatalf("register version 4 = %d %s, want 200 with its one task and two steps", taken.Code, taken.Body)
 		}
 	}
 	// A task that names no steps runs the project's default steps when its work starts, and the
 	// answer says it names none rather than guessing what the project will run then.
 	if bare := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 5); bare.Code != http.StatusOK ||
-		strings.TrimSpace(bare.Body.String()) != `{"plan":{"version":5,"tasks":[{"id":"a","steps":[],"needs":[]}]}}` {
+		strings.TrimSpace(bare.Body.String()) != `{"plan":{"version":5,"added":[],"tasks":[{"id":"a","steps":[],"needs":[]}]}}` {
 		t.Fatalf("register version 5 = %d %s, want 200 with task a naming no step", bare.Code, bare.Body)
 	}
 	want := []intake.Fact{
@@ -197,18 +197,19 @@ func TestRegisterPlanTakesARoleTheDeploymentDefines(t *testing.T) {
 // the reader takes a task written without `steps`, and the daemon holds what it does not check:
 // every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries
 // `steps` as a list, never null and never absent, a task whose block names none included. At
-// tasksContract each task carries `needs` the same way, a task that needs none included, and a
-// caller below it is served no `needs` (withoutNeeds).
-// TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.
+// tasksContract each task carries `needs` the same way, a task that needs none included, and the
+// plan carries `added`, a list for none too; a caller below it is served neither
+// (withoutNeedsOrAdded). TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one
+// task through the route.
 func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 7,
-		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}, Needs: []string{"a"}}}})}
+		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}, Needs: []string{"a"}}}}, nil)}
 	for _, tc := range []struct {
 		contract int
 		want     string
 	}{
 		{OwnerPlanContract, `{"plan":{"version":7,"tasks":[{"id":"a","steps":[]},{"id":"b","steps":["implementer"]}]}}`},
-		{tasksContract, `{"plan":{"version":7,"tasks":[{"id":"a","steps":[],"needs":[]},{"id":"b","steps":["implementer"],"needs":["a"]}]}}`},
+		{tasksContract, `{"plan":{"version":7,"added":[],"tasks":[{"id":"a","steps":[],"needs":[]},{"id":"b","steps":["implementer"],"needs":["a"]}]}}`},
 	} {
 		shaped, _ := shapeAnswer(AnswerPlanRegister, answer, tc.contract, tc.contract)
 		encoded, err := json.Marshal(shaped)
@@ -319,12 +320,7 @@ func TestRegisterPlanRefusesANeedIntoAnotherIssue(t *testing.T) {
 // its resolution of needs, under which d's needs read the words).
 func TestARegisteredPlanStoresItsNeedsAsTaskIds(t *testing.T) {
 	h, _, statuses := planHarness(t)
-	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
-		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine}, Dispatch: statuses, Deployment: plan.Deployment{Roles: plan.BuiltinRoles()}}).Handler
+	serveTheEngine(h, statuses)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	ref := func(id string) string { return "dispatch://LEGION-208/artifact/plan-md#b-" + id }
 	const steps = "implementer:i reviewer:r"
@@ -336,7 +332,7 @@ func TestARegisteredPlanStoresItsNeedsAsTaskIds(t *testing.T) {
 	task := func(id, needs string) string {
 		return `{"id":"` + id + `","steps":["implementer:i","reviewer:r"],"needs":[` + needs + `]}`
 	}
-	want := `{"plan":{"version":1,"tasks":[` + strings.Join([]string{task("a", ""), task("b", ""), task("c", `"b"`), task("d", `"a","c"`),
+	want := `{"plan":{"version":1,"added":["a","b","c","d","e"],"tasks":[` + strings.Join([]string{task("a", ""), task("b", ""), task("c", `"b"`), task("d", `"a","c"`),
 		task("e", `"d"`)}, ",") + `]}}`
 	if taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != want {
 		t.Fatalf("register the plan of tasks a to e = %d %s, want 200 with %s", taken.Code, taken.Body, want)
@@ -347,6 +343,75 @@ func TestARegisteredPlanStoresItsNeedsAsTaskIds(t *testing.T) {
 	}
 	if !slices.Equal(needs, []string{"a", "c"}) {
 		t.Fatalf("plan_tasks.needs of d = %q, want {a,c}: each need stored as the id of the task it names", needs)
+	}
+}
+
+// serveTheEngine serves h with the workflow's engine as its one handler, so each fact a route
+// applies is the workflow's to judge and write, as the daemon's are, and statuses as its Dispatch.
+func serveTheEngine(h *harness, statuses *statusRecorder) {
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{engine}, Dispatch: statuses, Deployment: plan.Deployment{Roles: plan.BuiltinRoles()}}).Handler
+}
+
+// register_plan's answer names each task its version adds over the version in force, in the
+// plan's order (`plan.added`): every task of the generation's first version, the one task a later
+// version adds and no task beside it, and none, an empty list and never null, for a version that
+// changes a task's steps and adds no task. A registration given again is the fact already applied,
+// answered what its apply answered, though a later version is in force by then. Each answer is
+// the workflow's apply of the plan (planGiven), through the route.
+//
+// The faults it catches are an answer built from the given document, which names every task of
+// each version (its control: the route answering every task of the plan given as added, under
+// which version 2 answers a, b and c), and an answer computed again for a registration given
+// again, against the version in force then, which names none (its control: the route reading the
+// plan in force on a duplicate and answering the tasks the given plan adds over it, under which
+// version 2 given again answers none).
+func TestRegisterPlanNamesTheTasksItsVersionAdds(t *testing.T) {
+	h, _, statuses := planHarness(t)
+	serveTheEngine(h, statuses)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	ref := func(id string) string { return "dispatch://LEGION-208/artifact/plan-md#b-" + id }
+	const steps = "implementer:i reviewer:r"
+	statuses.givePlan(planDoc, 1, taskBlock("a", steps), needing(taskBlock("b", steps), ref("a")))
+	statuses.givePlan(planDoc, 2, taskBlock("a", steps), needing(taskBlock("b", steps), ref("a")), needing(taskBlock("c", steps), ref("b")))
+	statuses.givePlan(planDoc, 3, taskBlock("a", steps), needing(taskBlock("b", "implementer:i"), ref("a")), needing(taskBlock("c", steps), ref("b")))
+
+	added := func(version int) []string {
+		t.Helper()
+		taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, version)
+		var answer struct {
+			Plan struct {
+				Version int       `json:"version"`
+				Added   *[]string `json:"added"`
+			} `json:"plan"`
+		}
+		if taken.Code != http.StatusOK || json.Unmarshal(taken.Body.Bytes(), &answer) != nil || answer.Plan.Version != version {
+			t.Fatalf("register version %d = %d %s, want 200 with that version", version, taken.Code, taken.Body)
+		}
+		if answer.Plan.Added == nil {
+			t.Fatalf("register version %d answers %s, want it to name `added`, a list and never null", version, taken.Body)
+		}
+		return *answer.Plan.Added
+	}
+	for _, tc := range []struct {
+		version int
+		want    []string
+		why     string
+	}{
+		{1, []string{"a", "b"}, "the generation's first version adds every task"},
+		{2, []string{"c"}, "version 2 adds c and keeps a and b as they were"},
+		{3, []string{}, "version 3 changes the steps of b and adds no task"},
+		{2, []string{"c"}, "version 2 given again is the registration taken, answered what its apply answered, though version 3 is in force"},
+		{1, []string{"a", "b"}, "version 1 given again is the registration taken, answered what its apply answered"},
+		{3, []string{}, "version 3 given again is the registration taken, answered what its apply answered"},
+	} {
+		if got := added(tc.version); !slices.Equal(got, tc.want) {
+			t.Errorf("register version %d answers added %q, want %q: %s", tc.version, got, tc.want, tc.why)
+		}
 	}
 }
 

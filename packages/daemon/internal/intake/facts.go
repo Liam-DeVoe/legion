@@ -1803,10 +1803,17 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// Added is set by the workflow's apply of a PlanGiven alone, the one fact whose route answers what
+// the apply wrote (api's registerPlan): the ids of the tasks the version adds over the version in
+// force that the apply read in its own transaction, in the plan's order, every task of a
+// generation's first version, and [] where it adds none. It is nil for every other fact, for a
+// refusal and for a duplicate, whose route reads what the apply recorded (record.Store.PlanAdded).
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Added     []string
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -2428,6 +2435,9 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 				result.Refusal = candidate.Refusal
 			}
 			result.Unspent = result.Unspent || candidate.Unspent
+			if candidate.Added != nil {
+				result.Added = candidate.Added
+			}
 		}
 		if err := settle(ctx, tx); err != nil {
 			return err

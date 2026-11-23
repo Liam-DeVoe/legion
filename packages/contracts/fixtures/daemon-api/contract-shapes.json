@@ -36903,6 +36903,8 @@
     "noBody": false,
     "keyPaths": [
       "plan",
+      "plan.added",
+      "plan.added.*",
       "plan.tasks",
       "plan.tasks.*",
       "plan.tasks.*.id",

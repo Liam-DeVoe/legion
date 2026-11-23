@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -12,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -23,14 +27,22 @@ type PlanRegisterRequest struct {
 	Version    int    `json:"version"`
 }
 
-// PlanRegisterResponse is the plan register_plan took: the version given and each of its tasks.
+// PlanRegisterResponse is the plan register_plan took: the version given, the tasks it added and
+// each of its tasks.
 type PlanRegisterResponse struct {
 	Plan RegisteredPlan `json:"plan"`
 }
 
-// RegisteredPlan is one version of a plan as register_plan read it.
+// RegisteredPlan is one version of a plan as register_plan read it. Added is the ids of the tasks
+// the version adds over the version in force, in the plan's order, as the workflow's apply of the
+// plan answered them (intake.Result.Added): every task of a generation's first version, none for a
+// version that changes or keeps each task it gives, [] and never null; a task it removes is in no
+// list of the answer. A registration given again is answered what its apply answered, which the
+// store recorded on the version (record.Store.PlanAdded). A caller below tasksContract, which
+// added the field, is served none (shaping.go's withoutNeedsOrAdded).
 type RegisteredPlan struct {
 	Version int              `json:"version"`
+	Added   *[]string        `json:"added,omitempty"`
 	Tasks   []RegisteredTask `json:"tasks"`
 }
 
@@ -40,7 +52,7 @@ type RegisteredPlan struct {
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
 // work starts, so the answer names none rather than guessing what the project will run then. A
 // task that needs none has [] here, never null; the answer to a caller below tasksContract, which
-// added the field, carries none (shaping.go's withoutNeeds).
+// added the field, carries none (shaping.go's withoutNeedsOrAdded).
 type RegisteredTask struct {
 	ID    string    `json:"id"`
 	Steps []string  `json:"steps"`
@@ -105,7 +117,8 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // plan.FromBlocks), and refuses with one reason for each cause of a plan this release does not
 // carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
 // nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
-// a later version are the workflow's.
+// a later version are the workflow's, and is answered with the tasks the workflow's apply says the
+// version added (registeredAnswer).
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
 // a retry of a registration taken is that fact, answered the same, and the same version given at
@@ -170,7 +183,33 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
 		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, PlanRegisterResponse{Plan: registeredPlan(given)})
+		AnswerPlanRegister, func(ctx context.Context, result intake.Result) (any, error) {
+			return s.registeredAnswer(ctx, result, req.Issue, generation, given)
+		})
+}
+
+// registeredAnswer is register_plan's answer to the plan given, of issue at generation, which the
+// fact's apply took (result): the tasks the version added are the ones that apply answered, read
+// in the transaction that wrote the version (intake.Result.Added). A registration given again is
+// the fact already applied, whose handler does not run again (result.Duplicate), and by then the
+// version in force can be this version or a later one, over which this version adds none: its
+// answer reads what the first apply recorded on the version (record.Store.PlanAdded), so both
+// answers are one body.
+func (s *server) registeredAnswer(ctx context.Context, result intake.Result, issue string, generation uint64, given plan.Plan) (any, error) {
+	added := result.Added
+	if result.Duplicate {
+		if s.records == nil {
+			return nil, errors.New("api: no record store to read the tasks a version added")
+		}
+		if err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			added, err = s.records.PlanAdded(ctx, tx, issue, generation, given.ArtifactID, given.Version)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return PlanRegisterResponse{Plan: registeredPlan(given, added)}, nil
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
@@ -282,12 +321,14 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	return given, true
 }
 
-// registeredPlan is given as register_plan answers it.
-func registeredPlan(given plan.Plan) RegisteredPlan {
+// registeredPlan is given as register_plan answers it, with added, the tasks its version added
+// ([] for nil).
+func registeredPlan(given plan.Plan, added []string) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
 		needs := append([]string{}, task.Needs...)
 		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps), Needs: &needs}
 	}
-	return RegisteredPlan{Version: given.Version, Tasks: tasks}
+	answered := append([]string{}, added...)
+	return RegisteredPlan{Version: given.Version, Added: &answered, Tasks: tasks}
 }

@@ -22,7 +22,10 @@ import (
 // registration, whose id names the issue, the generation, the document and the version (api's
 // registerPlan), applies when it is given again: a version refused while its task ran is taken
 // after stop_task, and the owner's plan given again at the generation the record holds meets the
-// rules of a later version there.
+// rules of a later version there. A version taken answers the tasks it adds over the version in
+// force that versionRefusal read (intake.Result.Added, record.PlanVersion.Added), which the route
+// answers, and which the write records on the version, since a registration given again is
+// answered that and not what the version would add over the version in force then.
 //
 // Apply judged the plan already on the record as the fact reads it, since the route read the
 // record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
@@ -34,10 +37,10 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
 	}
 	written, err := e.writeVersion(ctx, tx, fact, given)
-	if err != nil || !given.recorded {
-		return intake.Result{}, err
+	if err == nil && given.recorded {
+		err = e.afterVersion(ctx, tx, fact, given, written)
 	}
-	return intake.Result{}, e.afterVersion(ctx, tx, fact, given, written)
+	return intake.Result{Added: given.version.Added}, err
 }
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil
@@ -525,15 +528,16 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 }
 
 // givenRows is the rows of fact's version, given at now over stored, the plan in force (nil for
-// none), of which changed are the tasks it changes, adds or removes. Each task takes the
-// version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
-// the generation holds stands). A task the version leaves as it was keeps its stored steps; any
-// other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type its role has in d, the
-// engine's deployment (planSteps).
+// none), of which changed are the tasks it changes, adds or removes. The version records the tasks
+// it adds (addedTasks). Each task takes the version's block, and a task new to the generation
+// waits at no act (PutPlan keeps where a task the generation holds stands). A task the version
+// leaves as it was keeps its stored steps; any other task takes the steps its block names
+// (StepsOf), or, for a block that names none, defaults, the project's default steps
+// (Config.DefaultSteps), each with the type its role has in d, the engine's deployment
+// (planSteps).
 func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
-		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
+		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now, Added: addedTasks(stored, fact.Plan)}
 	var tasks []record.PlanTask
 	var steps []record.PlanStep
 	for _, given := range fact.Plan.Tasks {
@@ -547,4 +551,22 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
+}
+
+// addedTasks is the id of each task of next that stored, the plan in force, does not hold, in
+// next's order: every task of next where stored is nil, a generation's first version, and [] for a
+// version that adds none, never nil. A task next changes or keeps is not added, and a task it
+// removes is in no list.
+func addedTasks(stored *record.StoredPlan, next plan.Plan) []string {
+	added := []string{}
+	for _, task := range next.Tasks {
+		if stored == nil {
+			added = append(added, task.ID)
+			continue
+		}
+		if _, held := stored.TaskOf(task.ID); !held {
+			added = append(added, task.ID)
+		}
+	}
+	return added
 }

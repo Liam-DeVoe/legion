@@ -3462,9 +3462,14 @@ package api
 // SupportedContracts is `api.tasksContract`.
 // `POST /legion/v1/plans/register` (`register_plan`) takes a plan of several tasks and a task's
 // `needs` (plan.Supported refuses neither), and its answer names each task's `needs`, the ids of
-// the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`). A
-// caller below 224 is served each task without `needs` (shaping.go's withoutNeeds); the reader of
-// 219 parses a task as a zod object, which drops the key, so a plugin before it reads either body.
+// the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`), and the
+// plan's `added`, the ids of the tasks the version adds over the version in force, in the plan's
+// order, every task of a generation's first version, `[]` for none (`api.RegisteredPlan`): the
+// workflow's apply of the plan answers them, and records them on the version
+// (`store/migrations/20261123200630_plan_added.up.sql`), so a registration given again answers the
+// same. A caller below 224 is served neither (shaping.go's withoutNeedsOrAdded); the reader of 219
+// parses the plan and a task as zod objects, which drop the keys, so a plugin before it reads
+// either body.
 // The same change adds the notice kind `task-join-failed`, to the issue's architect, for a task
 // whose join of its needs waits for a need's branch GitHub does not have (`record.validNoticeKinds`).
 // An outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and

@@ -1457,17 +1457,23 @@ test("a failed step's completion names the step its task returns to", () => {
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
 // Contract 224: each task is answered with the tasks it needs, by id, an empty list for none and
+// never null, and the plan with the tasks its version added, by id, an empty list for none and
 // never null. No plugin code reads a field of the answer, so the reader takes each as optional
 // and refuses only a value of the wrong type.
-test("register_plan answers each task of the plan it took with its steps and its needs", () => {
+test("register_plan answers the tasks its version added and each task with its steps and its needs", () => {
   expect(LegionPlanRegisterResponse.parse(fixture("plan-register.json"))).toEqual({
-    plan: { version: 4, tasks: [{ id: "a", steps: ["implementer", "reviewer"], needs: [] }] },
+    plan: {
+      version: 4,
+      added: ["a"],
+      tasks: [{ id: "a", steps: ["implementer", "reviewer"], needs: [] }],
+    },
   });
   const none = { plan: { version: 1, tasks: [{ id: "a", steps: [], needs: [] }] } };
   expect(LegionPlanRegisterResponse.parse(none)).toEqual(none);
   const needing = {
     plan: {
       version: 2,
+      added: [],
       tasks: [
         { id: "a", steps: ["implementer"], needs: [] },
         { id: "b", steps: ["tester"], needs: ["a"] },
@@ -1483,6 +1489,12 @@ test("register_plan answers each task of the plan it took with its steps and its
   ]) {
     expect(
       LegionPlanRegisterResponse.safeParse({ plan: { version: 1, tasks: [task] } }).success
+    ).toBeFalse();
+  }
+  for (const added of [null, [""]]) {
+    expect(
+      LegionPlanRegisterResponse.safeParse({ plan: { version: 1, added, tasks: none.plan.tasks } })
+        .success
     ).toBeFalse();
   }
   expect(

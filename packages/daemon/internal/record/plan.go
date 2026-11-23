@@ -86,6 +86,12 @@ const (
 // generation is the plan in force. An owner's version is the version of its document (ArtifactID)
 // it gave, and GivenBy the claim token of the owner that gave it; a default plan has version 0, no
 // document and no giver.
+//
+// Added is the ids of the tasks an owner's version added over the version in force when it was
+// taken, in the plan's order (workflow's addedTasks): what register_plan answered then, which
+// PutPlan records and PlanAdded reads back for a registration given again. A default plan records
+// none. The plan reads (Plan, PlansOf, OwnersNewestPlan, PlansOfEarlierOwners) leave it nil, since
+// nothing but that answer reads it.
 type PlanVersion struct {
 	Issue      string
 	Generation uint64
@@ -94,6 +100,7 @@ type PlanVersion struct {
 	Source     string
 	GivenBy    claim.Token
 	GivenAt    time.Time
+	Added      []string
 }
 
 // TaskPlace is where a task stands: at a step (PlaceStep, Position from 1), at its retro or its
@@ -565,13 +572,14 @@ func (p StoredPlan) Implements(task string) bool {
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
-// steps of those tasks. The same version given twice is refused, and so is a task or a step of
-// another issue or generation, or a step of a task v does not give, whose step the write would
-// leave beside a task that keeps its own; each refusal is made before anything is written, so the
-// transaction stays usable. A task the generation holds already takes v's text and attributes and
-// keeps where it stands, which the walk writes; a new task is written as given. The steps of each
-// task v gives are replaced by the steps v gives it, each with the name of its agent as it is given
-// (NameAgents names them before this write; PutPlan has no rule of its own).
+// steps of those tasks, and the tasks v records it added (PlanVersion.Added, none for nil). The
+// same version given twice is refused, and so is a task or a step of another issue or generation,
+// or a step of a task v does not give, whose step the write would leave beside a task that keeps
+// its own; each refusal is made before anything is written, so the transaction stays usable. A
+// task the generation holds already takes v's text and attributes and keeps where it stands, which
+// the walk writes; a new task is written as given. The steps of each task v gives are replaced by
+// the steps v gives it, each with the name of its agent as it is given (NameAgents names them
+// before this write; PutPlan has no rule of its own).
 func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error {
 	describe := fmt.Sprintf("put version %d of the plan of %s at generation %d", v.Version, v.Issue, v.Generation)
 	given := make([]string, 0, len(tasks))
@@ -589,9 +597,13 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 			return fmt.Errorf("%s: step %d names task %s, which the version does not give", describe, step.Position, step.Task)
 		}
 	}
-	tag, err := tx.Exec(ctx, `insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
-		values ($1, $2, $3, $4, $5, $6, $7) on conflict (issue, generation, version) do nothing`,
-		v.Issue, int64(v.Generation), v.Version, v.Source, v.ArtifactID, string(v.GivenBy), v.GivenAt)
+	added := v.Added
+	if added == nil {
+		added = []string{}
+	}
+	tag, err := tx.Exec(ctx, `insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at, added)
+		values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict (issue, generation, version) do nothing`,
+		v.Issue, int64(v.Generation), v.Version, v.Source, v.ArtifactID, string(v.GivenBy), v.GivenAt, added)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
@@ -642,6 +654,24 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		return nil, fmt.Errorf("read the plan of %s at generation %d: %w", issue, generation, err)
 	}
 	return plans[issue], nil
+}
+
+// PlanAdded is the ids of the tasks that version of the plan of issue at generation, of the
+// document artifactID, recorded it added (PlanVersion.Added), in the plan's order: what
+// register_plan answered when it took that version, which a registration given again answers.
+// [] where the version added none, where it was taken before its write recorded what it added
+// (store migration 20261123200630_plan_added), and where the store no longer holds it.
+func (s *Postgres) PlanAdded(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) ([]string, error) {
+	added := []string{}
+	err := tx.QueryRow(ctx, `select added from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4`,
+		issue, int64(generation), version, artifactID).Scan(&added)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the tasks version %d of the plan of %s at generation %d added: %w", version, issue, generation, err)
+	}
+	return added, nil
 }
 
 // PlansOf is the plan of each of issues at the issue's own generation, by key, in the three
@@ -886,9 +916,10 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	return earlier, nil
 }
 
-// CarryPlan copies the plan of issue at generation from to generation to: every version, every task
-// and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
-// so each task keeps its state, its hold's reason, its place, its step's wait and since when, its
+// CarryPlan copies the plan of issue at generation from to generation to: every version, with the
+// tasks each recorded it added, every task and every step. carried is a hand-over that carries its
+// run, whose tasks go on where they stood, so each task keeps its state, its hold's reason, its
+// place, its step's wait and since when, its
 // counts, its branch and the needs whose join conflicted, and the generation every name it gave a
 // task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
 // starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
@@ -930,8 +961,8 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}
 	}
 	for _, statement := range append([]string{
-		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
-			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
+		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at, added)
+			select issue, $3, version, source, artifact_id, given_by, given_at, added from issue_plans where issue = $1 and generation = $2`,
 		tasks,
 		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
 			select issue, $3, task, position, role, type, agent_key, agent

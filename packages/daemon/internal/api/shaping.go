@@ -300,10 +300,11 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if !isRegistered {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, and each task's `needs` arrived
-		// at tasksContract, so a caller below it is served each task without it (withoutNeeds).
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and the plan's `added` and each
+		// task's `needs` arrived at tasksContract, so a caller below it is served neither
+		// (withoutNeedsOrAdded).
 		if strip < tasksContract {
-			registered = withoutNeeds(registered)
+			registered = withoutNeedsOrAdded(registered)
 		}
 		return registered, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
@@ -1570,18 +1571,19 @@ func withoutTasks(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
-// withoutNeeds is register_plan's answer with no `needs` on any task, the one field tasksContract
-// added to it. The reader of OwnerPlanContract parses each task as a plain zod object, which drops
-// a key it does not name (legion-api.ts's LegionPlanRegisterResponse), so it would read the body
-// either way; the band serves each contract below tasksContract the body its record describes.
-// The tasks are copied, so the body the route wrote keeps its own.
-func withoutNeeds(registered PlanRegisterResponse) PlanRegisterResponse {
+// withoutNeedsOrAdded is register_plan's answer with no `added` on the plan and no `needs` on any
+// task, the two fields tasksContract added to it. The reader of OwnerPlanContract parses the plan
+// and each task as plain zod objects, which drop a key they do not name (legion-api.ts's
+// LegionPlanRegisterResponse), so it would read the body either way; the band serves each contract
+// below tasksContract the body its record describes. The tasks are copied, so the body the route
+// wrote keeps its own.
+func withoutNeedsOrAdded(registered PlanRegisterResponse) PlanRegisterResponse {
 	tasks := make([]RegisteredTask, len(registered.Plan.Tasks))
 	for i, task := range registered.Plan.Tasks {
 		task.Needs = nil
 		tasks[i] = task
 	}
-	registered.Plan.Tasks = tasks
+	registered.Plan.Tasks, registered.Plan.Added = tasks, nil
 	return registered
 }
 
