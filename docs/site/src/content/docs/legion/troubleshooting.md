@@ -906,7 +906,8 @@ only it reports. A notice starts no architect, except one whose idle pod
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
 does not hold its role goes to the architect above, but an `owner-step` goes to its issue's own
-architect alone, a root's or a child's, which is told that step again when it runs again. A suspended worker of its issue's current
+architect alone, a root's or a child's, which is told that step again when it runs again, unless
+the session it runs in already had it. A suspended worker of its issue's current
 phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
 (`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
 suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
