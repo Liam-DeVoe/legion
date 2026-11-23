@@ -55,7 +55,7 @@ func TestAPullRequestOpenedIsRecordedForTheTaskWhoseBranchItIsOn(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	open := func(id string, number int, branch string, at time.Time, reopened bool) {
 		t.Helper()
-		if _, err := intake.ApplyFact(ctx, pool, "github", id, intake.PullRequestOpened{Repo: "acme/widgets", Number: number, Branch: branch,
+		if _, err := intake.ApplyFact(ctx, pool, "github", id, intake.PullRequestOpened{Repo: "acme/widgets", Number: number, Branch: branch, HeadRepo: "acme/widgets",
 			Base: "main", HeadSHA: "head-" + id, UpdatedAt: at, Reopened: reopened}, engine, admissionStub{}); err != nil {
 			t.Fatalf("apply the pull request %s: %v", id, err)
 		}

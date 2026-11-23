@@ -123,7 +123,7 @@ func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
 	if again.State != record.TaskRunning || again.Branch != "legion/LEGION-208.b.2" {
 		t.Fatalf("task b added back = %+v, want a new task running on legion/LEGION-208.b.2", again)
 	}
-	mustSpend(t, "the open of #3", apply("opened-3", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 3, Branch: again.Branch,
+	mustSpend(t, "the open of #3", apply("opened-3", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 3, Branch: again.Branch, HeadRepo: "sjawhar/legion",
 		Base: "main", HeadSHA: "head-b2", UpdatedAt: time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)}))
 	opened := pullRequestOfTask(t, pool, root.Key, "b")
 	if opened.Number != 3 || opened.State != record.PullRequestOpen {

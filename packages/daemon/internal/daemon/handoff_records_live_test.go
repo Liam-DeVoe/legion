@@ -1228,7 +1228,7 @@ func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string 
 		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
 			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
 		case r.Method == http.MethodGet && isRepository && len(parts) == 3 && parts[2] == "pulls":
-			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child"},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch)
+			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child","repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch, parts[0]+"/"+parts[1])
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)

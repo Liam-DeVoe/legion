@@ -51,7 +51,7 @@ func newBaseGitHub(t *testing.T) (*baseGitHub, *handoffGitHub) {
 			_, _ = io.WriteString(w, "[]")
 			return
 		}
-		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","html_url":"https://github.com/acme/widgets/pull/%d","head":{"ref":%q,"sha":%q},"base":{"ref":%q},"updated_at":"2026-11-22T06:00:00Z"}]`,
+		_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","html_url":"https://github.com/acme/widgets/pull/%d","head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":%q},"updated_at":"2026-11-22T06:00:00Z"}]`,
 			pull.number, pull.number, branch, headSHA, pull.base)
 	}})
 	return g, &handoffGitHub{url: url}
