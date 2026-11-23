@@ -180,19 +180,24 @@ const (
 
 // BoundDeviceAuth holds da's interval and lifetime to the device grant's bounds, its lifetime read
 // from now. It writes those two fields alone, so a reader of another one, the user code, races
-// nothing.
+// nothing. The end it writes is now plus what is left, one reading of now's monotonic clock where
+// now carries one (time.Now does): x/oauth2 dates the end from time.Now().UTC(), which drops that
+// reading, so a comparison with it reads the wall clock while a context's deadline and its timer
+// run on the monotonic one, and a step of the wall clock would set the two apart.
 //
 // x/oauth2 reads the device authorization's interval and expires_in as whole seconds
 // (oauth2.DeviceAuthResponse), and reads 0 as none, so an interval of 0 is 5 s here and a lifetime
 // of 0 the hour. A negative interval starts at the least, and a negative lifetime lapses the code
 // before its first poll. x/oauth2 wraps a lifetime past what a time.Duration holds (292 years), to
 // a time that has passed or that the hour bounds, and fails the device authorization on a fraction
-// of either.
+// of either, a count past an int64 or a lifetime sent as a string.
 func BoundDeviceAuth(da *oauth2.DeviceAuthResponse, now time.Time) {
 	da.Interval = min(max(cmp.Or(da.Interval, DefaultDeviceInterval), LeastDeviceInterval), MostDeviceInterval)
-	if most := now.Add(MostDeviceLifetime); da.Expiry.IsZero() || da.Expiry.After(most) {
-		da.Expiry = most
+	left := MostDeviceLifetime
+	if !da.Expiry.IsZero() {
+		left = min(da.Expiry.Sub(now), left)
 	}
+	da.Expiry = now.Add(left)
 }
 
 // ErrSignInEnded is a kept refresh token the issuer no longer honours: the person revoked the

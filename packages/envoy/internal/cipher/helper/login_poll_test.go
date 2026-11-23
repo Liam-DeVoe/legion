@@ -180,7 +180,7 @@ func newPollRigNaming(t *testing.T, fields map[string]any, lapseAt int, answers 
 	}
 	r.f.mu.Unlock()
 	r.b = &Broker{URL: cipheraddr.New(r.f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: r.f.srv.Client(),
-		testLoginWait: func(wait time.Duration, da *oauth2.DeviceAuthResponse) {
+		testLoginWait: func(_ context.Context, wait time.Duration, da *oauth2.DeviceAuthResponse) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.waits, r.until = append(r.waits, wait), append(r.until, time.Until(da.Expiry))
@@ -327,6 +327,43 @@ func TestALoginPollsWaitEndsAtTheCodesLifetime(t *testing.T) {
 	}
 	if reason := r.b.LoginStatus().Reason; reason != "the broker was unreachable or busy for the last poll" || r.polls() != 1 {
 		t.Fatalf("the lapse recorded %q after %d polls, want the last poll named after 1", reason, r.polls())
+	}
+}
+
+// TestALoginPollEndsAtItsDeadlineThoughTheEndReadsLater: the code lapses at the poll's context
+// deadline even where its end reads later, as the hook moves it here and as a step back of the
+// wall clock moves an end read from the wall clock alone. The loop records "expired" at once and
+// sends no poll, where it would otherwise turn without waiting, under a context already done, until
+// the end it reads.
+func TestALoginPollEndsAtItsDeadlineThoughTheEndReadsLater(t *testing.T) {
+	f := newFakeBroker(t)
+	f.mu.Lock()
+	f.loginOutcome, f.deviceAuthFields = "pending", map[string]any{"expires_in": 1}
+	f.mu.Unlock()
+	var mu sync.Mutex
+	turns := 0
+	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+		testLoginWait: func(ctx context.Context, _ time.Duration, da *oauth2.DeviceAuthResponse) {
+			mu.Lock()
+			turns++
+			first := turns == 1
+			mu.Unlock()
+			if first {
+				da.Expiry = da.Expiry.Add(time.Hour)
+				<-ctx.Done()
+			}
+		}}
+	t.Cleanup(b.Close)
+	if _, err := b.Login(context.Background(), "host-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return b.LoginStatus().State == "expired" })
+	mu.Lock()
+	defer mu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if turns != 1 || f.devicePolls != 0 {
+		t.Fatalf("the loop turned %d times and polled %d times, want once and no poll", turns, f.devicePolls)
 	}
 }
 

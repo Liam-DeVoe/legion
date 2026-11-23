@@ -259,6 +259,14 @@ func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 			t.Errorf("an interval of %d and an end %v held to %d and %v (user code %q), want %d and %v", c.interval, c.expiry, da.Interval, da.Expiry, da.UserCode, c.wantInterval, c.wantExpiry)
 		}
 	}
+	// The end is one reading of the monotonic clock, though x/oauth2 dates it from the wall clock
+	// alone (time.Now().UTC()), so a comparison with it, a context's deadline and a timer read one
+	// clock. Round(0) drops that reading, so the end differs from it only where it carries one.
+	da := &oauth2.DeviceAuthResponse{Expiry: time.Now().UTC().Add(10 * time.Minute)}
+	BoundDeviceAuth(da, time.Now())
+	if da.Expiry == da.Expiry.Round(0) {
+		t.Error("the bounded end carries no monotonic reading, so a comparison with it reads the wall clock")
+	}
 }
 
 // waitNoPanic is flow.Wait, with a panic inside it, which x/oauth2 v0.37.0's ticker raises on a

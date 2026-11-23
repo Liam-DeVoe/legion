@@ -459,16 +459,17 @@ function retryAfterMs(error: unknown): number {
  * challenge), stops the poll at once, naming the status, rather than polling until the code lapses
  * and saying it expired. That is the one place this poll and `pollLogin` differ by choice: the
  * helper polls on there until the code lapses, as it records the login's state in the background,
- * where a person waits on this poll. Beyond it they differ only where the two libraries read an
- * answer apart, in answers no conforming broker gives, which `pollLogin`'s doc lists: an OAuth
- * error in a body that is not JSON or beside a `WWW-Authenticate` challenge ({@link outage}'s
- * module header), a 2xx naming an OAuth error, a 3xx, any 2xx but a 200 JSON body, an approval
- * with no `token_type` or one the library does not know, a wait named otherwise than in an
- * unsigned `Retry-After` count or an HTTP date, and a device authorization naming an interval or
- * a lifetime that is not positive or is a fraction, a lifetime past what a Go duration holds, or
- * no lifetime. Each refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An
- * approved login that cannot be kept is refused naming its credential, which the broker holds
- * live, and where to revoke it, and a copy of it written whole is kept beside the file
+ * where a person waits on this poll. They also read apart some answers no conforming broker
+ * gives, where their libraries or their own checks differ; `pollLogin`'s doc names some, and
+ * neither list is complete. Among them: an OAuth error in a body that is not JSON or beside a
+ * `WWW-Authenticate` challenge ({@link outage}'s module header), a 2xx naming an OAuth error, a
+ * 3xx, a 2xx but a 200, a JSON approval in a body typed otherwise, an approval the library or
+ * `loginOf` refuses, a poll still in flight at the code's end, a wait named otherwise than in an
+ * unsigned `Retry-After` count or an HTTP date, and a device authorization's edge values (an
+ * interval or a lifetime that is not positive, a fraction, a string, or none). Each refusal names
+ * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot be kept is
+ * refused naming its credential, which the broker holds live, and where to revoke it, and a copy
+ * of it written whole is kept beside the file
  * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the lock
  * included. One kept whose lock is then not let go is answered as kept: the machine uses that
  * login, so it is not one to revoke.
