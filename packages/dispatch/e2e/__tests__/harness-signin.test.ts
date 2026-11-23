@@ -151,8 +151,10 @@ describe("DISPATCH_E2E_SIGNIN", () => {
         });
         expect(ran.stderr).toBe("");
         expect(ran.code).toBe(0);
+        // The client's secret file, then its one callback (main's #5185): the servers'
+        // /auth/callback on the loopback dashboard origin.
         expect(ran.stdout).toMatch(
-          /^handed --code-flow dispatch-e2e=\/dev\/fd\/\d+ --sign-in-as alice@example\.com --sign-in-group people\n$/
+          /^handed --code-flow dispatch-e2e=\/dev\/fd\/\d+=http:\/\/127\.0\.0\.1\/auth\/callback --sign-in-as alice@example\.com --sign-in-group people\n$/
         );
 
         const plain = join(dir, "not-executable");
