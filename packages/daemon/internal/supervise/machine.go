@@ -174,7 +174,7 @@ type Claim struct {
 	// them the session is. It is written in the decision that brings the claim back for a step's
 	// agent (revive), the decision that begins or takes the session for that agent: a spawn for it,
 	// a resume or a retry of the session the claim holds for it, and a start for another agent,
-	// which leaves the session behind first (leaveAnotherAgentsSession). No other code writes it,
+	// which leaves the session behind first. No other code writes it,
 	// and a forget for any other cause keeps it: the claim then relaunches in a new session the same
 	// agent's work it holds. "" is a claim no start for a step's agent has brought back yet — the
 	// claim of an issue with no plan rows, of a role no step names, or one the release before last
@@ -3540,7 +3540,7 @@ type AbandonedSession struct {
 	Why         string    `json:"why"`
 	At          time.Time `json:"at"`
 	// AnotherAgent is whether the session was left behind because it was another agent's than
-	// the agent of the step the claim was started for (Machine.leaveAnotherAgentsSession): the
+	// the agent of the step the claim was started for (Machine.revive): the
 	// agent that replaces it is new on that step, and is told so (abandonedTask), not that a
 	// session of its own was lost.
 	AnotherAgent bool `json:"anotherAgent,omitempty"`
@@ -3640,7 +3640,7 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
 // one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
 // needs a new session; the start of a step's agent whose session the claim does not hold
-// (leaveAnotherAgentsSession), in a spawn, a resume by rule or a retry; and the operator's
+// (revive), in a spawn, a resume by rule or a retry; and the operator's
 // forget-session (forgetSession, the table's), which `legion claims retry --fresh-session` and
 // the controller's fresh_session run (api's freshSession). None of them changes the agent the
 // claim records as its session's (Claim.SessionAgent): the start of another agent records its own

@@ -237,3 +237,52 @@ func TestARefusedAdmissionLeavesTheClaimsSessionWhereItWas(t *testing.T) {
 		})
 	}
 }
+
+// Leaving another agent's session is a step of the admission itself (revive), not one each
+// decision that brings the claim back must remember to ask for: a decision that brings the claim
+// back for another step's agent and gives revive nothing to run once the claim is admitted still
+// leaves the session the claim holds for the agent before, so the launch spawns the new agent in a
+// session of its own. The control, a start for the agent of the session, resumes it. The fault:
+// the session was left only where the caller asked for it, so a caller that did not recorded the
+// new agent as the agent of the old agent's session and resumed that session.
+func TestReviveLeavesAnotherAgentsSessionWhoeverCallsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string
+		fresh bool
+	}{
+		{name: "a start for another agent", agent: keyAgentB, fresh: true},
+		{name: "control: a start for the agent of the session", agent: stepAgentA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := queuedClaim()
+			c.SessionAgent = stepAgentA
+			h := newHarnessOf(t, c)
+			h.reach(StateIdle)
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "its task was stopped"})
+			h.wantState(StateSuspended)
+			spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
+
+			if err := h.insideDecision(h.m, func() error {
+				return h.m.revive(h.ctx, "a decision that runs nothing at the admission", false, StartWork{Agent: tc.agent}, nil)
+			}); err != nil {
+				t.Fatalf("revive for %s = %v, want the claim brought back", tc.agent, err)
+			}
+
+			got := h.claim()
+			spawned, resumed := len(h.calls("Spawn"))-spawns, len(h.calls("Resume"))-resumes
+			if tc.fresh {
+				if spawned != 1 || resumed != 0 || got.Session != "" || got.Abandoned.Session != session {
+					t.Fatalf("revive for %s of a claim whose session is %s's made %d spawns and %d resumes, the claim recording session %q and abandoned %q; want one spawn of a new session and %q left behind",
+						tc.agent, stepAgentA, spawned, resumed, got.Session, got.Abandoned.Session, session)
+				}
+			} else if spawned != 0 || resumed != 1 || got.Session != session {
+				t.Fatalf("revive for %s of a claim whose session is its own made %d spawns and %d resumes, the claim recording session %q; want the session %q resumed",
+					tc.agent, spawned, resumed, got.Session, session)
+			}
+			if got.SessionAgent != tc.agent {
+				t.Fatalf("the claim records the agent %q of its session, want %q", got.SessionAgent, tc.agent)
+			}
+		})
+	}
+}

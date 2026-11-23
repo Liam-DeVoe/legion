@@ -4,7 +4,7 @@ import "testing"
 
 // A claim queued again after a launch (ReleasedLaunch) still records the session it ran, and the
 // agent of that session (Claim.SessionAgent). A spawn of it for another step's agent leaves that
-// session behind, as every start of another agent does (leaveAnotherAgentsSession): the launch
+// session behind, as every start of another agent does (revive): the launch
 // spawns the new agent in a session of its own and the claim records the new agent. The control,
 // a spawn for the agent of the session, resumes it and keeps the record. The fault: the spawn
 // brought another agent back into the session of the agent that held the name before.
