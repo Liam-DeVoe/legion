@@ -4968,7 +4968,8 @@ A login GitHub lists that is no such name is left out the same way: no lease is 
 Every directory's token is the role's own App's: the implement App's for the implementer, the merger and each role of `roles` whose `github_app` is `implement`; the review App's for every other role, a role of `roles` with no `github_app` among them.
 Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
-A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches, whichever owner's it is.
+A role's Secret therefore holds tokens to push to, open a pull request in and review a pull request of every repository its App reaches.
+In an issue pod a role sees only the directories every role of the pod holds, as the projection below says.
 `GH_CONFIG_DIR` names the directory the issue's repository routes to: its recorded owner's, or, for a repository a configured rename moved, the directory of the owner it moved to.
 Which repository the issue names decides that default and nothing else.
 The one directory minted on another owner's installation is the one a configured rename adds: it holds the lease of the owner whose installation serves the moved repository.
