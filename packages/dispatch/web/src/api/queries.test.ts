@@ -126,7 +126,8 @@ test("a project-timeline view is keyed by its window, facets and search, never i
     query: "q=widget&author=octocat",
     window: { preset: 28 },
   } as const;
-  expect(projectTimelineViewQuery(params).queryKey).toEqual(["evals", "timeline", params]);
-  expect(JSON.stringify(projectTimelineViewQuery(params).queryKey)).not.toContain("limit");
+  const key = [...projectTimelineViewQuery(params).queryKey];
+  expect(key).toEqual(["evals", "timeline", params]);
+  expect(JSON.stringify(key)).not.toContain("limit");
   expect(PROJECT_TIMELINE_PAGE).toBe(200);
 });
