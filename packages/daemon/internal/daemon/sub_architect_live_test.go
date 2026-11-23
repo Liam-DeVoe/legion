@@ -10,10 +10,13 @@
 // releases them with its own grant, and a grandchild's notices reach it rather than the root's
 // architect. It may park, rerun and release only issues under its own issue, and is answered 403
 // ISSUE_NOT_OWNED for any other. When its claim fails because its launches ran out, the architect
-// above it is told, the child's notices go there too (all but an owner-step, which is the child's
-// own architect's and waits for it), and the child's next phase start retries the claim in the
-// same session with fresh budgets. A parked child's architect is suspended with the child, and the
-// child's rerun resumes that session.
+// above it is told, and the child's notices go there too, all but an owner-step: that goes to the
+// child's own architect alone, and one sent while its claim has failed is dropped, for its next
+// launch's catch-up to tell that step again. The child's next phase start retries the claim in the
+// same session with fresh budgets; where the child stands at a step or a retro its own architect
+// does, other than an acceptance, the daemon starts the claim again at once, at most three times
+// in that step's run. A parked child's architect is suspended with the child, and the child's
+// rerun resumes that session.
 // scripts/e2e/sub-architect.sh builds this driver with `-tags e2e` and owns the nats-server and
 // the PostgreSQL it runs against, through the run lib/live-daemon-proof.sh makes around every
 // whole-daemon live proof.
