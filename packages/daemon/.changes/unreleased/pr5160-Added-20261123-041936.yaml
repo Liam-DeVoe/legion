@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  An owner's plan can define a role of its own in a `plan_role` block: the block's id is the
+  role's name, `type` is its type, `model` is its model and the block's text is its prompt. A step
+  names the role as it names any other, and the role's agent runs on Oh My Pi with that prompt and
+  model. `register_plan` refuses a role whose name Legion or the deployment already holds, a model
+  the deployment does not list, and a key whose steps name roles of two models or two harnesses.
+
+  The new top-level `legion.yaml` key `models` lists the models a role of a plan may name; the
+  model of each role of `roles` is listed after them. This release takes a value of `models` that
+  is not a list, and an entry that is not one model's name or that names a model again, with a
+  warning at boot and at `legion config check`, and lists no such entry; the next release refuses
+  them. A `default_steps` key that names one agent for roles of two models or two harnesses is
+  warned about the same way, and its later such step runs as an agent of its own. A model taken
+  out of `models` stops, at the next boot, each task whose remaining steps name a role of the
+  issue's plan on that model, with a `task-stopped` notice whose reason names the model.
+
+  One migration adds the table of the roles a plan defines. A rollback runs its way back, and
+  removes `models` from `legion.yaml` first, since an earlier daemon refuses the key.
+time: 2026-11-23T04:19:36Z
+custom:
+    Issue: pr5160
