@@ -3707,7 +3707,9 @@ function phaseCard(key: string, since: string): LegionBoardCard {
 // under a day, which reads anew each minute, and 50 between one and two days, ten minutes past
 // an hour, which reads the same 61 s on. Those 50 are at work too (k13, found by INFRA-3221's
 // goal red team): their Work time grows an hour an hour from 30 h 10 m, which reads 1 d 6 h at
-// the start and 61 s on, so no text those cards draw changes and none of them draws again.
+// the start and 61 s on, so no text those cards draw changes and none of them draws again. One
+// more card, CORE-1102, has no phase_since and has worked 2 h 30 m 30 s at the start, an hour an
+// hour, which reads 2 h 31 m 61 s on: only its Work time can draw it again (k13).
 test("a live read that moves one card of 600 draws at most 5 card bodies and 5 card shells", async () => {
   const start = new Date("2026-11-17T12:00:30Z");
   setSystemTime(start);
@@ -3719,11 +3721,14 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
   const ticking = rows.slice(0, 50).map((row) => row.key);
   const steady = rows.slice(50, 100).map((row) => row.key);
+  // In progress, so neither move picks it.
+  const working = rows[102]?.key ?? "";
   const { client } = table(rows, "?layout=board", {}, {}, Promise.resolve(DAEMON));
   await answerBoard(sockets, {
     ...legionBoard({
       ...Object.fromEntries(ticking.map((key) => [key, boardFacts(3)])),
       ...Object.fromEntries(steady.map((key) => [key, openFacts(ago(29 * 60 + 10))])),
+      [working]: openFacts(ago(90.5)),
     }),
     columns: [
       {
@@ -3732,6 +3737,7 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
         cards: [
           ...ticking.map((key, index) => phaseCard(key, ago(30 + index))),
           ...steady.map((key, index) => phaseCard(key, ago(24 * 60 + (index % 20) * 60 + 10))),
+          { ...phaseCard(working, start.toISOString()), phase_since: null },
         ],
       },
     ],
@@ -3751,6 +3757,12 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
           ?.textContent
     );
   expect(steadyWork()).toEqual(steady.map(() => expect.stringContaining("1 d 6 h")));
+  /** The text of the working card's Legion fact, by its hook. */
+  const workingFact = (hook: string) =>
+    document.querySelector(`[data-board-card="${working}"] [data-legion-fact=${hook}]`)
+      ?.textContent;
+  expect(workingFact("work-time")).toBe("Work time2 h 30 m");
+  expect(workingFact("phase-time")).toBeUndefined();
   const bodies = spyOn(routeReach, "UnreachableRouteMarker");
   const shells = spyOn(dndCore, "useDraggable");
   restores.push(() => {
@@ -3797,6 +3809,7 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
     expect(drawn.size).toBeGreaterThanOrEqual(1);
     expect(drawn.size).toBeLessThanOrEqual(5);
     expect(drawn.has(sameMinute.key)).toBe(true);
+    expect(drawn.has(working)).toBe(false);
   }
   expect(bodies.mock.calls.length).toBeLessThanOrEqual(5);
   expect(shells.mock.calls.length).toBeLessThanOrEqual(5);
@@ -3805,12 +3818,14 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   const nextMinute = await move(1, "2026-11-17T12:01:35Z");
   for (const drawn of [nextMinute.bodies, nextMinute.shells]) {
     for (const key of ticking) expect(drawn.has(key)).toBe(true);
+    expect(drawn.has(working)).toBe(true);
     for (const key of steady) expect(drawn.has(key)).toBe(false);
-    const others = [...drawn].filter((key) => !ticking.includes(key));
+    const others = [...drawn].filter((key) => !ticking.includes(key) && key !== working);
     expect(others).toContain(nextMinute.key);
     expect(others.length).toBeLessThanOrEqual(5);
   }
   expect(steadyWork()).toEqual(steady.map(() => expect.stringContaining("1 d 6 h")));
+  expect(workingFact("work-time")).toBe("Work time2 h 31 m");
 }, 120_000);
 
 // k13 (R11): a card's Work time is a text it draws, so a live change draws again a card whose
