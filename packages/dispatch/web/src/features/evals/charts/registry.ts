@@ -6,11 +6,13 @@ import { bandKind } from "./band";
 import type { ChartKind } from "./kind";
 import { pendingKind } from "./pending";
 import { proseKind } from "./prose";
+import { runsKind } from "./runs";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
   pending: pendingKind,
   prose: proseKind,
+  runs: runsKind,
   xy: xyKind,
 };
