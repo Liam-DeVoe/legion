@@ -113,18 +113,22 @@ func TestBedrockEmbedReturnsBedrockErrorBody(t *testing.T) {
 }
 
 // TestBedrockEmbedMarksItsOwnThrottles drives a coded Bedrock error through the real SDK path:
-// Embed classifies it with Bedrock's code set and marks a throttle for IsThrottled, while a bad
-// request comes back unmarked.
+// Embed classifies it with Bedrock's code sets and marks a throttle for IsThrottled and an outage
+// (ModelTimeoutException, InternalServerException) for IsOutage, while a bad request comes back
+// unmarked.
 func TestBedrockEmbedMarksItsOwnThrottles(t *testing.T) {
 	for _, tc := range []struct {
 		code      string
 		status    int
 		throttled bool
+		outage    bool
 	}{
-		{"ThrottlingException", http.StatusTooManyRequests, true},
-		{"ServiceUnavailableException", http.StatusServiceUnavailable, true},
-		{"ModelNotReadyException", http.StatusTooManyRequests, true},
-		{"ValidationException", http.StatusBadRequest, false},
+		{"ThrottlingException", http.StatusTooManyRequests, true, false},
+		{"ServiceUnavailableException", http.StatusServiceUnavailable, true, false},
+		{"ModelNotReadyException", http.StatusTooManyRequests, true, false},
+		{"ModelTimeoutException", http.StatusRequestTimeout, false, true},
+		{"InternalServerException", http.StatusInternalServerError, false, true},
+		{"ValidationException", http.StatusBadRequest, false, false},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +144,9 @@ func TestBedrockEmbedMarksItsOwnThrottles(t *testing.T) {
 			}
 			if got := IsThrottled(err); got != tc.throttled {
 				t.Errorf("IsThrottled(%v) = %v, want %v", err, got, tc.throttled)
+			}
+			if got := IsOutage(err); got != tc.outage {
+				t.Errorf("IsOutage(%v) = %v, want %v", err, got, tc.outage)
 			}
 			var coded interface{ ErrorCode() string }
 			if !errors.As(err, &coded) || coded.ErrorCode() != tc.code {

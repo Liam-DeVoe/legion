@@ -158,11 +158,10 @@ func IdentityPlace(identity string) (place, model string) {
 }
 
 // IsThrottled reports whether err is the model service signaling "too many requests, back off"
-// (or a closely related capacity condition, or an outage: a service that could not answer now),
-// rather than something wrong with the specific text that was being embedded. It reads only the
-// marker each client puts on its own throttles - an error in err's chain with a Throttled() bool
-// method answering true - because only the client knows what its place's throttles look like
-// (bedrockThrottled, azureThrottled).
+// (or a closely related capacity condition), rather than something wrong with the specific text
+// that was being embedded. It reads only the marker each client puts on its own throttles - an
+// error in err's chain with a Throttled() bool method answering true - because only the client
+// knows what its place's throttles look like (bedrockThrottled, azureThrottled).
 //
 // embedqueue relies on this to decide what a failure means: a throttled batch is retried
 // indefinitely (the provider will recover; the content was never the problem), while a non-
@@ -174,6 +173,19 @@ func IsThrottled(err error) bool {
 	return errors.As(err, &marked) && marked.Throttled()
 }
 
+// IsOutage reports whether err is the model service failing to answer now in a way that is no
+// throttle (azureOutage: a 408, or a 5xx but the 503 that is Azure's capacity throttle; Bedrock's
+// bedrockOutageErrorCodes). Such an answer is either the service failing or one text it fails on
+// every time, and only embedqueue can tell them apart: it still bisects the batch and confirms a
+// row's own failure with its canary, which fails too while the whole service does. Only then does
+// it back RateLimitedEmbedder off (BackOff): a failing half of a bisection moves the pace not at
+// all. It reads only the marker the client puts on its own outages - an error in err's chain with
+// an Outage() bool method answering true.
+func IsOutage(err error) bool {
+	var marked interface{ Outage() bool }
+	return errors.As(err, &marked) && marked.Outage()
+}
+
 // throttleError marks a client's own throttle for IsThrottled, keeping the cause's text and
 // letting errors.Is/As reach the cause.
 type throttleError struct{ err error }
@@ -181,6 +193,13 @@ type throttleError struct{ err error }
 func (e *throttleError) Error() string   { return e.err.Error() }
 func (e *throttleError) Unwrap() error   { return e.err }
 func (e *throttleError) Throttled() bool { return true }
+
+// outageError marks a client's own outage for IsOutage, as throttleError marks a throttle.
+type outageError struct{ err error }
+
+func (e *outageError) Error() string { return e.err.Error() }
+func (e *outageError) Unwrap() error { return e.err }
+func (e *outageError) Outage() bool  { return true }
 
 // Literal renders a vector as pgvector's text input form ("[0.1,0.2,...]"), the form a query
 // parameter cast with ::vector accepts. Dispatch never scans a vector value back out of

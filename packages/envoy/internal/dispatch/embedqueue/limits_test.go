@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,21 +14,24 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
-// the resource has), the status outage names while it is set - to every request but one that
-// carries only embedCanary, which gets vectors, when canaryAnswers is set too - and vectors
-// otherwise, recording each request's inputs.
+// the resource has), the status outage names while it is set (to every request, the canary's
+// included: Azure itself failing), 500 to any request holding a text that contains poison while
+// it is set (one text Azure fails on every time), and vectors otherwise, recording each request's
+// inputs.
 type azureFake struct {
-	mu            sync.Mutex
-	throttling    bool
-	missing       bool
-	outage        int
-	canaryAnswers bool
-	requests      [][]string
+	mu         sync.Mutex
+	throttling bool
+	missing    bool
+	outage     int
+	poison     string
+	requests   [][]string
 }
 
 func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +44,7 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.requests = append(f.requests, request.Input)
-	throttling, missing, outage := f.throttling, f.missing, f.outage
-	canary := f.canaryAnswers && len(request.Input) == 1 && request.Input[0] == embedCanary
+	throttling, missing, outage, poison := f.throttling, f.missing, f.outage, f.poison
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	if throttling {
@@ -53,10 +57,17 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`))
 		return
 	}
-	if outage != 0 && !canary {
+	if outage != 0 {
 		w.WriteHeader(outage)
 		_, _ = fmt.Fprintf(w, `{"error":{"code":"InternalServerError","message":"%s"}}`, http.StatusText(outage))
 		return
+	}
+	for _, text := range request.Input {
+		if poison != "" && strings.Contains(text, poison) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":"InternalServerError","message":"The server had an error while processing your request."}}`))
+			return
+		}
 	}
 	type item struct {
 		Index     int       `json:"index"`
@@ -100,6 +111,8 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 		t.Fatalf("NewAzure: %v", err)
 	}
 	deps := Deps{Store: database, Embedder: client}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 
 	for cycle := range retry.DeadLetterAttempts + 2 {
 		for _, id := range ids {
@@ -111,6 +124,20 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 		}
 		if requests := fake.take(); len(requests) != 1 || len(requests[0]) != len(ids) {
 			t.Fatalf("cycle %d: Azure saw %v, want one request carrying the whole batch", cycle, requests)
+		}
+		// One WARN for the group at each attempt, naming its size and attempt and no text.
+		lines := passRecords(records, slog.LevelWarn, throttledGroupMessage)
+		if len(lines) != cycle+1 {
+			t.Fatalf("cycle %d: %d throttled-group lines, want %d (one a cycle)", cycle, len(lines), cycle+1)
+		}
+		attrs := attrsOf(lines[cycle])
+		if attrs["rows"].Int64() != int64(len(ids)) || attrs["attempt"].Int64() != int64(cycle+1) {
+			t.Fatalf("cycle %d: throttled-group line %v, want rows=%d attempt=%d", cycle, attrs, len(ids), cycle+1)
+		}
+		for key, value := range attrs {
+			if strings.Contains(value.String(), "Title of") {
+				t.Fatalf("cycle %d: throttled-group line's %s carries a text: %v", cycle, key, value)
+			}
 		}
 	}
 	var dead, confirmed int
@@ -142,48 +169,161 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 	}
 }
 
-// An Azure outage - a 408, a 500, a 502 or a 504 - through the real AzureClient, is a throttle as
-// a 429 is: a row whose own call meets it is retried as it stands, never confirmed with a canary,
-// however many times it recurs, so nothing is counted against the row even while the canary would
-// have been answered. An outage says nothing about the text (RFC 9110 sections 15.5.9 and 15.6).
-func TestAnAzureOutageIsNeverCountedAgainstARow(t *testing.T) {
+// throttledGroupMessage is handleGroupFailure's line for a group the model service throttled.
+const throttledGroupMessage = "dispatch embedqueue: the model service throttled a group; it is retried whole, counted against no row"
+
+// azureClientFor is a real AzureClient that calls server.
+func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {
+	t.Helper()
+	client, err := embed.NewAzure(embed.AzureConfig{
+		Endpoint:        server.URL + "/models",
+		Deployment:      "embed-v-4-0",
+		TokensPerMinute: 300_000,
+		APIKey:          strings.Repeat("k", 8),
+		HTTPClient:      server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewAzure: %v", err)
+	}
+	return client
+}
+
+// embeddingStates is each issue row's id with whether it is embedded, its confirmed failures and
+// whether it is dead.
+func embeddingStates(t *testing.T, database *store.Store) map[string]string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select id, embedded_hash is not distinct from content_hash, confirmed_failures, dead
+		from embeddings where kind = 'issue'`)
+	if err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	defer rows.Close()
+	states := map[string]string{}
+	for rows.Next() {
+		var id string
+		var embedded, dead bool
+		var confirmed int
+		if err := rows.Scan(&id, &embedded, &confirmed, &dead); err != nil {
+			t.Fatalf("scan row: %v", err)
+		}
+		states[id] = fmt.Sprintf("embedded=%v confirmed=%d dead=%v", embedded, confirmed, dead)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	return states
+}
+
+// A text Azure answers 500 for every time, through the real AzureClient, holds up no other text:
+// its batch is bisected, so the two texts beside it embed in the first cycle, and its own failure
+// is confirmed by the canary Azure answers, one confirmed failure a cycle, until it is dead at
+// retry.DeadLetterAttempts. The failing halves of the bisection leave the shared pace where it
+// was, since Azure is answering (cmd/dispatch's RateLimitedEmbedder, wrapped here for the first
+// cycle). Read as a throttle, the three were retried whole together, in step, and none ever
+// embedded.
+func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
+	database := storetest.Open(t)
+	for _, id := range []string{"AZPO-1", "AZPO-2", "AZPO-3"} {
+		seedIssue(t, database, "AZPO", id, "Title of "+id)
+	}
+	fake := &azureFake{poison: "AZPO-1"}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	client := azureClientFor(t, server)
+	paced := embed.NewRateLimitedEmbedder(client)
+	pace := paced.Interval()
+	deps := Deps{Store: database, Embedder: paced}
+
+	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+	if err != nil || blocked || throttled || succeeded != 2 || failed != 1 {
+		t.Fatalf("cycle 0: ProcessBatch = %d, %d, %v, %v, %v; want 2, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
+	}
+	if got := paced.Interval(); got != pace {
+		t.Fatalf("cycle 0 moved the pace from %v to %v, want it where it was", pace, got)
+	}
+	deps.Embedder = client // the later cycles' pace is the limiter's own rows'; unpaced, they wait nothing
+	if requests := fake.take(); len(requests) != 4 || len(requests[0]) != 3 || requests[2][0] != embedCanary {
+		t.Fatalf("cycle 0: Azure saw %v, want the batch, the poison alone, the canary and the other two", requests)
+	}
+	want := map[string]string{
+		"AZPO-1": "embedded=false confirmed=1 dead=false",
+		"AZPO-2": "embedded=true confirmed=0 dead=false",
+		"AZPO-3": "embedded=true confirmed=0 dead=false",
+	}
+	if got := embeddingStates(t, database); !maps.Equal(got, want) {
+		t.Fatalf("after cycle 0: %v, want %v", got, want)
+	}
+	for cycle := 1; cycle < retry.DeadLetterAttempts; cycle++ {
+		forceEligible(t, database, "issue", "AZPO-1")
+		if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
+			t.Fatalf("cycle %d: ProcessBatch: %v", cycle, err)
+		}
+	}
+	want["AZPO-1"] = fmt.Sprintf("embedded=false confirmed=%d dead=true", retry.DeadLetterAttempts)
+	if got := embeddingStates(t, database); !maps.Equal(got, want) {
+		t.Fatalf("after %d cycles: %v, want %v", retry.DeadLetterAttempts, got, want)
+	}
+}
+
+// Azure itself failing - a 408, a 500, a 502 or a 504 to every request, the canary's included -
+// through the real AzureClient, is counted against no row however long it lasts: each row's
+// failure is met by a canary that fails too, so nothing is confirmed and nothing dead-letters.
+// Each such canary backs the shared pace off (RateLimitedEmbedder.BackOff, wrapped here for one
+// last cycle), so a cycle that bisects two rows and sends two canaries leaves it four times
+// slower.
+func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 	for _, status := range []int{http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			database := storetest.Open(t)
-			id := fmt.Sprintf("AZOU-%d", status)
-			seedIssue(t, database, "AZOU", id, "Title of "+id)
-			fake := &azureFake{outage: status, canaryAnswers: true}
+			ids := []string{fmt.Sprintf("AZOU-%d1", status), fmt.Sprintf("AZOU-%d2", status)}
+			for _, id := range ids {
+				seedIssue(t, database, "AZOU", id, "Title of "+id)
+			}
+			fake := &azureFake{outage: status}
 			server := httptest.NewServer(fake)
 			defer server.Close()
-			client, err := embed.NewAzure(embed.AzureConfig{
-				Endpoint:        server.URL + "/models",
-				Deployment:      "embed-v-4-0",
-				TokensPerMinute: 300_000,
-				APIKey:          strings.Repeat("k", 8),
-				HTTPClient:      server.Client(),
-			})
-			if err != nil {
-				t.Fatalf("NewAzure: %v", err)
-			}
+			client := azureClientFor(t, server)
 			deps := Deps{Store: database, Embedder: client}
 			for cycle := range retry.DeadLetterAttempts + 2 {
-				forceEligible(t, database, "issue", id)
+				for _, id := range ids {
+					forceEligible(t, database, "issue", id)
+				}
 				succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
-				if err != nil || blocked || !throttled || succeeded != 0 || failed != 1 {
-					t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, throttled", cycle, succeeded, failed, blocked, throttled, err)
+				if err != nil || blocked || throttled || succeeded != 0 || failed != 2 {
+					t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, 2, not blocked, not throttled", cycle, succeeded, failed, blocked, throttled, err)
 				}
-				if requests := fake.take(); len(requests) != 1 || len(requests[0]) != 1 || requests[0][0] == embedCanary {
-					t.Fatalf("cycle %d: Azure saw %v, want the row's one request and no canary", cycle, requests)
+				canaries := 0
+				requests := fake.take()
+				for _, request := range requests {
+					if len(request) == 1 && request[0] == embedCanary {
+						canaries++
+					}
+				}
+				if len(requests) != 5 || canaries != 2 {
+					t.Fatalf("cycle %d: Azure saw %v, want the batch, then each row and a canary after it", cycle, requests)
 				}
 			}
-			var dead, confirmed int
-			if err := database.Pool.QueryRow(context.Background(), `
-				select count(*) filter (where dead), coalesce(sum(confirmed_failures), 0) from embeddings where kind = 'issue'
-			`).Scan(&dead, &confirmed); err != nil {
-				t.Fatalf("read rows: %v", err)
+			states := embeddingStates(t, database)
+			if len(states) != len(ids) {
+				t.Fatalf("read %d rows, want %d: %v", len(states), len(ids), states)
 			}
-			if dead != 0 || confirmed != 0 {
-				t.Fatalf("%d dead rows, %d confirmed failures after a sustained %d, want 0 and 0", dead, confirmed, status)
+			for id, state := range states {
+				if state != "embedded=false confirmed=0 dead=false" {
+					t.Fatalf("%s after a sustained %d: %s, want nothing confirmed and nothing dead", id, status, state)
+				}
+			}
+			paced := embed.NewRateLimitedEmbedder(client)
+			pace := paced.Interval()
+			deps.Embedder = paced
+			for _, id := range ids {
+				forceEligible(t, database, "issue", id)
+			}
+			if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
+				t.Fatalf("the paced cycle: ProcessBatch: %v", err)
+			}
+			if got := paced.Interval(); got != 4*pace {
+				t.Fatalf("the paced cycle's two failing canaries took the pace from %v to %v, want %v", pace, got, 4*pace)
 			}
 		})
 	}

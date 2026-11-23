@@ -144,8 +144,11 @@ func (c *BedrockClient) Embed(ctx context.Context, texts []string, inputType Inp
 	})
 	if err != nil {
 		err = fmt.Errorf("embed: bedrock invoke model: %w", err)
-		if bedrockThrottled(err) {
+		switch {
+		case bedrockThrottled(err):
 			return nil, &throttleError{err: err}
+		case bedrockOutage(err):
+			return nil, &outageError{err: err}
 		}
 		return nil, err
 	}
@@ -187,4 +190,20 @@ var bedrockThrottles = retry.IsErrorThrottles{retry.ThrottleErrorCode{Codes: bed
 // is still recognized correctly. Embed marks what it finds for IsThrottled.
 func bedrockThrottled(err error) bool {
 	return bedrockThrottles.IsErrorThrottle(err) == aws.TrueTernary
+}
+
+// bedrockOutageErrorCodes are Bedrock's codes for an answer it could not give now that is no
+// throttle, Azure's 408 and 5xx (azureOutage) by code: ModelTimeoutException (408, the model did
+// not answer in time) and InternalServerException (500, the service failed). Like those, one may
+// be a text Bedrock fails on every time, so embedqueue bisects the batch and confirms the row
+// with its canary, and only a failing canary backs the pace off (IsOutage).
+var bedrockOutageErrorCodes = map[string]struct{}{"ModelTimeoutException": {}, "InternalServerException": {}}
+
+// bedrockOutages reads bedrockOutageErrorCodes with the SDK's code matcher bedrockThrottles uses.
+var bedrockOutages = retry.IsErrorThrottles{retry.ThrottleErrorCode{Codes: bedrockOutageErrorCodes}}
+
+// bedrockOutage reports whether err names one of bedrockOutageErrorCodes. Embed marks what it
+// finds for IsOutage.
+func bedrockOutage(err error) bool {
+	return bedrockOutages.IsErrorThrottle(err) == aws.TrueTernary
 }

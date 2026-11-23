@@ -198,27 +198,30 @@ func TestAzureEmbedRefusesMoreThanTheBatchLimit(t *testing.T) {
 	}
 }
 
-// TestAzureEmbedClassifiesStatuses: an outage status (a 408, a 429, any 5xx) is a throttle, every
-// other failure is not, and each error names the status and Azure's error code but never the key
-// or the texts.
+// TestAzureEmbedClassifiesStatuses: a 429 and a 503 are throttles; a 408 and every other 5xx are
+// outages, which IsOutage marks and IsThrottled does not (embedqueue still bisects and confirms
+// them with its canary, since one may be a text Azure fails on every time); every other failure
+// is neither; and each error names the status and Azure's error code but never the key or the
+// texts.
 func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	for _, tc := range []struct {
 		status    int
 		code      string
 		throttled bool
+		outage    bool
 	}{
-		{http.StatusTooManyRequests, "RateLimitReached", true},
-		{http.StatusServiceUnavailable, "ServiceUnavailable", true},
-		{http.StatusRequestTimeout, "Timeout", true},
-		{http.StatusInternalServerError, "InternalServerError", true},
-		{http.StatusNotImplemented, "NotImplemented", true},
-		{http.StatusBadGateway, "BadGateway", true},
-		{http.StatusGatewayTimeout, "Timeout", true},
-		{http.StatusHTTPVersionNotSupported, "HTTPVersionNotSupported", true},
-		{http.StatusBadRequest, "InvalidRequest", false},
-		{http.StatusUnauthorized, "PermissionDenied", false},
-		{http.StatusNotFound, "DeploymentNotFound", false},
-		{http.StatusConflict, "Conflict", false},
+		{http.StatusTooManyRequests, "RateLimitReached", true, false},
+		{http.StatusServiceUnavailable, "ServiceUnavailable", true, false},
+		{http.StatusRequestTimeout, "Timeout", false, true},
+		{http.StatusInternalServerError, "InternalServerError", false, true},
+		{http.StatusNotImplemented, "NotImplemented", false, true},
+		{http.StatusBadGateway, "BadGateway", false, true},
+		{http.StatusGatewayTimeout, "Timeout", false, true},
+		{http.StatusHTTPVersionNotSupported, "HTTPVersionNotSupported", false, true},
+		{http.StatusBadRequest, "InvalidRequest", false, false},
+		{http.StatusUnauthorized, "PermissionDenied", false, false},
+		{http.StatusNotFound, "DeploymentNotFound", false, false},
+		{http.StatusConflict, "Conflict", false, false},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +237,9 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 			if got := IsThrottled(err); got != tc.throttled {
 				t.Errorf("IsThrottled(%v) = %v, want %v", err, got, tc.throttled)
 			}
+			if got := IsOutage(err); got != tc.outage {
+				t.Errorf("IsOutage(%v) = %v, want %v", err, got, tc.outage)
+			}
 			text := err.Error()
 			if !strings.Contains(text, http.StatusText(tc.status)) || !strings.Contains(text, tc.code) {
 				t.Errorf("error %q does not name status %d and code %s", text, tc.status, tc.code)
@@ -246,7 +252,7 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 }
 
 // An error body that names no code, such as a gateway's page, still names the status, and a 502
-// is an outage, so a throttle.
+// is an outage, not a throttle.
 func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -254,8 +260,8 @@ func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	}))
 	defer server.Close()
 	_, err := testAzureClient(t, server, AzureConfig{}).Embed(context.Background(), []string{"x"}, InputDocument)
-	if err == nil || !strings.Contains(err.Error(), "502") || !IsThrottled(err) {
-		t.Fatalf("Embed error = %v, want a throttle naming HTTP 502", err)
+	if err == nil || !strings.Contains(err.Error(), "502") || IsThrottled(err) || !IsOutage(err) {
+		t.Fatalf("Embed error = %v, want an outage, unthrottled, naming HTTP 502", err)
 	}
 }
 
