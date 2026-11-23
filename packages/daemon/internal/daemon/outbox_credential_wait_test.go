@@ -246,3 +246,90 @@ func TestAReroleWaitForTheCredentialWithNoIdleReleaseIsToldOnce(t *testing.T) {
 		})
 	}
 }
+
+// A launch the runtime refuses because the issue's pod cannot run it until that pod's update round
+// or its release replaces it — here a re-role into a slot whose launcher, read after a daemon
+// restart, starts a child at once (the Sandbox runtime's relaunch) — leaves the start row waiting
+// for the pod as a start the pod lacks a name of waits: its text begins with
+// pods.StartWaitsForPodPrefix, so the idle view counts it as no delivery and the release rules may
+// take the pod, and the claim, the pod's only one, is left suspended by the daemon. The next try,
+// while that pod stands, launches nothing and leaves the claim's generation as it was. Once
+// another pod stands, the next try resumes the claim.
+func TestAStartWhoseLaunchItsPodRefusedWaitsForThePod(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
+	putOutboxIssue(t, pool, records, issue)
+	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
+	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
+	putPhaseRow(t, pool, records, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.Runtime = credentialWaitRuntime{Runtime: rt, waits: map[claim.Role]bool{claim.RoleImplementer: true}}
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
+		Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the claim of key a: %v", err)
+	}
+	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: keyed, Exempt: true}); err != nil {
+		t.Fatalf("spawn key a's agent: %v", err)
+	}
+	launch := machine.Claim().Generation
+	if err := machine.Handle(ctx, supervise.RequestRegister{Claim: keyed, Generation: launch, Session: "ses-a", SessionFile: "/tmp/a.jsonl"}); err != nil {
+		t.Fatalf("register key a's agent: %v", err)
+	}
+	if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
+		t.Fatalf("ready key a's agent: %v", err)
+	}
+	if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: keyed, By: supervise.SuspendedByDaemon, Reason: "its step ended"}); err != nil {
+		t.Fatalf("suspend key a's agent: %v", err)
+	}
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, notices: &outboxPublisher{},
+		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), idleReleases: true,
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+		},
+	}
+	rt.ScriptIssuePod(issue.Key, "pod-1")
+	rt.OnResume = func(context.Context) error {
+		return runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(keyed) + ": the pod pod-1 of LEGION-208 was built before its launchers waited for a start's credential"}
+	}
+	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester, Phase: phase.Testing,
+		Entry: 2, Task: "Do it.", Generation: 1}, time.Now())
+	row.ID = 73
+	try := func() error {
+		err := runner.execute(ctx, row)
+		if err != nil {
+			row.LastError = err.Error()
+		}
+		return err
+	}
+
+	first := try()
+	if !errors.Is(first, wait.ErrWaiting) || !errors.Is(first, runtime.ErrAwaitsPodUpdate) || !strings.HasPrefix(first.Error(), pods.StartWaitsForPodPrefix) {
+		t.Fatalf("the first try = %v, want a wait for the pod that is runtime.ErrAwaitsPodUpdate and begins %q", first, pods.StartWaitsForPodPrefix)
+	}
+	held := machine.Claim()
+	if held.State != supervise.StateSuspended || held.SuspendedBy != supervise.SuspendedByDaemon {
+		t.Fatalf("after the refused launch the claim is %s by %q, want it suspended by the daemon, running nothing", held.State, held.SuspendedBy)
+	}
+	resumes := len(rt.CallsOf("Resume"))
+	second := try()
+	if !errors.Is(second, wait.ErrWaiting) || !errors.Is(second, runtime.ErrAwaitsPodUpdate) || !strings.HasPrefix(second.Error(), pods.StartWaitsForPodPrefix) {
+		t.Fatalf("the try while pod-1 stands = %v, want the same wait for the pod", second)
+	}
+	if got := len(rt.CallsOf("Resume")); got != resumes || machine.Claim().Generation != held.Generation {
+		t.Fatalf("the try while pod-1 stands asked %d launches and left the claim at generation %d; want none, and generation %d",
+			got-resumes, machine.Claim().Generation, held.Generation)
+	}
+
+	rt.ScriptIssuePod(issue.Key, "pod-2")
+	rt.OnResume = nil
+	if err := try(); err != nil {
+		t.Fatalf("the try once another pod stands = %v, want the claim resumed", err)
+	}
+	if got := len(rt.CallsOf("Resume")); got != resumes+1 {
+		t.Fatalf("the try once another pod stands asked %d launches, want one", got-resumes)
+	}
+}
