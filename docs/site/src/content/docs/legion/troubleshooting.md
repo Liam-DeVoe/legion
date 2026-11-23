@@ -985,8 +985,9 @@ name of the claim's agent, the role of that agent's first step, whatever role it
   `accepting` for the architect's own acceptance (a step `acceptance:owner`, or an issue with no
   plan rows), and the architect's own issue where it stands at another step of its own or at its
   retro (`at a step of yours, which no worker does`); no worker runs at either. A step
-  `acceptance` with no key is a fresh agent's, which the catch-up leaves out. A step of its own
-  issue that the architect does itself is also told to it again in an `owner-step`. Retry it:
+  `acceptance` with no key is a fresh agent's, which the catch-up leaves out. Where its own issue
+  stands at a step or the retro of its plan that it does itself, started and not ended, it is also
+  told that step again in an `owner-step` after the catch-up, unless one is still queued. Retry it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
