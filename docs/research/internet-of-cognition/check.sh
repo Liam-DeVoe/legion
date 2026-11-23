@@ -638,10 +638,11 @@ EVIDENCE="${IOC_EVIDENCE:-$HERE}"
 # --landed 21 s, --shape 12 s and --admitted 7 s; "the issue pod" is the pod of
 # dispatch://INFRA-3134 on 2026-11-21, where the tester's --replay of a fresh clone of
 # e7518312 ran from 16:18Z and its file times were read.
-#   mode_bound     each mode whole: --replay 10800, three times 3584; --self-test
-#                  19000, over three times 6047, its run on a fresh clone of 673bf2f8 in the
-#                  issue pod on 2026-11-22, as its cases grew past the 5612 s of the
-#                  fresh-clone runs; --citations 1500, three times 496; --landed 200,
+#   mode_bound     each mode whole: --replay 11200, over three times 3697, its run on a fresh
+#                  clone of 7412da37 in the issue pod on 2026-11-23, a loaded pod slower than
+#                  the 3584 s of the fresh-clone runs; --self-test 27000, over three times 8895,
+#                  its run in that same pod and run; --citations 3100, over three times 1010,
+#                  its run in that same run; --landed 200,
 #                  three times 62, its run under this rule's first form in the issue pod at
 #                  17:27Z, beside 21 in the fresh-clone runs; --shape 120, three times 31,
 #                  its run without this rule in the issue pod at 17:28Z, beside 12; --admitted
@@ -655,8 +656,9 @@ EVIDENCE="${IOC_EVIDENCE:-$HERE}"
 #                  16:33:42Z to 16:35:52Z of the tester's --replay in the issue pod, read
 #                  from the times env.sh wrote its entries; env.sh's four clones took 19 s
 #                  together and its 207 reads of the review corpus 152 s together. No program
-#                  of --citations is measured alone, and the whole mode ran 496 s in the
-#                  fresh-clone runs, 1488 s three times over.
+#                  of --citations is measured alone, and the whole mode ran 1010 s in the
+#                  implementer's fresh-clone run of 7412da37 on 2026-11-23, 3030 s three
+#                  times over.
 #   BOUND_ROW      each recorded command of a row and each committed proof of a landed step.
 #                  The slowest measured is tm-our-count, 338 s, cold, then m-ctl-our-row-count,
 #                  149 s, of the 644 rows that tester's --replay had run by 17:31Z, each from
@@ -675,20 +677,20 @@ EVIDENCE="${IOC_EVIDENCE:-$HERE}"
 #                  issue pod (19.9 s without the rule, in the run beside it), and --landed
 #                  over this tree, 21 s in the fresh-clone runs.
 #   BOUND_CASES    a run of check.test.sh or of --self-test that gate_run makes: the
-#                  --self-test that ran check.test.sh's cases inside it ran 6047 s on a fresh
-#                  clone of 673bf2f8 in the issue pod on 2026-11-22, 18141 s three times over.
+#                  --self-test that ran check.test.sh's cases inside it ran 8895 s on a fresh
+#                  clone of 7412da37 in the issue pod on 2026-11-23, 26685 s three times over.
 #   BOUND_KILL     the seconds between the TERM a child is sent at its bound and the KILL.
-BOUND_PROGRAM=1500
+BOUND_PROGRAM=3100
 BOUND_ROW=1800
 BOUND_COUNT=3600
 BOUND_RUN=900
-BOUND_CASES=19000
+BOUND_CASES=27000
 BOUND_KILL=10
 mode_bound() {
     case "$1" in
-    replay) printf 10800 ;;
-    self-test) printf 19000 ;;
-    citations) printf 1500 ;;
+    replay) printf 11200 ;;
+    self-test) printf 27000 ;;
+    citations) printf 3100 ;;
     landed) printf 200 ;;
     shape) printf 120 ;;
     admitted) printf 150 ;;
