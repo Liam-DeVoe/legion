@@ -759,6 +759,20 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	return answered, nil
 }
 
+// ProxyPlaceholderGrant is the grant the broker minted placeholder for, live or ended, and ""
+// when no row holds it: a placeholder it never minted, or one of a grant that has ended and that
+// the sweep has deleted the rows of since (deleteSpentPlaceholders). The proxy reads it to name,
+// in the refusal of a request that still carries a placeholder after the swap, which grant that
+// placeholder was minted for. It is one read by the table's primary key.
+func (m *Machine) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
+	var grantID string
+	err := m.Store.Pool.QueryRow(ctx, `select grant_id from airlock_placeholders where placeholder_sha256 = $1`, placeholderHash(placeholder)).Scan(&grantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return grantID, err
+}
+
 // airlockProjectRule is AirlockConnection's project rule over names, the airlock names a
 // connection may carry: a name tagged with a private project the credential no longer names, or
 // with a project Dispatch does not hold, ends the grant for good (projectNotNamed). A grant

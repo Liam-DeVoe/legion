@@ -55,6 +55,9 @@ const (
 	// serveBound: an azure access slot whose token this pod neither holds nor could exchange for
 	// (azureAccess).
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
+	// serveBound: a request that still carries a placeholder after the swap - one no live grant
+	// of the session swaps here, or one outside the headers its entry names (leftoverPlaceholder).
+	codePlaceholderLeft = "PLACEHOLDER_NOT_SWAPPED"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"
 	// serveBound: an AWS call the airlock will not sign again (signAWS).

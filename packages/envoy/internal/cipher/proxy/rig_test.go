@@ -319,6 +319,23 @@ func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, ex
 	return live, nil
 }
 
+// ProxyPlaceholderGrant is the grant a placeholder the row wrote stands for, live or ended: the
+// password of a connection the row wrote or any slot of its grant, and "" for a placeholder the
+// row never wrote, as the broker's own read answers before its sweep deletes an ended grant's
+// rows.
+func (f *fakeGrants) ProxyPlaceholderGrant(_ context.Context, placeholder string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, conn := range f.connections {
+		for _, held := range conn.Names {
+			if slices.Contains(slices.Collect(maps.Values(held.Slots)), placeholder) {
+				return conn.GrantID, nil
+			}
+		}
+	}
+	return "", nil
+}
+
 // enrollmentReads is how often every live grant of an enrollment has been read.
 func (f *fakeGrants) enrollmentReads() int {
 	f.mu.Lock()

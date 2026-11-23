@@ -86,6 +86,37 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 	}
 }
 
+// TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded: the proxy names, in the refusal
+// of a request that still carries a placeholder after the swap, the grant that placeholder was
+// minted for. A live grant's placeholder names its grant, and so does an ended grant's until the
+// sweep deletes its rows; a placeholder the broker never minted names none, and so does an ended
+// grant's once its rows are gone.
+func TestProxyPlaceholderGrantNamesTheGrantOfAPlaceholderLiveOrEnded(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	placeholder := release.Airlock.ProxyPassword
+	named := func(what, placeholder, want string) {
+		t.Helper()
+		if got, err := m.ProxyPlaceholderGrant(t.Context(), placeholder); err != nil || got != want {
+			t.Fatalf("ProxyPlaceholderGrant(%s) = %q, %v; want %q", what, got, err, want)
+		}
+	}
+	named("a live grant's placeholder", placeholder, grantID)
+	named("a placeholder the broker never minted", PlaceholderPrefix+"neverMintedByThisBrokerAtAll0000", "")
+	if err := m.RevokeGrant(t.Context(), grantID, enr); err != nil {
+		t.Fatalf("RevokeGrant: %v", err)
+	}
+	named("an ended grant's placeholder before the sweep", placeholder, grantID)
+	if _, err := m.deleteSpentPlaceholders(t.Context()); err != nil {
+		t.Fatalf("the sweep: %v", err)
+	}
+	named("an ended grant's placeholder after the sweep", placeholder, "")
+}
+
 // grantIDs is each grant's id, in the order given.
 func grantIDs(grants []AirlockConnection) []string {
 	ids := make([]string, len(grants))

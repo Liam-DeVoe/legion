@@ -80,6 +80,14 @@ func (gcpAirlockGrant) ProxyGrantsOfEnrollment(context.Context, string, string) 
 	return nil, nil
 }
 
+// ProxyPlaceholderGrant names the one grant above for its placeholder, and none for any other.
+func (gcpAirlockGrant) ProxyPlaceholderGrant(_ context.Context, placeholder string) (string, error) {
+	if placeholder == gcpAirlockPlaceholder {
+		return gcpAirlockGrantID, nil
+	}
+	return "", nil
+}
+
 // TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC: `agent-secrets secret list`,
 // built from this package and run as its own process, with the grant's placeholder in
 // CLOUDSDK_AUTH_ACCESS_TOKEN and HTTPS_PROXY naming the proxy with that placeholder as its

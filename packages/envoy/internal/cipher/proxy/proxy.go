@@ -109,6 +109,10 @@ type GrantSource interface {
 	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
 	// (grantRefusal).
 	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error)
+	// ProxyPlaceholderGrant is the grant the broker minted a placeholder for, live or ended, and
+	// "" where no row holds it: the refusal of a request that still carries a placeholder after
+	// the swap names that grant (Server.placeholderGrant).
+	ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error)
 }
 
 // Options is what a Server is built from.

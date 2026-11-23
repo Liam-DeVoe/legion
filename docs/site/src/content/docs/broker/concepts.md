@@ -1541,9 +1541,16 @@ and the token swapped in is the one of the account the request's path names, whe
 that account: `/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
 `/{owner}/{repo}` on `github.com`.
 Otherwise it is the token of the account whose placeholder the request carries, so a GraphQL,
-search or `/user` call gets the token of the account the command's gh configuration names. That
-connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
-else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
+search or `/user` call gets the token of the account the command's gh configuration names. A
+request that still carries a placeholder after the swap is refused `403`
+(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service: the placeholder of a grant
+that has ended, of another session, of a second grant beside the one the request is handled for,
+or one outside the headers its entry names, in another header, the path or the query. Its refusal
+line names the grant the placeholder was minted for, in `placeholder_grant`, while the broker
+still holds the placeholder. The body is not read, so a placeholder there goes as the command
+wrote it. A decrypted connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a
+client that offers nothing else, which is how every gRPC client connects. Each HTTP/2 stream is
+decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
 host. A `CONNECT` or an upgrade to `h2c` inside that connection is refused
 (`PROTOCOL_SWITCH_REFUSED`), because what crosses after its answer is no request the proxy reads.

@@ -12,10 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
+	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
 // gitHost is the host git's own paths are read on: github.com serves a repository's git
@@ -87,6 +89,40 @@ func TestTheTokenIsTheAccountsThePathNames(t *testing.T) {
 		if slot := r.logs.callsAtLeast(t, i+1)[i].fields["slot"]; slot != row.slot {
 			t.Errorf("%s: the call logged the slot %v; want %s", row.path, slot, row.slot)
 		}
+	}
+}
+
+// TestARenewedGitHubGrantsEndedPlaceholderIsRefused: a role's GitHub grant is renewed, its
+// connections open with the new grant's placeholder, and gh still sends the ended grant's
+// placeholder of the same name, from a configuration written before the renewal. No live grant
+// swaps that placeholder, so the request is refused, the service sees nothing, and the line names
+// the ended grant; the new grant's placeholder on the same connection is swapped, the control.
+func TestARenewedGitHubGrantsEndedPlaceholderIsRefused(t *testing.T) {
+	const endedGrant = "grant-00000007"
+	ended := requests.PlaceholderPrefix + "renewedrenewedrenewedrenewedrene"
+	r := newRig(t, Options{Rules: githubRules()})
+	r.useGitHubAppGrant()
+	r.grants.setConnection(ended, requests.AirlockConnection{
+		GrantID: endedGrant, EnrollmentID: testEnrollID, RequestID: "request-00000007", Issue: testIssue,
+		Names: map[string]requests.AirlockGrantName{workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: ended}}},
+	})
+	r.grants.refuseConnection(ended, requests.ErrGrantNotLive)
+	client := r.client(workerPlaceholder)
+
+	answer, body := r.get(client, "https://"+boundHost+"/repos/acme/widget", "Authorization", "token "+ended)
+	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+		t.Fatalf("the ended grant's placeholder answered %d %q; want 403 naming the placeholder left after the swap", answer.StatusCode, body)
+	}
+	if refusals := r.logs.refusals(); len(refusals) != 1 || refusals[0].fields["code"] != codePlaceholderLeft || refusals[0].fields["placeholder_grant"] != endedGrant {
+		t.Fatalf("the refusal logged %v; want one line coded %s naming %s", refusals, codePlaceholderLeft, endedGrant)
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service saw %d request(s); want none", len(seen))
+	}
+
+	r.get(client, "https://"+boundHost+"/repos/acme/widget", "Authorization", "token "+workerPlaceholder)
+	if seen := r.requests(); len(seen) != 1 || seen[0].Header.Get("Authorization") != "token "+githubAcmeToken {
+		t.Fatalf("the live grant's placeholder reached the service as %v; want acme's token swapped in", seen)
 	}
 }
 

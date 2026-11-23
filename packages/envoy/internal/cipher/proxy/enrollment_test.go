@@ -73,10 +73,11 @@ func enrollmentRules() proxyrules.Rules {
 // opened with the placeholder of one grant, and the command holds another grant of the same
 // session beside it - a mail client's write placeholder on the connection of its read grant. A
 // request that carries the second grant's placeholder and none of the first's is handled for the
-// second: its value is swapped in, and the line names its grant. A request carrying a placeholder
-// of both is handled for the connection's own grant alone, one (name, slot) per request as before.
-// The controls: a placeholder of a grant of another enrollment, and of a second grant that has
-// ended, each reach the service as the command wrote them.
+// second: its value is swapped in, and the line names its grant. A request carrying the own
+// grant's placeholder on the same connection is handled for the own grant. The controls: a
+// placeholder of a grant of another enrollment, and of the second grant once it has ended, are
+// swapped by no grant and reach no service (every such case is a row of
+// TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused).
 func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
@@ -93,35 +94,20 @@ func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarrie
 		t.Fatalf("the call logged %v; want grant %s, secret %s, enrollment %s", line.fields, secondGrantID, secondName, testEnrollID)
 	}
 
-	// The connection's own grant on the same connection, and both at once: the own grant's.
-	r.get(client, "https://"+boundHost+"/v1/both", "Authorization", "Bearer "+workerPlaceholder, "X-Second", "Token "+secondPlaceholder)
+	r.get(client, "https://"+boundHost+"/v1/own", "Authorization", "Bearer "+workerPlaceholder)
 	seen = r.requests()
 	if got := seen[1].Header.Get("Authorization"); got != "Bearer "+workerValue {
 		t.Errorf("the service saw Authorization %q; want the connection's own grant's value", got)
 	}
-	if got := seen[1].Header.Get("X-Second"); got != "Token "+secondPlaceholder {
-		t.Errorf("the service saw X-Second %q; want the placeholder as written: one request is handled for one name", got)
-	}
 	if grant := r.logs.callsAtLeast(t, 2)[1].fields["grant"]; grant != testGrantID {
-		t.Errorf("the call carrying both logged grant %v; want the connection's own %s", grant, testGrantID)
+		t.Errorf("the call of the own grant's placeholder logged grant %v; want %s", grant, testGrantID)
 	}
 
-	// Another enrollment's live grant: its placeholder is no placeholder of this session.
 	r.get(client, "https://"+boundHost+"/v1/foreign", "X-Foreign", "Token "+foreignPlaceholder)
-	seen = r.requests()
-	if got := seen[2].Header.Get("X-Foreign"); got != "Token "+foreignPlaceholder {
-		t.Fatalf("the service saw X-Foreign %q; want the placeholder of another enrollment's grant as written", got)
-	}
-	if grant := r.logs.callsAtLeast(t, 3)[2].fields["grant"]; grant != testGrantID {
-		t.Errorf("the call carrying another enrollment's placeholder logged grant %v; want the connection's own %s", grant, testGrantID)
-	}
-
-	// The second grant once it has ended.
 	r.grants.refuseConnection(secondPlaceholder, requests.ErrGrantNotLive)
 	r.get(client, "https://"+boundHost+"/v1/ended", "X-Second", "Token "+secondPlaceholder)
-	seen = r.requests()
-	if got := seen[3].Header.Get("X-Second"); got != "Token "+secondPlaceholder {
-		t.Fatalf("the service saw X-Second %q; want the ended grant's placeholder as written", got)
+	if seen := r.requests(); len(seen) != 2 {
+		t.Fatalf("the service saw %d requests; want the two above alone: another enrollment's placeholder and an ended grant's are swapped by no grant of this session", len(seen))
 	}
 }
 
@@ -283,5 +269,85 @@ func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.
 	}
 	if got := cuts[0].fields["grant"]; got != secondGrantID {
 		t.Errorf("the cut logged grant %v, want %s", got, secondGrantID)
+	}
+}
+
+// TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused: a placeholder is the password of
+// its grant's proxy connections, so one that would leave the proxy is refused rather than sent to
+// the service. Each row is one request on a connection opened with the live grant's placeholder,
+// and after the swap it still carries a placeholder: an ended grant's, of the connection's own
+// name and of another; another enrollment's live grant's; the connection's own grant's outside
+// the header its entry names, in another header, the path or the query; a second live grant's
+// beside the own grant's; one inside a Basic credential, as git sends it; and one no grant holds.
+// Each is refused 403 PLACEHOLDER_NOT_SWAPPED, the service sees nothing, and the refusal line
+// names the grant the placeholder was minted for when the broker holds one. The controls, on the
+// same connection after the rows: the own grant's and the second live grant's placeholders, each
+// in the header its entry names, are swapped and sent. The named revert:
+// proxy-placeholder-left-forwarded, which sends each row's request on with its placeholder.
+func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T) {
+	const (
+		endedSameGrant  = "grant-00000005"
+		endedOtherGrant = "grant-00000006"
+	)
+	endedSame := requests.PlaceholderPrefix + "endedsameendedsameendedsameended"
+	endedOther := requests.PlaceholderPrefix + "endedotherendedotherendedotheren"
+	unknown := requests.PlaceholderPrefix + "unknownunknownunknownunknownunkn"
+	r := newRig(t, Options{Rules: enrollmentRules()})
+	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	r.addGrant(foreignPlaceholder, foreignGrantID, foreignEnrollment, foreignName, foreignValue)
+	r.addGrant(endedSame, endedSameGrant, testEnrollID, workerName, "the-real-worker-token-of-the-ended-grant")
+	r.addGrant(endedOther, endedOtherGrant, testEnrollID, secondName, "the-real-second-token-of-the-ended-grant")
+	r.grants.refuseConnection(endedSame, requests.ErrGrantNotLive)
+	r.grants.refuseConnection(endedOther, requests.ErrGrantNotLive)
+	client := r.client(workerPlaceholder)
+
+	for _, row := range []struct {
+		name, path string
+		headers    []string
+		grant      string
+	}{
+		{"an ended grant's placeholder of the connection's own name", "/v1/things",
+			[]string{"Authorization", "Bearer " + endedSame}, endedSameGrant},
+		{"an ended grant's placeholder of another name", "/v1/things",
+			[]string{"X-Second", "Token " + endedOther}, endedOtherGrant},
+		{"an ended grant's placeholder inside a Basic credential", "/v1/things",
+			[]string{"Authorization", gitBasic(endedSame)}, endedSameGrant},
+		{"another enrollment's live grant's placeholder", "/v1/things",
+			[]string{"X-Foreign", "Token " + foreignPlaceholder}, foreignGrantID},
+		{"the own grant's placeholder in a header its entry does not name", "/v1/things",
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Other", "carried: " + workerPlaceholder}, testGrantID},
+		{"the own grant's placeholder in the query", "/v1/things?token=" + workerPlaceholder,
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
+		{"the own grant's placeholder in the path", "/v1/things/" + workerPlaceholder,
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
+		{"a second live grant's placeholder beside the own grant's", "/v1/things",
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Second", "Token " + secondPlaceholder}, secondGrantID},
+		{"a placeholder no grant holds", "/v1/things",
+			[]string{"Authorization", "Bearer " + unknown}, ""},
+	} {
+		refusals := len(r.logs.refusals())
+		answer, body := r.get(client, "https://"+boundHost+row.path, row.headers...)
+		if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "placeholder") {
+			t.Errorf("%s: answered %d %q; want 403 naming the placeholder left after the swap", row.name, answer.StatusCode, body)
+			continue
+		}
+		lines := r.logs.refusals()[refusals:]
+		if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+			t.Errorf("%s: the refusal logged %v; want one line coded %s", row.name, lines, codePlaceholderLeft)
+			continue
+		}
+		if got, named := lines[0].fields["placeholder_grant"]; row.grant == "" && named || row.grant != "" && got != row.grant {
+			t.Errorf("%s: the refusal line named placeholder_grant %v; want %q", row.name, got, row.grant)
+		}
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service saw %d request(s) carrying a placeholder; want none: %v", len(seen), seen)
+	}
+
+	r.get(client, "https://"+boundHost+"/v1/own", "Authorization", "Bearer "+workerPlaceholder)
+	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
+	seen := r.requests()
+	if len(seen) != 2 || seen[0].Header.Get("Authorization") != "Bearer "+workerValue || seen[1].Header.Get("X-Second") != "Token "+secondValue {
+		t.Fatalf("the controls reached the service as %v; want the own grant's and the second grant's values swapped in", seen)
 	}
 }

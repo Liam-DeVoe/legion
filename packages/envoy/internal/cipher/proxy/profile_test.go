@@ -100,6 +100,10 @@ func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID
 	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID, exceptGrantID)
 }
 
+func (g *rolledGrants) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
+	return g.machine.Load().ProxyPlaceholderGrant(ctx, placeholder)
+}
+
 // profileRig is the rig with a broker behind its proxy: the store, the stored App key, the GitHub
 // stand-in and the plain service its minter reaches it at, the grant source the proxy reads, and
 // one live session of profileOperator, which asks for the profile.

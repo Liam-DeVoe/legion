@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"maps"
@@ -491,6 +492,20 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// the signature covers neither of these.
 	header.Del("Proxy-Authorization")
 	header.Del("Proxy-Connection")
+	// A placeholder the request still carries after the swap would leave the proxy with it: an
+	// ended grant's, another session's, a grant's beside the one this request is handled for, or
+	// one outside the headers its entry names - in another header, the path or the query. While
+	// its grant lives a placeholder is the password of that grant's connections to this port, so
+	// one a service reads opens the port to whoever reads it there; an ended one only fails at the
+	// service, with an answer that names no reason. So the request is refused here and nothing of
+	// it goes upstream, with a line naming the grant the placeholder was minted for. The body is
+	// not read (the Body above), so a placeholder in it is not seen.
+	if left, carried := leftoverPlaceholder(header, r.URL.Path, r.URL.RawPath, rawQuery); carried {
+		refused := info.callFor(chosen)
+		refused.placeholderGrant = s.placeholderGrant(r.Context(), left)
+		s.refuse(w, r, refused, http.StatusForbidden, codePlaceholderLeft, placeholderLeft)
+		return
+	}
 
 	id := answerOf(w).ID()
 	// Every call the proxy carries is held to its grant for as long as it runs, as a request on
@@ -848,6 +863,10 @@ type call struct {
 	grant  requests.AirlockConnection
 	host   string
 	chosen pair
+	// placeholderGrant is the grant a placeholder the request still carried after the swap was
+	// minted for (Server.placeholderGrant), which the refusal of such a request names, and "" for
+	// every other call and where the broker holds no such grant.
+	placeholderGrant string
 }
 
 // callFor is what a request on this connection knows of its call, once chosen is.
@@ -898,12 +917,15 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 	if c.chosen.name != "" {
 		line.Secrets.Note(c.chosen.name)
 	}
-	trailing := make([]any, 0, 4)
+	trailing := make([]any, 0, 6)
 	if c.grant.GrantID != "" {
 		trailing = append(trailing, "issue", c.grant.Issue)
 	}
 	if slot := c.chosen.namedSlot(); slot != "" {
 		trailing = append(trailing, "slot", slot)
+	}
+	if c.placeholderGrant != "" {
+		trailing = append(trailing, "placeholder_grant", c.placeholderGrant)
 	}
 	return line.Fields([]any{
 		"host", c.host,
@@ -1145,6 +1167,87 @@ func accountSlot(host, path string, slots map[string]string) (string, bool) {
 	slot := requests.SlotGitHubPrefix + fold.ASCII(account)
 	_, held := slots[slot]
 	return slot, held
+}
+
+// placeholderLeft is the words a request that still carries a placeholder after the swap is
+// refused with (leftoverPlaceholder). They name no placeholder and no grant: the refusal line
+// names the grant.
+const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its entry names - so it is not sent: send a live grant's placeholder, in the header its entry names"
+
+// leftoverPlaceholder is the first placeholder a request about to go upstream still carries, and
+// false when it carries none: in a header, as proxyrules.Carries reads one, which is the reading
+// the swap makes and reaches inside a Basic credential, and then in the path, its raw form, the
+// query and the query unescaped. A placeholder is read as the broker mints it, the prefix and up
+// to PlaceholderLength letters and digits after it. Headers are read in headersOf's order only
+// once one has been found to carry one, so which placeholder a line names does not depend on the
+// run, and a request that carries none - every request the swap served - costs no sort.
+func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
+	for _, values := range header {
+		for _, v := range values {
+			if !proxyrules.Carries(requests.PlaceholderPrefix, v) {
+				continue
+			}
+			for _, h := range headersOf(header) {
+				if proxyrules.Carries(requests.PlaceholderPrefix, h[1]) {
+					return placeholderIn(h[1]), true
+				}
+			}
+		}
+	}
+	query, err := url.QueryUnescape(rawQuery)
+	if err != nil {
+		query = ""
+	}
+	for _, text := range [...]string{path, rawPath, rawQuery, query} {
+		if i := strings.Index(text, requests.PlaceholderPrefix); i >= 0 {
+			return placeholderAt(text[i:]), true
+		}
+	}
+	return "", false
+}
+
+// placeholderIn is the placeholder a header value carries, read in the value itself or in the
+// Basic credential it is, for the refusal line to name its grant by. A value whose placeholder
+// only proxyrules.Carries' own reading of a Basic credential finds answers the prefix alone, which
+// names no grant.
+func placeholderIn(v string) string {
+	if i := strings.Index(v, requests.PlaceholderPrefix); i >= 0 {
+		return placeholderAt(v[i:])
+	}
+	if scheme, payload, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "basic") {
+		if decoded, err := base64.StdEncoding.DecodeString(strings.Trim(payload, " \t")); err == nil {
+			if i := strings.Index(string(decoded), requests.PlaceholderPrefix); i >= 0 {
+				return placeholderAt(string(decoded)[i:])
+			}
+		}
+	}
+	return requests.PlaceholderPrefix
+}
+
+// placeholderAt is the placeholder text opens with: the prefix and the letters and digits after
+// it, at most PlaceholderLength of them.
+func placeholderAt(text string) string {
+	end := len(requests.PlaceholderPrefix)
+	for end < len(text) && end-len(requests.PlaceholderPrefix) < requests.PlaceholderLength && strings.IndexByte(requests.PlaceholderAlphabet, text[end]) >= 0 {
+		end++
+	}
+	return text[:end]
+}
+
+// placeholderGrant is the grant the broker minted placeholder for, live or ended, which the
+// refusal of a request that still carried it after the swap names, and "" where no row holds it.
+// Only a whole placeholder is looked up, since nothing else is a row. A read that failed is logged
+// and names nothing: the request is refused either way.
+func (s *Server) placeholderGrant(ctx context.Context, placeholder string) string {
+	if len(placeholder) != len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
+		return ""
+	}
+	grantID, err := s.grants.ProxyPlaceholderGrant(ctx, placeholder)
+	if err != nil {
+		s.log.Error("proxy: the grant of a placeholder left after the swap could not be read", "error", err)
+		return ""
+	}
+	return grantID
 }
 
 // sniOf is the name the command asked for in its TLS handshake, "" for a client that sent none.
