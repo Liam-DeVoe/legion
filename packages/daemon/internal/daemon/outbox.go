@@ -4538,8 +4538,9 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // gets its pull request from Legion, where its branch holds work its base lacks
 // (openTaskPullRequest), since no step of it opens one. Once its merges end, the end of the join is
 // applied as a fact (intake.TaskJoined, joined) at the row's own generation, naming the branch,
-// the needs it joined and each need GitHub refused as a conflict: the workflow writes those on the
-// task, for its first step to repair, and starts the step that waits for that join, and changes
+// the needs it joined, each need GitHub refused as a conflict and whether the join branch merged
+// into the task's branch (joinBranch): the workflow writes those on the task, for its first step to
+// repair, and starts the step that waits for that join, and changes
 // nothing where the task no longer waits for it, a task a stop and a later version changed while
 // the row joined, whose start again queued a join of its own, or a run a re-admission carried to
 // the next generation, whose join the settle of that re-admission queued again there (workflow's
@@ -4594,7 +4595,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if join {
 		onto = base
 	}
-	conflicts, err := r.joinBranch(ctx, issue, branch, onto, needs)
+	conflicts, unmerged, err := r.joinBranch(ctx, issue, branch, onto, needs)
 	var missing *needBranchMissing
 	if errors.As(err, &missing) {
 		return r.joinCannotEnd(ctx, row, issue, task, missing)
@@ -4608,7 +4609,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 		}
 	}
 	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: payload.Generation, Task: task.Task, Branch: branch, Needs: task.Needs,
-		Conflicts: conflicts})
+		Conflicts: conflicts, Unmerged: unmerged})
 }
 
 // openTaskPullRequest opens the pull request of task of issue, on branch against base, as
@@ -4690,17 +4691,20 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 // each of needs into it in order, with the message `<KEY>: join the work of task <id>`, as
 // branchClient makes each write of a branch, within branchRowTimeout. Where onto is not branch, the
 // task's join branch, branch is then made at onto's head, unless GitHub has it, and onto is merged
-// into it, so a branch GitHub has, with the task's own work on it, takes what its needs did since;
-// a conflict of that merge leaves the branch without the join, so each need is one. It answers the
-// id of each need whose merge GitHub refused as a conflict, nil for none. GitHub's 404 for a need's
-// branch, to the read of the first need's head or to a merge of a need, is a *needBranchMissing
-// naming that need.
-func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, needs []record.PlanTask) ([]string, error) {
+// into it, so a branch GitHub has, with the task's own work on it, takes what its needs did since.
+// It answers the id of each need whose merge into onto GitHub refused as a conflict, nil for none,
+// which the task's first step repairs on onto, and whether GitHub refused the merge of onto into
+// branch as a conflict (unmerged), which only the task's own work on branch makes and which that
+// step repairs on branch: two facts, since the first step repairs each on another branch, and a
+// repair on branch of a need's conflict would show that need's work in the task's pull request,
+// which is based on onto. GitHub's 404 for a need's branch, to the read of the first need's head or
+// to a merge of a need, is a *needBranchMissing naming that need.
+func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto string, needs []record.PlanTask) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
 	github, repo, err := r.branchClient(ctx, issue)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	base := issue.DefaultBranch
 	if len(needs) > 0 {
@@ -4708,29 +4712,28 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	}
 	if err := ghbranch.Create(ctx, github, repo, onto, base); err != nil {
 		if len(needs) > 0 && githubAnswered(err, http.StatusNotFound) {
-			return nil, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
+			return nil, false, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
 		}
-		return nil, err
+		return nil, false, err
 	}
-	var conflicts []string
 	for _, need := range needs {
 		head := need.BranchOf(issue.Key)
 		joined, err := ghbranch.Merge(ctx, github, repo, onto, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
 		if err != nil {
 			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
-				return nil, &needBranchMissing{need: need.Task, branch: head, err: err}
+				return nil, false, &needBranchMissing{need: need.Task, branch: head, err: err}
 			}
-			return nil, err
+			return nil, false, err
 		}
 		if joined == ghbranch.MergeConflict {
 			conflicts = append(conflicts, need.Task)
 		}
 	}
 	if onto == branch {
-		return conflicts, nil
+		return conflicts, false, nil
 	}
 	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	ids := make([]string, 0, len(needs))
 	for _, need := range needs {
@@ -4738,12 +4741,9 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	}
 	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(ids, ", ")))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if joined == ghbranch.MergeConflict {
-		return ids, nil
-	}
-	return conflicts, nil
+	return conflicts, joined == ghbranch.MergeConflict, nil
 }
 
 // needBranchMissing is a join that cannot end: GitHub has no branch, branch, of the need need, so

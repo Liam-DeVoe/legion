@@ -44,11 +44,12 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 // taskJoined applies the end of a task's join (intake.TaskJoined) in the fact's transaction: where
 // the step of the task waits for this join (the task running at the fact's generation, waiting for
 // its join, on the branch and with the needs the join read), it writes the needs whose join GitHub
-// refused as a conflict (record.Store.SetJoinConflicts), ends the wait and starts the step at the
-// task's place through Engine.start, the start of every step, so at no commit does the step wait for
-// nothing with nothing of it started: start raises its entry, or writes that it waits for its agent
-// where that agent runs a step of another task. Its task is told where its work stands and its own
-// pull request, as the start after the wait for an agent tells it (handOn). Any other end of a join
+// refused as a conflict (record.Store.SetJoinConflicts) and whether its join branch merged into its
+// branch (record.Store.SetJoinUnmerged), ends the wait and starts the step at the task's place
+// through Engine.start, the start of every step, so at no commit does the step wait for nothing with
+// nothing of it started: start raises its entry, or writes that it waits for its agent where that
+// agent runs a step of another task. Its task is told where its work stands and its own pull
+// request, as the start after the wait for an agent tells it (handOn). Any other end of a join
 // changes nothing: one of a generation the issue has left, of a task its plan no longer holds or
 // whose step waits for no join, and one onto another branch or from other needs, a row that a stop
 // and a later version of the task left behind, whose start again queued a join of its own.
@@ -76,6 +77,9 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err := e.store.SetJoinConflicts(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Conflicts); err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.store.SetJoinUnmerged(ctx, tx, issue.Key, issue.Generation, fact.Task, fact.Unmerged); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, fact.Task, record.StepWaitNone, nil); err != nil {
 		return intake.Result{}, err
 	}
@@ -84,7 +88,7 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.startAfterWait(ctx, tx, view, w, "workflow: a task's join ended, and its step starts",
-		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
+		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts, "unmerged", fact.Unmerged)
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the

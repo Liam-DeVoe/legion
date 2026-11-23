@@ -124,11 +124,16 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 // planTold is what a step's task is told from its issue's plan beside the walk of its task
 // (standingPart reads it): base, the base of the task's pull request where the plan gives one other
 // than the issue's default branch (record.StoredPlan.BaseOf), and "" where it gives that branch;
-// and conflicts, each need whose join into the task's branch GitHub refused as a conflict
-// (record.PlanTask.JoinConflicts), with its branch, in the order the row holds them.
+// join, that base where it is the task's join branch, the branch the join of its needs is made on,
+// and "" for a task with no join branch; conflicts, each need whose join GitHub refused as a
+// conflict (record.PlanTask.JoinConflicts), with its branch, in the order the row holds them; and
+// unmerged, whether GitHub refused as a conflict the merge of the task's join branch into its
+// branch (record.PlanTask.JoinUnmerged), false for a task with no join branch.
 type planTold struct {
 	base      string
+	join      string
 	conflicts []joinConflict
+	unmerged  bool
 }
 
 // joinConflict is a need of a task whose join GitHub refused as a conflict, and the need's branch.
@@ -143,12 +148,15 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 		return planTold{}, nil
 	}
 	var told planTold
-	base, _, err := stored.BaseOf(issue, task)
+	base, join, err := stored.BaseOf(issue, task)
 	if err != nil {
 		return planTold{}, err
 	}
 	if base != issue.DefaultBranch {
 		told.base = base
+	}
+	if join {
+		told.join = base
 	}
 	byID := make(map[string]record.PlanTask, len(stored.Tasks))
 	for _, row := range stored.Tasks {
@@ -157,6 +165,7 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 	for _, need := range byID[task].JoinConflicts {
 		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: byID[need].BranchOf(issue.Key)})
 	}
+	told.unmerged = join && byID[task].JoinUnmerged
 	return told, nil
 }
 
@@ -186,7 +195,7 @@ func standingText(issue record.Issue, dir func(record.Issue, string) string, w W
 		if dir != nil {
 			where = dir(issue, w.Branch)
 		}
-		lines += startsFrom(w.Needs) + joinToRepair(issue.Key, w.Branch, where, told.conflicts)
+		lines += startsFrom(w.Needs) + joinToRepair(issue.Key, w.Branch, where, w.Needs, told)
 	}
 	if w.Steps[place.Position-1].Type == plan.TypeImplementation {
 		lines += pullRequestBase(told.base)
@@ -227,30 +236,68 @@ func startsFrom(needs []string) string {
 	return fmt.Sprintf(" This task starts from the joined work of tasks %s, which are done.", strings.Join(needs, ", "))
 }
 
-// joinToRepair is what the first step of a task is told where GitHub refused the join of some of
-// its needs into the task's branch as a conflict (planTold.conflicts): that sentence, then how its
-// agent joins them in the task's working copy, at where, the directory the runtime places it at
-// (`jj` with no `-R` where none is known), with a commit that names each need, and pushes the
-// task's branch, before its own work. Nothing for a join with no conflict.
-func joinToRepair(key, branch, where string, conflicts []joinConflict) string {
-	if len(conflicts) == 0 {
+// joinToRepair is what the first step of a task is told where GitHub refused part of the join of its
+// needs as a conflict (planTold), so that its agent repairs it before its own work, at where, the
+// directory the runtime places the task's working copy at (`jj` with no `-R` where none is known),
+// each repair a merge commit that names what it joins, pushed with the commands that push it, and
+// the agent's own work then starts on a new commit, so no push of that work rewrites the pushed
+// repair.
+//
+// Where the task has a join branch (planTold.join), the base of its pull request, the conflicts of
+// its needs are repaired on that join branch and pushed there, so the pull request, against it,
+// shows the task's own work alone; then the task's own work starts on its branch, whose head the
+// join made at the join branch's unrepaired head, from the repaired join: a new commit on the heads
+// of the task's branch and the join branch, which is the repaired join alone at a first start and
+// the merge of the two where the branch holds work of its own. Where GitHub could not merge the join
+// branch into the task's branch, for the task's own work there (planTold.unmerged), the agent merges
+// the join branch, repaired first where its needs conflicted, into the task's branch, and the join
+// branch takes none of it. A task with no join branch, the task that merges and one none of whose
+// steps implements, joins its conflicting needs on its own branch, in its working copy, as its
+// first commit. Nothing for a join GitHub ended with no conflict.
+func joinToRepair(key, branch, where string, needs []string, told planTold) string {
+	if len(told.conflicts) == 0 && !told.unmerged {
 		return ""
 	}
 	jj := "jj"
 	if where != "" {
 		jj = "jj -R " + where
 	}
-	tasks := make([]string, len(conflicts))
-	heads := make([]string, len(conflicts))
-	for i, conflict := range conflicts {
-		tasks[i] = "task " + conflict.task
-		heads[i] = conflict.branch + "@origin"
+	resolve := fmt.Sprintf("repair each path that `%s resolve --list` lists", jj)
+	push := func(to string) string {
+		return fmt.Sprintf("then `%s bookmark set %s -r @` and `%s git push --bookmark %s`", jj, to, jj, to)
 	}
-	named := strings.Join(tasks, ", ")
-	return fmt.Sprintf(" GitHub could not join the work of %s into this branch: their changes conflict."+
-		" Before your own work, join it in your working copy: `%s git fetch`, then `%s new @- %s -m \"%s: join the work of %s\"`,"+
-		" repair each path that `%s resolve --list` lists, `%s squash`, and push the branch %s. That join is the first commit of your step.",
-		named, jj, jj, strings.Join(heads, " "), key, named, jj, jj, branch)
+	var lines string
+	if len(told.conflicts) > 0 {
+		tasks := make([]string, len(told.conflicts))
+		heads := make([]string, len(told.conflicts))
+		for i, conflict := range told.conflicts {
+			tasks[i] = "task " + conflict.task
+			heads[i] = conflict.branch + "@origin"
+		}
+		named := strings.Join(tasks, ", ")
+		joins := fmt.Sprintf("%s: join the work of %s", key, named)
+		if told.join == "" {
+			return fmt.Sprintf(" GitHub could not join the work of %s into this branch: their changes conflict."+
+				" Before your own work, join it in your working copy: `%s git fetch`, then `%s new @- %s -m \"%s\"`, %s, %s."+
+				" That join is the first commit of your step: start your own work after it with `%s new`.",
+				named, jj, jj, strings.Join(heads, " "), joins, resolve, push(branch), jj)
+		}
+		lines = fmt.Sprintf(" GitHub could not join the work of %s into the join branch %s, the base of this task's pull request: their changes conflict."+
+			" Before your own work, repair that join on %s, so the pull request shows this task's own work alone:"+
+			" `%s git fetch`, `%s bookmark track %s@origin`, then `%s new %s@origin %s -m \"%s\"`, %s, %s.",
+			named, told.join, told.join, jj, jj, told.join, jj, told.join, strings.Join(heads, " "), joins, resolve, push(told.join))
+		if !told.unmerged {
+			return lines + fmt.Sprintf(" Then start your own work on the branch %s from the repaired join: `%s new 'heads(%s@origin | %s@origin)'`,"+
+				" and %s there; your first commit on %s is from that join.", branch, jj, branch, told.join, resolve, branch)
+		}
+		lines += " Then merge the repaired join into this branch, which GitHub could not do: its changes conflict with this task's own work:"
+	} else {
+		lines = fmt.Sprintf(" GitHub could not merge the join branch %s into this branch: its changes conflict with this task's own work."+
+			" Before your own work, merge it here: `%s git fetch`, then", told.join, jj)
+	}
+	return lines + fmt.Sprintf(" `%s new %s@origin %s@origin -m \"%s: join the work of tasks %s\"`, %s, %s."+
+		" That merge is the first commit of your step, and the join branch takes none of it: start your own work after it with `%s new`.",
+		jj, branch, told.join, key, strings.Join(needs, ", "), resolve, push(branch), jj)
 }
 
 // pullRequestBase is what a step of the type implementation is told of the base of its task's

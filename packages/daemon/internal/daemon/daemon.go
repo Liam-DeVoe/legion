@@ -2773,7 +2773,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var tokens appauth.Source
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
-	var handoffCompleted func(string)
+	var handoffCompleted func(issue, task string)
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
