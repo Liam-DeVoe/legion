@@ -51,7 +51,7 @@ func TestTheClearedSpecApprovalsLatestVersionAndItsWayBackLeaveWhatTheReleaseBef
 		t.Fatalf("the database the release before left read cleared_spec_approvals.latest_version = %v, want no such column (42703): the migration would prove nothing", err)
 	}
 	records := record.NewStore()
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, key := range []string{"LEGION-208", "LEGION-300"} {
 			if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: "admitted", Generation: 3,
 				Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
@@ -75,12 +75,12 @@ func TestTheClearedSpecApprovalsLatestVersionAndItsWayBackLeaveWhatTheReleaseBef
 	}
 	backfilled := record.ClearedSpecApproval{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 2, LatestVersion: 2, Mark: record.EventMark{Seq: 12}}
 	written := record.ClearedSpecApproval{Issue: "LEGION-300", ArtifactID: "artifact-300", Version: 2, LatestVersion: 4, Mark: record.EventMark{Seq: 30}}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error { return records.PutClearedSpecApproval(ctx, tx, written) }); err != nil {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutClearedSpecApproval(ctx, tx, written) }); err != nil {
 		t.Fatalf("record the cleared approval with its latest version: %v", err)
 	}
 	readBack := func(when string, want ...record.ClearedSpecApproval) {
 		t.Helper()
-		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			for _, approval := range want {
 				got, err := records.ClearedSpecApproval(ctx, tx, approval.Issue)
 				if err != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -149,7 +150,7 @@ func (r *approvalRig) issue(key string) record.Issue {
 // read runs read in a read-only transaction.
 func (r *approvalRig) read(read func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginTxFunc(context.Background(), r.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, read); err != nil {
+	if err := store.TransactWith(context.Background(), r.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(_ context.Context, tx pgx.Tx) error { return read(tx) }); err != nil {
 		r.t.Fatalf("read the records: %v", err)
 	}
 }
@@ -157,7 +158,7 @@ func (r *approvalRig) read(read func(tx pgx.Tx) error) {
 // write runs write in a transaction: the fixture's own records.
 func (r *approvalRig) write(write func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.store.Tx(context.Background(), write); err != nil {
+	if err := store.Transact(context.Background(), r.store.Pool(), func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("seed the records: %v", err)
 	}
 }

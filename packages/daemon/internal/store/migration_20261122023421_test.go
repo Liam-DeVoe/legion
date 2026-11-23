@@ -47,7 +47,7 @@ func TestTheWorkHoldOpeningsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t 
 	held.Tree = "LEGION-300"
 	opened := closed
 	opened.OpenedAt, opened.Opening = time.Date(2026, 11, 22, 2, 34, 21, 0, time.UTC), "The design gate of LEGION-208 opened."
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{root, other} {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
@@ -62,7 +62,7 @@ func TestTheWorkHoldOpeningsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t 
 	}); err != nil {
 		t.Fatalf("record the hold and its opening: %v", err)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		read, err := records.TreeWorkHold(ctx, tx, "LEGION-208")
 		if err == nil && (read == nil || !reflect.DeepEqual(*read, opened)) {
 			t.Fatalf("the opened hold reads back %+v, want %+v", read, opened)

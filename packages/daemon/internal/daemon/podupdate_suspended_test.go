@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -224,7 +225,7 @@ func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
 	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
 	// stop and each decision of the tester while the stop waits for the turn read its row for
 	// share, and a decision that finds no row makes no stop (supervise's readHoldForStop).
-	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(rig.ctx, rig.pool, func(_ context.Context, tx pgx.Tx) error {
 		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
 			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
 	}); err != nil {
@@ -714,7 +715,7 @@ func TestWorkHoldAnUpdateRoundSavesTheWorkOfAClaimTheHoldStopsBeforeTheLastWord(
 	rig.bundlesTo(heldWorkSave)
 	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
 	// stop reads it, and a stop that finds no record makes no stop (supervise's readHoldForStop).
-	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(rig.ctx, rig.pool, func(_ context.Context, tx pgx.Tx) error {
 		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
 			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
 	}); err != nil {

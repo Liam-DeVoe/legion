@@ -136,7 +136,7 @@ func newWorkHoldRig(t *testing.T, tree holdTree) *workHoldRig {
 	if tree.steps == nil {
 		tree.steps = config.DesignGateRootIssues.Steps()
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: tree.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: tree.project, Tree: tree.key, Title: "a held root", Phase: tree.at, Generation: 1, Status: workflow.PhaseStatus(tree.at),
 			Rank: "U", LastDispatchSeq: 5}); err != nil {
@@ -519,7 +519,7 @@ func (r *workHoldRig) issue() record.Issue {
 // inTx runs write in one transaction of the rig's pool.
 func (r *workHoldRig) inTx(write func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, write); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("write the record: %v", err)
 	}
 }

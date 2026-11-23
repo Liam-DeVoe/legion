@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // ClaimApprovalRequest is the body of POST /legion/v1/claims/approval: the claim the reading
@@ -69,9 +70,9 @@ func (s *server) claimApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var standing *record.StandingApproval
-	err := pgx.BeginTxFunc(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		standing, err = standingApproval(r.Context(), tx, s.records, s.steps, held.Issue, held.Role)
+		standing, err = standingApproval(ctx, tx, s.records, s.steps, held.Issue, held.Role)
 		return err
 	})
 	var answer ClaimApprovalResponse

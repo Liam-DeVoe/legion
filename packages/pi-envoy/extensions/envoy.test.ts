@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  EnvelopeSchema,
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -21668,6 +21669,55 @@ console.log(JSON.stringify(args));
     });
   }, 30_000);
 
+  // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
+  // of connections lists: the image's build-commit stamp, else a packed build's release version,
+  // else none.
+  test("the connection name the server sees ends with the plugin's build", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const names: string[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          names.push(options.name ?? "");
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
+      try {
+        // An instance of its own (the query), as each row of this file loads one: the build source
+        // it is given is that instance's module state.
+        const entry = await import("./envoy.ts?connection-build");
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const rows = [
+          { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
+          { stamp: undefined, packed: true, want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}` },
+          { stamp: undefined, packed: false, want: "omp-ses_build" },
+        ];
+        for (const [index, row] of rows.entries()) {
+          const stamp = join(stampDirectory, `build-commit-${index}`);
+          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+          entry.setBuildSourceForTests({ stamp, packed: row.packed });
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const fixture = createPi();
+          entry.default(fixture.pi);
+          names.length = 0;
+          await fixture.handlers.get("session_start")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
+          expect(names[0]).toBe(row.want);
+        }
+      } finally {
+        rmSync(stampDirectory, { recursive: true, force: true });
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
   for (const { row, error, shown, withheld } of [
     {
       row: "names the NATS failure in the refused registration and in every part of the notice",
@@ -24893,6 +24943,52 @@ describe("the send and publish answers", () => {
           event_id: "evt_text",
           topic: "notifications.team.test",
           ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
+
+  // The listener answers a repeat of another sender's key with that message's ids and times
+  // alone, its text fields empty: both tools report it as not delivered, naming that message's
+  // event id. The control is the envelope schema every answer was read by before, which throws
+  // on it.
+  for (const tool of ["envoy_send", "envoy_publish"] as const) {
+    test(`${tool} reports a key another sender's message holds as not delivered`, async () => {
+      const taken = {
+        event_id: "evt_alice",
+        source: "",
+        source_event_id: "",
+        topic: "notifications.team.test",
+        dedupe_key: "publish.key",
+        issued_at: 1,
+        payload_summary: "",
+        trace_id: "",
+        recipient: "ses_target",
+        duplicate: true,
+      };
+      expect(() => EnvelopeSchema.parse(taken)).toThrow();
+      const session = await bootTool(`answers-key-taken-${tool}`, taken);
+
+      try {
+        const result = await session.fixture.tools
+          .find((candidate) => candidate.name === tool)
+          ?.execute(
+            "",
+            tool === "envoy_send"
+              ? { session_id: "ses_target", message: "bob's words" }
+              : { topic: "notifications.team.test", message: "bob's words" }
+          );
+
+        expect(result?.content[0]?.text).toBe(
+          `not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; ${tool === "envoy_send" ? "send it again without an idempotency_key; Envoy gives it a new one" : "publish it again; Envoy gives every publish a new idempotency_key"}`
+        );
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_alice",
+          topic: "notifications.team.test",
+          delivered: false,
+          key_taken: true,
         });
       } finally {
         await session.stop();

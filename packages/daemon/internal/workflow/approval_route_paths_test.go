@@ -482,7 +482,7 @@ func (r *pathRig) applyAs(source, id string, fact intake.Fact) {
 // write runs write in a transaction of its own.
 func (r *pathRig) write(write func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.store.Tx(r.ctx, write); err != nil {
+	if err := store.Transact(r.ctx, r.store.Pool(), func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("write the records: %v", err)
 	}
 }
@@ -490,7 +490,7 @@ func (r *pathRig) write(write func(tx pgx.Tx) error) {
 // read runs read in a read-only transaction of its own.
 func (r *pathRig) read(read func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginTxFunc(r.ctx, r.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, read); err != nil {
+	if err := store.TransactWith(r.ctx, r.store.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(_ context.Context, tx pgx.Tx) error { return read(tx) }); err != nil {
 		r.t.Fatalf("read the records: %v", err)
 	}
 }

@@ -54,7 +54,7 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	carried := record.Issue{Key: "LEGION-209", Tree: "LEGION-209", Project: "LEGION", Title: "carried", Phase: "admitted", Generation: 2,
 		Status: "in_progress", Rank: "V", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{root, carried} {
 			if err := record.NewStore().PutIssue(ctx, tx, issue); err != nil {
 				return err
@@ -74,7 +74,7 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 	}
 	handed := record.HandedOverRoot{Issue: "LEGION-209", Generation: 2, GateCarried: true, FromRoot: "LEGION-208"}
 	cleared := record.ClearedSpecApproval{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 4, LatestVersion: 5, Mark: record.EventMark{Seq: 12}}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := record.NewStore().PutHandedOverRoot(ctx, tx, handed); err != nil {
 			return err
 		}
@@ -82,7 +82,7 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 	}); err != nil {
 		t.Fatalf("record the carried root and the cleared approval: %v", err)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		before, err := record.NewStore().HandedOverRoot(ctx, tx, "LEGION-208")
 		if err != nil {
 			return err

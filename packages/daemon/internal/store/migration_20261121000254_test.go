@@ -44,7 +44,7 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	hold := record.WorkHold{Project: "LEGION", Tree: "LEGION-208", RootGeneration: 4, Step: record.DesignStepSpec,
 		ArtifactID: "artifact-208", Version: 4, ClosedAt: time.Date(2026, 11, 21, 0, 2, 54, 0, time.UTC)}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := record.NewStore().PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -52,7 +52,7 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 	}); err != nil {
 		t.Fatalf("record the hold: %v", err)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		read, err := record.NewStore().LockWorkHold(ctx, tx, "LEGION-208")
 		if err == nil && (read == nil || !reflect.DeepEqual(*read, hold)) {
 			t.Fatalf("the hold reads back %+v, want %+v", read, hold)

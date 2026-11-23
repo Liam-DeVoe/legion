@@ -106,7 +106,7 @@ func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
 	if stands(childIssue) {
 		t.Fatalf("the work hold of %s stands, want none: no close wrote its row", childIssue)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error { return records.DeleteWorkHold(ctx, tx, rootIssue) }); err != nil {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.DeleteWorkHold(ctx, tx, rootIssue) }); err != nil {
 		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
 	}
 	if stands(rootIssue) {
@@ -125,7 +125,7 @@ func TestWorkHoldStandsReadsAnOpenedHoldAsEnded(t *testing.T) {
 	records := record.NewStore()
 	opened := closeWorkHold(t, store, records)
 	opened.OpenedAt, opened.Opening = time.Date(2026, 11, 22, 2, 34, 21, 0, time.UTC), "The design gate of LEGION-208 opened."
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := records.LockWorkHold(ctx, tx, rootIssue); err != nil {
 			return err
 		}
@@ -137,7 +137,7 @@ func TestWorkHoldStandsReadsAnOpenedHoldAsEnded(t *testing.T) {
 	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || stands {
 		t.Fatalf("the read of the opened hold = stands %t, %v; want a hold that does not stand", stands, err)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		read, err := records.TreeWorkHold(ctx, tx, rootIssue)
 		if err == nil && (read == nil || read.Standing() || !reflect.DeepEqual(*read, opened)) {
 			t.Fatalf("the tree's record after the opening is %+v, want the opened hold %+v", read, opened)
@@ -162,7 +162,7 @@ func closeWorkHold(t *testing.T, store *Store, records record.Store) record.Work
 		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	hold := record.WorkHold{Project: "LEGION", Tree: rootIssue, RootGeneration: 4, Step: record.DesignStepSpec,
 		ArtifactID: "artifact-208", Version: 4, ClosedAt: time.Date(2026, 11, 21, 0, 2, 54, 0, time.UTC)}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -201,7 +201,7 @@ func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 		err    error
 	}
 
-	opening, err := store.Pool().Begin(ctx)
+	opening, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	}
 	quick, cancelQuick := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelQuick()
-	if err := store.Tx(quick, func(tx pgx.Tx) error {
+	if err := Transact(quick, store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		if _, err := records.LockWorkHold(quick, tx, rootIssue); err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
 	}
 
 	closeWorkHold(t, store, records)
-	held, err := store.Pool().Begin(ctx)
+	held, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
 func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func() error) {
 	t.Helper()
 	ctx := context.Background()
-	fact, err := store.Pool().Begin(ctx)
+	fact, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
