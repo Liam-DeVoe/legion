@@ -2854,6 +2854,34 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	return PhaseRow{Role: role, StepTask: task, StepPlace: place}
 }
 
+// CompletionRow is role's row among rows of the run a completion of role serving entry reports, on
+// a task whose steps are steps standing at at (task "" for an issue with no plan rows). Where the
+// role works the place the task stands at (works), it is the row there (PhaseRowAt): the role's run
+// now, which every other run of the role is behind, so the entry fence holds a turn of another run
+// to it (intake.EntryFence). Otherwise the completion is the report of a run the task has left,
+// and its row is the row whose entry is the one served: a step's start raises its entry above
+// every row of its role (workflow's enter), so no two rows of a role stand on one entry, and the
+// served entry names the run whichever of the role's places the task stands at since, before,
+// between or after its steps. Where no row stands on that entry (a completion of no entry, or of
+// one a later run of its step raised past), it is the role's row now (PhaseRowOf), the run the
+// role ran last, and where the role has no row at all, the row PhaseRowAt stamps for it. The
+// completion route and the workflow's handoff both read it, so a completion is held to one run,
+// recorded on that run's row and written onto that run's step.
+func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, task string, at TaskPlace, steps []PlanStep) PhaseRow {
+	if works {
+		return PhaseRowAt(rows, role, task, at, steps)
+	}
+	for _, row := range rows {
+		if entry > 0 && row.Role == role && row.Entry == entry {
+			return row
+		}
+	}
+	if now := PhaseRowOf(rows, role); now.Role == role {
+		return now
+	}
+	return PhaseRowAt(rows, role, task, at, steps)
+}
+
 // RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
 // task whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task
 // gives no place. It is also the place a completion's key names where the role stands at two

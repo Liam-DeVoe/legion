@@ -15,31 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// seedTwoTesterSteps gives key, at generation 1, the owner's plan `implementer tester:a reviewer
-// tester:a`, one agent at the tester's two steps, with its task running at place.
-func seedTwoTesterSteps(t *testing.T, h *harness, key string, place int) {
-	t.Helper()
-	ctx, records := context.Background(), record.NewStore()
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-		if place == 2 {
-			v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
-				GivenBy: "owner", GivenAt: time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)}
-			task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting}
-			steps := []record.PlanStep{
-				{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
-				{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "tester", AgentKey: "a", Type: plan.TypeTesting},
-				{Issue: key, Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: plan.TypeReview},
-				{Issue: key, Generation: 1, Task: "a", Position: 4, Role: "tester", AgentKey: "a", Type: plan.TypeTesting}}
-			if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
-				return err
-			}
-		}
-		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
-	}); err != nil {
-		t.Fatalf("seed the tester's step %d of %s: %v", place, key, err)
-	}
-}
-
 // A role that stands at two steps of a task completes each, and the two completions are two facts
 // even where they report the same thing in one pass: the key names the place of the step when the
 // task names the role at two places. In `implementer tester:a reviewer tester:a`, the tester's
@@ -52,13 +27,13 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	const key = "LEGION-208"
 	seedIssueAt(t, h, key, phase.Testing)
-	seedTwoTesterSteps(t, h, key, 2)
+	seedStepsAt(t, h, key, []string{"implementer", "tester:a", "reviewer", "tester:a"}, 2, claim.RoleTester, "", nil)
 	tester := newLiveClaim(t, h, key, claim.RoleTester)
 	written := tester.writeHandoff("test", 1)
 	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
 
-	seedTwoTesterSteps(t, h, key, 4)
+	runTaskAt(t, h, key, 4)
 	request.GrantID = tester.grant(t)
 	if answer := h.complete(request); answer.Code != http.StatusOK {
 		t.Fatalf("the tester's completion of step 4 = %d %s, want it applied as a fact of its own", answer.Code, answer.Body)
@@ -69,47 +44,48 @@ func TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts(t *testing.T) {
 	}
 }
 
-// seedTesterAt gives key, at generation 1, the owner's plan of task a whose steps are roles, each
-// with the type plan.BuiltinRoles gives it and the key a on every tester's step, with the task
-// running at place, and the tester's row of each place in entries at that entry, under token, raised
-// by a forward move in place order.
-func seedTesterAt(t *testing.T, h *harness, key string, roles []string, place int, token claim.Token, entries map[int]int64) {
+// runTaskAt runs task a of key's plan at step place.
+func runTaskAt(t *testing.T, h *harness, key string, place int) {
+	t.Helper()
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return record.NewStore().MoveTask(context.Background(), tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("run task a of %s at step %d: %v", key, place, err)
+	}
+}
+
+// seedStepsAt gives key, at generation 1, the owner's plan of task a whose steps are words, each
+// `role` or `role:key`, with the type plan.BuiltinRoles gives its role, each named as planGiven
+// names a version's agents (record.NameAgents), with the task running at place, and role's row of
+// each place in entries at that entry, under token.
+func seedStepsAt(t *testing.T, h *harness, key string, words []string, place int, role claim.Role, token claim.Token, entries map[int]int64) {
 	t.Helper()
 	ctx, records := context.Background(), record.NewStore()
 	builtin := plan.BuiltinRoles()
-	raised := time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-" + key, Source: record.PlanSourceOwner,
-			GivenBy: "owner", GivenAt: raised}
+			GivenBy: "owner", GivenAt: time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Task a.", State: record.TaskWaiting}
-		steps := make([]record.PlanStep, 0, len(roles))
-		for i, role := range roles {
-			step := record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: builtin[role].Type}
-			if role == string(claim.RoleTester) {
-				step.AgentKey = "a"
-			}
-			steps = append(steps, step)
+		steps := make([]record.PlanStep, 0, len(words))
+		for i, word := range words {
+			name, agentKey, _ := strings.Cut(word, ":")
+			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: name, AgentKey: agentKey, Type: builtin[name].Type})
 		}
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
 			return err
 		}
-		if err := records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: place}, record.TaskRunning); err != nil {
-			return err
-		}
-		for at := range len(roles) + 1 {
-			entry, ok := entries[at]
-			if !ok {
-				continue
-			}
-			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: token, Entry: entry,
-				EntryRaisedAt: raised.Add(time.Duration(at) * time.Minute), StepTask: "a", StepPlace: at}); err != nil {
-				return err
+		for at := range len(words) + 1 {
+			if entry, ok := entries[at]; ok {
+				if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Claim: token, Entry: entry, StepTask: "a", StepPlace: at}); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed the tester's steps of %s at step %d: %v", key, place, err)
+		t.Fatalf("seed the steps %v of %s: %v", words, key, err)
 	}
+	runTaskAt(t, h, key, place)
 }
 
 // The route holds a completion to the step its turn was given, as the workflow does. In
@@ -130,15 +106,15 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 		entries map[int]int64
 		refused bool
 	}{
-		{"the turn of step 2 completing while step 4 runs", []string{"implementer", "tester", "reviewer", "tester"}, 4, map[int]int64{2: 1, 4: 3}, true},
-		{"the control: a role at one step handed again at the same head", []string{"implementer", "tester", "reviewer"}, 2, map[int]int64{2: 3}, false},
+		{"the turn of step 2 completing while step 4 runs", []string{"implementer", "tester:a", "reviewer", "tester:a"}, 4, map[int]int64{2: 1, 4: 3}, true},
+		{"the control: a role at one step handed again at the same head", []string{"implementer", "tester:a", "reviewer"}, 2, map[int]int64{2: 3}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, key, phase.Testing)
 			seedPullRequest(t, h, key, headSHA)
 			tester := newLiveClaim(t, h, key, claim.RoleTester)
-			seedTesterAt(t, h, key, tc.roles, tc.place, tester.token, tc.entries)
+			seedStepsAt(t, h, key, tc.roles, tc.place, claim.RoleTester, tester.token, tc.entries)
 			takeTask(t, h, tester.token, "outbox:77", "test "+key, 1, 1)
 
 			answer := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
@@ -162,6 +138,53 @@ func TestTheRouteRefusesATurnOfARolesOtherStep(t *testing.T) {
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("facts after the refusal = %#v, want none applied: the route refuses before the fact", got)
+			}
+		})
+	}
+}
+
+// A late completion of a role's later step is held to the row of that step's run, the run whose
+// entry it serves. In `implementer:a reviewer:r implementer:a reviewer:r`, the review of step 4
+// requested changes before the reviewer completed, so the task stands at step 3, between the
+// reviewer's two steps, and the reviewer's claim still serves step 4's entry. Its completion is
+// applied, its key naming step 4 (`:p4`). The control is the same completion serving an entry no
+// row of the reviewer stands on: refused HANDOFF_NOT_CURRENT_PHASE, with no fact applied.
+// Before, the route read the reviewer's latest place at or before step 3, step 2's row, whose entry
+// is below step 4's, and refused the completion of step 4 HANDOFF_NOT_CURRENT_PHASE too.
+func TestALateCompletionOfARolesLaterStepIsHeldToThatStep(t *testing.T) {
+	const key = "LEGION-208"
+	for _, tc := range []struct {
+		name   string
+		served int64
+		taken  bool
+	}{
+		{"serving step 4's entry", 4, true},
+		{"the control: serving an entry no row stands on", 3, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, key, phase.Implementing)
+			seedPullRequest(t, h, key, headSHA)
+			reviewer := newLiveClaim(t, h, key, claim.RoleReviewer)
+			seedStepsAt(t, h, key, []string{"implementer:a", "reviewer:r", "implementer:a", "reviewer:r"}, 3, claim.RoleReviewer, reviewer.token,
+				map[int]int64{2: 2, 4: 4})
+			takeTask(t, h, reviewer.token, "outbox:77", "review "+key, tc.served, 1)
+
+			answer := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "changes requested",
+				HandoffID: reviewer.writeHandoff("review", 2), HandoffVersion: 2})
+			if !tc.taken {
+				refused(t, answer, http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+				if got := facts.recorded(); len(got) != 0 {
+					t.Fatalf("facts after the refusal = %#v, want none applied", got)
+				}
+				return
+			}
+			completion(t, answer)
+			if got := facts.recorded(); len(got) != 1 {
+				t.Fatalf("facts after the completion = %#v, want the one completion applied", got)
+			}
+			if keys := completionKeys(t, h, key); len(keys) != 1 || !strings.HasSuffix(keys[0], ":p4") {
+				t.Fatalf("the completion keys of %s = %q, want one, naming step 4 (:p4)", key, keys)
 			}
 		})
 	}

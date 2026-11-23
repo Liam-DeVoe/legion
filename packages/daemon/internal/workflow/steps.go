@@ -271,28 +271,24 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	return true, e.enqueue(ctx, tx, issue, write)
 }
 
-// reportEndedStep writes report, the handoff role's completion of at named, onto the record of
-// the run of at's step that ended before that completion landed: a review the review event moved
-// on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
-// record's report is the handoff the ending role's completion named, whichever of the two lands
-// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt):
-// the place that runs as at, and at step the step role runs, nearest where the task stands
-// (Walk.placeRunning), since a role can stand at two steps and the issue has left the one this
-// completion is of, and no start of it came since (handoff's current).
+// reportEndedStep writes report, the handoff a completion of at named, onto the record of the run
+// of at's step that ended before that completion landed: a review the review event moved on, whose
+// end the transition wrote with no report, since the reviewer had not completed yet. A record's
+// report is the handoff the ending role's completion named, whichever of the two lands first. The
+// run is the latest of the place of the step whose run row holds (Walk.runPlace), row being the
+// role's row of the run the completion reports (Walk.completionRow): a role can stand at two steps,
+// and the issue has left the one this completion is of, which its served entry names, wherever the
+// task stands now, and no start of it came since (handoff's current). w is the walk of issue's run.
 // The write carries the run's identity and the report alone, and Dispatch writes each field once,
 // so it and the end merge in either order (record.StepRecord). A completion that names no handoff
 // writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
 // — none ran, one is open, or one an earlier release started after a rollback, whose record this
 // release has not written — nor a record key that is no issue key.
-func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role, report string) error {
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, row record.PhaseRow, report string) error {
 	if report == "" {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	place, ok := w.placeRunning(at, role)
+	place, ok := w.runPlace(row, at)
 	if !ok {
 		return nil
 	}

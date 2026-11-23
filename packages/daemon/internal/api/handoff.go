@@ -182,7 +182,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_CLAIM", "the daemon supervises no claim for this grant")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role)
+	position, err := s.handoffPosition(r.Context(), grant.Issue)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
@@ -331,8 +331,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
-	// workflow judges the same rule again on the row its own transaction reads.
-	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, position.otherStepsEntry, req.Commit, position.pullRequest,
+	// workflow judges the same rule again on the row its own transaction reads. The row is the run
+	// the completion is of (completionPosition.run): where the role works the issue's phase, its
+	// row where the task stands, and otherwise the row of the entry it serves, so a late report of a
+	// role's later step is held to that step's run, whichever place the task returned to since.
+	run := position.run(grant.Role, entry, issue.RoleAt(issue.Phase) == grant.Role)
+	if refusal := intake.EntryFence(*issue, grant.Role, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit, position.pullRequest,
 		c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
@@ -413,7 +417,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// upgrade keeps its key.
 	//
 	// Where the task names the role at two places, the key ends with the place of the step the
-	// completion is of (`:p<place>`, completionPosition.place): the role's two steps run in one
+	// completion is of (`:p<place>`, completingRun.place): the role's two steps run in one
 	// pass, so the completion of the second can report what the first did, one commit or one
 	// record and one verdict, and must still be a fact of its own, which the workflow judges. A
 	// role at one place keeps the key it had.
@@ -431,8 +435,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		counted = position.task + ":" + counted
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
-	if position.place > 0 {
-		eventID += fmt.Sprintf(":p%d", position.place)
+	if run.place > 0 {
+		eventID += fmt.Sprintf(":p%d", run.place)
 	}
 	returnTo := 0
 	if req.ReturnTo != nil {

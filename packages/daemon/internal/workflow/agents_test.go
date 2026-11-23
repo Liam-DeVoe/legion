@@ -406,6 +406,72 @@ func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 }
 
+// A role's late report of its later step is the report of that step's run: the run whose entry it
+// serves. In `implementer:a reviewer:r implementer:a reviewer:r`, step 4's run ends before the
+// reviewer completes: the review's request for changes returns the task to step 1, its first
+// implementation step, and the reviewer's move back to implementing returns it to step 3, between
+// the reviewer's two steps. Either way, the reviewer's completion at step 4's entry is then taken,
+// moving nothing: step 4's row records it, step 4's record names its report, and step 2's row and
+// record keep their own. Before, the row read was the reviewer's place nearest where the task
+// stands, step 2's, whose entry is below the one served, so the completion was refused
+// HANDOFF_NOT_CURRENT_PHASE, and past that fence its report would have been written onto step 2's
+// record.
+func TestALateReportOfARolesLaterStepIsTakenOnThatStep(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ends func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string)
+		at   record.TaskPlace
+	}{
+		{"the review requests changes", func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			reviewRequestsChanges(t, pool, engine, key)
+		}, stepPlace(1)},
+		{"the reviewer moves the task back to implementing", func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			if result := applyFacts(t, pool, engine)("reviewer-back", intake.BackwardMove{Issue: key, Requester: claim.RoleReviewer, To: phase.Implementing,
+				Reason: "the change needs a migration"}); result.Refusal != nil {
+				t.Fatalf("the reviewer's move back to implementing was refused: %+v", result.Refusal)
+			}
+		}, stepPlace(3)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:r", "implementer:a", "reviewer:r")
+			implementer := agentToken(t, "implementer")
+			reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+			completesAs(t, pool, engine, claim.RoleReviewer, reviewer, "review", 1)
+			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
+			served := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[4].Entry
+			tc.ends(t, pool, engine, root.Key)
+			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, tc.at)
+			before := reportsAt(t, pool, root.Key, 2)
+
+			report := reportOf(claim.RoleReviewer, reviewer, "review-2")
+			report.Entry = served
+			if result := applyFacts(t, pool, engine)("reviewer-late-step-4", report); result.Refusal != nil {
+				t.Fatalf("the reviewer's completion at step 4's entry %d after the task returned to %+v = %d %s %q, want it taken on step 4",
+					served, tc.at, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+			}
+			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, tc.at)
+			rows := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)
+			if rows[4].HandoffRecord != "review-2" || rows[4].Entry != served || rows[2].HandoffRecord != "review-1" {
+				t.Fatalf("the reviewer's rows after its late report: step 2 %+v, step 4 %+v; want review-1 kept on step 2 and review-2 on step 4 at entry %d",
+					rows[2], rows[4], served)
+			}
+			if got := reportsAt(t, pool, root.Key, 4); !slices.Equal(got, []string{"a:review-2"}) {
+				t.Fatalf("the reports of step 4 = %v, want the late report a:review-2", got)
+			}
+			if got := reportsAt(t, pool, root.Key, 2); !slices.Equal(got, before) {
+				t.Fatalf("the reports of step 2 = %v, want them as they stood, %v", got, before)
+			}
+		})
+	}
+}
+
 // A keyed agent's next step after a new generation is numbered above every entry its claim was
 // given, whatever rows the generation's clear folded away. In `implementer:a reviewer:b
 // implementer:b`, key b, named reviewer, works steps 2 and 3 and the retro, the last of them on the

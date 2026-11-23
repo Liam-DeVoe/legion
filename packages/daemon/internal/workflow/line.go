@@ -164,6 +164,50 @@ func (w Walk) phaseRowOf(rows []record.PhaseRow, role claim.Role, standsIn phase
 	return record.PhaseRowAt(rows, role, w.Task, at, w.Steps)
 }
 
+// completionRow is the row of rows of the run role's completion serving entry reports
+// (record.CompletionRow), read where w's task stands as phaseRowOf reads it: where role works that
+// place (works), its row there; otherwise the row of the entry it serves, else role's row now.
+func (w Walk) completionRow(rows []record.PhaseRow, role claim.Role, entry int64, works bool, standsIn phase.Phase) record.PhaseRow {
+	if !w.Stored {
+		return record.CompletionRow(rows, role, entry, works, "", record.TaskPlace{}, nil)
+	}
+	at := w.Place
+	if at.Kind == "" {
+		at, _ = w.PlaceOf(standsIn)
+	}
+	return record.CompletionRow(rows, role, entry, works, w.Task, at, w.Steps)
+}
+
+// runPlace is the place on w of the run row holds, a run of reported: the retro and the merge at
+// their places, and a step at the step the row ran (record.PhaseRow.StepPlace), so a report of a
+// role that stands at two steps is the report of the step whose run it is, whichever place the
+// task stands at now. A row of no step, one a new generation cleared or the release before wrote,
+// is the role's one row, at its place nearest where the task stands (record.RolePlace). ok is
+// false for a row of another task, and for a step w's line no longer runs as reported with the
+// row's role there, as after a later version of the plan took it away. A walk with no plan rows
+// holds each phase once (PlaceOf).
+func (w Walk) runPlace(row record.PhaseRow, reported phase.Phase) (record.TaskPlace, bool) {
+	if !w.Stored {
+		return w.PlaceOf(reported)
+	}
+	switch {
+	case row.StepTask != "" && row.StepTask != w.Task:
+		return record.TaskPlace{}, false
+	case reported == phase.Retro:
+		return record.TaskPlace{Kind: record.PlaceRetro}, true
+	case reported == phase.Merging:
+		return record.TaskPlace{Kind: record.PlaceMerge}, true
+	}
+	place := row.StepPlace
+	if row.StepTask == "" {
+		place = record.RolePlace(row.Role, w.Place, w.Steps)
+	}
+	if place < 1 || place > len(w.Steps) || w.Line[place-1] != reported || claim.Role(w.Steps[place-1].Role) != row.Role {
+		return record.TaskPlace{}, false
+	}
+	return record.TaskPlace{Kind: record.PlaceStep, Position: place}, true
+}
+
 // steps is the part of the line each step runs: all of it but the retro and the merge.
 func (w Walk) steps() []phase.Phase {
 	if len(w.Line) < 2 {
@@ -505,10 +549,8 @@ func (w Walk) endingRole(from phase.Phase) claim.Role {
 
 // placeRunning is the place of w's task that runs as at, and at step the one whose role is role,
 // nearest where the task stands: the latest such place at or before w.Place, else the first after
-// it. A role can stand at two steps of a task, so a phase can run at two places, and the one a
-// reader of a run that ended means is the one the task left last, or, after a return before it,
-// the one it returned from: the run a late completion of role reports (reportEndedStep), and the
-// acceptance the task stands at (acceptedRole). A walk with no plan rows holds each phase once
+// it: the acceptance the task stands at (acceptedRole). A report of a run that ended reads the
+// place of its own run instead (Walk.runPlace). A walk with no plan rows holds each phase once
 // (PlaceOf).
 func (w Walk) placeRunning(at phase.Phase, role claim.Role) (record.TaskPlace, bool) {
 	if !w.Stored {
