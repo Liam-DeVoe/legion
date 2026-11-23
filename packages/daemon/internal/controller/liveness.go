@@ -12,6 +12,8 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the
@@ -59,13 +61,15 @@ type Prober struct {
 	client *http.Client
 }
 
-// NewProber is a Prober over opts.
+// NewProber is a Prober over opts. Its lookup follows no redirect (redirects.Refused): it carries
+// the listener's bearer, which a followed redirect would hand the host the Location names, and a
+// 3xx is the listener's refusal, which the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
 		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
 		token:  opts.EnvoyToken,
 		log:    opts.Log,
-		client: &http.Client{Timeout: probeTimeout},
+		client: redirects.Refused(&http.Client{Timeout: probeTimeout}),
 	}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -87,11 +91,12 @@ func NewProber(opts ProberOptions) *Prober {
 
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
-// both sessions or the holder's state.
+// both sessions or the holder's state. A lookup that could not be made or got no answer logs its
+// failure through redact.Unanswered, which prints none of net/http's own words for it.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", redact.Unanswered(err, nil, ""))
 		return Unknown
 	}
 	if p.token != "" {
@@ -99,7 +104,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", redact.Unanswered(err, request, ""))
 		return Unknown
 	}
 	defer response.Body.Close()
