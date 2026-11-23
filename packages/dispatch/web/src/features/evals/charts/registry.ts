@@ -4,9 +4,11 @@
 // (`DeclaredEval`). `kinds.test.ts` lists the 14 kinds the validator accepts against it.
 import { bandKind } from "./band";
 import type { ChartKind } from "./kind";
+import { networkKind } from "./network";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
+  network: networkKind,
   xy: xyKind,
 };
