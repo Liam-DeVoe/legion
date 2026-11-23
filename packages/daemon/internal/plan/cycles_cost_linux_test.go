@@ -14,8 +14,8 @@ import (
 )
 
 // cycleCheckBound is the most CPU time the check of a ring of 10,000 tasks may take. A check in
-// time near-linear in the plan takes a few milliseconds there; one that searches again from every
-// need of the ring takes over a minute.
+// time near-linear in the plan follows each of the ring's 10,000 needs once or twice; one that
+// searches the ring again from every need follows about 100 million, 10,000 for each need.
 const cycleCheckBound = time.Second
 
 // threadCPU is the CPU time the calling thread has spent, its user and its system time. The
@@ -37,7 +37,7 @@ func threadCPU(t *testing.T) time.Duration {
 // ring of 10,000 tasks, each needing the next, is one such set, and its check stays within
 // cycleCheckBound of the thread's CPU time, with the ring's one cycle as its one refusal. The
 // fault is a breadth-first search from every need, quadratic on a ring; the control is that
-// check, the cycles of the release before, which spent over a minute of CPU on this ring.
+// check, the cycles of the release before, which follows about 100 million needs on this ring.
 func TestARingOfTenThousandTasksIsRefusedInNearLinearTime(t *testing.T) {
 	const size = 10_000
 	ring := ringOf(size)

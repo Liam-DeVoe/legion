@@ -245,7 +245,8 @@ func cycleFrom(needs [][]int, component, parent []int, task int, ended func() er
 		}
 	}
 	// A component of more than one task leads from each of its tasks back to it, and one of one
-	// task holds a cycle only when that task needs itself, which the first need it follows finds.
+	// task holds a cycle only when that task needs itself: the search finds that need in its first
+	// round, among the task's own needs, whichever place the block writes it at.
 	panic(fmt.Sprintf("plan: task %d leads back to itself by no need inside its component", task))
 }
 
