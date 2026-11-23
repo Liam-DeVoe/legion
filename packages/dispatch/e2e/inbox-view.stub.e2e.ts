@@ -115,12 +115,13 @@ test("a row wears its marks without overlap, shows its issue key whole, and the 
   expect(lefts.size).toBe(1);
 
   // The row carries the page's own controls and no other control of this issue's: the filter
-  // trigger, Mark all read, the count the blocked-on-you banner carried (INFRA-3135, R7) and
-  // the display menu.
+  // trigger, New message, Mark all read, the count the blocked-on-you banner carried (INFRA-3135,
+  // R7) and the display menu.
   await page.goto("/");
   await expect(page.locator("[data-inbox-row]").first()).toBeVisible();
   await expect(controlRow(page).getByRole("button")).toHaveText([
     "Filter",
+    "New message",
     "Mark all read",
     "Blocked on you · 5",
     "View",
