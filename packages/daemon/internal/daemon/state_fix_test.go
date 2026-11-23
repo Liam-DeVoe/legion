@@ -32,6 +32,9 @@ func TestTheStateNamesTheFixsDirectoryBesideTheRuntimesWorkspace(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the store: %v", err)
+	}
 	key := cfg.Project + "-1"
 	records := record.NewStore()
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {

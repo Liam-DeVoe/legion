@@ -983,16 +983,17 @@ async function completeHandoff(
   // found in the fix's directory and never in the shared workspace, where `@-` is another
   // step's. A fix the daemon names no directory for cannot be reported, and is refused before
   // anything is minted or posted.
-  const fix = claim.role === "implementer" ? record.fix : undefined;
-  if (fix !== undefined && fix.dir === undefined) {
+  const fix = record.fix;
+  const fixes = claim.role === "implementer" && fix !== undefined;
+  if (fixes && fix.dir === undefined) {
     throw new Error(
       `${claim.issue} runs a fix, and the daemon names no directory of its working copy, so handoff_complete cannot find the fix's report; nothing was posted; tell the architect`
     );
   }
   const report =
-    fix?.dir === undefined
-      ? await runtime.handoffReport(record.phase, claim.role)
-      : await runtime.handoffReport("implementing", claim.role, fix.dir);
+    fixes && fix.dir !== undefined
+      ? await runtime.handoffReport("implementing", claim.role, fix.dir)
+      : await runtime.handoffReport(record.phase, claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
