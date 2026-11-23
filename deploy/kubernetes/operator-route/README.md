@@ -81,8 +81,9 @@ serves, never to another family, and adds that model to `enabledModels` and to `
 `models-key-file.yml`. A gateway serves only the ids it was set up for and answers any other with
 404, so on the gateway route run one `omp -p --model @<role> "Reply ok."` turn through the new
 `models.yml` for each new model id before applying. The older models stay in all three. A role
-whose settings or plan name an older model still starts on it. The pinned Oh My Pi also refuses to
-resume a session whose last model the profile lacks (`docs/kubernetes.md`).
+whose settings or plan name an older model still starts on it. A resumed session needs no older
+model: every launch names its model, so the pinned Oh My Pi restores no saved one
+(`docs/kubernetes.md`).
 
 `apply.sh` writes with a server-side apply under its own field manager,
 `legion-operator-route-apply`, and forces conflicts. When another tool wrote the ConfigMap before
