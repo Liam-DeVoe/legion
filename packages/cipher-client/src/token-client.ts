@@ -98,15 +98,14 @@ export interface BrokerToken {
 /**
  * A placeholder of Cipher's proxy, as a placeholder trade answers it (`proxyPlaceholder`): the
  * string a request carries where a token would be, which the broker's proxy swaps a token of its
- * own in for on each request its rule allows; the grant it stands for, as the kind's word, a colon
- * and an id; when the grant ends; and how the session reaches the proxy - its URL, the
+ * own in for on each request its rule allows, and how the session reaches the proxy - its URL, the
  * certificate its hosts' certificates are signed by, and each name behind it with the hosts it may
- * reach. The proxy's password is the placeholder itself.
+ * reach. The proxy's password is the placeholder itself. The answer's grant id and lifetime are
+ * checked (`#readPlaceholder`) and not kept: a caller asks for a placeholder at the moment it sends
+ * the one request it is for.
  */
 export interface ProxyPlaceholder {
   readonly placeholder: string;
-  readonly grantId: string;
-  readonly expiresAt: Date;
   readonly proxyUrl: string;
   readonly caCertificate: string;
   readonly names: Readonly<
@@ -1022,8 +1021,8 @@ export class BrokerTokenClient {
     }
     // Held before anything else is read, so no refusal below and no line after prints it.
     holdSecret(placeholder, Date.now() + seconds * 1000);
-    const grantId = typeof body["grant_id"] === "string" ? body["grant_id"] : "";
-    if (grantId === "") throw refused("no grant_id");
+    if (typeof body["grant_id"] !== "string" || body["grant_id"] === "")
+      throw refused("no grant_id");
     const release = body["proxy"];
     if (typeof release !== "object" || release === null) throw refused("no proxy release");
     const {
@@ -1056,14 +1055,7 @@ export class BrokerTokenClient {
       }
       read[name] = { value: placeholder, hosts: hosts as string[] };
     }
-    return {
-      placeholder,
-      grantId,
-      expiresAt: new Date(this.#now() + seconds * 1000),
-      proxyUrl,
-      caCertificate,
-      names: read,
-    };
+    return { placeholder, proxyUrl, caCertificate, names: read };
   }
 }
 

@@ -116,17 +116,13 @@ test("a sign-in is traded for the proxy placeholder and how the session reaches 
   const broker = stubBroker(() => ({ body: placeholderAnswer() }));
   try {
     const client = await personClient(broker.url);
-    const before = Date.now();
     const held = await client.proxyPlaceholder();
-    expect(held.placeholder).toBe(PLACEHOLDER);
-    expect(held.grantId).toBe("approve:5f070414-1a7c-43a3-8818-cf76eded9806");
-    expect(held.proxyUrl).toBe("http://proxy.example:3128");
-    expect(held.caCertificate).toBe(AUTHORITY);
-    expect(held.names).toEqual({
-      DISPATCH_APPROVE_TOKEN: { value: PLACEHOLDER, hosts: ["dispatch.example"] },
+    expect(held).toEqual({
+      placeholder: PLACEHOLDER,
+      proxyUrl: "http://proxy.example:3128",
+      caCertificate: AUTHORITY,
+      names: { DISPATCH_APPROVE_TOKEN: { value: PLACEHOLDER, hosts: ["dispatch.example"] } },
     });
-    expect(held.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 899_000);
-    expect(held.expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 900_000);
 
     expect(broker.trades).toHaveLength(1);
     const form = broker.trades[0]?.form;
