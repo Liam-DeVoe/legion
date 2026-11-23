@@ -315,7 +315,7 @@ var readersNameALine = regexp.MustCompile("task(?:'s| with no| whose| names| has
 func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
-	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
+	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer", AgentKey: "a"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
@@ -328,7 +328,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
-		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<role>) " + reportedLabel + ":",
+		stepsLabel: "`" + stepsLabel + ":", taskTextLabel: "`" + taskTextLabel + ":", reportedLabel: "(<step>) " + reportedLabel + ":",
 		handoffLabel: "`" + handoffLabel + ":", pullRequestLabel: "`" + pullRequestLabel + ":", reasonLabel: "`" + reasonLabel + ":",
 	}
 	for label, named := range labels {
@@ -347,9 +347,9 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 
 	for template, values := range map[string][]string{
 		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
-		"`Task: <id>. Step <i> of <n>: <role>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<role>", "reviewer"},
-		"`Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`": {"1 <role>, 2 <role>, …", "1 implementer, 2 reviewer"},
-		"`Step <j> (<role>) reported: <word> version <v>.`":             {"<j>", "1", "<role>", "implementer", "<word>", "implement", "<v>", "1"},
+		"`Task: <id>. Step <i> of <n>: <step>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<step>", "reviewer"},
+		"`Steps: 1 <step>, 2 <step>, … then Legion's retro and merge.`": {"1 <step>, 2 <step>, …", "1 implementer:a, 2 reviewer"},
+		"`Step <j> (<step>) reported: <word> version <v>.`":             {"<j>", "1", "<step>", "implementer:a", "<word>", "implement", "<v>", "1"},
 	} {
 		if !strings.Contains(readers, template) {
 			t.Errorf("no prompt or skill a worker reads spells out %s", template)
@@ -373,7 +373,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
+		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer:a, 2 reviewer then Legion's retro and merge."
 		if !strings.HasSuffix(at.String(), want) {
 			t.Errorf("the task of %s ends %q, want it to end %q, the words of %s and the task's steps", p, at, want, noStep)
 		}
