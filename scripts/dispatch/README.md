@@ -137,10 +137,15 @@ Of the other steps, the run finds each one that names the check's command (its s
 commands at each unquoted newline, `;`, `&&`, `||` and `|`, so `echo 'bun test x'` names no
 `bun test x`). A found step proves the check only where all of these hold:
 
-- its `run`, with line continuations joined and whitespace folded, is the check's `run` alone: no
-  other command, operator, comment or `${{ }}` expression before or after it, so
-  `false && bun test x`, `true || bun test x`, `bun test x || true` and `exit 0` before it are
-  not proof;
+- the check's `run` is one simple command: a program and its arguments, read as a shell reads
+  them, with no second line, operator, redirection, group, comment, `$` expansion or `${{ }}`
+  expression, backtick, glob, tilde or `!` outside quotes, and no `$` or backtick inside double
+  quotes. A check whose `run` is not one (`false && bun test x`, `bun test x || true`) is proved by
+  no step, even a step that runs the same script, since its test may never run or its failure may
+  not fail the job;
+- the step's `run` is that command alone: the same words, so `false && bun test x`,
+  `true || bun test x`, `bun test x || true`, `exit 0` before it and a `${{ }}` expression after it
+  are not proof;
 - the step, its job, the caller job of a called workflow, and the workflow's trigger have no `if`
   or trigger filter but one that holds on a ready pull request (`!github.event.pull_request.draft`,
   `github.event_name != 'merge_group'` and the like);

@@ -748,9 +748,8 @@ function namesCommand(named: readonly string[], wanted: readonly string[]): bool
   return false;
 }
 
-/** A script as the proof rule compares it: line continuations joined, each line's runs of
- *  whitespace one space, blank lines left out. Two scripts that differ only in that layout are
- *  one script; a second line is a second command. */
+/** A script as a reason shows it: line continuations joined, each line's runs of whitespace one
+ *  space, blank lines left out. */
 function scriptLines(script: string): string {
   return script
     .replace(/\\\r?\n/g, " ")
@@ -760,19 +759,123 @@ function scriptLines(script: string): string {
     .join("\n");
 }
 
+/** The characters a shell takes as themselves outside quotes: the ones `dispatch` writes bare. */
+const PLAIN = /^[A-Za-z0-9_./:@%+=,-]$/;
+
+/** What each other character outside quotes, and `$` or a backtick inside double quotes, is to
+ *  a shell. */
+const SHELL_SYNTAX: Record<string, string> = {
+  "\n": "a second line",
+  ";": "a shell operator",
+  "&": "a shell operator",
+  "|": "a shell operator",
+  "<": "a redirection",
+  ">": "a redirection",
+  "(": "a group",
+  ")": "a group",
+  "{": "a brace",
+  "}": "a brace",
+  $: "a $ expansion",
+  "`": "a backtick",
+  "*": "a glob",
+  "?": "a glob",
+  "[": "a glob",
+  "]": "a glob",
+  "#": "a comment",
+  "~": "a tilde",
+  "!": "a !",
+};
+
+function syntaxOf(character: string): string {
+  const name = SHELL_SYNTAX[character] ?? "a character the census does not read as plain text";
+  return `${name}, ${JSON.stringify(character)}`;
+}
+
+/** What a script that is one simple command passes to its program, or what in it the census
+ *  cannot read as part of one. */
+type SimpleCommand = { readonly words: string[] } | { readonly cannot: string };
+
+/**
+ * The words a script that is one simple command passes to its program, as a shell splits them:
+ * at unquoted spaces and tabs, with single quotes, double quotes and backslashes taken out at
+ * their boundaries and line continuations joined. Any other script is what the census cannot read
+ * in it: a second line, an operator, a redirection, a group or brace, a comment, an unclosed
+ * quote, a `$` expansion or `${{ }}` expression, a backtick, a glob, a tilde, a `!`, or any
+ * character outside quotes but the plain ones.
+ */
+function simpleCommandOf(script: string): SimpleCommand {
+  const text = script.trim();
+  const words: string[] = [];
+  let word: string | undefined;
+  for (let at = 0; at < text.length; at++) {
+    const character = text[at] as string;
+    if (character === " " || character === "\t") {
+      if (word !== undefined) words.push(word);
+      word = undefined;
+    } else if (character === "\\") {
+      const next = text[at + 1];
+      if (next === undefined) return { cannot: `a backslash at its end, ${JSON.stringify("\\")}` };
+      at++;
+      if (next !== "\n") word = (word ?? "") + next;
+    } else if (character === "'") {
+      const end = text.indexOf("'", at + 1);
+      if (end === -1) return { cannot: `an unclosed quote, ${JSON.stringify("'")}` };
+      word = (word ?? "") + text.slice(at + 1, end);
+      at = end;
+    } else if (character === '"') {
+      let quoted = "";
+      for (at++; text[at] !== '"'; at++) {
+        const inner = text[at];
+        if (inner === undefined) return { cannot: `an unclosed quote, ${JSON.stringify('"')}` };
+        if (inner === "$" || inner === "`") return { cannot: syntaxOf(inner) };
+        const escapedNext = text[at + 1];
+        if (inner === "\\" && escapedNext !== undefined && '$`"\\\n'.includes(escapedNext)) {
+          at++;
+          if (escapedNext !== "\n") quoted += escapedNext;
+        } else {
+          quoted += inner;
+        }
+      }
+      word = (word ?? "") + quoted;
+    } else if (PLAIN.test(character)) {
+      word = (word ?? "") + character;
+    } else {
+      return { cannot: syntaxOf(character) };
+    }
+  }
+  if (word !== undefined) words.push(word);
+  return words.length === 0 ? { cannot: "no command" } : { words };
+}
+
 /**
  * Why a step that names a check's command is not CI's proof of the check, or nothing where it is.
- * Its `run` must be the check's `run` alone — no other command, operator, comment or `${{ }}`
- * expression before or after it — and nothing on the step, its job, the jobs its job needs, its
- * caller job or its workflow may let CI pass without that command running and passing at the
- * repository's root (`Execution.doubts`). A step with any reason is one the census cannot judge.
+ * The check's `run` must be one simple command (`simpleCommandOf`): one that is not — an
+ * operator, a conditional, an earlier command — is proved by no step, even a step that runs the
+ * same script, since its test may never run or its failure may not fail the job. The step's `run`
+ * must then be that command alone: the same words, with no other command, operator, comment or
+ * `${{ }}` expression before or after them. Last, nothing on the step, its job, the jobs its job
+ * needs, its caller job or its workflow may let CI pass without that command running and passing
+ * at the repository's root (`Execution.doubts`). A step with any reason is one the census cannot
+ * judge.
  */
 function proofDoubts(step: Execution, run: string): string[] {
-  const own = /\$\{\{/.test(step.script)
-    ? [`its run holds a \${{ }} expression: ${JSON.stringify(scriptLines(step.script))}`]
-    : scriptLines(step.script) === scriptLines(run)
-      ? []
-      : [`its run is not the check's command alone: ${JSON.stringify(scriptLines(step.script))}`];
+  const wanted = simpleCommandOf(run);
+  const ran = simpleCommandOf(step.script);
+  const shown = JSON.stringify(scriptLines(step.script));
+  let own: string[] = [];
+  if ("cannot" in wanted) {
+    own = [
+      `the check's run is not one simple command (it holds ${wanted.cannot}), so no step proves it: ${JSON.stringify(scriptLines(run))}`,
+    ];
+  } else if (/\$\{\{/.test(step.script)) {
+    own = [`its run holds a \${{ }} expression: ${shown}`];
+  } else if (
+    "cannot" in ran ||
+    ran.words.length !== wanted.words.length ||
+    ran.words.some((word, at) => word !== wanted.words[at])
+  ) {
+    own = [`its run is not the check's command alone: ${shown}`];
+  }
   return [...own, ...step.doubts];
 }
 

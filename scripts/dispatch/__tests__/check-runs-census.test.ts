@@ -748,11 +748,13 @@ function pullRequestJob(job: string, body: string): string {
 }
 
 /** c3 as the reviewer's probe of CI's proof gives it: its `ci_check` names the job `job`, `rows`
- *  by default, so only a step of a job of that name can prove it. */
-function c3OfRows(job = "rows"): RoundScene {
+ *  by default, so only a step of a job of that name can prove it; `run`, where given, is its run. */
+function c3OfRows(job = "rows", run?: string): RoundScene {
   const scene = roundScene();
   const checks = scene.checks.map((check) =>
-    check.block_id === "c3" ? { ...check, ci_check: job } : check
+    check.block_id === "c3"
+      ? { ...check, ci_check: job, ...(run === undefined ? {} : { run }) }
+      : check
   );
   return { ...scene, checks };
 }
@@ -1117,6 +1119,29 @@ describe("the rounds census", () => {
         expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
         expect(cannotJudge(report)).toEqual([
           `c3 at H1 cannot judge whether CI proves it: ${reason}`,
+        ]);
+        expect(exitCode).toBe(3);
+      },
+      SLOW
+    );
+  }
+
+  // A check whose own run is not one simple command is proved by no step, not even a step that
+  // runs the same script: its test may never run, or its failure may not fail the job.
+  for (const run of [
+    "false && bun test fixtures/c3.test.ts",
+    "bun test fixtures/c3.test.ts || true",
+  ]) {
+    test(
+      `a step that runs the check's own compound run, ${run}, is no proof of CI's`,
+      async () => {
+        const workflow = pullRequestWorkflow(workflowJob("rows", "", `      - run: ${run}\n`));
+        const { report, exitCode } = await rounds(c3OfRows("rows", run), {
+          repository: { [ROWS]: workflow },
+        });
+        expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+        expect(cannotJudge(report)).toEqual([
+          `c3 at H1 cannot judge whether CI proves it: ${ROWS_STEP}: the check's run is not one simple command (it holds a shell operator, "${run.includes("&") ? "&" : "|"}"), so no step proves it: ${JSON.stringify(run)}`,
         ]);
         expect(exitCode).toBe(3);
       },
