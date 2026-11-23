@@ -45,7 +45,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	if r.supervisor == nil {
 		return errors.New("merge-forward message executor has no claim supervisor")
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}

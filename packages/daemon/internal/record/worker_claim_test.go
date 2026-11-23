@@ -43,31 +43,34 @@ func TestWorkerClaimIsTheClaimOfTheRolesStep(t *testing.T) {
 	}
 }
 
-// A role that stands at two steps has a row for each, and a reader with no walk reads the row whose
-// entry was raised last: the row of the step the role works now, or worked last. After a return to
-// step 1, that is step 1's row again, though step 3's entry is the higher number. Of two entries
-// raised at one moment the higher one wins, and a row no entry was raised on loses to one that was.
-// The claim of the role's worker is that row's (WorkerClaim).
-func TestARolesRowNowIsTheRowWhoseEntryWasRaisedLast(t *testing.T) {
+// A role that stands at two steps has a row for each, and a reader with no walk reads the row with
+// the highest entry: the row of the step the role works now, or worked last, since a step's start
+// raises its entry above every row of its role. After a return to step 1, that is step 1's row
+// again, raised above step 3's. A row no entry was raised on loses, and of two rows on one entry,
+// which only a release before that rule wrote, the later step wins. The claim of the role's worker
+// is that row's (WorkerClaim).
+func TestARolesRowNowIsTheRowWithTheHighestEntry(t *testing.T) {
 	const first, second claim.Token = "legion-legion-infra-12-implementer", "legion-legion-infra-12-reviewer"
-	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
 	for _, tc := range []struct {
 		name  string
 		rows  []PhaseRow
 		place int
 	}{
-		{name: "the later step's entry was raised last", place: 3, rows: []PhaseRow{
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 1, EntryRaisedAt: at(1)},
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
-		{name: "a return raised the earlier step's entry last", place: 1, rows: []PhaseRow{
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 2, EntryRaisedAt: at(4)},
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
-		{name: "two entries raised at one moment", place: 3, rows: []PhaseRow{
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 1, EntryRaisedAt: at(1)},
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(1)}}},
+		{name: "the later step's entry is the highest", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 1},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
+		{name: "a return raised the earlier step's entry above it", place: 1, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 4},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
 		{name: "a row no entry was raised on loses", place: 3, rows: []PhaseRow{
 			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first},
-			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3, EntryRaisedAt: at(3)}}},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
+		{name: "two rows on one entry, the earlier step read first", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 3},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
+		{name: "two rows on one entry, the later step read first", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 3}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := PhaseRowOf(tc.rows, claim.RoleImplementer); got.StepPlace != tc.place {

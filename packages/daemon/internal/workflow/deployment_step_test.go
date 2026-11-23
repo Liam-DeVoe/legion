@@ -43,19 +43,39 @@ func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 // stepHead is the commit every completion of these tests reports.
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
+// workerOr is the claim role's phases row of key now names on the step it runs, the claim a real
+// route's grant carries (the step's worker), or fallback where the row runs no step or names no
+// claim: a completion from any other claim of the role is refused (HANDOFF_NOT_THE_STEPS_WORKER).
+// The row now is the role's row with the highest entry (record.PhaseRowOf), since a role that
+// stands at two steps keeps a row for each.
+func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
+	t.Helper()
+	var token string
+	if err := pool.QueryRow(t.Context(), `select coalesce((select claim from phases
+		where issue = $1 and role = $2 and step_task <> '' and claim <> ''
+		order by entry desc, step_task desc, step_place desc limit 1), '')`, key, string(role)).Scan(&token); err != nil {
+		t.Fatalf("read the worker on %s's %s step: %v", key, role, err)
+	}
+	if token == "" {
+		return fallback
+	}
+	return claim.Token(token)
+}
+
 // stepReports applies role's completion of key at its generation 1 with verdict ("" for none),
-// summary and returnTo (0 for none), as the route hands it to the engine, and fails the test on a
-// refusal; handoffRecord is the handoff record it names ("" for none). It names the claim of the
-// agent the role names, as the route names the claim whose grant reported, which the completion
-// writes on the step's row and the claim of the role's worker is then read from (record.WorkerClaim).
+// summary and returnTo (0 for none), as the route hands it to the engine, from the step's worker
+// (workerOr), and fails the test on a refusal; handoffRecord is the handoff record it names (""
+// for none). Where the role's row names no worker yet, it names the claim of the agent the role
+// names, as the route names the claim whose grant reported, which the completion writes on the
+// step's row and the claim of the role's worker is then read from (record.WorkerClaim).
 func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role, verdict, summary, handoffRecord string, returnTo int) {
 	t.Helper()
 	agent, err := claim.AgentToken("legion", key, claim.Agent(role))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: agent, Summary: summary, Commit: stepHead,
-		Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
+	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: workerOr(t, pool, key, role, agent),
+		Summary: summary, Commit: stepHead, Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
 	if result := applyFacts(t, pool, engine)(string(role)+"-"+verdict+"-"+handoffRecord+"-"+summary, fact); result.Refusal != nil {
 		t.Fatalf("the %s's completion of %s was refused: %+v", role, key, result.Refusal)
 	}
@@ -151,10 +171,12 @@ func lastEndOfStep(t *testing.T, pool *pgxpool.Pool, key string, step int) recor
 }
 
 // Two steps of roles the deployment defines are two places of one phase: in `implementer checker
-// linter` the checker's pass starts the linter, the issue stays at step with the linter running, a
-// late completion of the checker moves nothing, and the linter's fail naming step 2 starts the
-// checker again. In `implementer checker linter critic`, the critic's fail naming step 3 starts the
-// linter again, and the critic's step ends failed, returned to 3.
+// linter` the checker's pass starts the linter, the issue stays at step with the linter running, the
+// linter's row and the record of its step name the linter's own claim and not the checker's (the
+// place the task stands at, not the first place that runs as step), a late completion of the
+// checker moves nothing, and the linter's fail naming step 2 starts the checker again. In
+// `implementer checker linter critic`, the critic's fail naming step 3 starts the linter again, and
+// the critic's step ends failed, returned to 3.
 func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 	types := map[string]string{"checker": "testing", "linter": "testing", "critic": "review"}
 
@@ -171,6 +193,22 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 		}
 		if starts := roleStartsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
 			t.Fatalf("the linter's starts = %+v, want one", starts)
+		}
+		linter, err := stepClaim(root, root.Key, "linter")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := workerOr(t, pool, root.Key, "linter", ""); got != linter {
+			t.Fatalf("the linter's row names the claim %q, want the linter's own, %q", got, linter)
+		}
+		var started []string
+		for _, write := range writesAt(stepWrites(t, pool, root.Key), "step", 3) {
+			if isStart(write) {
+				started = append(started, write.Agent)
+			}
+		}
+		if len(started) != 1 || started[0] != string(linter) {
+			t.Fatalf("the starts of step 3 name the agents %q, want one, the linter's claim %q", started, linter)
 		}
 
 		fact := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: "checker", Claim: "checker-claim", Summary: "Checked again.", Commit: stepHead, Verdict: "pass"}

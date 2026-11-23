@@ -314,3 +314,102 @@ func TestANumberedNameOnlyAgentsWithNoKeyHeldIsGivenAgain(t *testing.T) {
 		})
 	}
 }
+
+// A step names the agent its row holds, and no other: a row with no name has none. A step of the
+// key owner has no name whatever it holds: its agent is the tree's architect, whose token names
+// the tree, not the issue.
+func TestAStepNamesTheAgentItsRowHolds(t *testing.T) {
+	if got := (PlanStep{Role: "reviewer"}).AgentName(); got != "" {
+		t.Errorf("AgentName = %q, want none: the row names no agent", got)
+	}
+	if got := (PlanStep{Role: "acceptance", AgentKey: "owner", Agent: "acceptance"}).AgentName(); got != "" {
+		t.Errorf("AgentName = %q, want none: the owner is the tree's architect", got)
+	}
+	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
+		t.Errorf("AgentName = %q, want the name the row holds", got)
+	}
+}
+
+// ofGeneration is steps as rows of generation gen of an issue's plan.
+func ofGeneration(gen uint64, steps []PlanStep) []PlanStep {
+	rows := make([]PlanStep, len(steps))
+	for i, step := range steps {
+		step.Generation = gen
+		rows[i] = step
+	}
+	return rows
+}
+
+// agentNames is the name of each step of named, in order.
+func agentNames(named []PlanStep) []claim.Agent {
+	got := make([]claim.Agent, len(named))
+	for i, step := range named {
+		got[i] = step.Agent
+	}
+	return got
+}
+
+// A key's name is its newest: rows of an earlier generation that named it otherwise do not move it
+// within a generation. The project's default steps name key a for its first role, implementer, with
+// no earlier rows (defaultRows); the owner's version of that generation keeps that name, and not the
+// name tester that key a had in generation 1.
+func TestAKeysNameIsItsNewestAcrossGenerations(t *testing.T) {
+	first := ofGeneration(1, NameAgents(nil, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "implementer"},
+	}))
+	defaults := ofGeneration(2, NameAgents(nil, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	}))
+	earlier := append(slices.Clone(first), defaults...)
+	got := NameAgents(earlier, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "tester", AgentKey: "a"},
+		{Task: "t", Position: 3, Role: "reviewer"},
+	})
+	if want := []claim.Agent{"implementer", "implementer", "reviewer"}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q: key a keeps the name its generation's default steps gave it", agentNames(got), want)
+	}
+}
+
+// Rows of the key owner in earlier name no agent: the owner's step of a later version still has no
+// name, and no other key or step takes a name from the owner's rows.
+func TestTheOwnersEarlierRowsNameNoAgent(t *testing.T) {
+	earlier := ofGeneration(1, NameAgents(nil, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer"},
+		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
+	}))
+	earlier[1].Agent = "acceptance"
+	got := NameAgents(earlier, nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Task: "t", Position: 2, Role: "acceptance", AgentKey: "owner"},
+	})
+	if want := []claim.Agent{"implementer", ""}; !slices.Equal(agentNames(got), want) {
+		t.Fatalf("the names = %q, want %q: the owner has no name whatever its earlier rows hold", agentNames(got), want)
+	}
+}
+
+// A step's token is the tree's architect's for a step of the key owner, whose agent has no name on
+// the issue, and the token of its agent's name on the issue otherwise, so the steps of one key are
+// one claim. A name outside the agent grammar has no token.
+func TestStepTokenIsTheTreeArchitectsForTheOwnerAndItsAgentsOtherwise(t *testing.T) {
+	for _, tc := range []struct {
+		step PlanStep
+		want claim.Token
+	}{
+		{PlanStep{Task: "t", Position: 1, Role: "implementer", AgentKey: "a", Agent: "implementer"}, "legion-legion-legion-209-implementer"},
+		{PlanStep{Task: "t", Position: 2, Role: "tester", AgentKey: "a", Agent: "implementer"}, "legion-legion-legion-209-implementer"},
+		{PlanStep{Task: "t", Position: 3, Role: "reviewer", Agent: "reviewer"}, "legion-legion-legion-209-reviewer"},
+		{PlanStep{Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"}, "legion-legion-legion-208-architect"},
+	} {
+		got, err := StepToken("legion", "LEGION-209", "LEGION-208", tc.step)
+		if err != nil || got != tc.want {
+			t.Errorf("StepToken(step %d) = %q, %v; want %q", tc.step.Position, got, err, tc.want)
+		}
+	}
+	if got, err := StepToken("legion", "LEGION-209", "LEGION-208", PlanStep{Task: "t", Position: 1, Role: "implementer", Agent: "Implementer"}); err == nil {
+		t.Errorf("StepToken of a step named outside the agent grammar = %q, want a refusal", got)
+	}
+}

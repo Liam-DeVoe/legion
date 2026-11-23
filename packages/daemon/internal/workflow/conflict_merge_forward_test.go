@@ -98,7 +98,7 @@ func mergeForwardMessages(t *testing.T, pool *pgxpool.Pool) []record.MergeForwar
 // seededClaim is the claim of role's step that seedConflictIssue leaves, which a merge-forward
 // message to role names (record.MergeForwardMessage.Claim): the issue runs no step of a plan, so
 // the claim the record gives each role's step is the role's own (record.WorkerClaim).
-func seededClaim(t *testing.T, _ phase.Phase, role claim.Role) claim.Token {
+func seededClaim(t *testing.T, role claim.Role) claim.Token {
 	t.Helper()
 	return claim.Token(token(t, "LEGION-208", role))
 }
@@ -249,10 +249,10 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 	if asked == nil || asked.Head != conflictHead || asked.Base != "main" || asked.Phase != at || asked.Why != why || asked.Landed != "" || asked.AskedAt.IsZero() {
 		t.Fatalf("the record's merge forward = %+v, want %s onto main in %s for %s, not landed", asked, conflictHead, at, why)
 	}
-	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: seededClaim(t, at, claim.RoleImplementer), Step: record.MergeForwardAsk,
+	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Step: record.MergeForwardAsk,
 		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}}
 	if hold != "" {
-		want = append(want, record.MergeForwardMessage{Role: hold, Claim: seededClaim(t, at, hold), Step: record.MergeForwardHold, Head: conflictHead,
+		want = append(want, record.MergeForwardMessage{Role: hold, Claim: seededClaim(t, hold), Step: record.MergeForwardHold, Head: conflictHead,
 			Base: "main", Phase: at, PullRequest: 42, Why: why})
 	}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
@@ -607,7 +607,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 			if got := issuePhase(t, pool); got != phase.Accepting {
 				t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
 			}
-			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: seededClaim(t, phase.Accepting, claim.RoleImplementer),
+			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer),
 				Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Accepting, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting is the architect's", got)
@@ -681,7 +681,7 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 			t.Fatalf("after the implementer's completion the issue is in %s, want testing: its completion stands", got)
 		}
 		asked := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
-			return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
+			return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
 				PullRequest: 42, Why: record.ConflictCheckNotGreen}
 		}
 		want := []record.MergeForwardMessage{asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing),
@@ -875,7 +875,7 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
-		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Landed: forwardHead,
+		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, role), Step: step, Head: conflictHead, Landed: forwardHead,
 			Base: "main", Phase: at, PullRequest: 42, Why: record.ConflictMergeNext}
 	}
 	for _, tc := range []struct {

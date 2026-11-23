@@ -27,7 +27,7 @@ import (
 //
 // (c) lateReport itself, asked of each role as a report of the step the stop ended
 // (stoppedStepReported), refuses the checker's and answers nil for the linter's: the linter's own
-// place, step 2, is not where the task stopped (Walk.placeOfRole against Walk.Place).
+// place, step 2, is not where the task stopped (Walk.runPlace of the linter's row against Walk.Place).
 func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -80,8 +80,16 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				refusal, err = engine.lateReport(ctx, tx, *issue, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
-					phase.Step, stoppedStepReported)
+				w, err := engine.walk(ctx, tx, *issue)
+				if err != nil {
+					return err
+				}
+				rows, err := engine.store.Phases(ctx, tx, root.Key)
+				if err != nil {
+					return err
+				}
+				refusal, err = engine.lateReport(ctx, tx, *issue, w, intake.HandoffComplete{Issue: root.Key, Role: role, Claim: token, Generation: issue.Generation},
+					phase.Step, stoppedStepReported, w.completionRow(rows, role, 0, false, record.StandsAt(*issue)))
 				return err
 			})
 			return refusal

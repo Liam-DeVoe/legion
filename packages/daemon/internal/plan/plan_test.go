@@ -87,16 +87,15 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 }
 
 // A stored step names its agent by one rule, which the record and the store both read: the name
-// stored with the step, or, on a row a release before the stored names wrote, its role, which
-// named its agent then. A step of the key owner names none whatever it holds: its agent is the
-// tree's architect, whose token names the tree, not the issue.
+// stored with the step, and none where it holds none. A step of the key owner names none whatever
+// it holds: its agent is the tree's architect, whose token names the tree, not the issue.
 func TestAStoredStepNamesItsAgent(t *testing.T) {
 	for _, tc := range []struct {
 		step   Step
 		stored string
 		want   string
 	}{
-		{Step{Role: "reviewer"}, "", "reviewer"},
+		{Step{Role: "reviewer"}, "", ""},
 		{Step{Role: "acceptance", Key: "owner"}, "", ""},
 		{Step{Role: "acceptance", Key: "owner"}, "acceptance", ""},
 		{Step{Role: "tester", Key: "a"}, "implementer", "implementer"},

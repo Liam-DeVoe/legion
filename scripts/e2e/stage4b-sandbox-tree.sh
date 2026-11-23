@@ -319,8 +319,9 @@ unset field
 # (internal/runtime/sandbox/issue_suspend.go).
 deleted_msg="sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned"
 # How long a planner the driver has told to plan gets to finish: before its handoff it runs its two
-# model-backed plan checks, the gap analyst and up to three plan-review rounds (each a subagent
-# call), so planning takes a whole loop of its own (wait_for_phase).
+# model-backed plan checks, the gap analyst and as many plan-review rounds as its plan needs (each a
+# subagent call; the planner's prompt sets no round limit), so planning takes a whole loop of its
+# own (wait_for_phase), and 2700 s is this proof's bound on it.
 plan_seconds=2700
 # One path for every run on the devbox holding this identity: today's single fixed path for the
 # default identity, so a default run collides with another default run exactly as before, and a
@@ -4840,6 +4841,9 @@ notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" archite
 on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
 [ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
+# The request for changes ends the round whether or not the reviewer has completed (workflow's
+# roundRejected), so the reviewer's handoff record is waited for, within a turn's budget, first.
+on_tree "$tree1" until_true "$phase_seconds" "the reviewer's round 1 handoff record on $tree1" role_handoff_recorded "$tree1" reviewer
 assert_handoff_record "$tree1" reviewer reviewing 1
 assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||

@@ -217,7 +217,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-  "write this phase's handoff), " +
+  "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
+  "completing), " +
   "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
@@ -252,7 +253,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
   "steps its task runs, with `implementer` among them and the tester, the reviewer and `acceptance:owner` after it: Legion's " +
   "`planner implementer tester reviewer acceptance:owner`, a role of the deployment, or a role a `plan_role` block of the document " +
-  "defines, whose id is the role's name, whose `type` and `model` are its type and its model and whose text is its prompt; a " +
+  "defines, whose id is the role's name, whose `type` and `model` are its type and its model and whose text is its prompt; " +
+  "a step may carry a key after its role: acceptance carries `owner` and no other, any other role any key but `owner` or none, " +
+  "and the steps of one key run as one agent in one claim and one session (`implementer:a tester:a`); a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -315,8 +318,11 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
   "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
   "controller's report issue's icebox, because that issue holds no work. " +
-  "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+  "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+  "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
+  "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+  "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
+  "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
   "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
   "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
@@ -502,6 +508,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
+    claim: {
+      type: "string",
+      description:
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does",
+    },
   },
   required: ["op"],
   additionalProperties: false,
@@ -2154,6 +2165,38 @@ test("the controller reads the state without a grant and sets an issue's status 
     "freshSession",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
   ]);
+  // A claim named by its token (contract 222), another claim of the role than the step's worker,
+  // is sent as named, and only when named; compact takes it the same way.
+  await run({
+    op: "fresh_session",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
+  await run({
+    op: "compact",
+    issue: "LEGION-209",
+    role: "tester",
+    claim: "legion-legion-legion-209-tester",
+  });
+  expect(calls.at(-1)).toEqual([
+    "compact",
+    {
+      grantId: "controller-grant-1",
+      issue: "LEGION-209",
+      role: "tester",
+      claim: "legion-legion-legion-209-tester",
+    },
+  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2168,7 +2211,11 @@ test("the controller reads the state without a grant and sets an issue's status 
     [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
     [
       { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
-      'fresh_session does not accept field "status"; it takes issue, role',
+      'fresh_session does not accept field "status"; it takes issue, role, claim',
+    ],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "tester", claim: " " },
+      "fresh_session's claim is a claim token",
     ],
     [
       { op: "read_state", to: "planning" },
@@ -2200,7 +2247,14 @@ test("the controller reads the state without a grant and sets an issue's status 
     isError: true,
   });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+  expect(minted).toEqual([
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+    "ses_controller",
+  ]);
 });
 
 // Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
@@ -2238,6 +2292,36 @@ test("read_state's summary lists the claim of a role of the deployment under its
     "merger",
     "checker",
   ]);
+});
+
+// Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
+// summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
+// both turn times and its token, marks it as another claim of that role, and names the token
+// because fresh_session and compact reach that claim only by it (their `claim`).
+test("read_state's summary lists another claim of a role after the workers of its issue", async () => {
+  const state = stateOf92Issues(1);
+  const running = state.issues["INFRA-100"];
+  const tester = running?.workers?.tester?.claim;
+  if (running === undefined || tester === undefined) {
+    throw new Error("INFRA-100 lacks its tester");
+  }
+  const claimToken = "legion-acme-infra-100-tester";
+  running.otherClaims = [
+    { role: "tester", claim: { ...tester, token: claimToken, state: "suspended" } },
+  ];
+  const { daemon } = recordingDaemon({ state });
+  const summary = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
+  const under = text.split("\n").filter((line) => line.startsWith("  "));
+  expect(under.at(-1)).toBe(
+    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"} claim ${claimToken}`
+  );
 });
 
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the

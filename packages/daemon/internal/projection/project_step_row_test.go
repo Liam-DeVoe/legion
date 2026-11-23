@@ -12,11 +12,11 @@ import (
 )
 
 // A role that stands at two steps of a task has a row for each, and the state serves its worker
-// from its row now, the one whose entry was raised last (record.PhaseRowOf), as the admission pass
+// from its row now, the one with the highest entry (record.PhaseRowOf), as the admission pass
 // weighs it: in `implementer:a reviewer implementer:a` at step 3, the row of step 3, at its entry,
-// with no report yet; after a return to step 1, the row of step 1 again, though step 3's row holds
-// a report and the higher entry. Before, the served worker was the role's last row in the store's
-// order, step 3's at both places, and the served entry its first row's.
+// with no report yet; after a return to step 1, the row of step 1 again, which the return raised
+// above step 3's, though step 3's row holds a report. Before, the served worker was the role's last
+// row in the store's order, step 3's at both places, and the served entry its first row's.
 func TestTheStateServesARolesRowNow(t *testing.T) {
 	implementer := claim.Token("legion-legion-legion-208-implementer")
 	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }

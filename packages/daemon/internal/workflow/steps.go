@@ -271,28 +271,24 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	return true, e.enqueue(ctx, tx, issue, write)
 }
 
-// reportEndedStep writes report, the handoff role's completion of at named, onto the record of
-// the run of at's step that ended before that completion landed: a review the review event moved
-// on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
-// record's report is the handoff the ending role's completion named, whichever of the two lands
-// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt):
-// the place that runs as at, and at step the step role runs, nearest where the task stands
-// (Walk.placeRunning), since a role can stand at two steps and the issue has left the one this
-// completion is of, and no start of it came since (handoff's current).
+// reportEndedStep writes report, the handoff a completion of at named, onto the record of the run
+// of at's step that ended before that completion landed: a review the review event moved on, whose
+// end the transition wrote with no report, since the reviewer had not completed yet. A record's
+// report is the handoff the ending role's completion named, whichever of the two lands first. The
+// run is the latest of the place of the step whose run row holds (Walk.runPlace), row being the
+// role's row of the run the completion reports (Walk.completionRow): a role can stand at two steps,
+// and the issue has left the one this completion is of, which its served entry names, wherever the
+// task stands now, and no start of it came since (handoff's current). w is the walk of issue's run.
 // The write carries the run's identity and the report alone, and Dispatch writes each field once,
 // so it and the end merge in either order (record.StepRecord). A completion that names no handoff
 // writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
 // — none ran, one is open, or one an earlier release started after a rollback, whose record this
 // release has not written — nor a record key that is no issue key.
-func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role, report string) error {
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, row record.PhaseRow, report string) error {
 	if report == "" {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	place, ok := w.placeRunning(at, role)
+	place, ok := w.runPlace(row, at)
 	if !ok {
 		return nil
 	}
@@ -329,13 +325,13 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 		agent, err := e.startAgent(ctx, tx, issue, at)
 		return agent, time.Time{}, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, worker)
+	row, err := e.phaseRow(ctx, tx, issue, worker)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	if at == phase.Merging {
 		// The retro's completion is recorded on the row of the role that works the retro.
-		retro, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(phase.Retro))
+		retro, err := e.phaseRow(ctx, tx, issue, phase.RoleFor(phase.Retro))
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -380,28 +376,22 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
-// role is role: the one function that makes the token of a step's agent, which each entry takes
-// (enter) and writes to the step's phases row (record.PhaseRow.Claim) and to its step record
-// (startStep). A step of the key owner is the tree's architect's, as the accepting step's is
-// (startAgent). Where AgentAt names an agent, it is that agent's token (claim.AgentToken), so the
-// steps of one key are one claim; where it names none — the merge, and every place of a run with no
-// plan rows — it is the role's own token (R20).
+// role is role, which each entry takes (enter) and writes to the step's phases row
+// (record.PhaseRow.Claim) and to its step record (startStep). Where the walk holds a step for place
+// (stepAt), it is that step's token (record.StepToken, the one rule of it): a step of the key owner
+// is the tree's architect's, as the accepting step's is (startAgent), and every other step's is its
+// agent's (claim.AgentToken), so the steps of one key are one claim. Where it holds none — the
+// merge, and every place of a run with no plan rows — it is the role's own token (R20).
 func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
-	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
-		step := w.Steps[place.Position-1]
-		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
-			return stepClaim(issue, issue.Tree, claim.RoleArchitect)
-		}
-	}
-	name := w.AgentAt(place)
-	if name == "" {
+	step, ok := w.stepAt(place)
+	if !ok {
 		return stepClaim(issue, issue.Key, role)
 	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
 	}
-	return claim.AgentToken(project, issue.Key, name)
+	return record.StepToken(project, issue.Key, issue.Tree, step)
 }
 
 // implementationAgent is the agent that does the implementation work of issue's task where the

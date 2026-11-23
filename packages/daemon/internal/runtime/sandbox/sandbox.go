@@ -127,9 +127,15 @@ type Runtime struct {
 	actsAs                  runtime.ActsAs
 	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
 	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
-	// files may not hold its credential yet. A runtime that restarted holds it empty. Guarded by
-	// launchedMu.
+	// files may not hold its credential yet. A runtime that restarted holds it empty. launching
+	// counts, for each such slot, the launches into it in flight, from just before a launch into a
+	// pod it keeps writes the slot's credential to the end of its start (markSlotLaunch), and
+	// updating is the refresher's write of the slot on its way to the API server, if one is
+	// (refreshUpdate): no refresh writes a slot a launch is in flight in, so the slot holds the
+	// token the start names until the start ends. All three are guarded by launchedMu.
 	launchedApp          map[slotKey]string
+	launching            map[slotKey]int
+	updating             map[slotKey]chan struct{}
 	launchedMu           sync.Mutex
 	controllerCredential runtime.ControllerCredential
 	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
@@ -447,7 +453,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		sessions:    map[claim.Token]launchedSession{},
-		launchedApp: map[slotKey]string{},
+		launchedApp: map[slotKey]string{}, launching: map[slotKey]int{}, updating: map[slotKey]chan struct{}{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -925,18 +931,12 @@ func podContainer(role claim.Role) string {
 	return runtime.IssuePodContainer
 }
 
-// slotOf is the slot of its pod that token's process runs in, named in the type the pod's code
-// names a slot by (roleVolume, roleDir, roleSecretName): the name of the agent a claim of an issue
-// ends in (claim.Token.Cut), which can be no role, and RoleController for the controller's token.
-// It is the one place that picks a slot, and it reads no role off the token: a claim's role is
-// the one its record holds. A token that is neither has no slot, "".
-func slotOf(token claim.Token) claim.Role {
-	if token.IsController() {
-		return claim.RoleController
-	}
-	_, agent, _ := token.Cut()
-	return claim.Role(agent)
-}
+// launcherOf is the role of the pod's launcher that serves slot, the slot a claim's process runs in
+// (claim.Token.Slot): a pod runs one launcher of each role of its kind (podKind.roles), and the
+// launcher of a role serves the slot of that role's name, with that role's Secret, volumes and
+// address record. A slot no role of the pod is named for is one the pod was built without
+// (runtime.PodLacks).
+func launcherOf(slot claim.Agent) claim.Role { return claim.Role(slot) }
 
 // checkLocator refuses a locator this runtime did not mint.
 func (r *Runtime) checkLocator(loc runtime.Locator) error {

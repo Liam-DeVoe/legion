@@ -183,7 +183,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_CLAIM", "the daemon supervises no claim for this grant")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role)
+	position, err := s.handoffPosition(r.Context(), grant.Issue)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
@@ -330,18 +330,25 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
+	// Whether the role works the phase the issue stands in is read once (record.Issue.RoleAt: at
+	// step, the role of the running step, so a role the deployment defines works only its own step),
+	// for the entry fence's row and for the phase this completion is of below.
+	works := issue.RoleAt(issue.Phase) == grant.Role
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
-	// workflow judges the same rule again on the row its own transaction reads.
-	if refusal := intake.EntryFence(*issue, grant.Role, entry, position.entry, position.entryMovedBack, position.otherStepsEntry, req.Commit, position.pullRequest,
-		c.Pending); refusal != nil {
+	// workflow judges the same rule again on the row its own transaction reads. The row is the run
+	// the completion is of (completionPosition.run): where the role works the issue's phase, its
+	// row where the task stands, and otherwise the row of the entry it serves, so a late report of a
+	// role's later step is held to that step's run, whichever place the task returned to since.
+	run := position.run(grant.Role, entry, works)
+	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
+		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
-	// at step, the role of the running step, so a role the deployment defines is current only at
-	// its own step), the phase the role left otherwise (phase.LeftBy), and the issue's for the
-	// architect, which leaves none. The record a phase with a handoff ends with is read back and
+	// The phase this completion is of is the issue's where the role works it, the phase the role
+	// left otherwise (phase.LeftBy), and the issue's for the architect, which leaves none. The
+	// record a phase with a handoff ends with is read back and
 	// held to the completion before anything is recorded: always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
 	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
@@ -349,7 +356,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.LeftBy(grant.Role, issue.Phase)
-	if issue.RoleAt(issue.Phase) == grant.Role {
+	if works {
 		of = issue.Phase
 	}
 	if of == "" {
@@ -414,7 +421,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// upgrade keeps its key.
 	//
 	// Where the task names the role at two places, the key ends with the place of the step the
-	// completion is of (`:p<place>`, completionPosition.place): the role's two steps run in one
+	// completion is of (`:p<place>`, completingRun.place): the role's two steps run in one
 	// pass, so the completion of the second can report what the first did, one commit or one
 	// record and one verdict, and must still be a fact of its own, which the workflow judges. A
 	// role at one place keeps the key it had.
@@ -423,6 +430,13 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
 	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
+	//
+	// Who completed is in the key by its role, and by its claim's agent where that is not the role
+	// (completionWho): two claims of one issue can hold one role — the agent of a key on a step of
+	// another role, beside that role's own claim of an earlier version of the plan — and the same
+	// report from each is a fact of its own, so the workflow's refusal of the one recorded under the
+	// key never answers the other's completion as its duplicate. A role's own claim keeps the key
+	// it had.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -431,9 +445,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
-	if position.place > 0 {
-		eventID += fmt.Sprintf(":p%d", position.place)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, completionWho(grant), issue.Phase, counted, reported, req.Verdict)
+	if run.place > 0 {
+		eventID += fmt.Sprintf(":p%d", run.place)
 	}
 	returnTo := 0
 	if req.ReturnTo != nil {
@@ -478,6 +492,17 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
 	return
+}
+
+// completionWho is who completed, as a completion's key names it (answerCompletion): the grant's
+// role, and `@<agent>` after it where the grant's claim is an agent of another name than the role,
+// a keyed agent on that role's step.
+func completionWho(grant credential.Grant) string {
+	who := string(grant.Role)
+	if _, agent, ok := grant.Claim.Cut(); ok && string(agent) != string(grant.Role) {
+		who += "@" + string(agent)
+	}
+	return who
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion

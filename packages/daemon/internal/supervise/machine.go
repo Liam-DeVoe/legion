@@ -199,6 +199,11 @@ type Claim struct {
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
 	// whose let-gos ended nothing worth telling records none.
 	EndedWork EndedWork
+	// RoleChange is the record that the claim took another role (Rerole) and that its agent has
+	// still to be told so, which the first prompt its agent takes in the new role tells
+	// (roleChangedTask). It is persisted, since that prompt is a relaunch and can be a daemon
+	// restart away. A claim that never took another role records none.
+	RoleChange RoleChange
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
@@ -1071,6 +1076,15 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
+	// PodRefused is told when a launch is refused because the claim's issue pod cannot run it
+	// until that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate), at
+	// the first such refusal and hourly while that pod stands (podRefused): the claim is suspended,
+	// charged nothing, and runs nothing until another pod stands. pod is the refusing pod's uid.
+	// queue is whether no outbox start stands behind the launch (a relaunch of the machine's own,
+	// an operator's resume), so the daemon queues a start of the claim, which resumes it once the
+	// pod is replaced. Nil tells no one. It is called inside the machine's decision and returns at
+	// once.
+	PodRefused func(c Claim, pod, detail string, queue bool)
 	// SessionGone is told the Envoy session a claim recorded once no process stands behind it,
 	// once per process end (sessionGone says where and when, and why then). It is the daemon's
 	// clean stop of that session's registration, which makes the listener read it `gone` at once
@@ -1495,15 +1509,17 @@ type Machine struct {
 	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
 	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
-	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
-	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirm reads to mark each record told, so a turn
-	// whose prompt went out before a record existed — the takeover of a process another runtime
-	// still runs, whose relaunch the pacing parks — tells nothing of it. It is set where the send
-	// goes out (startSend), and goes with the process (letGo) and, for the record of the let-go,
-	// with that record (recordEnd), since a newer record is words no earlier prompt carried. It is
-	// memory only: a daemon restarted inside the turn of such a prompt reads none (confirm).
+	// carried is which of the claim's three untold records a prompt this machine sent to the
+	// claim's current process carried the sentence of (sentences, Delivery.message): the session
+	// the claim abandoned, what its last let-go ended, and the other role it took, each marked only
+	// where the prompt's text carries that record's own sentence. It is what confirm reads to mark
+	// each record told, so a turn whose prompt went out before a record existed — the takeover of a
+	// process another runtime still runs, whose relaunch the pacing parks — tells nothing of it. It
+	// is set where the send goes out (startSend), and goes with the process (letGo) and, for the
+	// record of the let-go, with that record (recordEnd), since a newer record is words no earlier
+	// prompt carried. A role change needs no such clearing: only a claim that runs nothing takes
+	// one (Rerole), and its process took its marks with it. It is memory only: a daemon restarted
+	// inside the turn of such a prompt reads none (confirm).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -1597,6 +1613,14 @@ type Machine struct {
 	cancelStart    context.CancelFunc
 	startStopped   bool
 	storeFaultTold time.Time
+	// refusedPod is the uid of the issue pod the claim's last launch was refused on because that
+	// pod cannot run it until its update round or its release replaces it (podRefused), and
+	// podRefusedTold when the issue and the controller were last told of it (tellPodRefused).
+	// While that pod is the issue's pod, no launch is tried and nothing of the claim is written
+	// (podStillRefuses). Memory only: a daemon that restarts makes one more refused launch, which
+	// writes the claim once and records the pod again.
+	refusedPod     string
+	podRefusedTold time.Time
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -2733,7 +2757,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
 // nothing, and a start the session store could not answer is charged nothing and tried again
-// (startWaitsForStore). A launch that fails stops the process it
+// (startWaitsForStore). Nor is a launch the runtime refuses because the claim's issue pod cannot
+// run it until the pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): it
+// is charged nothing, keeps its refusal as the claim's last start failure, and is tried again at
+// the probe interval for as long as that pod stands. A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2792,6 +2819,9 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // session kept, and the start of the role's next work resumes it (startLeft).
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause, start) }
+	if err := m.podStillRefuses(); err != nil {
+		return err
+	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
@@ -2942,6 +2972,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt, start)
 		}
+		if errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			return m.podRefused(starting, err, start)
+		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
 			return m.promptRefused(ctx, starting, err)
@@ -2955,6 +2988,71 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		charged = true
 	}
+}
+
+// podRefusedReport is how often the issue and the controller are told, while the pod a claim's
+// launch was refused on still stands, that the claim cannot start (tellPodRefused).
+const podRefusedReport = time.Hour
+
+// podRefused is a launch the runtime refused because the claim's issue pod cannot run it until
+// that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate). Nothing of the
+// claim failed, so nothing is charged. A claim left launching would be live, which keeps both
+// release rules off the pod (workflow's IdleRelease and UnownedPodRelease), and its retries would
+// write it at every try, so the pod would never be quiet. So the process the launch let go is
+// stopped, the claim is suspended as the daemon's, in one write, and the pod the refusal names
+// (runtime.AwaitsPodUpdate) is remembered: while it stands, no launch is tried and nothing is
+// written (podStillRefuses). The issue and the controller are told at once and hourly after, and a
+// launch no outbox start stands behind (start names no generation: the machine's own relaunch, an
+// operator's resume) asks the daemon to queue a start of the claim, so that whatever replaces the
+// pod resumes it through the outbox's start.
+func (m *Machine) podRefused(ctx context.Context, cause error, start StartWork) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	var awaits runtime.AwaitsPodUpdate
+	if errors.As(cause, &awaits) {
+		m.refusedPod = awaits.Pod
+	}
+	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; the claim is suspended, charged nothing, until another pod stands",
+		err, "generation", m.claim.Generation, "pod", m.refusedPod)
+	m.podRefusedTold = time.Time{}
+	m.tellPodRefused(cause, start.Generation == 0)
+	return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
+}
+
+// podStillRefuses is the fence of every launch and resume of a claim whose last launch was refused
+// on refusedPod (podRefused): while that pod is still the issue's pod (runtime.IssuePodReader), it
+// answers that refusal again (runtime.AwaitsPodUpdate), before anything of the claim is written,
+// and the issue and the controller are told at most hourly. Once another pod stands, or none, or
+// the runtime reads no pod, the record is dropped and the launch goes on.
+func (m *Machine) podStillRefuses() error {
+	if m.refusedPod == "" {
+		return nil
+	}
+	if reader, ok := m.deps.Runtime.(runtime.IssuePodReader); ok {
+		if pod, read := reader.IssuePod(m.claim.Issue); read && pod == m.refusedPod {
+			err := runtime.AwaitsPodUpdate{Pod: pod, Reason: fmt.Sprintf("launch %s: the pod %s of %s, which refused its last launch, still stands",
+				m.claim.Token, pod, m.claim.Issue)}
+			m.tellPodRefused(err, false)
+			return err
+		}
+	}
+	m.refusedPod = ""
+	return nil
+}
+
+// tellPodRefused tells the issue and the controller that the claim cannot start until its pod is
+// replaced (Deps.PodRefused), at the first refusal and at most once an hour after it, as
+// tellStoreFault reports a store fault. queue is whether the daemon is to queue a start of the
+// claim, which only the report of a refused launch no outbox start stood behind asks.
+func (m *Machine) tellPodRefused(cause error, queue bool) {
+	if m.deps.PodRefused == nil {
+		return
+	}
+	now := m.deps.Clock.Now()
+	if !m.podRefusedTold.IsZero() && now.Sub(m.podRefusedTold) < podRefusedReport {
+		return
+	}
+	m.podRefusedTold = now
+	m.deps.PodRefused(m.current(), m.refusedPod, storetext.FarSideError(cause.Error()), queue)
 }
 
 // promptRefused is a start the runtime refused because the role's composed system prompt is larger
@@ -3607,6 +3705,29 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 func (a AbandonedSession) OfAnotherAgent(agent plan.AgentID) bool {
 	return agent != "" && a.Agent != "" && a.Agent != agent
 }
+
+// RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has
+// not yet been told so. The claim keeps its session, so the transcript its next generation resumes
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub accepts
+// for up to an hour; the first prompt the agent takes in its new role says that every such token
+// is no longer its to use and that its gh and git now act as the new role's App (roleChangedTask),
+// and a claim that holds no task is given a delivery of the daemon's own to say it
+// (queueRelaunch). From is the role the claim held before the first change not yet told, kept for
+// the log: a second change before that prompt leaves it, since the sentence names only the role
+// the claim holds then.
+type RoleChange struct {
+	From claim.Role `json:"from"`
+	// Told is whether a turn of the agent took a prompt that told it, and ToldBy the delivery whose
+	// confirmation told it, as confirm states, the way AbandonedSession's are: told twice is the
+	// harmless way round, where a sentence lost leaves the agent free to use a token of a role it
+	// no longer holds.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
+}
+
+// Tells is whether a prompt to this claim's agent must still say that the claim took another role:
+// it took one and no turn has taken a prompt that said so.
+func (r RoleChange) Tells() bool { return r.From != "" && !r.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
 // stands behind it. Three decisions tell it, each only once the process has ended: a death a probe

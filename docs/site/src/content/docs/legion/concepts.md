@@ -16,11 +16,11 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime each issue runs in a pod of its own, where every agent of that issue runs, from one
-  published worker image. Each agent talks to the daemon over a connection its pod dials back, and
-  a controller the daemon launches runs in a pod of its own. Under either runtime a phase
-  worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`). It does the
-  same work through the same `legion` tool and keeps its conversation the same way.
+  runtime the agents of one issue run in that issue's one pod, each in a slot of its own, from one
+  published worker image, and a controller the daemon launches runs in a pod of its own. Each agent
+  talks to the daemon over a connection its slot's launcher dials back. Under either runtime a
+  phase worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`). It does
+  the same work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
@@ -55,8 +55,8 @@ The bundle holds one directory per owner the App is installed on, one more per o
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
 An issue pod shows its roles the directories that both Apps' bundles hold.
-No directory holds a read-only token, so a role writes in every repository its App reaches,
-whichever owner holds it.
+No directory holds a read-only token, so a role writes in every repository its App reaches of
+each owner whose directory it is shown, whichever owner holds it.
 The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
 or, for a repository a configured rename moved, the directory of the owner it moved to.
 The controller's bundle is the one bundle of read-only tokens.
@@ -155,9 +155,10 @@ workflow, at a head that carries their merges.
 ## Phase workers
 
 The daemon starts each phase's worker itself, one phase at a time. It runs only the phases of the
-steps the issue's [plan](#the-plan-of-an-issue) names, in the order of those steps. Each agent keeps
-its session between its assignments until its issue leaves the workflow, so its next task reaches
-the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
+steps the issue's [plan](#the-plan-of-an-issue) names, in the order of those steps. An agent keeps
+its session between its assignments, across the roles of its steps, while its issue runs and
+after it leaves the workflow, so its next task reaches the same session. Under the Kubernetes
+runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
@@ -179,8 +180,10 @@ testing or review, and the change goes through the issue's steps after the imple
 the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
-reviewer's approval of the head ends the round whatever CI says at that commit, since the
-reviewer reads the code commit's checks on GitHub before it approves
+reviewer's approval of the head ends the round whatever the daemon reads of CI at that commit,
+once GitHub reports that head one the issue may advance on (a head GitHub holds blocked, on a
+check the repository requires, stays in `reviewing`), since the reviewer reads the code commit's
+checks on GitHub before it approves
 ([review signalling](#review-signalling)). What a red check does is reach the architect that owns
 the issue, the worker of the issue's current phase and the implementer, as one message naming each
 check and its conclusion; and hold the merge, where GitHub applies the base branch's own required
@@ -196,10 +199,11 @@ order the owner chooses. The plan defines each of its roles in a `plan_role` blo
 `:::plan_role{#prober type="testing" model="<a listed model>"}`, whose text is the role's prompt.
 The steps hold `implementer`, and each `tester`, `reviewer` and `acceptance:owner` step, the last
 the architect's own acceptance in `accepting`, stands after an `implementer` step, whose pull
-request it reads. A role may stand at two steps, of one agent or of two:
-`implementer reviewer implementer` runs step 3 in a second agent of the role implementer,
-`implementer-2`, in a session of its own. The owner writes the plan as the issue's `plan.md`
-document, with one `plan_task` block such as
+request it reads. Any other step may carry a key after its role (`implementer:a tester:a`), the
+steps of one key running as one agent in one claim and one session. A role may stand at two steps,
+of one agent or of two: `implementer reviewer implementer` runs step 3 in a second agent of the
+role implementer, `implementer-2`, in a session of its own. The owner writes the plan as the
+issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
@@ -483,8 +487,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
-  moves to is raised, so a completion the role sends for the phase it lost
-  still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
+  moves to is raised, so a completion the role sends for the phase it lost still names the entry
+  that phase gave it: the first completion of the run the move ended is recorded and moves nothing,
+  and any later one is refused `HANDOFF_NOT_CURRENT_PHASE`;
   `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of another entry than the role's phases row
   names, from a role whose phase the issue is no longer in, is answered

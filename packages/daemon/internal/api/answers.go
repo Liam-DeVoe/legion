@@ -323,6 +323,15 @@ var stateEnumeratedFields = []EnumeratedField{
 	// LEGION_CLAIM_STATES). The architect's view and each worker's carry the one field.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.state", Values: claimViewStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.state", Values: claimViewStates},
+	// An issue's other claims (api.Issue.OtherClaims, contract 222) carry the same claim view, so
+	// each of its enumerated fields is declared again under `otherClaims`. The key arrived at 222
+	// and a caller below it is served no `otherClaims` at all (shaping.go's withoutClaimTokens), so
+	// each list is recorded from that contract (arrivedWith).
+	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.state", Values: arrivedWith(strandedTokenContract, claimViewStates)},
+	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.updateState", Values: arrivedWith(strandedTokenContract, updateStates)},
+	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.failure.cause", Values: arrivedWith(strandedTokenContract, failureCauses)},
+	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.pendingCause", Values: arrivedWith(strandedTokenContract, failureCauses)},
+	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.pendingTask.phase", Values: arrivedWith(strandedTokenContract, workflowPhases)},
 	// `updateState` of a claim view, where the claim's update round stands
 	// (api.ClaimView.UpdateState). This change's own key, served down below its contract with
 	// the rest of the round report (shaping.go's withoutClaimRoundReport).
@@ -453,6 +462,18 @@ func valuesFrom[V ~string](since int, values ...V) []EnumeratedValue {
 		recorded = append(recorded, EnumeratedValue{Value: string(value), Since: since})
 	}
 	slices.SortFunc(recorded, func(a, b EnumeratedValue) int { return strings.Compare(a.Value, b.Value) })
+	return recorded
+}
+
+// arrivedWith is values as a field that arrived at contract carries them: each value recorded at
+// the later of its own arrival and the field's, since a field carries no value older than itself
+// (EnumeratedFields says why the earliest arrival of a list is its field's own). It is how a later
+// key path of a field already enumerated elsewhere takes that field's list.
+func arrivedWith(contract int, values []EnumeratedValue) []EnumeratedValue {
+	recorded := slices.Clone(values)
+	for i := range recorded {
+		recorded[i].Since = max(recorded[i].Since, contract)
+	}
 	return recorded
 }
 

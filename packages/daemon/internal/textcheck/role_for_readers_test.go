@@ -85,11 +85,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}: {calls: 1, tests: []string{"TestArchitectUnchangedByItsCompletionAtAdmitted"}},
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
-	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	// The retro's role and the merge's, each compared with the role whose place it reads; a task at
 	// no act reads the role's first place.
-	{file: "internal/record/record.go", fn: "RolePlace"}: {calls: 2, tests: []string{
+	{file: "internal/record/phase_rows.go", fn: "RolePlace"}: {calls: 2, tests: []string{
 		"TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands", "TestTwoCompletionsOfOneRoleInOnePassAreTwoFacts"}},
+	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{

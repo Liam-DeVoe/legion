@@ -770,7 +770,9 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "merged", CheckedHead: "merged", Failing: []string{}}); err != nil {
 			t.Fatalf("seed pull request: %v", err)
 		}
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
+		// The key LEGION-LINGER names no claims (claim.IsIssueKey), so its rows name none: a row
+		// names its claim by an agent's claim token or not at all (record's namedClaim).
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
 			t.Fatalf("seed implementer: %v", err)
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleMerger, Claim: "merger", Summary: "READY #85 at gen1 (approved at gen1) for " + child}); err != nil {
@@ -805,14 +807,16 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 		}
 	})
 
+	// The completions name no claim either: LEGION-LINGER names no claims, and a completion that
+	// names none is judged by its role (workflow's HANDOFF_NOT_THE_STEPS_WORKER rule passes it).
 	for _, step := range []struct {
 		id   string
 		fact intake.Fact
 	}{
 		{id: "gen2-register", fact: intake.GateRegistered{Issue: key, ArtifactID: artifact, Version: 1}},
 		{id: "gen2-approved", fact: intake.DispatchArtifact{Key: key, ArtifactID: artifact, Kind: intake.DispatchArtifactApproved, Version: 1}},
-		{id: "gen2-plan", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Claim: "planner", Summary: "planned", HandoffRecord: "gen2-plan", HandoffVersion: 1}},
-		{id: "gen2-implement", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "gen2-handoff", HandoffRecord: "gen2-implement", HandoffVersion: 4}},
+		{id: "gen2-plan", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Summary: "planned", HandoffRecord: "gen2-plan", HandoffVersion: 1}},
+		{id: "gen2-implement", fact: intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Summary: "implemented", Commit: "gen2-handoff", HandoffRecord: "gen2-implement", HandoffVersion: 4}},
 	} {
 		if result, err := intake.ApplyFact(context.Background(), pool, "api", step.id, step.fact, engine, admission); err != nil || result.Refusal != nil || result.Duplicate {
 			t.Fatalf("%s = %#v, %v", step.id, result, err)

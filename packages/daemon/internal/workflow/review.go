@@ -796,7 +796,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	reviewer, err := e.phaseRow(ctx, tx, *issue, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1402,7 +1402,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every
 		// phase a round can wait on GitHub in already owes one on a head move or a base push.
-		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		reviewer, err := e.phaseRow(ctx, tx, *issue, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}

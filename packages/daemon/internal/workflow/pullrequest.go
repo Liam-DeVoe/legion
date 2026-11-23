@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -204,7 +205,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		// askMergeState).
 		return intake.Result{}, nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 	if err != nil || !row.Completed() {
 		return intake.Result{}, err
 	}
@@ -287,7 +288,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		}
 		return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byPush)
 	case phase.Implementing:
-		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+		row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 		if err != nil || !row.Completed() {
 			return intake.Result{}, err
 		}
@@ -360,7 +361,7 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if issue.Phase != phase.Reviewing {
 		return nil
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	reviewer, err := e.phaseRow(ctx, tx, issue, claim.RoleReviewer)
 	if err != nil {
 		return err
 	}
@@ -692,7 +693,9 @@ func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, num
 // GitHub): the issue waits in implementing for a pull request record (implementationReady), and
 // nothing else tells anybody it is missing - the implementer's completion was applied with GitHub
 // unread, or the pull request it read was closed without merging since. The notice names the
-// issue, the repository, the branch and the handoff commit, and says what to do. It tells nothing
+// issue, the repository, the branch and the handoff commit, and the topic of the implementer to
+// tell: the claim that works the implementer's step (workerClaim), which a key's agent can be,
+// not a topic spelled from the role. It says what to do. It tells nothing
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge
 // told the architect (merged) and a completion moves the issue on it.
@@ -701,7 +704,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || issue == nil || issue.Phase != phase.Implementing {
 		return intake.Result{}, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	row, err := e.phaseRow(ctx, tx, *issue, claim.RoleImplementer)
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
@@ -709,9 +712,13 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}
+	worker, err := e.workerClaim(ctx, tx, *issue, claim.RoleImplementer)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pull-request-missing", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s's implementer completed at %s, and GitHub shows no open pull request on %s %s, so %s stays in implementing. "+
-			"Tell its implementer (envoy_publish to its role topic) to open the pull request from %s; the daemon records it and moves %s to testing once it is open. "+
+			"Tell its implementer (envoy_publish to `%s%s`) to open the pull request from %s; the daemon records it and moves %s to testing once it is open. "+
 			"When the work should not go on, decide %s's phase as for a pull request closed without merging.",
-			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, fact.Branch, issue.Key, issue.Key)})
+			issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch, issue.Key, notify.RoleTopicPrefix, worker, fact.Branch, issue.Key, issue.Key)})
 }

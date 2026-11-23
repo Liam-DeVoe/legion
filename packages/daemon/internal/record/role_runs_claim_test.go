@@ -57,3 +57,52 @@ func TestARoleRunCountsNoQueuedRowThatNamesAnotherClaim(t *testing.T) {
 		}
 	})
 }
+
+// Two keys of one role, issue and generation read together, as the stranded report reads its
+// batch: key a's claim works the tester's step and the tester's own claim of an earlier version
+// stands beside it. A queued start naming key a's claim is key a's run and not the other's, and a
+// start that names no claim, on an issue with no plan rows, is the run of the role's own claim,
+// which is the claim such a row reaches.
+func TestTwoKeysOfOneRoleReadTogetherEachKeepTheirOwnRun(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	keyed := claim.Token("legion-legion-legion-209-implementer")
+	own := claim.Token("legion-legion-legion-209-tester")
+	inTx(t, st, func(tx pgx.Tx) {
+		row, err := NewOutboxRow("LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester,
+			Claim: keyed, Generation: 1, Phase: phase.Testing}, time.Now())
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	})
+	keys := []RoleRunKey{
+		{Token: keyed, Issue: "LEGION-209", Role: claim.RoleTester, Generation: 1},
+		{Token: own, Issue: "LEGION-209", Role: claim.RoleTester, Generation: 1},
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		runs, err := records.RoleRuns(ctx, tx, keys)
+		must(t, err)
+		if queued := runs[keyed].Queued; len(queued) != 1 || queued[0].Request.Claim != keyed {
+			t.Fatalf("key a's run counts %+v, want the start that names it", queued)
+		}
+		if queued := runs[own].Queued; len(queued) != 0 {
+			t.Fatalf("the tester's own run counts %+v, want none: the start names key a's claim", queued)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		row, err := NewOutboxRow("LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester,
+			Generation: 1, Phase: phase.Testing}, time.Now())
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		runs, err := records.RoleRuns(ctx, tx, keys)
+		must(t, err)
+		if queued := runs[own].Queued; len(queued) != 1 || queued[0].Request.Claim != "" {
+			t.Fatalf("the tester's own run counts %+v, want the start that names no claim: no plan row names another worker", queued)
+		}
+		if queued := runs[keyed].Queued; len(queued) != 1 {
+			t.Fatalf("key a's run counts %+v, want its own start alone", queued)
+		}
+	})
+}

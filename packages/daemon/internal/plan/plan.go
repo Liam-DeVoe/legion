@@ -97,17 +97,13 @@ func (id AgentID) Key() (string, bool) {
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
 // step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's
 // agents for an issue pod's slots). A step of the key owner names none, since its agent is the
-// tree's architect, whose token names the tree and no name on the issue. A row a release before the
-// stored names wrote holds none and reads as its role: that release ran each role at most once in
-// a task and refused every key but the owner's, so its role named its agent.
+// tree's architect, whose token names the tree and no name on the issue. Every other step holds
+// its name: 20261117213545 named every step a release before the stored names wrote.
 func StoredAgentName(task string, place int, s Step, stored string) string {
-	switch {
-	case AgentOf(task, place, s).Owner():
+	if AgentOf(task, place, s).Owner() {
 		return ""
-	case stored != "":
-		return stored
 	}
-	return s.Role
+	return stored
 }
 
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
