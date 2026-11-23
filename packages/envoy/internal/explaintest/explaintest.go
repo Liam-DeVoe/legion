@@ -4,7 +4,9 @@
 // which index each index scan reads through, under which condition, which relations the plan
 // reads at all, how often each and under which subplan (Scans), every node with the conditions
 // it tests, what an analyzed plan measured of it, the rows its Filter and a join's Join Filter
-// removed each time it ran among them, and the shared buffers it hit and read (Nodes), and each
+// removed each time it ran among them, the shared buffers it and the nodes under it hit and
+// read, the position of the node it is directly under, the name of the subplan it begins (a
+// CTE's plan is `CTE <name>`) and the output list a VERBOSE plan prints of it (Nodes), and each
 // bitmap heap scan with the bitmap it reads its rows through (BitmapHeapScans). It also answers,
 // from the catalog, the first key column of a named index and whether a scan's condition names
 // it, which is what tells a read served by an index from one that reads the whole index and
@@ -45,8 +47,8 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // rows each answered, the rows an index-only scan fetched from the heap, and the rows its Filter
 // and a join's Join Filter removed each time it ran, all 0 in a plan explained without ANALYZE),
 // the shared buffers it and the nodes under it hit and read (0 in a plan explained without
-// BUFFERS), the CTE it scans, the alias the statement gives the relation it reads, and its
-// children.
+// BUFFERS), the CTE it scans, the alias the statement gives the relation it reads, the output
+// list a plan explained with VERBOSE prints of it (nil without VERBOSE), and its children.
 type planNode struct {
 	NodeType                string            `json:"Node Type"`
 	RelationName            string            `json:"Relation Name"`
@@ -65,6 +67,7 @@ type planNode struct {
 	SharedReadBlocks        float64           `json:"Shared Read Blocks"`
 	CTEName                 string            `json:"CTE Name"`
 	Alias                   string            `json:"Alias"`
+	Output                  []string          `json:"Output"`
 	Plans                   []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
@@ -80,6 +83,7 @@ func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
 		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
+		Parent: n.parent, SubplanName: n.SubplanName, Output: n.Output,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
 		HeapFetches:         n.HeapFetches,
@@ -247,8 +251,20 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 
 // Node is one node of a plan, whatever that node reads: its type, the relation, index and CTE
 // it names (each empty when the node names none), the subplan it runs under (empty: none, so
-// it runs with the plan rather than once per row of what drives it), the conditions it tests,
-// and what `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+// it runs with the plan rather than once per row of what drives it), where it sits in the tree,
+// the conditions it tests, what `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained
+// without ANALYZE, and what a VERBOSE plan says it outputs.
+//
+// Parent is the position in Nodes' answer of the node this one is directly under, -1 for the
+// root, so a caller can climb from any node to the root or gather every node under one.
+// SubplanName is the node's own "Subplan Name", the name of the subplan it begins: `CTE <name>`
+// for the plan of a CTE, `InitPlan <n>` or `SubPlan <n>` for an init plan or a subplan, and
+// empty for a node that begins none. It is not Subplan, which every node under a SubPlan
+// carries down from the node that began it: SubplanName is the beginning node's alone, under
+// whatever parent relationship it has, and a CTE's plan, which begins under the relationship
+// InitPlan, has a SubplanName and leaves Subplan empty. Output is the node's output list as a
+// plan explained with VERBOSE prints it, one expression per column in the plan's own text (a
+// text literal reads `'document'::text`), and nil in a plan explained without VERBOSE.
 //
 // Filter is the condition the node tests every row it reads by, IndexCond the one an index scan
 // reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
@@ -262,11 +278,20 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // Filter"), the rows removed over every loop divided by Loops and rounded to a whole number, and
 // 0 where the node prints none, as a node carrying no such filter does. Alias is the name the
 // statement gives the relation the node reads, which a condition of another node spells that
-// relation's columns with. SharedHitBlocks and SharedReadBlocks are the shared buffers the node
-// and the nodes under it hit in the cache and read into it, which a plan explained with the
-// BUFFERS option carries, and 0 in a plan explained without it.
+// relation's columns with.
+//
+// SharedHitBlocks and SharedReadBlocks are the shared buffers the node and every node under it
+// hit in the cache and read into it, which a plan explained with the BUFFERS option carries, and
+// 0 in a plan explained without it. A node's buffers therefore include its whole subtree's, and
+// what a node read itself is its buffers less its children's. A CTE's plan is the exception to
+// adding up: it runs as a CTE Scan of it pulls rows, so that scan's buffers include the CTE
+// plan's as well, and the same blocks show under the CTE's plan and under the scan, though the
+// statement read them once (testdata/verbose_buffers.json).
 type Node struct {
 	Type, Relation, Index, CTE, Alias, Subplan   string
+	Parent                                       int
+	SubplanName                                  string
+	Output                                       []string
 	Loops, Rows                                  float64
 	Filter, IndexCond, RecheckCond               string
 	HeapFetches                                  float64
