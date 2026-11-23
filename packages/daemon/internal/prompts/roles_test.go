@@ -642,10 +642,15 @@ func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 		{"implementer.md", "For a check CI proves, copy the `Pull request line` under this pull request's head from `dispatch results` into the body's `Checks` line; record no result for it."},
 		// R14: the state at the head decides, whoever recorded the pass, so the reviewer's gate asks
 		// no pass of a named role, and its merge-gate order reads the testing step by its states.
-		{"core/reviewer.md", "every `before_merge` check of the issue's Verification document reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it."},
+		// The review and the acceptance read the states of each check a CI job runs too: the
+		// reviewer approves only when each check reads yes at the head it reviews, and the
+		// architect accepts only when each reads yes at each open head of the issue.
+		{"core/reviewer.md", "every `before_merge` check of the issue's Verification document, a check carrying `ci_check` among them, reading yes on that head's line in `dispatch results --issue <issue>`, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it."},
 		{"core/reviewer.md", "A check carrying `ci_check` is CI's, and its state comes from its results from CI:"},
-		{"reviewer.md", "refuse it while any such check does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none."},
+		{"reviewer.md", "refuse it while any such check, a check carrying `ci_check` among them, does not read yes on the line of that head under the check in `dispatch results --issue <issue>`, naming each by its block id. That state decides, whoever recorded the pass: for a check carrying `ci_check` it comes from its results from CI, and a pass at another commit is none."},
 		{"reviewer.md", "(the testing step passed, each check reading yes at the head it tested → your approval"},
+		{"architect.md", "read at the issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which `dispatch results --issue <issue>` shows."},
+		{"architect-root.md", "read at the issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which `dispatch results --issue <issue>` shows."},
 	} {
 		text := strings.Join(strings.Fields(rolePart(t, pin.file)), " ")
 		if !strings.Contains(text, pin.rule) {
@@ -660,6 +665,13 @@ func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 			if strings.Contains(text, gate) {
 				t.Errorf("%s still asks a pass of a named role: %q", file, gate)
 			}
+		}
+	}
+	// The acceptance's gate was worded as a pass standing at one head, which says neither that the
+	// state decides nor that each open head of the issue is read.
+	for _, file := range []string{"architect.md", "architect-root.md"} {
+		if text := foldWhitespace(rolePart(t, file)); strings.Contains(text, "each needs a pass standing at that head") {
+			t.Errorf("%s still gates the acceptance on a pass standing at one head", file)
 		}
 	}
 }
