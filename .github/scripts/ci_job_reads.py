@@ -2475,6 +2475,11 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-gitleaks-version.sh",
          "the script under test, symlinked into every fixture (check-gitleaks-version.test.sh:31)"),
     ]),
+    harness("check_legion_release_paths_test", "Test the legion release path check",
+            f"{SCRIPTS}/check-legion-release-paths.test.sh", [
+        (f"{SCRIPTS}/check-legion-release-paths.sh",
+         "the script under test, symlinked into every fixture (check-legion-release-paths.test.sh's fixture function)"),
+    ]),
     harness("workflow_paths_test", "Test the workflow path model the path checks import",
             f"{SCRIPTS}/workflow_paths.test.sh", [
         (f"{SCRIPTS}/workflow_paths.py", "the module under test, symlinked in at workflow_paths.test.sh:29"),

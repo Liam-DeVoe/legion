@@ -137,6 +137,13 @@ jobs:
           token: ''
           cache: false
 
+      # After setup-go: it runs `go list -deps ./cmd/legion` in packages/daemon and holds
+      # release.yaml's LEGION_VERSION_ARGS to every package of this repository it prints, so a
+      # package the legion binary comes to link is one a change to which releases a legion. Here,
+      # in a job that holds no credential, never in the release workflow.
+      - name: Check the legion release's version paths cover every package the binary links
+        run: .github/scripts/check-legion-release-paths.sh
+
       # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
       # inside packages/daemon), so it is formatted here with the daemon.
       - name: Check the Go daemon's formatting

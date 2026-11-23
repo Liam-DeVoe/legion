@@ -106,6 +106,9 @@ which versions of their dependencies it links. That list is written here by hand
 command that prints it, to be run from packages/daemon whenever what the binary links moves:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+ci.yaml's lint job runs that command on every change (.github/scripts/check-legion-release-paths.sh)
+and fails naming each package of this repository it prints, and each such module's go.mod and
+go.sum, that no path of the list covers.
 
 ## Why GOPROXY falls through to direct
 

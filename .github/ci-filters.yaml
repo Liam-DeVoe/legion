@@ -729,6 +729,13 @@ check_gitleaks_version_test: &check_gitleaks_version_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-gitleaks-version.test.sh'
   - '.github/scripts/check-gitleaks-version.sh'
+check_legion_release_paths_test: &check_legion_release_paths_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-legion-release-paths.test.sh'
+  - '.github/scripts/check-legion-release-paths.sh'
 workflow_paths_test: &workflow_paths_test
   - *ci_router
   - *ci_filters_data
@@ -1077,6 +1084,7 @@ test:
   - *check_zod_version_test
   - *check_gh_version_test
   - *check_gitleaks_version_test
+  - *check_legion_release_paths_test
   - *workflow_paths_test
   - *check_image_trigger_paths_test
   - *check_ci_images_test

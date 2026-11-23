@@ -92,6 +92,12 @@ on:
           check-gitleaks-version.test.sh and what it tests.
         type: string
         required: true
+      check_legion_release_paths_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_legion_release_paths_test:
+          check-legion-release-paths.test.sh and what it tests.
+        type: string
+        required: true
       workflow_paths_test:
         description: "ci.yaml's needs.changes.outputs.workflow_paths_test: workflow_paths.test.sh and what it tests."
         type: string
@@ -633,6 +639,11 @@ jobs:
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
+
+      # After setup-go too: its fixtures run go list over a scratch pair of modules.
+      - name: Test the legion release path check
+        if: inputs.changes-result != 'success' || inputs.check_legion_release_paths_test == 'true'
+        run: .github/scripts/check-legion-release-paths.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
