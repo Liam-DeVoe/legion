@@ -10,8 +10,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"math"
 	"net/url"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -28,8 +31,11 @@ import (
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
 // This function reads no environment variable and starts no container, so its failures can name
 // neither.
+// Every connect to adminURL here, and to the URL it returns, waits until the test binary's deadline
+// (WithConnectDeadline), whatever connect_timeout adminURL names.
 func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	t.Helper()
+	adminURL = WithConnectDeadline(t, adminURL)
 	server, err := url.Parse(adminURL)
 	if err != nil {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
@@ -58,6 +64,44 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 func databaseURL(server url.URL, database string) string {
 	server.Path = "/" + database
 	return server.String()
+}
+
+// WithConnectDeadline returns databaseURL with connect_timeout set to the whole seconds left until
+// t's deadline, the test binary's own (go test's -timeout), rounded up and at least 1, in place of
+// any connect_timeout the URL names. pgx bounds the whole of a new connection (the dial, the
+// authentication and the server's startup answer) by connect_timeout, through pgx.Connect and every
+// pool; a URL that names none gets two minutes. On a loaded machine Postgres can take longer than
+// that to answer a new connection, and a test then failed on its connect, whatever it checked
+// (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused failed after 120.68 s). With the
+// binary's deadline as the bound, a slow server only slows a test, and one that never answers ends
+// it at that deadline. A shorter connect_timeout in the URL would make the test depend on load
+// again, so it is replaced. Where t names no deadline (-timeout 0, or a testing.TB with no Deadline
+// method) it is the longest connect_timeout pgx holds. A failure prints only what url.Parse wraps,
+// since the URL carries a credential.
+func WithConnectDeadline(t testing.TB, databaseURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the URL of the test database: %v", errors.Unwrap(err))
+	}
+	query := parsed.Query()
+	query.Set("connect_timeout", connectTimeout(t))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds.
+func connectTimeout(t testing.TB) string {
+	unbounded := strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
+	named, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return unbounded
+	}
+	deadline, bounded := named.Deadline()
+	if !bounded {
+		return unbounded
+	}
+	return strconv.FormatInt(max(1, int64((time.Until(deadline)+time.Second-1)/time.Second)), 10)
 }
 
 // adminExec runs one statement over a connection of its own to adminURL: neither create database
