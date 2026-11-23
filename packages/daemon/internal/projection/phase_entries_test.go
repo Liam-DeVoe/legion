@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Each issue carries the entry the role of its current phase stands on and the entry that role
-// was given, in every shape the claim of that role can be in: a live claim level with its entry,
+// Each issue carries the entry the role that works it (record.Issue.RoleAt) stands on and the entry
+// that role was given, in every shape the claim of that role can be in: a live claim level with its entry,
 // a claim the daemon suspended behind it, a retired claim behind it, and a role the daemon holds
 // no claim row of at all, which was given nothing. The given number is the claim's and not the
 // phases row's: LEGION-30's row names a token of an earlier run, and the number served is the
@@ -178,7 +178,7 @@ func sameInstant(got, want *time.Time) bool {
 }
 
 // A tree's own root carries its architect's handshake of its current run in every phase it stands
-// in, and the entry numbers of the role of that phase beside it (dispatch://INFRA-2614, k5 of the
+// in, and the entry numbers of the role that works it (record.Issue.RoleAt) beside it (dispatch://INFRA-2614, k5 of the
 // Verification document at version 10). A real architect registers its design gate in its first
 // turn, so its root waits on a person and then stands in a phase a phase role works: the two
 // times are still the architect's handshake there, read as the architect's and never as that
@@ -187,8 +187,9 @@ func sameInstant(got, want *time.Time) bool {
 // whose new architect entry is not queued yet, and so does a root whose architect recorded no
 // handshake, whatever its phase role recorded.
 //
-// An issue that is not a tree's root carries the handshake of the role of its current phase, as it
-// carries that role's numbers, and in a phase no role works — done and held — neither the numbers
+// An issue that is not a tree's root carries the handshake of the role that works it
+// (record.Issue.RoleAt: the architect at a step or a retro the owner does), as it carries that
+// role's numbers, and in a phase no role works — done and held — neither the numbers
 // nor the times, whichever role's row and claim it holds and however far behind that claim
 // stands: no row of it is read, the sweep passes it over and a difference written for it would
 // stand for ever.
@@ -277,7 +278,7 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			t.Fatalf("%s is in no issue of the projected state; this test proves nothing", key)
 		}
 		if view.PhaseEntry != want.PhaseEntry || view.GivenEntry != want.GivenEntry {
-			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works that phase (phase.RoleFor)",
+			t.Errorf("%s at %s is projected with entry %d given %d, want entry %d given %d: the numbers are the role's that works the issue (record.Issue.RoleAt)",
 				key, view.Phase, view.PhaseEntry, view.GivenEntry, want.PhaseEntry, want.GivenEntry)
 		}
 		if !sameInstant(view.EntryQueuedAt, want.EntryQueuedAt) || !sameInstant(view.EntryConfirmedAt, want.EntryConfirmedAt) {

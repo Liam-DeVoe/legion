@@ -144,7 +144,7 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 // project's daemon keeps of the issue on a shared database is not this daemon's
 // (store.readIdleView). StepRole is the role of the step the issue's task stands at, read from
 // its plan rows as the issue's own record reads it (record.Issue.StepRole), and "" where they
-// hold none: at step, the worker of the issue's open phase, which no phase names. PlaceRole is
+// hold none: at step, the role of the issue's running step, which no phase names, and whose worker works it unless the step is the owner's. PlaceRole is
 // the role of the claim that works that place, read the same way (record.Issue.PlaceRole): the
 // architect at a step or a retro the owner does, and the retro's agent's role at the retro.
 //
