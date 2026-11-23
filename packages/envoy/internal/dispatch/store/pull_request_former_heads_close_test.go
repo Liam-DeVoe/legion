@@ -102,15 +102,15 @@ func TestEveryCloseEndsTheLifecycleItClosesWhereverDispatchFirstSawIt(t *testing
 
 // TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall:
 // CORE-1's #70 stands at 4444… before the install, where its row is written, and a tester records
-// a result at 1111… while #70 is open. #70 then closes at 4444…, its row written closed and dated
-// by GitHub's time of the close, as every writer of a row dates it (pull_request_heads.event_at),
+// a result at 1111… while #70 is open. #70 then closes at 4444…, its row written closed, which
+// Dispatch dates on its own clock when the row first reads closed (pull_request_heads.closed_at),
 // and a result is recorded at 4444… while #70 is closed: before the install, or after it. #70
 // then reopens at 3333… and moves on to 7777…, and CORE-1's settle drains what is owed. Wherever
 // the install falls, the result at 1111… is of the lifecycle the close ended and stays out, and
 // the result at 4444… is of the closed period and makes 4444… a candidate of the reopened pull
 // request, as a result recorded after the close does in Dispatch's own records: the install places
-// a result it finds and the close of a pull request closed when it runs in the order of their
-// times, not every result before the close. Each schedule records the closed-period result in
+// a result it finds and the close of a pull request closed when it runs in the order of Dispatch's
+// own times, not every result before the close. Each schedule records the closed-period result in
 // either result table.
 func TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall(t *testing.T) {
 	ctx := context.Background()
@@ -164,15 +164,126 @@ func TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSid
 	}
 }
 
-// TestAnUndatedCloseAtTheInstallKeepsOutEveryResultRecordedBeforeTheInstall: the schedule of
-// TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall with
-// both results recorded before the install, where #70's row is written closed with no date: no
-// time Dispatch holds says whether the result at 4444… came after the close. The install takes
-// such a result as one from before the close, the conservative side, so after the reopen neither
-// result is a candidate, while a result recorded after the install, at a place after the close,
-// still is. The neighbour dates the close as every writer dates a row, and the closed-period
-// result counts.
-func TestAnUndatedCloseAtTheInstallKeepsOutEveryResultRecordedBeforeTheInstall(t *testing.T) {
+// installCloseStory is the start of the tests below: CORE-1's #70 written at 4444…, open, a
+// result recorded at openAt while #70 is open, in table, and then the statement closing, of
+// pull_request_heads, closes #70. It answers exec, which runs a statement on the store or fails
+// the test.
+func installCloseStory(t *testing.T, store *Store, documents map[string]string, table, openAt, closing string) func(what, sql string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := store.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("write #70 at 4444…", `update pull_request_heads set head_sha = $1, event_at = clock_timestamp() where number = 70`, closedPeriodH4)
+	exec("record a result while #70 is open", installResult(table), "CORE-1", "CORE-1", documents["CORE-1"], openAt)
+	exec("close #70 at 4444…", closing)
+	var state string
+	if err := store.Pool.QueryRow(ctx, `select state from pull_request_heads where number = 70`).Scan(&state); err != nil || state != "closed" {
+		t.Fatalf("#70's row reads %q (%v) after the close, want closed: this test holds no close", state, err)
+	}
+	return exec
+}
+
+// reopenedFormerHeads reopens #70 at 3333…, moves it on to 7777…, drains CORE-1, and answers
+// #70's former heads.
+func reopenedFormerHeads(t *testing.T, store *Store, exec func(what, sql string, args ...any)) []string {
+	t.Helper()
+	exec("reopen #70 at 3333…", `update pull_request_heads set state = 'open', head_sha = $1, event_at = clock_timestamp() where number = 70`, installH3)
+	exec("move #70 on to 7777…", `update pull_request_heads set head_sha = $1, event_at = clock_timestamp() where number = 70`, reopenedH7)
+	drainCandidates(t, store, "CORE-1")
+	heads, _ := formerHeadsAndOwed(t, store)
+	return heads
+}
+
+// TestAResultRecordedBeforeTheCloseStaysOutWhateverTimeGitHubGaveTheClose: CORE-1's tester
+// records a result at 4444… while #70 is open there, and #70 then closes, its row written closed
+// with a time GitHub gave that is earlier than the result's: GitHub's clock behind Dispatch's, or
+// a closing write that names no time and keeps the earlier one its open row was dated with. The
+// install then runs, and #70 reopens at 3333… and moves on to 7777…. The result at 4444… is of
+// the lifecycle the close ended, so it is no candidate of the reopened pull request: the install
+// orders a result and a close by Dispatch's own clock alone, when it recorded the result and when
+// it first stored the row closed, never by a time GitHub gave. Each close is tried with the result
+// in either result table.
+func TestAResultRecordedBeforeTheCloseStaysOutWhateverTimeGitHubGaveTheClose(t *testing.T) {
+	ctx := context.Background()
+	for _, table := range []string{"check_results", "ci_check_results"} {
+		for _, close := range []struct{ name, closing string }{
+			{"GitHub's time of the close is an hour before the result's",
+				`update pull_request_heads set state = 'closed', event_at = clock_timestamp() - interval '1 hour' where number = 70`},
+			{"the closing write names no time and keeps the open row's earlier one",
+				`update pull_request_heads set state = 'closed' where number = 70`},
+		} {
+			t.Run(table+"/"+close.name, func(t *testing.T) {
+				store := openEmptyTestStore(t)
+				documents := installFixture(t, store)
+				exec := installCloseStory(t, store, documents, table, closedPeriodH4, close.closing)
+				var before bool
+				if err := store.Pool.QueryRow(ctx, `
+					select head.event_at < (select max(created_at) from (select created_at from check_results union all select created_at from ci_check_results) recorded)
+					from pull_request_heads head where number = 70`).Scan(&before); err != nil || !before {
+					t.Fatalf("#70's closed row is dated before the result: %v (%v), want true: this test holds no such close", before, err)
+				}
+				if err := store.Migrate(ctx); err != nil {
+					t.Fatalf("migrate: %v", err)
+				}
+				if heads, want := reopenedFormerHeads(t, store, exec), []string{"acme/widgets#70@3333"}; !slices.Equal(heads, want) {
+					t.Fatalf("after the reopen #70 holds the former heads %v, want %v: the result at 4444… was recorded before the close, whatever time GitHub gave the close", heads, want)
+				}
+			})
+		}
+	}
+}
+
+// TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed: CORE-1's #70 closes at 4444…, and a
+// result is then recorded at 4444… while #70 is closed. GitHub then updates the closed pull
+// request again, its title, or a read of it finds it closed still, and Dispatch writes the closed
+// row again with GitHub's later time, before the install. #70 reopens at 3333… and moves on to
+// 7777…. The result at 4444… came after the close in Dispatch's own records, and a write of a row
+// that is closed already moves no close: Dispatch keeps when the row first read closed
+// (pull_request_heads.closed_at), so 4444… is a candidate of the reopened pull request. The
+// neighbour writes the closed row no more. Each is tried with the result in either result table.
+func TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, table := range []string{"check_results", "ci_check_results"} {
+		for _, again := range []struct{ name, write string }{
+			{"the closed row is not written again", ""},
+			{"the closed row's title is written again with a later time",
+				`update pull_request_heads set title = 'Edited while closed', event_at = clock_timestamp() where number = 70`},
+			{"a read finds the pull request closed still, with a later time",
+				`update pull_request_heads set state = 'closed', event_at = clock_timestamp(), checked_at = clock_timestamp() where number = 70`},
+		} {
+			t.Run(table+"/"+again.name, func(t *testing.T) {
+				store := openEmptyTestStore(t)
+				documents := installFixture(t, store)
+				exec := installCloseStory(t, store, documents, "check_results", installH1, `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`)
+				exec("record a result at 4444… while #70 is closed", installResult(table), "CORE-1", "CORE-1", documents["CORE-1"], closedPeriodH4)
+				if again.write != "" {
+					exec("write #70's closed row again", again.write)
+				}
+				if err := store.Migrate(ctx); err != nil {
+					t.Fatalf("migrate: %v", err)
+				}
+				if heads, want := reopenedFormerHeads(t, store, exec), []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}; !slices.Equal(heads, want) {
+					t.Fatalf("after the reopen #70 holds the former heads %v, want %v: the result at 4444… was recorded after the close, and a later write of the closed row moves no close", heads, want)
+				}
+			})
+		}
+	}
+}
+
+// TestAPullRequestClosedBeforeDispatchDatedClosesKeepsOutEveryResultRecordedBeforeTheInstall: the
+// schedule of TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed, where #70 closed before
+// Dispatch stored when a row first reads closed (migration pull_request_heads_closed_at), so no
+// record on Dispatch's clock says whether the result at 4444… came after the close. The install
+// takes every result it finds of such a pull request as one from before the close: a result taken
+// from the lifecycle the close ended can carry a pass across the reopen, and one left out leaves
+// its commit with no state, which a testing move waits on. So after the reopen the result at
+// 4444… is no candidate, while a result recorded after the install, at a place after the close,
+// is. The neighbour closes #70 once Dispatch dates closes, and the closed-period result counts.
+func TestAPullRequestClosedBeforeDispatchDatedClosesKeepsOutEveryResultRecordedBeforeTheInstall(t *testing.T) {
 	ctx := context.Background()
 	const afterInstallH6 = "6666666666666666666666666666666666666666"
 	for _, row := range []struct {
@@ -180,47 +291,35 @@ func TestAnUndatedCloseAtTheInstallKeepsOutEveryResultRecordedBeforeTheInstall(t
 		dated, afterInstall bool
 		want                []string
 	}{
-		{name: "the close is undated", want: []string{"acme/widgets#70@3333"}},
-		{name: "the close is undated and a result is recorded after the install", afterInstall: true,
+		{name: "the close is from before Dispatch dated closes", want: []string{"acme/widgets#70@3333"}},
+		{name: "the close is from before Dispatch dated closes and a result is recorded after the install", afterInstall: true,
 			want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
-		{name: "the close is dated", dated: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+		{name: "Dispatch dated the close", dated: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			store := openEmptyTestStore(t)
-			documents := installFixture(t, store)
-			exec := func(what, sql string, args ...any) {
-				t.Helper()
-				if _, err := store.Pool.Exec(ctx, sql, args...); err != nil {
-					t.Fatalf("%s: %v", what, err)
-				}
-			}
-			exec("write #70 at 4444…", `update pull_request_heads set head_sha = $1 where number = 70`, closedPeriodH4)
-			exec("record a result at 1111… while #70 is open", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], installH1)
-			closing := `update pull_request_heads set state = 'closed' where number = 70`
+			through := closesDatedSince(t) - 1
 			if row.dated {
-				closing = `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`
+				through = formerHeadsInstall(t) - 1
 			}
-			exec("close #70 at 4444…", closing)
-			var dated bool
-			if err := store.Pool.QueryRow(ctx, `select event_at is not null from pull_request_heads where number = 70 and state = 'closed'`).Scan(&dated); err != nil {
-				t.Fatalf("read #70's closed row: %v", err)
-			}
-			if dated != row.dated {
-				t.Fatalf("#70's closed row is dated %v, want %v: this test holds no such close", dated, row.dated)
-			}
+			documents := installFixtureThrough(t, store, through)
+			exec := installCloseStory(t, store, documents, "check_results", installH1, `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`)
 			exec("record a result at 4444… while #70 is closed", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], closedPeriodH4)
+			if err := store.migrate(ctx, migrationsThrough(t, formerHeadsInstall(t)-1)); err != nil {
+				t.Fatalf("migrate through the version before the install: %v", err)
+			}
+			var dated bool
+			if err := store.Pool.QueryRow(ctx, `select closed_at is not null from pull_request_heads where number = 70`).Scan(&dated); err != nil || dated != row.dated {
+				t.Fatalf("#70's closed row holds a time Dispatch dated its close: %v (%v), want %v: this test holds no such close", dated, err, row.dated)
+			}
 			if err := store.Migrate(ctx); err != nil {
 				t.Fatalf("migrate: %v", err)
 			}
 			if row.afterInstall {
 				exec("record a result at 6666… while #70 is closed, after the install", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], afterInstallH6)
 			}
-			exec("reopen #70 at 3333…", `update pull_request_heads set state = 'open', head_sha = $1 where number = 70`, installH3)
-			exec("move #70 on to 7777…", `update pull_request_heads set head_sha = $1 where number = 70`, reopenedH7)
-			drainCandidates(t, store, "CORE-1")
-			heads, _ := formerHeadsAndOwed(t, store)
-			if !slices.Equal(heads, row.want) {
-				t.Fatalf("after the reopen #70 holds the former heads %v, want %v: a result whose order against an undated close no time shows is taken as before it, and one after the install is after it", heads, row.want)
+			if heads := reopenedFormerHeads(t, store, exec); !slices.Equal(heads, row.want) {
+				t.Fatalf("after the reopen #70 holds the former heads %v, want %v: a result no record on Dispatch's clock places after the close is taken as before it, and one after the install is after it", heads, row.want)
 			}
 		})
 	}

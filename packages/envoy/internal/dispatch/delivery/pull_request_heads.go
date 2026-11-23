@@ -60,9 +60,10 @@ type PullRequestHead struct {
 	BaseRef string
 	// BaseSHA is the commit the base branch was at when the writer read the pull request
 	// (GitHub's base.sha), "" where the writer read none, which stores null: "not known". The
-	// check states settler's read of a pull request's commits is an answer about one head and one
-	// base revision, and applies only where the row still names the revisions its claim read
-	// (pull_request_former_heads_snapshot, migration 20261122071001).
+	// check states settler's read of a pull request's commits is GitHub's comparison of the head
+	// and this base revision as its claim read them (PullRequestMembership), and applies only where
+	// the row still names them (pull_request_former_heads_snapshot, migration 20261122071001); a
+	// row that names none is not read.
 	BaseSHA           string
 	State             string
 	IssueKey          *string
@@ -1312,10 +1313,10 @@ func (a *Attributor) ReadThroughCommitPulls(
 //
 // The envelope carries the commit the base branch was at (`base_sha`), which the row stores with
 // the branch's name (PullRequestHead.BaseSHA): the base branch can move with no change of its
-// name, and the check states settler's read of which commits are the pull request's own is about
-// one base revision. An envelope that does not name it, one a publisher older than this field
-// made, stores the revision as not known, which a read claimed before refuses as it refuses a
-// changed revision.
+// name, and the check states settler's read of which commits are the pull request's own compares
+// the head with one base revision. An envelope that does not name it, one a publisher older than
+// this field made, stores the revision as not known, and the settler reads no such row until a
+// write stores one, which the reconcile's read of the pull request does.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
 // canonicalised before anything is read or written (refs.Renames.Canonical), and no row is ever
