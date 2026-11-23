@@ -1048,8 +1048,9 @@ type BackwardMove struct {
 	// ReturnTo is the step of the issue's running task the move names as the one it returns to:
 	// its place in the task, 1 for its first. A move that names one goes to that place, judged as
 	// a failed step's returnTo is (workflow's returnStep), and its To must be the phase that step
-	// runs as. 0 names none, and the move goes to the one earlier place of its task that runs as
-	// To.
+	// runs as. 0 names none, and the move goes to the nearest earlier place of its task that runs
+	// as To (workflow's backwardPlace); where To is step and two earlier places run as step, it is
+	// refused, since it does not say which.
 	ReturnTo int
 	// PhaseEntry is, for a phase worker's move, the entry of the requester's phases row its claim
 	// serves (supervise.Claim.ServingEntry, the entry of the task its turn is on), which the route
@@ -2254,17 +2255,17 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 //
 // Unless the entry the completion serves is of another of the role's steps or its retro, or of an
-// earlier run of this step that the task left for one of them (otherStep). A role can
-// stand at two steps of a task, one agent doing both, and a forward move enters the later one: the
-// reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer step 3 at the
-// head step 1 left, while the agent's turn of step 1 can still be open. The two steps ask for
-// different work, so the same head is not the same work between them, and the first entry of the
-// role's other step asks for work no verdict of an earlier step answers, as a move back's entry
-// does. A row holds only the entry it stands on, and a step's start raises its entry above every
-// row of its role (workflow's enter), so the caller says it from the rows: the served entry is at
-// or below the entry another step's row of the role holds (EntryFence's otherSteps). That also
-// refuses an earlier entry of this same step that the role left for another step and came back
-// from, a turn that outlived a step the task stood at since.
+// earlier run of this step that the task left for one of them (otherStep). A role can stand at two
+// steps of a task, one agent doing both or one agent each, and a forward move enters the later
+// one: the reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer
+// step 3 at the head step 1 left, while the agent's turn of step 1 can still be open. The two steps
+// ask for different work, so the same head is not the same work between them, and the first entry
+// of the role's other step asks for work no verdict of an earlier step answers, as a move back's
+// entry does. A row holds only the entry it stands on, and a step's start raises its entry above
+// every row of its role (workflow's enter), so the caller says it from the rows: the served entry
+// is at or below the entry another step's row of the role holds (EntryFence's otherSteps). That
+// also refuses an earlier entry of this same step that the role left for another step and came
+// back from, a turn that outlived a step the task stood at since.
 //
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
 // the record holds for the issue, or that it holds no pull request at all; and, where movedBack,

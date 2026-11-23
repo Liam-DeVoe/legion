@@ -749,10 +749,10 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 // neither posts a READY with no packet nor moves the child on.
 func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testing.T) {
 	pool := migratedPool(t)
-	// Two slots, more than the test needs: the cap counts the issues that hold a slot, and of this
-	// tree's two issues at work only the root, whose planning starts when its new gate opens, takes
-	// one; the carried child stands in merging, whose merger resumes with the re-admission on no
-	// slot (record.KeepsSlot).
+	// Two slots, though only one issue takes one: the cap counts the issues that hold a slot, and
+	// of this tree's two issues at work only the root, whose planning starts when its new gate
+	// opens, takes one; the carried child stands in merging, whose merger resumes with the
+	// re-admission on no slot (record.KeepsSlot).
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const key, artifact = "LEGION-LINGER", "4f2a9c1e-8b3d-4e7f-9a60-2c5d8e1b7f34"

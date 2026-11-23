@@ -4499,8 +4499,8 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 The live proof of the completion route's entry fence on a completion behind its phase entry.
-Such a completion is taken when the commit it names is the head the record holds, because the phase was entered again at that head and the work the new entry's task asks for is the work that turn did.
-It is refused when it names a head the record has left or no commit at all, and whatever head it names when the entry the phase stands on was raised by a move back, which asks for that phase's work to be done again (`record.PhaseRow.EntryMovedBack`, read by `internal/api/handoff.go`).
+Such a completion is taken when the commit it names is the head the record holds and the entry it serves is of the step the task stands at, because the phase was entered again at that head and the work the new entry's task asks for is the work that turn did.
+It is refused when it names a head the record has left or no commit at all, and whatever head it names when the entry the phase stands on was raised by a move back, which asks for that phase's work to be done again (`record.PhaseRow.EntryMovedBack`, read by `internal/api/handoff.go`), or when the entry it serves is of another step of the role than the one the task stands at (`record.OtherStepsEntry`; this proof's tester stands at one step, and `internal/api/handoff_step_row_test.go` holds that case).
 No reading of the heads tells that last case from the one that is taken, since a move back sends the work back at the head that is already there, so steps 5 and 8 report the same completion at the same head and differ only in what raised the entry.
 Steps 3, 4 and 5 report the same completion behind the same forward entry and differ only in the commit.
 Step 6 is what follows a taken one: the completion step 5 took moved the issue to `reviewing` and left the tester's claim serving the entry it was behind on, so the completions that claim sends next meet the fence in a phase the tester no longer works.
