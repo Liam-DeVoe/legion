@@ -90,6 +90,31 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 	}
 }
 
+// The implementer's parts name every trigger of a forward merge that its skill names, so the two
+// lists agree. Retro's own work commits nothing, and a merge forward the daemon asks for in retro
+// is no part of it, so the parts that say retro commits nothing say "of its own". Each part is
+// read alone. This shows the text is loaded, never that an implementer follows it.
+func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
+	for _, part := range []struct {
+		name, text    string
+		want, retired []string
+	}{
+		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
+			"Merge the base forward only on one of six triggers.",
+			"(in `implementing` and `retro` your own assignment and its completion stand)",
+			"The controller asks you to, because of a conflict.",
+			"The architect's move back names a parent's last round.",
+		}, []string{"one of four triggers"}},
+		{"go/implementer.md", goPart(t, "implementer.md"), []string{
+			"Retro commits nothing and pushes nothing of its own:",
+			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
+		}, nil},
+		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{"Retro writes no handoff and commits nothing of its own,"}, nil},
+	} {
+		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
+	}
+}
+
 // The owner is told the roles a step of its plan may name by the list its launch gives after its
 // addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
 // part can know. Its prompt says where a step of such a role runs, that it runs at the phase step

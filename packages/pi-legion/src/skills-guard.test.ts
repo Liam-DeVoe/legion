@@ -794,6 +794,27 @@ test("an issue runs the default steps unless its architect registers a plan befo
   ]).toEqual([]);
 });
 
+// Each rule of the worker and retro skills states its exceptions where it is stated, so no other
+// sentence of the skills or the prompts contradicts it: a kept volume keeps more than the tracked
+// work, a parent can be held before its retro, a merge forward the daemon asks for in retro is no
+// part of retro, a tool that takes no rating is never refused for its absence, and step 3 writes
+// no comment when no point qualifies.
+test("the worker and retro skills state the exceptions of their rules", () => {
+  expect([
+    ...lacks("legion-worker/SKILL.md", [
+      /nothing else of the disk survives, unless the deployment keeps the pod's volume/,
+      /without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave/,
+    ]),
+    ...lacks("legion-retro/SKILL.md", [
+      /Retro commits nothing and pushes nothing of its own:/,
+      /A merge forward that the daemon's merge-forward message asks of you is no part of retro/,
+      /In the workspace retro itself changes nothing\./,
+      /The daemon refuses a completion without them where your tool takes them \(`PLAN_RATING_REQUIRED`\)/,
+      /The message is posted, and so is step 3's comment where a point qualified\./,
+    ]),
+  ]).toEqual([]);
+});
+
 // The admission table is read raw, since each of its rows is a line, and it lists the contract's
 // held reasons in the contract's order.
 test("the controller reads every held reason, and a stopped task's phase in its report", () => {
