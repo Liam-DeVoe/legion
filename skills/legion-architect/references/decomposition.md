@@ -9,7 +9,7 @@ Read your own issue (`read_record`), its criteria, its children and their handof
 
 ## Adopting children
 
-Release a child a person created as it is, once you have reviewed its spec, as no person did, and given it its plan: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+Release a child a person created as it is, once you have reviewed its spec (no person did) and given it its plan: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
 The answer names `released`, `started` and `held`, each held child with what it waits on.
 A release refused with a code below writes nothing: release the rest again without the child it names.
 
@@ -96,9 +96,9 @@ A decision only a person can make goes to the architect above you, never into yo
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
 Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
-For a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
-Release it before an issue above it is accepted: the daemon then refuses it until that issue closes.
-If that pull request cannot merge in time, ask a person ("Every turn") rather than release late.
+A repository that pins the other one by commit (a lock file or dependency pin) pins that merged commit.
+Release it before an issue above it is accepted (`CHILD_UNDER_ACCEPTED_PARENT`).
+If it cannot merge in time, ask a person ("Every turn") rather than release late.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
