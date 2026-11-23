@@ -49,12 +49,14 @@ import (
 // on a phase entry alike.
 //
 // The roles are addressed as every role message of the daemon is (addressRoles), each once, and
-// a pull request that is not open, an issue where no merge forward stands on line, the phases its
-// task walks (classify.MergeForwardStands: implementing or a phase after it), and a tree that
-// lingers (record.TreeLingers, where every role is suspended) are asked nothing.
-func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, line []phase.Phase, pr *record.PullRequest, why record.ConflictWhy) error {
+// a pull request that is not open, an issue where no merge forward stands at the place its task
+// stands at on w's line (classify.MergeForwardStands: the implementer's place or a place after
+// it, read by the place, since every step of a role the deployment defines runs as step), and a
+// tree that lingers (record.TreeLingers, where every role is suspended) are asked nothing.
+func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
-	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, line) {
+	place, _ := w.placeIn(at)
+	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(w.Line, place) {
 		return nil
 	}
 	asker := record.MergeForwardAsker(at)
@@ -165,10 +167,10 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 		if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
+		return e.mergeForward(ctx, tx, issue, w, pr, record.ConflictMergeNext)
 	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
 		w.passedStep(record.StandsAt(issue), phase.Implementing) && !classify.MergeComesNext(issue, w.Line):
-		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
+		return e.mergeForward(ctx, tx, issue, w, pr, asked.Why)
 	}
 	return nil
 }

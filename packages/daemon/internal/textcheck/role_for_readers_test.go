@@ -146,9 +146,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/wake.go", fn: "OpenRoleOf"}: {calls: 1, tests: []string{
 		"TestAnArchitectGetsNoBackstop", "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted",
 		"TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
-	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{"TestOnlyAPhaseWorkerHoldsAMembersPhase"}},
-	{file: "internal/record/design_news.go", fn: "untold"}:              {calls: 1, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
-	{file: "internal/workflow/design_news.go", fn: "memberWords"}:       {calls: 1, tests: []string{"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"}},
+	// The holder of a member's phase that design news reaches, the reason a member is owed none,
+	// and the role the root architect's summary names as the member's holder: each reads the role
+	// of the running step at step (record.Issue.RoleAt).
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{
+		"TestOnlyAPhaseWorkerHoldsAMembersPhase", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 1, tests: []string{
+		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{
+		"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

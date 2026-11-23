@@ -121,9 +121,10 @@ type Config struct {
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
 	// issue on to its task's next step (accepting, in the default steps); and, by the gate
 	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
-	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line) and a
-	// base push of an issue in a phase after implementing on that line, each of which can turn the
-	// head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
+	// (classify.MergeForwardStands: its task at the implementer's place, or a place after it on the
+	// task's line) and a base push of an issue whose task stands at a place after the
+	// implementer's, each of which can turn the head conflicting with its base
+	// (dispatch://INFRA-4374 R0). The daemon
 	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
 	// is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
