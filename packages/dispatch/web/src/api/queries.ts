@@ -17,9 +17,11 @@ import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from ".
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
+  DeliveryLiveWindow,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
@@ -489,11 +491,12 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  readonly evals: EvalListResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
- *  other kinds this page does not read. */
+ *  the pages subscribe - timeline, measures, pipeline and evals - are keyed here; the socket
+ *  serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -540,6 +543,52 @@ export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline
     queryKey: ["delivery", "pipeline", view],
     queryFn: (context) => subscribeLive(context, view),
   });
+
+/** The kinds of eval, each read by a view of its own on the Evals tab. */
+export type EvalKind = "delivery" | "legion" | "ci" | "experiment";
+
+/** How many evals one evals view answers: the eval list's most (`evalPageMax`, api/evals.go). A
+ *  kind with more is read by a second view at the next offset. */
+export const EVALS_VIEW_LIMIT = 200;
+
+/** One evals view of a project's Evals tab: its window, the compare range (null for none), the
+ *  repositories whose day rows every number folds (none: the project's own), the kind it keeps,
+ *  and the offset of its page. */
+export interface EvalsViewParams {
+  readonly project: string;
+  readonly window: DeliveryLiveWindow;
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  readonly kind: EvalKind;
+  readonly offset: number;
+}
+
+/** One project's evals of one kind, live (dispatch://INFRA-2918/artifact/plan-md, D3): the body of
+ *  `GET /api/v1/projects/{key}/evals` for the window, sent as the view's window, and the rest of
+ *  its query, sent as the view's query, a page of EVALS_VIEW_LIMIT at `offset`. Keyed by the view,
+ *  so a change of the window, the compare range or the repositories subscribes its own entry. */
+export const evalsViewQuery = (params: EvalsViewParams) => {
+  const query = new URLSearchParams();
+  if (params.compare !== null) {
+    query.set("compare_from", params.compare.from);
+    query.set("compare_to", params.compare.to);
+  }
+  for (const repo of params.repos) query.append("repo", repo);
+  query.set("kind", params.kind);
+  query.set("limit", String(EVALS_VIEW_LIMIT));
+  if (params.offset > 0) query.set("offset", String(params.offset));
+  const view = {
+    kind: "evals",
+    project: params.project,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+  return queryOptions({
+    ...LIVE,
+    queryKey: ["evals", "view", view],
+    queryFn: (context) => subscribeLive(context, view),
+  });
+};
 
 /** The delivery timeline's configuration record, or `null` until someone sets it: the Settings
  *  section's form reads it, while the Delivery page's setup form starts from the `null` the

@@ -190,7 +190,8 @@ export function EvalsHeader({
   freshness?: { freshness: DeliveryFreshness; readAtMs: number };
 }): ReactNode {
   return (
-    <div aria-label="Window and filters" className="flex flex-col gap-2" role="group">
+    <fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
+      <legend className="sr-only">Window and filters</legend>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <WindowControl
           key={
@@ -225,6 +226,6 @@ export function EvalsHeader({
       {freshness === undefined ? null : (
         <SourceFreshness freshness={freshness.freshness} readAtMs={freshness.readAtMs} />
       )}
-    </div>
+    </fieldset>
   );
 }

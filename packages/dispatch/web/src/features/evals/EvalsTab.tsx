@@ -1,42 +1,113 @@
-import { type ReactNode, useId } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { type ReactNode, useMemo } from "react";
 
-import { textPrimaryOnCanvas } from "../../theme/classes";
+import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/queries";
+import type { EvalListResponse } from "../../api/types";
+import { compareRange, liveWindow } from "../delivery/lib/window";
 import { EvalsHeader } from "./EvalsHeader";
-import { useEvalsUrlState } from "./evals-url";
+import { EvalsSection } from "./EvalsSection";
+import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
+import type { EvalsScope } from "./useEvalsViews";
+
+/** The views each section reads, by kind: the target cards read the delivery and the Legion evals
+ *  (plan D3), the Deploys and lead time section the same delivery view as the cards, and the
+ *  merge timeline none, since it is closed on the first paint (spec R13). */
+const CARDS: readonly EvalKind[] = ["delivery", "legion"];
+const CARDS_WITHOUT_LEGION: readonly EvalKind[] = ["delivery"];
+const LEGION: readonly EvalKind[] = ["legion"];
+const CI: readonly EvalKind[] = ["ci"];
+const DEPLOYS: readonly EvalKind[] = ["delivery"];
+const TIMELINE: readonly EvalKind[] = [];
+const LOGGED: readonly EvalKind[] = ["experiment"];
 
 /** The tab's sections, in the order dispatch://INFRA-2918/spec R2 sets: the target cards, the
  *  Legion measures, CI health, deploys and lead time, the merge timeline, and then every eval the
- *  project's agents and jobs log. */
-export const EVALS_SECTIONS = [
-  { id: "cards", title: "Target cards" },
-  { id: "legion", title: "Legion measures" },
-  { id: "ci", title: "CI health" },
-  { id: "deploys", title: "Deploys and lead time" },
-  { id: "timeline", title: "Merge timeline" },
-  { id: "logged", title: "Logged" },
-] as const;
+ *  project's agents and jobs log. The Legion section and the Legion cards show only where the
+ *  project has a Legion daemon (spec R5). */
+function sectionsOf(legion: boolean) {
+  return [
+    { id: "cards", title: "Target cards", kinds: legion ? CARDS : CARDS_WITHOUT_LEGION },
+    ...(legion ? [{ id: "legion", title: "Legion measures", kinds: LEGION }] : []),
+    { id: "ci", title: "CI health", kinds: CI },
+    { id: "deploys", title: "Deploys and lead time", kinds: DEPLOYS },
+    { id: "timeline", title: "Merge timeline", kinds: TIMELINE },
+    { id: "logged", title: "Logged", kinds: LOGGED },
+  ];
+}
 
-/** One section of the tab, named by its heading. */
-function EvalsSectionSlot({ id, title }: { id: string; title: string }): ReactNode {
-  const headingId = useId();
+/** The window and compare range of an answer, which are the same in every view of one scope. */
+function daysOf(answer: EvalListResponse): Pick<EvalListResponse, "window" | "compare"> {
+  return { window: answer.window, compare: answer.compare };
+}
+
+/** The header, naming the days of the first answer any of the tab's views gives. It reads only
+ *  each view's window and compare range, so a delta that moves neither renders no header. */
+function LiveHeader({
+  kinds,
+  onChange,
+  scope,
+  state,
+}: {
+  kinds: readonly EvalKind[];
+  onChange: (next: EvalsUrlState) => void;
+  scope: EvalsScope;
+  state: EvalsUrlState;
+}): ReactNode {
+  const days = useQueries({
+    queries: kinds.map((kind) => ({
+      ...evalsViewQuery({ ...scope, kind, offset: 0 }),
+      select: daysOf,
+    })),
+  });
+  const first = days.find((view) => view.data !== undefined)?.data;
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2" data-section={id}>
-      <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
-        {title}
-      </h2>
-    </section>
+    <EvalsHeader
+      compare={first?.compare}
+      onChange={onChange}
+      state={state}
+      window={first?.window}
+    />
   );
 }
 
-/** A project's Evals tab (`/projects/<KEY>/evals`, spec R1): its one page of numbers, every
- *  project's alike, under one header. */
+/**
+ * A project's Evals tab (`/projects/<KEY>/evals`, dispatch://INFRA-2918/spec R1, R2, R3, R5): its
+ * one page of numbers, every project's alike, under one header. It is a subscriber: it opens one
+ * evals view per kind it shows, all at once, and each section paints from its own as it lands,
+ * never waiting for another's (plan D3). In parallel it reads the project's Legion daemon, which
+ * decides whether the Legion section and cards show; until that read answers they show, so their
+ * view is opened with the others rather than after it.
+ *
+ * The compare range a preset's default names is taken when the window or the compare choice is
+ * set, from the days of that moment; a tab left open past midnight keeps the range it opened with
+ * until the reader sets either again.
+ */
 export function EvalsTab({ project }: { project: string }): ReactNode {
   const [state, setState] = useEvalsUrlState();
+  const daemon = useQuery(legionDaemonQuery(project));
+  const legion = daemon.data !== null;
+  const scope = useMemo(
+    (): EvalsScope => ({
+      project,
+      window: liveWindow(state.window),
+      compare: compareRange(state.compare, state.window, Date.now()),
+      repos: state.repos,
+    }),
+    [project, state]
+  );
+  const sections = sectionsOf(legion);
+  const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
   return (
-    <div className="flex flex-col gap-6" data-project={project}>
-      <EvalsHeader onChange={setState} state={state} />
-      {EVALS_SECTIONS.map((section) => (
-        <EvalsSectionSlot id={section.id} key={section.id} title={section.title} />
+    <div className="flex flex-col gap-6">
+      <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
+      {sections.map((section) => (
+        <EvalsSection
+          id={section.id}
+          key={section.id}
+          kinds={section.kinds}
+          scope={scope}
+          title={section.title}
+        />
       ))}
     </div>
   );

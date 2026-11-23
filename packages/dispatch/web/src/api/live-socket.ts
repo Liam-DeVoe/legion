@@ -1,6 +1,6 @@
 // The page's one live socket: one websocket to `GET /ws/live` per query client, over which every
-// live subscription of the page runs. The Delivery and Pipeline pages' live-owned queries
-// (`meta.live`, `api/queries.ts`'s three delivery reads) subscribe to their views (LEGION-690):
+// live subscription of the page runs. The live-owned queries (`meta.live`: `api/queries.ts`'s
+// three delivery reads and the Evals tab's evals views) subscribe to their views (LEGION-690):
 // Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
 // what changed, and this client writes both into the query cache with `setQueryData`, so the page
 // renders them as any read. The event feed (`subscribeEvents`) and each agent live view

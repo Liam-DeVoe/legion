@@ -13,6 +13,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -295,25 +296,35 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
 
 test("the Evals tab shows on a project with no source, and /evals selects it", async () => {
   const user = userEvent.setup();
-  const issues = renderPage("/projects/CORE/issues");
+  // The tab subscribes its evals views over the live socket and reads the project's Legion
+  // daemon; this project names none.
+  const sockets = installFakeLiveSockets();
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   try {
-    await screen.findByRole("heading", { name: "Core" });
-    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Evals" }));
-    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals");
-  } finally {
-    issues.restore();
-  }
+    const issues = renderPage("/projects/CORE/issues");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("tab", { name: "Evals" }));
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals");
+    } finally {
+      issues.restore();
+    }
 
-  const evals = renderPage("/projects/CORE/evals");
-  try {
-    await screen.findByRole("heading", { name: "Core" });
-    expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
-    const panel = screen.getByRole("tabpanel", { name: "Evals" });
-    expect(within(panel).getByRole("region", { name: "Target cards" })).toBeTruthy();
-    expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
+    const evals = renderPage("/projects/CORE/evals");
+    try {
+      await screen.findByRole("heading", { name: "Core" });
+      expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+      const panel = screen.getByRole("tabpanel", { name: "Evals" });
+      expect(within(panel).getByRole("region", { name: "Target cards" })).toBeTruthy();
+      expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
+      await waitFor(() => expect(getLegionDaemon).toHaveBeenCalledWith("CORE"));
+    } finally {
+      evals.restore();
+    }
   } finally {
-    evals.restore();
+    getLegionDaemon.mockRestore();
+    sockets.restore();
   }
 });
 

@@ -5,8 +5,8 @@ import { Link, Navigate, useLocation } from "react-router-dom";
 import { legionDaemonQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { linkText, textMutedOnCanvas } from "../../theme/classes";
-import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { buildProjectPath } from "../refs/routes";
+import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 /**
  * `/delivery` and `/pipeline`, the pages the Evals tab replaced (dispatch://INFRA-2918, R1): the
