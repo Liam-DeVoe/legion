@@ -142,7 +142,7 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
 	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
 	newJudge := flags.String("judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
-	newGuidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters, or none")
+	newGuidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters (on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @), or none")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -279,6 +279,21 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	owner, tier := after[policy.TagOwner], after[policy.TagTier]
+	// The store's own limit on a tag value (awsBackend.checkTagValues), over every tag this retag
+	// writes: each it sets or changes, the requesters a guard rewrite writes, and the owner and tier
+	// every AWS tag write sends again. A value it leaves as the secret holds it is not written.
+	written := map[string]string{}
+	for key, value := range after {
+		if held.tags[key] != value || key == policy.TagOwner || key == policy.TagTier {
+			written[key] = value
+		}
+	}
+	if rewrite != "" {
+		written[policy.TagRequesters] = rewrite
+	}
+	if err := s.backend.checkTagValues(written); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	if len(remove) == 0 && (owner == "" || tier == "") {
 		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s has no owner tag or no tier tag, and a retag sends both: name the missing one with --owner or --tier", name)})
 	}

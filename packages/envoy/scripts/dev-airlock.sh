@@ -257,9 +257,10 @@ JUDGE_SECONDS=900
 SECOND_JUDGE_SECONDS=600
 # The guidance tags of JUDGED_SECRET and of SECOND_JUDGED_SECRET: the key owner's instruction,
 # which the stand-in model is shown with every request for the key. Each is printed
-# single-quoted in the exports below and written into the fake store's JSON as it is, so neither
-# may hold a quote of either kind or a backslash.
-JUDGE_GUIDANCE="grant for the stack check runs, which name the run in the reason"
+# single-quoted in the exports below and written into the fake store's JSON as it is, and each
+# holds only what an AWS Secrets Manager tag value may (letters, digits, spaces and
+# `_ . : / = + - @`), as the guidance of a real key on that store must.
+JUDGE_GUIDANCE="grant for the stack check runs that name the run in the reason"
 SECOND_JUDGE_GUIDANCE="grant for the stack release job"
 # What the judge is configured with: the model id its verdicts are recorded under
 # (record.JudgeActor writes "judge:<id>"), the protocol the model stand speaks, and the

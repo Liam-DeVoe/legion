@@ -4,8 +4,8 @@
 # Proves that the airlock's tests and the Lean proofs catch a defect, which is the whole claim
 # behind a model that is only as good as the test tying it to the Go functions, and behind a
 # proxy whose wire handling no model covers. Each file of internal/cipher/proxyrules/testdata/mutants,
-# of internal/cipher/proxy/testdata/mutants and of internal/cipher/policy/testdata/mutants is one
-# defect as a unified diff. For each,
+# of internal/cipher/proxy/testdata/mutants, of internal/cipher/policy/testdata/mutants and of
+# internal/cipher/requests/testdata/mutants is one defect as a unified diff. For each,
 # this script copies packages/envoy to a fresh directory under $TMPDIR, applies that one patch
 # there with patch -p1, and requires the copy to fail:
 #
@@ -28,13 +28,18 @@
 #     rule against `go test -run '^(<Test>|...)$' ./internal/cipher/policy/`: every test its
 #     `# must fail: <Test>` lines name must run and fail. These are defects of what the policy
 #     load fingerprints, which a live grant is held to at its release.
+#   - a requests mutant (requests-*.patch, internal/cipher/requests/testdata/mutants) is held to
+#     the same rule against ./internal/cipher/requests/, whose tests need the Postgres
+#     BROKER_TEST_DATABASE_URL names. Where it names none, the mutant is not run and its line says
+#     UNKNOWN, counted apart from the caught ones; a requests mutant named on the command line with
+#     no database exits 2.
 #
 # A mutant nothing catches is a hole in the tests or in the proofs, and this script fails on
 # it. The patches are never applied to this repository: every one is applied inside the copy,
 # and the run ends with jj's or git's status of the repository to show it is untouched.
 #
 # Usage: packages/envoy/scripts/airlock-mutants.sh [<name>...]
-#        with no name, every mutant of the three testdata/mutants directories; a name is a patch's
+#        with no name, every mutant of the four testdata/mutants directories; a name is a patch's
 #        file name, with or without the .patch suffix (for example go-carries-value).
 #
 # Needs go, GNU patch or git (the patches are plain unified diffs, and `git apply -p1`
@@ -51,6 +56,7 @@ AIRLOCK_PKG_DIR="$ENVOY_DIR/internal/cipher/proxyrules"
 MUTANT_DIR="$AIRLOCK_PKG_DIR/testdata/mutants"
 PROXY_MUTANT_DIR="$ENVOY_DIR/internal/cipher/proxy/testdata/mutants"
 POLICY_MUTANT_DIR="$ENVOY_DIR/internal/cipher/policy/testdata/mutants"
+REQUESTS_MUTANT_DIR="$ENVOY_DIR/internal/cipher/requests/testdata/mutants"
 MODEL="$AIRLOCK_PKG_DIR/lean/.lake/build/bin/airlock-model"
 
 usage() {
@@ -58,21 +64,23 @@ usage() {
 usage: airlock-mutants.sh [<name>...]
 
 Applies each mutant of internal/cipher/proxyrules/testdata/mutants, of
-internal/cipher/proxy/testdata/mutants and of internal/cipher/policy/testdata/mutants to a copy
-of packages/envoy under $TMPDIR and requires that copy to fail: a go-*.patch must fail the
-comparison fuzz test over the committed seed corpus, a lean-*.patch must fail `lake build`,
-because a proof no longer holds, or that same comparison against the mutated model, and a
-proxy-*.patch or policy-*.patch must fail every test of ./internal/cipher/proxy/ or
-./internal/cipher/policy/ its own `# must fail: <Test>` lines name, and is counted by those
-tests alone.
+internal/cipher/proxy/testdata/mutants, of internal/cipher/policy/testdata/mutants and of
+internal/cipher/requests/testdata/mutants to a copy of packages/envoy under $TMPDIR and
+requires that copy to fail: a go-*.patch must fail the comparison fuzz test over the committed
+seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer holds, or that
+same comparison against the mutated model, and a proxy-*.patch, policy-*.patch or
+requests-*.patch must fail every test of its package its own `# must fail: <Test>` lines name,
+and is counted by those tests alone. A requests-*.patch needs the Postgres
+BROKER_TEST_DATABASE_URL names; without one it is reported UNKNOWN and not run.
 
   <name>   a patch's file name, with or without the .patch suffix (for example
-           go-carries-value or proxy-connect-carried); with no name, every mutant of the three
+           go-carries-value or proxy-connect-carried); with no name, every mutant of the four
            directories
 
-No patch is ever applied to this repository. It prints one PASS: or FAIL: line per mutant and
-a last line saying how many were caught, exits non-zero when a mutant was not caught, and
-exits 2 when go, lake or both patch and git are missing.
+No patch is ever applied to this repository. It prints one PASS:, FAIL: or UNKNOWN: line per
+mutant and a last line saying how many were caught, exits non-zero when a mutant was not caught,
+and exits 2 when go, lake or both patch and git are missing, or when a requests mutant named on
+the command line has no database.
 EOF
 }
 
@@ -104,29 +112,34 @@ apply_patch() {
 	fi
 }
 
-# mutant_file is the patch a mutant's name names: a proxy-* mutant's under the proxy's own
-# testdata, a policy-* mutant's under the policy's, every other under the airlock's.
+# mutant_file is the patch a mutant's name names: a proxy-*, policy-* or requests-* mutant's under
+# that package's own testdata, every other under the airlock's.
 mutant_file() {
 	case "$1" in
 	proxy-*) echo "$PROXY_MUTANT_DIR/$1.patch" ;;
 	policy-*) echo "$POLICY_MUTANT_DIR/$1.patch" ;;
+	requests-*) echo "$REQUESTS_MUTANT_DIR/$1.patch" ;;
 	*) echo "$MUTANT_DIR/$1.patch" ;;
 	esac
 }
 
-# The mutants to run: the names given, else every patch of the three testdata/mutants, in name order.
+# The mutants to run: the names given, else every patch of the four testdata/mutants, in name order.
 mutants=()
 if [[ $# -gt 0 ]]; then
 	for name in "$@"; do
 		name="${name%.patch}"
 		if [[ ! -f "$(mutant_file "$name")" ]]; then
-			echo "airlock-mutants: no mutant named $name in $MUTANT_DIR, $PROXY_MUTANT_DIR or $POLICY_MUTANT_DIR" >&2
+			echo "airlock-mutants: no mutant named $name in $MUTANT_DIR, $PROXY_MUTANT_DIR, $POLICY_MUTANT_DIR or $REQUESTS_MUTANT_DIR" >&2
+			exit 2
+		fi
+		if [[ "$name" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]; then
+			echo "airlock-mutants: $name's tests need the Postgres BROKER_TEST_DATABASE_URL names, and it names none" >&2
 			exit 2
 		fi
 		mutants+=("$name")
 	done
 else
-	for patch_file in "$MUTANT_DIR"/*.patch "$PROXY_MUTANT_DIR"/proxy-*.patch "$POLICY_MUTANT_DIR"/policy-*.patch; do
+	for patch_file in "$MUTANT_DIR"/*.patch "$PROXY_MUTANT_DIR"/proxy-*.patch "$POLICY_MUTANT_DIR"/policy-*.patch "$REQUESTS_MUTANT_DIR"/requests-*.patch; do
 		mutants+=("$(basename "$patch_file" .patch)")
 	done
 fi
@@ -136,7 +149,7 @@ needs_model=false
 for name in "${mutants[@]}"; do
 	case "$name" in
 	lean-*) needs_lake=true ;;
-	proxy-* | policy-*) ;;
+	proxy-* | policy-* | requests-*) ;;
 	*) needs_model=true ;;
 	esac
 done
@@ -218,6 +231,7 @@ named_tests() {
 }
 
 failures=0
+unrun=0
 for name in "${mutants[@]}"; do
 	started=$SECONDS
 	copy="$WORK_DIR/$name"
@@ -232,9 +246,17 @@ for name in "${mutants[@]}"; do
 		continue
 	fi
 
-	if [[ "$name" == proxy-* || "$name" == policy-* ]]; then
-		package=./internal/cipher/proxy/
-		[[ "$name" == policy-* ]] && package=./internal/cipher/policy/
+	if [[ "$name" == proxy-* || "$name" == policy-* || "$name" == requests-* ]]; then
+		case "$name" in
+		policy-*) package=./internal/cipher/policy/ ;;
+		requests-*) package=./internal/cipher/requests/ ;;
+		*) package=./internal/cipher/proxy/ ;;
+		esac
+		if [[ "$name" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]; then
+			echo "UNKNOWN: $name — not run: the tests it names need the Postgres BROKER_TEST_DATABASE_URL names, and it names none, so they would skip"
+			unrun=$((unrun + 1))
+			continue
+		fi
 		tests="$(must_fail "$(mutant_file "$name")")"
 		if [ -z "$tests" ]; then
 			echo "FAIL: $name — the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
@@ -291,7 +313,10 @@ echo
 if [[ $failures -gt 0 ]]; then
 	echo "$failures of ${#mutants[@]} mutants were not caught"
 else
-	echo "${#mutants[@]} mutants, each caught"
+	echo "$((${#mutants[@]} - unrun)) mutants, each caught"
+fi
+if [[ $unrun -gt 0 ]]; then
+	echo "$unrun mutant(s) not run, so neither caught nor missed: set BROKER_TEST_DATABASE_URL to run the requests-* mutants"
 fi
 
 # Last, the assurance that this run changed nothing here: every patch was applied inside

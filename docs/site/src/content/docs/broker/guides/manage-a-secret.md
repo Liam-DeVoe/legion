@@ -250,11 +250,19 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   (`judge-out-of-range`). Without it a person decides every request that needs a decision. A
   profile is decided by its source's tag, so tag the stored secret. `retag --judge none` gives
   the decision back to a person, and ends each live grant the judge made of the secret at its
-  next release. Any change of the seconds also ends the live grants of each profile of it that
-  has a proxy block, since the seconds are in the profile's fingerprint.
+  next release; lowering the seconds below a live judged grant's lifetime ends that grant the
+  same way, and putting the tag back does not bring an ended grant back. Any change of the
+  seconds also ends the live grants of each profile of it that has a proxy block, since the
+  seconds are in the profile's fingerprint.
 - **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
-  request for the secret, in at most 2000 characters, for example
-  `--guidance 'grant for the release job when the reason names its run'`. The judge shows it to
+  request for the secret, for example
+  `--guidance 'grant for the release job when the reason names its run'`. On Google Secret
+  Manager it holds up to 2000 characters of any kind. On AWS Secrets Manager it is a tag value, so
+  it holds at most 256 characters, of Unicode letters, digits, spaces and `_ . : / = + - @`
+  alone: no comma, apostrophe, quote or parenthesis. The same holds for every tag value this
+  command writes on AWS. A value past either limit is refused before
+  anything is written, naming the limit and, for a character, the first one that fails. The judge
+  shows it to
   its model with each request, and anyone who can reach the broker can read it
   (`GET /v1/settings`), so write nothing in it you would not show them. `retag --guidance none`
   removes it; writing it ends no grant.

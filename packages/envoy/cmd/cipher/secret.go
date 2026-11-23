@@ -682,6 +682,10 @@ type secretBackend interface {
 	// write landed (tagsUnknown, writeUnknown).
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
+	// checkTagValues refuses, before any write, a tag value the store itself would refuse, naming
+	// the tag and the store's limit (awsBackend's: 256 characters of a fixed set; Secret Manager's
+	// annotations take any value the tag rules allow). tags is every tag the write sends.
+	checkTagValues(tags map[string]string) error
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:
 	// DeleteSecret's own recovery window end; GCP: the expire_time it sets), nil only on error.
 	delete(ctx context.Context, slug string) (deletion *time.Time, err error)
@@ -1398,7 +1402,7 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
 	judge := flags.String("judge", "", "whole seconds from 1 to 900: the model judge decides a request for this secret, granting at most that long, against its --guidance. Unset, a person decides it")
-	guidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret: when to grant it, in at most 2000 characters")
+	guidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret: when to grant it, in at most 2000 characters; on AWS Secrets Manager at most 256, of letters, digits, spaces and _ . : / = + - @")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1482,6 +1486,11 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	// read and before anything is written. The owner and tier go into the map above, so the
 	// tags the check weighs are the tags this create sends and the broker then reads.
 	if err := checkTagsFor(tags); err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
+	// The store's own limit on a tag value, which on AWS is shorter and narrower than the tag
+	// rules' (awsBackend.checkTagValues), checked over every tag the create sends.
+	if err := s.backend.checkTagValues(tags); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
 	command := []string{"secret", "create", name, "--owner", *owner, "--tier", *tier}

@@ -318,7 +318,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		// compares on every release, either one ends a grant decided under the other's entry; such
 		// a grant is simply asked for again.
 		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
-			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(g.name))
+			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(set, g.name, decidedBy))
 		}
 	}
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set, facts: facts, enr: enr}, nil
@@ -333,12 +333,38 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // record the chain rests on, so each caller refuses or passes over exactly as before the line.
 // ApplyDecision, which also answers ErrGrantChainInvalid, is a decision and no release, and does
 // not come through here.
+//
+// A chain that fails because a key the judge decided is one its judge tag no longer admits
+// (record.JudgeTagRefusal: the tag taken off, or lowered below the grant's lifetime) also ends the
+// grant for good, in the same step (endJudgedGrant): the release, and every release after it, is
+// refused, and putting the tag back does not revive it, as a lowered max-grant does not. The
+// caller still answers the chain's refusal, which names the judge tag.
 func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
+		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {
+			return recordID, ended
+		}
 	}
 	return recordID, err
+}
+
+// endJudgedGrant ends grantID for good (endGrant) when chainErr, the chain's refusal of it, is a
+// key's judge tag refusing the judge's approval (record.JudgeTagRefusal), recording the refusal's
+// own words as the reason, and answers nil once it is ended or when chainErr is no such refusal.
+// It answers an error only when the end itself fails (a database error), which the release
+// returns in place of the chain's refusal.
+func (m *Machine) endJudgedGrant(ctx context.Context, grantID string, chainErr error) error {
+	var refusal record.JudgeTagRefusal
+	if !errors.As(chainErr, &refusal) {
+		return nil
+	}
+	reason := fmt.Errorf("%w: %s's judge tag no longer admits this grant the model judge made: %s", ErrGrantNotLive, refusal.Name, refusal.Error())
+	if err := m.endGrant(ctx, grantID, reason); !errors.Is(err, ErrGrantNotLive) {
+		return err
+	}
+	return nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -493,8 +519,17 @@ func sourceMoved(name string) error {
 
 // profileChanged is the refusal of a granted name whose profile is not the one its request
 // recorded (requestedSecret.profileDigest against policy.Secret.ProfileDigest), which ends the
-// grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant).
-func profileChanged(name string) error {
+// grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant). A
+// profile with a proxy block carries its source key's judge seconds in its fingerprint
+// (policy.Profiles.servedDigest), so where that tag can be what moved - the source carries one
+// now, or the model judge decided the grant (decidedBy), so it carried one then - the refusal names
+// the tag beside the entry: either may be what moved, and the fingerprint does not say which.
+func profileChanged(set *policy.Set, name, decidedBy string) error {
+	served := set.Secrets[name]
+	_, judged := record.JudgeLogin(decidedBy)
+	if served.Profile != nil && served.Profile.Proxy != nil && (served.Judge != 0 || judged) {
+		return fmt.Errorf("%w: %s's profile changed since this grant was decided: its entry in the profiles file, or the judge tag of its source key %s", ErrGrantNotLive, name, served.Profile.Source)
+	}
 	return fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, name)
 }
 
@@ -801,8 +836,11 @@ func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy
 // authority is that tag and not a person's, so this arm reads the tag where the person's arm
 // reads a login: a secret handed to another person ends a grant that person must approve and did
 // not, and leaves a judged one alone, no person's approval being what it rested on, while a judge
-// tag taken off the secret, or lowered below what this grant holds, ends it. The tag is in the
-// policy version (policy.Secret.Judge), so the release reaches this arm whenever it moved.
+// tag taken off the secret, or lowered below what this grant holds, refuses it. A release meets
+// that refusal first in the chain check, which ends the grant for good there (record.MayJudge,
+// endJudgedGrant); this arm holds a caller that re-checks a grant without the chain to the same
+// rule. The tag is in the policy version (policy.Secret.Judge), so the release reaches this arm
+// whenever it moved.
 //
 // The admin tag is read first, because it outranks whatever the judge tag says: the admin tag's
 // promise is that a person approves every release of the credential (policy.TagAdmin), and a
@@ -1400,7 +1438,7 @@ candidates:
 			// release of the grant would end it for (checkRelease): end it here, as that
 			// release would, and answer no reusable grant.
 			if set.Secrets[g.name].ProfileDigest != g.profileDigest {
-				if ended := m.endGrant(ctx, match.grantID, profileChanged(g.name)); !errors.Is(ended, ErrGrantNotLive) {
+				if ended := m.endGrant(ctx, match.grantID, profileChanged(set, g.name, decidedBy)); !errors.Is(ended, ErrGrantNotLive) {
 					return Request{}, false, ended
 				}
 				return Request{}, false, nil

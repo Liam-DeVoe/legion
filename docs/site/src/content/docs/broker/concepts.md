@@ -1852,7 +1852,11 @@ every signed-in person's page.
 A judged grant is held to the keys' `judge` tags in force rather than to a person's standing, and
 to the `admin` tag over both. Each release re-checks that the secret's `judge` tag still gives the
 judge at least the grant's lifetime; a grant whose secret lost its `judge` tag, or whose seconds
-fell below that lifetime, releases nothing. A secret its owner tags as an
+fell below that lifetime, is refused and ended for good at that release, and putting the tag back
+does not bring it back, as a lowered `max-grant` does not. A grant the new seconds still cover goes
+on releasing, unless the secret is served as a profile with a `proxy` block: that profile's
+fingerprint holds the seconds, so any change of them ends its grants, refused as its profile
+having changed, "its entry in the profiles file, or the judge tag of its source key". A secret its owner tags as an
 administrator's after the judge decided it ends that grant for good, at the release and at the
 next request that would reuse it: a person approves every release of one, so no judged grant
 goes on releasing it, and taking the tag off again does not bring the grant back: the session

@@ -158,7 +158,7 @@ func (c *ChainVerifier) Verify(ctx context.Context, recordID string) (Body, erro
 			}
 		}
 		if err := MayJudge(body, obj, c.JudgeSeconds, decided); err != nil {
-			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which its keys' judge tags do not admit: %s", ErrChainBroken, modelID, err)
+			return Body{}, fmt.Errorf("%w: approved by the model judge %q, which its keys' judge tags do not admit: %w", ErrChainBroken, modelID, err)
 		}
 	} else if err := CheckDecider(c.Kind, body.Approver, obj.Service(), decisions[0].Login, c.Groups); err != nil {
 		var lapsed ApproverNotAdmittedError

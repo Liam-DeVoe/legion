@@ -916,6 +916,28 @@ func MayDecide(kind, approver, service, login string, groups Groups) bool {
 // ErrNotJudgeable); one that must say why keeps the wrapped reason.
 var ErrNotJudgeable = errors.New("not a request the model judge may decide")
 
+// JudgeTagRefusal is MayJudge's refusal of a record because a key the judge decided is one its
+// judge tag does not admit now: the key carries no judge tag (Tagged false), or the tag gives the
+// judge fewer seconds (Bound) than the record's lifetime (Lifetime). It wraps ErrNotJudgeable. A
+// release that meets it on a grant the judge made ends that grant for good (requests'
+// endJudgedGrant), as a lowered max-grant does: putting the tag back must not revive a grant the
+// tag stopped admitting.
+type JudgeTagRefusal struct {
+	Name     string
+	Tagged   bool
+	Bound    uint32
+	Lifetime int
+}
+
+func (e JudgeTagRefusal) Error() string {
+	if !e.Tagged {
+		return fmt.Sprintf("%s: %q carries no judge tag, so the judge decides nothing of it", ErrNotJudgeable, e.Name)
+	}
+	return fmt.Sprintf("%s: the record asks for %d seconds of %q, past the %d its judge tag lets the judge decide", ErrNotJudgeable, e.Lifetime, e.Name, e.Bound)
+}
+
+func (e JudgeTagRefusal) Unwrap() error { return ErrNotJudgeable }
+
 // JudgeAllowsLifetime reports whether a signed lifetime in seconds is within the seconds a key's
 // judge tag gives the judge, which policy.Set.JudgeSeconds answers as bound. It is the one
 // comparison three callers make — the judge's own check before the model
@@ -973,10 +995,10 @@ func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (ui
 		judged++
 		bound, ok := judgeSeconds(d.Identifier)
 		if !ok {
-			return fmt.Errorf("%w: %q carries no judge tag, so the judge decides nothing of it", ErrNotJudgeable, d.Identifier)
+			return JudgeTagRefusal{Name: d.Identifier}
 		}
 		if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
-			return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d its judge tag lets the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, d.Identifier, bound)
+			return JudgeTagRefusal{Name: d.Identifier, Tagged: true, Bound: bound, Lifetime: *body.LifetimeSeconds}
 		}
 	}
 	if judged == 0 {
