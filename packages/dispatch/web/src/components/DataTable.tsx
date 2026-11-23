@@ -39,7 +39,7 @@ import {
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { ColumnFilter } from "./ColumnFilter";
-import { CONTROL } from "./control-names";
+import { CONTROL, type ControlSize } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
@@ -330,7 +330,8 @@ export interface LineProps {
  * What draws the filter in a column's header cell. The caller's, never the cell's own choice:
  * one page's filter reads a registry of facets with a count against each value, another reads
  * the column's own values, and a third narrows by two ends of a range. A caller that gives none
- * gets the shared `ColumnFilter`, counting with `filterCounts` in the table's `noun`.
+ * gets the shared `ColumnFilter`, counting with `filterCounts` in the table's `noun`, at the
+ * table's `size`.
  */
 export type ColumnFilterRenderer<Row> = (props: {
   readonly column: Column<Row, unknown>;
@@ -387,6 +388,11 @@ export interface DataTableProps<Row> {
   /** The pager drawn under the box, in the caller's own words. A table given none draws none:
    *  a listing that fits one page, or one paged elsewhere, has no line to show. */
   readonly pager?: PagerOptions;
+  /** How much room the controls the table draws take (`ControlSize`): the pager's steps and its
+   *  list of page sizes, and each header's shared filter. The page passes the size the rest of
+   *  its controls take. The header cells, the rows and their cells are drawn the same at every
+   *  size. */
+  readonly size?: ControlSize;
   /** Draws the filter in a header cell, for every column that filters. */
   readonly renderFilter?: ColumnFilterRenderer<Row>;
   /** The column that takes what a box wider than the columns has to spare, and is never drawn
@@ -545,6 +551,7 @@ export function DataTable<Row>({
   renderGroup,
   renderRow,
   scrollTestId,
+  size = "comfortable",
   stackColumn,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
@@ -595,6 +602,7 @@ export function DataTable<Row>({
         noun={noun}
         onOpenChange={onOpenChange}
         open={open}
+        size={size}
         unloaded={filterUnloaded?.get(column.id) ?? NONE_UNLOADED}
       />
     ));
@@ -684,7 +692,7 @@ export function DataTable<Row>({
       </div>
 
       {pager === undefined ? null : (
-        <Pager {...pager} noun={noun} pagerRef={layout.pagerRef} table={table} />
+        <Pager {...pager} noun={noun} pagerRef={layout.pagerRef} size={size} table={table} />
       )}
     </>
   );

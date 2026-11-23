@@ -3,7 +3,9 @@ import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
+import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import type { ControlSize } from "./control-names";
 import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -88,6 +90,27 @@ test("a notice is drawn in the bar, announced, and beside no action", () => {
     // Its own line: the actions are in a box of their own, which the notice is not in.
     expect(notice.parentElement).toBe(bar);
     expect(screen.getByRole("button", { name: "Clear selection" }).parentElement).not.toBe(bar);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the bar's box takes the page's size: the comfortable padding by default, the compact padding at the compact size", () => {
+  const bar = (size?: ControlSize) => (
+    <SelectionBar count={2} label="Selected rows" size={size}>
+      <button type="button">Clear selection</button>
+    </SelectionBar>
+  );
+  const view = render(bar());
+  const padding = () =>
+    sizeUnder(screen.getByRole("toolbar", { name: "Selected rows" }), SIZE_CSS).padding;
+  try {
+    // The comfortable size is the bar the Inbox draws, which passes none.
+    expect(padding()).toBe("8px 16px 8px 16px");
+    view.rerender(bar("comfortable"));
+    expect(padding()).toBe("8px 16px 8px 16px");
+    view.rerender(bar("compact"));
+    expect(padding()).toBe("4px 8px 4px 8px");
   } finally {
     view.unmount();
   }

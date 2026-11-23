@@ -40,6 +40,7 @@ function SingleHost({
   marks,
   onCreate,
   onQueryChange,
+  onTriggerFocus,
   options,
 }: {
   ariaDisabled?: boolean;
@@ -49,6 +50,7 @@ function SingleHost({
   marks?: ListMarks;
   onCreate?: (value: string) => boolean;
   onQueryChange?: (query: string) => void;
+  onTriggerFocus?: (from: Element | null) => void;
   options: string[];
 }) {
   const [open, setOpen] = useState(false);
@@ -76,6 +78,7 @@ function SingleHost({
           setHanded((before) => [...before, picked]);
         }}
         onQueryChange={onQueryChange}
+        onTriggerFocus={onTriggerFocus}
         open={open}
         options={options}
         searchLabel="Search epics"
@@ -1278,6 +1281,54 @@ test("a focused row's press that changes nothing drawn answers no later loss: ne
       document.body,
       "new options took the row away, and the focus left the page's body though the reader's press took nothing away"
     ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host can keep where the reader came from onto the trigger, for a way back there, as the
+// Inbox's bulk Snooze keeps the row Escape returns to. The list hands the focus back to its
+// trigger as it closes - on a pick, Escape, Tab, or a press of the trigger - which is no arrival,
+// so the host's record outlives the reader's use of the list.
+test("a single pick tells its host where a focus arriving on its trigger came from, and not of the focus its list hands back", async () => {
+  const user = userEvent.setup();
+  const arrivals: string[] = [];
+  const view = render(
+    <SingleHost
+      onTriggerFocus={(from) => arrivals.push(from?.textContent ?? "nowhere")}
+      options={["Lease", "Mirror"]}
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
+    await user.tab({ shift: true });
+    expect(trigger).toHaveFocus();
+    expect(arrivals).toEqual(["Elsewhere"]);
+
+    // Escape, Tab and a pick each hand the focus back from the list to the trigger.
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.tab();
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(trigger).toHaveFocus();
+    expect(screen.getByTestId("handed").textContent).toBe("Mirror");
+    // A press of the open list's trigger closes it.
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    expect(arrivals).toEqual(["Elsewhere"]);
+
+    // A press from outside is an arrival again.
+    act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
+    await user.click(trigger);
+    expect(arrivals).toEqual(["Elsewhere", "Elsewhere"]);
   } finally {
     view.unmount();
   }

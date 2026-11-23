@@ -1,8 +1,9 @@
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useState } from "react";
 import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeSelectBadge, badgeSelectTrigger, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
@@ -20,13 +21,77 @@ const NO_BULK_SNOOZING: ReadonlySet<string> = new Set();
  */
 export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SNOOZING);
 
+/** The presets' ids, in the order the list offers them. */
+const PRESET_IDS: readonly string[] = SNOOZE_PRESETS.map((preset) => preset.id);
+
+/** The row's own Snooze writes this on its list's trigger, which the Inbox's `h` focuses. */
+const ROW_SNOOZE_MARKS: ListMarks = { trigger: { "data-inbox-snooze": "" } };
+
 /**
- * The per-row defer control. On an ordinary row it is the "Snooze" badge with the same
- * invisible native `<select>` over it that the priority editor uses, so the menu is one tap on
- * a phone and one keyboard interaction on a desktop; the picks are `snooze.ts`'s presets and
- * the moment is computed when the reader picks, not when the page rendered. On a row already
- * inside its window it is the return time and the one button that ends the snooze early -
- * nothing else does, which is the point: an agent answering a deferred ask leaves it deferred.
+ * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single
+ * pick (`MultiSelect`) of `snooze.ts`'s presets, and the list's text box narrows them as the
+ * reader types. A row's own Snooze (`SnoozeControl`) and the selection bar's (`Inbox.tsx`) are
+ * this control. The badge shows `badge` for the eye alone (`aria-hidden`), so the trigger's name
+ * is `label` alone, whatever the badge says. A pick hands `onPick` the moment its preset names,
+ * computed at the pick, not when the page rendered. While `held` - a write is out that the pick
+ * would race - the trigger is `aria-disabled`, never `disabled`, so it keeps the reader's focus:
+ * a press of it opens no list, and a pick from a list that stood open as the hold began writes
+ * nothing.
+ */
+export function SnoozePick({
+  badge,
+  held,
+  label,
+  marks,
+  onPick,
+  onTriggerFocus,
+}: {
+  badge: string;
+  held: boolean;
+  label: string;
+  /** The marks the host's keys find the trigger by. */
+  marks: ListMarks;
+  onPick: (until: string) => void;
+  /** The focus arriving on the trigger from outside the list (`MultiSelect`'s). */
+  onTriggerFocus?: (from: Element | null) => void;
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className={badgeSelectWrapper}>
+      <MultiSelect
+        ariaDisabled={held}
+        chevron={false}
+        emptyMessage="No snooze time matches that."
+        label={label}
+        marks={marks}
+        mode="single"
+        onOpenChange={(next) => setOpen(next && !held)}
+        onPick={(id) => {
+          if (held) return;
+          const preset = SNOOZE_PRESETS.find((option) => option.id === id);
+          if (preset !== undefined) onPick(preset.until(new Date()));
+        }}
+        onTriggerFocus={onTriggerFocus}
+        open={open}
+        optionLabel={(id) => SNOOZE_PRESETS.find((preset) => preset.id === id)?.label}
+        options={PRESET_IDS}
+        searchLabel="Search snooze times"
+        triggerClassName={badgeSelectTrigger}
+      >
+        <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
+          {badge}
+        </span>
+      </MultiSelect>
+    </span>
+  );
+}
+
+/**
+ * The per-row defer control. On an ordinary row it is the "Snooze" badge and the list of
+ * `snooze.ts`'s presets it opens (`SnoozePick`), whose text box narrows them as the reader types.
+ * On a row already inside its window it is the return time and the one button that ends the
+ * snooze early - nothing else does, which is the point: an agent answering a deferred ask leaves
+ * it deferred.
  *
  * A snooze moves its row into Later, which starts folded, and an un-snooze moves it out, either
  * of which would unmount this control. So the write is not this control's: the Inbox holds it,
@@ -40,37 +105,37 @@ export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SN
  * move is the feedback for a snooze that lands, made in the commit in which the Inbox lets go of
  * the row. A snooze the server refuses, or one the reader stops, rolls the row's moment back and
  * holds the row no longer, so the next read of the Inbox places it; the reason stays with the
- * ask, shown wherever the row is drawn. The Snooze select and Un-snooze are held from the press
- * until the commit after their write's answer (`useHeldThroughAnswer`): the select by
+ * ask, shown wherever the row is drawn. The Snooze list and Un-snooze are held from the press
+ * until the commit after their write's answer (`useHeldThroughAnswer`): the list's trigger by
  * `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`. The Inbox lets
  * go of the row in the answer's own commit, so a row that moves takes its control away while that
  * control is still held.
  * The optimistic moment puts the row inside its window at once, where Un-snooze would be drawn in
- * the select's place; the select stays drawn instead, held, with the return time being saved
- * before it, while its pick's write is out and through the commit after its answer. An
- * un-snooze takes the row out of its window at once the same way, where the select would be drawn
- * in Un-snooze's place, so Un-snooze stays drawn, held, while its write is out and through the
- * commit after its answer. The press is the reader's, and the row's going after the answer is
- * that press's doing (`causedByReader`) only while the control it landed on is still in the page
- * and held: the row goes with its held control, so the page's rescue hands the focus on as it
- * does for Dismiss and Assign to me, to the same control in the row that moves up into the row's
- * place. That is a row's own Snooze. In the reading column's head (`ReadingPaneHead`) the control
- * goes with the question the column shows, and the Inbox's own hand-off sends the focus to the
- * column's focus stop instead (`Inbox.tsx`). A control taken away at the press would leave the
- * row's going to drop the focus onto the page.
+ * the list's place; the list stays drawn instead, held, with the return time being saved before
+ * it, while its pick's write is out and through the commit after its answer. An un-snooze takes
+ * the row out of its window at once the same way, where the list would be drawn in Un-snooze's
+ * place, so Un-snooze stays drawn, held, while its write is out and through the commit after its
+ * answer. The press is the reader's, and the row's going after the answer is that press's doing
+ * (`causedByReader`) only while its control - for a pick, the trigger of the list it was made in -
+ * is still in the page and held: the row goes with its held control, so the page's rescue hands
+ * the focus on as it does for Dismiss and Assign to me, to the same control in the row that moves
+ * up into the row's place. That is a row's own Snooze. In the reading column's head
+ * (`ReadingPaneHead`) the control goes with the question the column shows, and the Inbox's own
+ * hand-off sends the focus to the column's focus stop instead (`Inbox.tsx`). A control taken away
+ * at the press would leave the row's going to drop the focus onto the page.
  *
  * The selection bar's Snooze over the rows the reader marked holds the control the same way while
  * that write is out over this ask (`BulkSnoozingContext`): the optimistic moment would draw
- * Un-snooze there too, and a press on it would send a write racing the bar's. The select stays
+ * Un-snooze there too, and a press on it would send a write racing the bar's. The list stays
  * drawn instead, held, with the return time being saved before it, through the commit in which
  * the bar lets go of the row, which is the commit the Inbox moves the row in; a refused or
  * stopped bar write leaves the row where it was, with the reason on the bar, and its ordinary
  * control back in the commit after. One hold covers both writes, so no pick and no press of
  * Snooze or Un-snooze writes while either is out.
  *
- * The badge's `Snoozing…` is drawn for the eye alone (`aria-hidden`) and the select keeps its
- * name, so the write is said to a screen reader by a polite status of its own while it is out,
- * and that status says nothing once the write is decided.
+ * The badge's `Snoozing…` is drawn for the eye alone (`aria-hidden`) and the list's trigger keeps
+ * its name, so the write is said to a screen reader by a polite status of its own while it is
+ * out, and that status says nothing once the write is decided.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -159,31 +224,13 @@ export function SnoozeControl({
     <>
       {status}
       {returnTime}
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
-          {pendingLabel ?? "Snooze"}
-        </span>
-        <select
-          aria-disabled={held || undefined}
-          aria-label={`Snooze ${label}`}
-          className={badgeSelectOverlay}
-          data-inbox-snooze=""
-          onChange={(event) => {
-            // Held, a pick writes nothing, and the select, controlled at `""`, shows no pick.
-            if (held) return;
-            const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-            if (preset !== undefined) write.submit(preset.until(new Date()));
-          }}
-          value=""
-        >
-          <option value="">Snooze…</option>
-          {SNOOZE_PRESETS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.label}
-            </option>
-          ))}
-        </select>
-      </span>
+      <SnoozePick
+        badge={pendingLabel ?? "Snooze"}
+        held={held}
+        label={`Snooze ${label}`}
+        marks={ROW_SNOOZE_MARKS}
+        onPick={(until) => write.submit(until)}
+      />
       {failure}
     </>
   );

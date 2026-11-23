@@ -10,10 +10,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router-dom";
 
 import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
+import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
@@ -22,16 +22,15 @@ import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { MultiSelect } from "../../components/MultiSelect";
+import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import { capSearchQuery } from "../../lib/page-address";
+import { capSearchQuery, useAddressNavigate } from "../../lib/page-address";
 import {
-  badgeLow,
   borderDefault,
   checkboxAccent,
   dangerText,
@@ -49,7 +48,6 @@ import {
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -136,7 +134,7 @@ import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { ReadingPane } from "./ReadingPane";
 import { RowApprovalMark, RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
-import { BulkSnoozingContext, SnoozeControl } from "./SnoozeControl";
+import { BulkSnoozingContext, SnoozeControl, SnoozePick } from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
   type InboxSection,
@@ -147,7 +145,7 @@ import {
   sectionTitles,
   UNASSIGNED_FILTER_VALUE,
 } from "./sections";
-import { isSnoozed, SNOOZE_PRESETS } from "./snooze";
+import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
@@ -248,8 +246,10 @@ function InboxRowChip({ ask }: { ask: OpenAskRow }): ReactNode {
   return null;
 }
 
-/** The bulk bar's snooze picker: `h` hands it focus and Escape takes it back to the list. */
+/** The bulk bar's snooze picker, its list's trigger: `h` hands it focus and Escape takes it back
+ *  to the list. */
 const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
+const BULK_PICKER_MARKS: ListMarks = { trigger: { "data-inbox-bulk-snooze": "" } };
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
@@ -832,8 +832,8 @@ function withHeld(
 
 /** `bands` with an empty band for each key of `kept` that none of them has, headed as the reader
  *  last saw it (`previous`, the bands as last drawn) and drawn after the nearest band before it
- *  there that is still drawn: the band a write out keeps its row in once every other row the
- *  list holds has left it. */
+ *  there that is still drawn: the band a write out keeps its row in, or the reader's hand keeps
+ *  a moved row in, once every other row the list holds has left it. */
 function withHeldBands(
   bands: readonly InboxGroup[],
   kept: ReadonlySet<string>,
@@ -1035,6 +1035,7 @@ function InboxBody({
   readonly onCompose: () => void;
 }): ReactNode {
   const [addressRoute, goToRoute] = useInboxRoute();
+  const navigate = useAddressNavigate();
   const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
   // in the drawer, the Inbox is the list of cards it has always been.
@@ -2022,7 +2023,10 @@ function InboxBody({
   // while the list is still drawn under it - the same grouping, and the same view. Under that
   // layout the band a write holds its row in is drawn again though no other row is left in it
   // (`keptBands`): a snooze takes its row out of the band whoever else is there, and an answer,
-  // a decline, an Assign to me or a hand-on the filters drop takes it out of the list.
+  // a decline, an Assign to me or a hand-on the filters drop takes it out of the list. So is the
+  // band the reader's hand holds a listed row in that has moved to another band, as a pick of the
+  // row's own priority moves it: drawn in no band, the row would leave the page with the
+  // reader's focus in it.
   const layout = showDismissed ? "dismissed" : groupBy;
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
@@ -2057,7 +2061,9 @@ function InboxBody({
     );
     if (kept === undefined) continue;
     held.push(kept);
-    if (sameLayout && (out || written)) keptBands.add(kept.group);
+    if (sameLayout && ((inHand && listed !== undefined) || out || written)) {
+      keptBands.add(kept.group);
+    }
     if (inHand) handHeld = kept;
   }
   heldUnder.current =
@@ -2074,28 +2080,37 @@ function InboxBody({
         ? { sessionId: agent, storedTitle: undefined }
         : { actor: agentAuthor };
   const agentTitle = agentSubject === undefined ? undefined : agentText.part(agentSubject);
-  // The clear-filter link keeps its own text and name; the agent's live link sits beside it.
-  // `whitespace-pre` keeps the space before an attribution suffix, which a flex item would drop.
+  // Taking the agent narrowing off leaves for the Inbox of the same assignees, selection and
+  // search text, with every other narrowing, the order, the banding and the view at their
+  // defaults. On the page the move pushes a history entry, as following a link does, so Back
+  // gives the agent's asks back. A host that owns the filter (the drawer) is told of the move
+  // instead, as it is of every other chip's removal.
+  const clearAgent = () => {
+    const next: InboxRoute = { assignees: filter.assignees, item: filter.item, q: filter.q };
+    if (onFilterChange) onFilterChange(next);
+    else navigate(buildInboxPath(next), { replace: false });
+  };
+  const waitingOnYou = filter.section === "needs-you" ? " waiting on you" : "";
+  // The agent narrowing's chip is the row's shared removable chip, drawn as `filterChips` draws
+  // the other narrowings' chips, and named for what its press does. The agent's live link sits
+  // beside it, outside it. `whitespace-pre` keeps the space before an attribution suffix, which
+  // a flex item would drop.
   const agentChip =
     agentSubject === undefined ? undefined : (
       <AgentName
         {...agentSubject}
         className="flex items-center whitespace-pre"
         control={(name) => (
-          <Link
+          <Chip
             aria-label="Clear agent filter"
-            className="inline-flex min-h-11 items-center rounded-full"
-            to={buildInboxPath({
-              assignees: filter.assignees,
-              item: filter.item,
-              q: filter.q,
-            })}
+            onClick={clearAgent}
+            removable
+            selected
+            title={`Asks from ${agentText.part(agentSubject)}${waitingOnYou}`}
           >
-            <LabelPill selected>
-              Asks from {name}
-              {filter.section === "needs-you" ? " waiting on you" : ""} · clear
-            </LabelPill>
-          </Link>
+            Asks from {name}
+            {waitingOnYou}
+          </Chip>
         )}
         kind="control"
       />
@@ -2455,41 +2470,23 @@ function InboxBody({
           and under the Blocked on you narrowing out of the list. A picker unmounted under the
           reader's hand drops their focus. */}
       {selectedAsks.length === 0 && bulkSnoozing.size === 0 ? null : (
-        <span className={badgeSelectWrapper}>
-          <span
-            aria-hidden="true"
-            className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}
-          >
-            Snooze
-          </span>
-          {/* One pick at a time: a second while the first is in the air re-sends every id, and
-              its answer can settle after the live one's and overwrite what the reader was told.
-              It is `aria-disabled` rather than `disabled` because the browser takes focus off a
-              control that disables itself under it - dropping the reader on the document
-              mid-write, with no Escape to leave and no way back to the bar. */}
-          <select
-            aria-disabled={bulkSnoozing.size !== 0}
-            aria-label="Snooze selected asks"
-            className={badgeSelectOverlay}
-            data-inbox-bulk-snooze=""
-            onChange={(event) => {
-              if (bulkSnoozing.size !== 0) return;
-              const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-              if (preset !== undefined) snoozePick(preset.until(new Date()));
-            }}
-            onFocus={(event) => {
-              pickerOrigin.current = rowAround(event.relatedTarget)?.dataset.inboxRow ?? null;
-            }}
-            value=""
-          >
-            <option value="">Snooze…</option>
-            {SNOOZE_PRESETS.map((preset) => (
-              <option key={preset.id} value={preset.id}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-        </span>
+        // One pick at a time: a second while the first is in the air re-sends every id, and its
+        // answer can settle after the live one's and overwrite what the reader was told. It is
+        // held by `aria-disabled` rather than `disabled` because the browser takes focus off a
+        // control that disables itself under it - dropping the reader on the document mid-write,
+        // with no Escape to leave and no way back to the bar. The focus arriving on it records
+        // the row it came from, for Escape to go back to; the list handing the focus back to it
+        // records nothing, so the row outlives a pick (`onTriggerFocus`).
+        <SnoozePick
+          badge="Snooze"
+          held={bulkSnoozing.size !== 0}
+          label="Snooze selected asks"
+          marks={BULK_PICKER_MARKS}
+          onPick={snoozePick}
+          onTriggerFocus={(from) => {
+            pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
+          }}
+        />
       )}
       {selectedThreads.length === 0 ? null : (
         <button
@@ -2671,8 +2668,9 @@ function InboxBody({
   }
 
   // Each held row is drawn in the band the reader saw it in, after the row it then followed; a
-  // band a write keeps its row in is drawn where it stood though no other row is left in it
-  // (`keptBands`). A band every row has left is empty, and an empty band has nothing to head.
+  // band a write keeps its row in, or the reader's hand keeps a moved row in, is drawn where it
+  // stood though no other row is left in it (`keptBands`). A band every row has left is empty,
+  // and an empty band has nothing to head.
   const heldById = new Map(held.map((placed) => [rowId(placed.row), placed]));
   const drawn = withHeldBands(bands, keptBands, presentedBands.current.headings)
     .map((band) => {

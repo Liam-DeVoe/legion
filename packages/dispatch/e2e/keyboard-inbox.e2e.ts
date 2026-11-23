@@ -13,6 +13,7 @@ import {
   patchIssue,
 } from "./api";
 import { recordClipboard } from "./clipboard";
+import { listTrigger, pickFromList } from "./filters";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   hasReadingPane,
@@ -96,11 +97,11 @@ test.describe("inbox selection", () => {
       });
 
       // h with a selection focuses the bulk picker; one pick writes every marked ask.
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+      const picker = listTrigger(bar, "Snooze selected asks");
       await page.keyboard.press("h");
       await expect(picker).toBeFocused();
       const writes = Promise.all([snoozeRequest(page, first), snoozeRequest(page, second)]);
-      await picker.selectOption("later-today");
+      await pickFromList(picker, "Later today");
       for (const request of await writes) {
         expect(Date.parse(request.postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
       }
@@ -153,7 +154,7 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+      await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
 
       // The reason is the server's own, as the per-row control shows it - a refusal a reader
       // cannot tell from a sign-out is not a report.
@@ -201,7 +202,7 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+      await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
@@ -273,9 +274,9 @@ test.describe("inbox selection", () => {
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       await page.keyboard.press("h");
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+      const picker = listTrigger(bar, "Snooze selected asks");
       await expect(picker).toBeFocused();
-      await picker.selectOption("tomorrow");
+      await pickFromList(picker, "Tomorrow");
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
@@ -370,7 +371,7 @@ test.describe("inbox selection", () => {
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
       inboxReads.length = 0;
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
+      await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
 
       // Both rows go at once; the bar stays while its write is in the air, and counts the pick
       // it is waiting on rather than the selection the optimistic move has just emptied. With the
@@ -395,7 +396,7 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(0);
 
       // The pick is the one thing in the air: the picker takes no second one while it settles.
-      await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toBeDisabled();
+      await expect(listTrigger(bar, "Snooze selected asks")).toBeDisabled();
 
       refuse?.();
 
@@ -429,7 +430,7 @@ test.describe("inbox selection", () => {
       // Mark it, then snooze it from its own control: it folds into Later.
       await markFromKeyboard(page, 1);
       await expect(bar).toContainText("1 selected");
-      await (await rowSnooze(page, await askIdOf(page, 0))).selectOption("tomorrow");
+      await pickFromList(await rowSnooze(page, await askIdOf(page, 0)), "Tomorrow");
       await expect(later).toBeVisible();
       await expect(rows).toHaveCount(0);
       await expect(bar).toHaveCount(0);
@@ -450,9 +451,9 @@ test.describe("inbox selection", () => {
       );
       await rows.nth(0).focus();
       await page.keyboard.press("h");
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+      const picker = listTrigger(bar, "Snooze selected asks");
       await expect(picker).toBeFocused();
-      await picker.selectOption("next-week");
+      await pickFromList(picker, "Next week");
       await expect(bar).toContainText("Could not snooze 1 of 1: snoozed_until must be a moment.");
 
       // Fold the band again: nothing of the list is rendered, and the bar is all that is left -
@@ -499,7 +500,7 @@ test.describe("inbox selection", () => {
       await expect(bar).toContainText("2 selected");
 
       // The reader defers one row themselves; it folds into Later, out of sight but still marked.
-      await (await rowSnooze(page, deferred.id)).selectOption("tomorrow");
+      await pickFromList(await rowSnooze(page, deferred.id), "Tomorrow");
       await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", live.id);
@@ -511,7 +512,7 @@ test.describe("inbox selection", () => {
       // own picker with it, so focus is back on the page and `h` is the bar's.
       await page.mouse.move(0, 0);
       await page.keyboard.press("h");
-      await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("next-week");
+      await pickFromList(listTrigger(bar, "Snooze selected asks"), "Next week");
       await expect.poll(() => moment(live.id)).toBeTruthy();
 
       expect(await moment(deferred.id)).toBe(byHand);
@@ -540,22 +541,22 @@ test.describe("inbox selection", () => {
 
       await markFromKeyboard(page, 2);
       const bar = page.getByRole("toolbar", { name: "Selected rows" });
-      const picker = bar.getByRole("combobox", { name: "Snooze selected asks" });
+      const picker = listTrigger(bar, "Snooze selected asks");
       await page.keyboard.press("h");
       await expect(picker).toBeFocused();
       const writes: string[] = [];
       page.on("request", (request) => {
         if (request.method() === "PUT") writes.push(request.url());
       });
-      await picker.selectOption("tomorrow");
+      await pickFromList(picker, "Tomorrow");
 
       // Inert, not taken away: a control that disabled itself would drop the reader to the
       // document mid-write, and Escape would have nothing to leave.
       await expect(bar).toContainText("Snoozing 2…");
       await expect(picker).toBeDisabled();
       await expect(picker).toBeFocused();
-      // A second pick from the keyboard the reader still holds: an arrow on a focused native
-      // select changes it and fires `change`, and the bar ignores it while its own write is out.
+      // A second pick from the keyboard the reader still holds: an arrow on the focused trigger
+      // opens its list, and the trigger opens none while the bar's own write is out.
       await page.keyboard.press("ArrowDown");
       expect(writes.length).toBe(2);
 
@@ -587,7 +588,7 @@ test.describe("inbox selection", () => {
       const rows = page.locator("[data-inbox-row]");
 
       // Defer Alpha: it drops into `Later`, which renders below every turn band.
-      await (await rowSnooze(page, deferred.id)).selectOption("tomorrow");
+      await pickFromList(await rowSnooze(page, deferred.id), "Tomorrow");
       await page.getByRole("button", { name: /^Later \(1\)/ }).click();
       await expect(rows).toHaveCount(2);
 
@@ -695,7 +696,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     await expect(bar).toContainText("1 selected");
     await expect(bar.getByRole("button", { name: "Dismiss selected threads" })).toBeVisible();
     await page.keyboard.press("h");
-    await expect(bar.getByRole("combobox", { name: "Snooze selected asks" })).toHaveCount(0);
+    await expect(listTrigger(bar, "Snooze selected asks")).toHaveCount(0);
     // The mark is the reader's own: a second `x` gives the row back before the walk goes on.
     await page.keyboard.press("x");
     await expect(bar).toHaveCount(0);

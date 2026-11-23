@@ -46,7 +46,7 @@ import {
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
-import { PriorityControl } from "../issue/PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
@@ -684,7 +684,10 @@ export function IssueBoard({
       id: "priority",
       keys: "p",
       label: "Focus the card's priority",
-      run: () => cardAround(document.activeElement)?.querySelector("select")?.focus(),
+      run: () =>
+        cardAround(document.activeElement)
+          ?.querySelector<HTMLElement>(PRIORITY_TRIGGER_SELECTOR)
+          ?.focus(),
       when: focusedCard,
     },
     {

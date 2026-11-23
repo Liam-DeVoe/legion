@@ -459,11 +459,11 @@ test.describe("inbox search", () => {
     await expect(inboxRow(page, scene.retryAskId)).toBeVisible();
     await expect(inboxSearchBox(page)).toHaveValue("lease");
 
-    const clear = page.getByRole("link", { name: "Clear agent filter" });
-    await expect(clear).toHaveText("Asks from Morning auditor · clear");
+    const clear = page.getByRole("button", { name: "Clear agent filter" });
+    await expect(clear).toHaveText("Asks from Morning auditor×");
     await clear.click();
 
-    await expect(page.getByRole("link", { name: "Clear agent filter" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Clear agent filter" })).toHaveCount(0);
     await expect(inboxSearchBox(page)).toHaveValue("lease");
     await expect(rows(page)).toHaveCount(2);
     await expect(inboxRow(page, scene.retryAskId)).toBeVisible();

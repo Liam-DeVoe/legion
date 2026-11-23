@@ -1,8 +1,9 @@
 import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 import type { Agent, MessageDeliveryMode } from "../../api/types";
 import { heldPress } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
 import { RefusableButton } from "../../components/RefusableButton";
 import {
   borderDefault,
@@ -15,7 +16,7 @@ import {
   textMutedOnSurface,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
-import { MODE_LABELS } from "../conversation/delivery";
+import { capabilityLabel, deliveryMode } from "../conversation/delivery";
 import { MentionField } from "../conversation/MentionField";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { broadcastSendState, type ComposedBroadcast } from "./broadcast-plan";
@@ -78,6 +79,7 @@ export function BroadcastComposer({
 }): ReactNode {
   const { plan } = composed;
   const { excluded, recipients, unchecked } = plan;
+  const [modeListOpen, setModeListOpen] = useState(false);
   // The selection's own mode, named when it is not the broadcast's usual BTW, so the reader knows
   // what their words become: an Aside, because a selected session takes Aside and not BTW.
   const asideOnly =
@@ -166,21 +168,27 @@ export function BroadcastComposer({
         })}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
-        <select
-          aria-disabled={held || undefined}
-          aria-label="Delivery mode"
-          className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-          onChange={(event) => {
-            if (!held) onDelivery(event.target.value as MessageDeliveryMode);
+        {/* The shared list's single pick of the modes, whose text box narrows them as the reader
+            types; its trigger shows the mode the broadcast sends in. While `held` it is held by
+            `aria-disabled`: it keeps the focus, opens on nothing, and a pick changes no mode. */}
+        <MultiSelect
+          ariaDisabled={held}
+          emptyMessage="No mode matches that."
+          label="Delivery mode"
+          mode="single"
+          onOpenChange={(next) => setModeListOpen(next && !held)}
+          onPick={(picked) => {
+            if (held) return;
+            const mode = deliveryMode(picked);
+            if (mode !== undefined) onDelivery(mode);
           }}
+          open={modeListOpen}
+          optionLabel={capabilityLabel}
+          options={DELIVERY_CAPABILITIES}
+          searchLabel="Search delivery modes"
+          triggerClassName={`min-h-11 rounded-lg border px-3 py-2 text-left text-sm ${inputClasses(true)}`}
           value={delivery}
-        >
-          {DELIVERY_CAPABILITIES.map((mode) => (
-            <option key={mode} value={mode}>
-              {MODE_LABELS[mode]}
-            </option>
-          ))}
-        </select>
+        />
       </div>
       {/* The box is one grid cell of the short-screen layout, so the label the field wraps it
           in carries that placement and the box itself only its own size. */}

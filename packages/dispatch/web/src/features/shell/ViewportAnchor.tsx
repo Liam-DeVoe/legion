@@ -1,6 +1,7 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
+import { PANEL_ATTRIBUTE } from "./keymap";
 
 export interface AnchorRow {
   id: string;
@@ -133,6 +134,17 @@ function rowAtCenter(
 function rowWithin(root: HTMLElement, selector: string, node: Element | null): HTMLElement | null {
   const row = node?.closest<HTMLElement>(selector) ?? null;
   return row !== null && root.contains(row) ? row : null;
+}
+
+/** Where the focus is, as a row reads it: the focused element, or, while the focus is in a panel
+ *  a control opened (`AnchoredPanel`, a `MultiSelect` list's), the control that names that panel
+ *  (`aria-controls`). The panel is portalled out of the list, so without this a row whose list is
+ *  open would hold no focus while the reader picks from it. */
+function focusedControl(): Element | null {
+  const active = document.activeElement;
+  const panel = active?.closest(`[${PANEL_ATTRIBUTE}]`);
+  if (panel == null || panel.id === "") return active;
+  return document.querySelector(`[aria-controls~="${CSS.escape(panel.id)}"]`) ?? active;
 }
 
 /**
@@ -482,13 +494,14 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (rootRef !== undefined) rootRef.current = node;
   };
 
-  /** The row the reader's hand is on: focus within a row, else the pointer resting on one. No
-   *  layout reads, so a parent may call it on every render. */
+  /** The row the reader's hand is on: focus within a row, or in a list a control of the row
+   *  opened (`focusedControl`), else the pointer resting on one. No layout reads, so a parent may
+   *  call it on every render. */
   interacted(): (AnchorRow & { row: HTMLElement }) | null {
     const root = this.root;
     if (root === null) return null;
     const selector = `[${this.props.item}]`;
-    const focused = rowWithin(root, selector, document.activeElement);
+    const focused = rowWithin(root, selector, focusedControl());
     const resting =
       this.hovered !== null && (!this.onOwnCard || refPreviewOpenedIn(this.hovered))
         ? this.hovered

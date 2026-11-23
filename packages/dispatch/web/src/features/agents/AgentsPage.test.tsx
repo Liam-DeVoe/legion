@@ -15,6 +15,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue } from "../../__tests__/focus-rescue";
 import { pressHeld } from "../../__tests__/held-press";
+import { pickIn } from "../../__tests__/issue-picks";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
@@ -3025,9 +3026,10 @@ test("a broadcast leaves out a selected agent that does not advertise the chosen
     );
     const broadcast = within(region).getByRole("region", { name: "Broadcast" });
     // The Reviewer advertises `aside` only, so BTW reaches the Planner alone.
-    await user.selectOptions(
-      within(broadcast).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
+    await pickIn(
+      user,
+      () => within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") }),
+      "BTW"
     );
     const excludedLine = within(broadcast).getByText(
       wholeText(
@@ -3068,17 +3070,16 @@ test("a broadcast whose selection holds an Aside-only session goes as an Aside u
       within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
     );
     let broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    const mode = () =>
-      within(broadcast).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    const mode = () => within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") });
     // The Planner takes BTW: the broadcast's usual default, named by nothing.
-    expect(mode().value).toBe("btw");
+    expect(mode()).toHaveAccessibleName("Delivery mode BTW");
     expect(within(broadcast).queryByText(/Sending as Aside/)).not.toBeInTheDocument();
     // The Reviewer advertises `aside` only, so the selection's mode becomes Aside and reaches both.
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     const asideLine = within(broadcast).getByText(
       wholeText("Sending as Aside: Reviewer does not advertise BTW.")
     );
@@ -3128,12 +3129,58 @@ test("a mode both recipients advertise takes the excluded one back in", async ()
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const broadcast = within(region).getByRole("region", { name: "Broadcast" });
-    await user.selectOptions(
-      within(broadcast).getByRole("combobox", { name: "Delivery mode" }),
-      "aside"
+    await pickIn(
+      user,
+      () => within(broadcast).getByRole("button", { name: pickNamed("Delivery mode") }),
+      "Aside"
     );
     expect(within(broadcast).queryByText(/Excluded:/)).not.toBeInTheDocument();
     expect(within(broadcast).getByRole("button", { name: "Send to 2" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// R3: every list of options a reader picks from holds a text box that narrows the options. The
+// broadcast composer's Delivery mode is the shared list's single pick of the modes: pressed, it
+// opens with one text box, a typed word leaves the modes it matches, and Enter on the one left
+// sends the broadcast in that mode.
+test("the broadcast's Delivery mode list opens with a text box, a typed word narrows the modes, and a pick sends in that mode", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    const broadcast = within(within(region).getByRole("region", { name: "Broadcast" }));
+    const mode = broadcast.getByRole("button", { name: pickNamed("Delivery mode") });
+    expect(mode).toHaveAccessibleName("Delivery mode BTW");
+    const boxes = textBoxes().length;
+    await user.click(mode);
+    const panel = panelOf(mode);
+    expect(textBoxes().length).toBe(boxes + 1);
+    expect(within(panel).getByRole("combobox", { name: "Search delivery modes" })).toHaveFocus();
+    const shown = () =>
+      within(panel)
+        .getAllByRole("option")
+        .map((option) => option.textContent);
+    expect(shown()).toEqual(["Aside", "✓BTW", "Send"]);
+    await user.keyboard("asi");
+    expect(shown()).toEqual(["Aside"]);
+    await user.keyboard("{Enter}");
+    expect(mode).toHaveAccessibleName("Delivery mode Aside");
+    expect(mode).toHaveFocus();
+    await type(user, broadcast.getByRole("textbox", { name: "Broadcast message" }), "Report.");
+    await user.click(broadcast.getByRole("button", { name: "Send to 1" }));
+    await waitFor(() =>
+      expect(page.createBroadcast).toHaveBeenCalledWith(
+        { body: "Report.", delivery: "aside", session_ids: ["planner-session"] },
+        keyedAttempt
+      )
+    );
   } finally {
     page.view.unmount();
     page.restore();
@@ -3282,20 +3329,20 @@ test("Restore draft keeps a mode the sender did not pick unpicked, so it still f
     const region = await screen.findByRole("region", { name: "Agents" });
     const broadcast = () => within(region).getByRole("region", { name: "Broadcast" });
     const mode = () =>
-      within(broadcast()).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+      within(broadcast()).getByRole("button", { name: pickNamed("Delivery mode") });
     // The Reviewer takes Aside alone, so the selection's own mode is Aside.
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const body = within(broadcast()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Report status.");
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(screen.getByRole("button", { name: "Send to 1" }));
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
 
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     expect(
       within(broadcast()).getByText(wholeText("Sending as Aside: Reviewer does not advertise BTW."))
     ).toBeTruthy();
@@ -3306,7 +3353,7 @@ test("Restore draft keeps a mode the sender did not pick unpicked, so it still f
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
-    expect(mode().value).toBe("btw");
+    expect(mode()).toHaveAccessibleName("Delivery mode BTW");
   } finally {
     page.view.unmount();
     page.restore();
@@ -3322,14 +3369,13 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const composer = () => within(region).getByRole("region", { name: "Broadcast" });
-    const mode = () =>
-      within(composer()).getByRole<HTMLSelectElement>("combobox", { name: "Delivery mode" });
+    const mode = () => within(composer()).getByRole("button", { name: pickNamed("Delivery mode") });
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Report status.");
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
 
@@ -3341,7 +3387,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
 
     // Held word for word, the request shows its own mode and goes in it.
-    expect(mode().value).toBe("aside");
+    expect(mode()).toHaveAccessibleName("Delivery mode Aside");
     await user.click(within(composer()).getByRole("button", { name: "Send to 1" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(2));
     expect(posted(page, 1)).toEqual(posted(page, 0));
@@ -3367,9 +3413,10 @@ test("a selected agent that went away does not change what Restore draft re-send
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
     const composer = () => within(region).getByRole("region", { name: "Broadcast" });
-    await user.selectOptions(
-      within(composer()).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
+    await pickIn(
+      user,
+      () => within(composer()).getByRole("button", { name: pickNamed("Delivery mode") }),
+      "BTW"
     );
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Still here?");
@@ -3444,9 +3491,10 @@ test("a selected agent that came back is shown as not in the restored send, and 
     await user.click(
       within(region).getByRole("checkbox", { name: "Select Reviewer for broadcast" })
     );
-    await user.selectOptions(
-      within(composer()).getByRole("combobox", { name: "Delivery mode" }),
-      "btw"
+    await pickIn(
+      user,
+      () => within(composer()).getByRole("button", { name: pickNamed("Delivery mode") }),
+      "BTW"
     );
     const body = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, body, "Still here?");
@@ -4171,11 +4219,13 @@ test("the header checkbox follows the filters and its count never hides a select
     await user.click(header);
     expect(within(region).getByText("2 of 2 matching selected")).toBeTruthy();
     // Picked, so the Aside-only Reviewer is left out of the count below.
-    await user.selectOptions(
-      within(within(region).getByRole("region", { name: "Broadcast" })).getByRole("combobox", {
-        name: "Delivery mode",
-      }),
-      "btw"
+    await pickIn(
+      user,
+      () =>
+        within(within(region).getByRole("region", { name: "Broadcast" })).getByRole("button", {
+          name: pickNamed("Delivery mode"),
+        }),
+      "BTW"
     );
     await type(user, search, "PLANNER");
     await waitFor(() =>

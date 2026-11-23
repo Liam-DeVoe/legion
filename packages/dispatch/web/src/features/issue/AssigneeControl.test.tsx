@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
   type Commits,
+  drawnPick,
   type HeldNotifications,
   holdNotifications,
   recordCommits,
@@ -176,11 +177,7 @@ function renderControl() {
   const user = userEvent.setup();
   // What the trigger's name says after its label - the person it holds, as a `<select>` says its
   // value - and the text of its badge.
-  const commits = recordCommits<string | null>(() => {
-    const [, ...shown] = trigger().getAttribute("aria-labelledby")?.split(" ") ?? [];
-    const named = shown.map((id) => document.getElementById(id)?.textContent).join(" ");
-    return `${named} ${trigger().textContent}`;
-  });
+  const commits = recordCommits<string | null>(() => drawnPick(trigger()));
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CachedControl commits={commits} />

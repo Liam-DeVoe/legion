@@ -10,7 +10,7 @@ import {
 import { focusOnDocument } from "../features/shell/roving";
 import { spaceTaken } from "../features/shell/ViewportAnchor";
 import { card, dangerText, focusVisibleRing, textPrimaryOnCanvas } from "../theme/classes";
-import { CONTROL } from "./control-names";
+import { CONTROL, type ControlSize } from "./control-names";
 import {
   aboveSightNow,
   causedByReader,
@@ -46,6 +46,9 @@ export interface SelectionBarProps {
    *  itself, or a table row the window has not drawn yet takes the focus as it lands
    *  (`DataTableModel.focusRow`). */
   readonly returnFocus?: () => HTMLElement | null;
+  /** How much room the bar's own box takes (`ControlSize`): its padding. The actions in it are
+   *  the page's, and each carries the page's size itself. */
+  readonly size?: ControlSize;
   /** The bar's own words in place of the count, for what a count cannot say: the Inbox's
    *  `Every row selected`, which covers rows a fold or a page is holding back, and its
    *  `Snoozing 3…`, which is the press that is in the air rather than what is still marked. */
@@ -371,6 +374,14 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
   return <DrawnBar {...bar} wentHolding={wentHolding} />;
 }
 
+/** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
+ *  size is the smaller box of a page whose controls are compact, in the padding the compact
+ *  controls take (`controlPadding`). */
+const BAR_BOX: Record<ControlSize, string> = {
+  comfortable: "px-4 py-2",
+  compact: "px-2 py-1",
+};
+
 /** The bar itself, mounted exactly while it is drawn, so its going is its own unmount. */
 function DrawnBar({
   barRef,
@@ -378,6 +389,7 @@ function DrawnBar({
   count,
   label,
   notice,
+  size = "comfortable",
   state,
   wentHolding,
 }: Omit<SelectionBarProps, "returnFocus"> & {
@@ -416,7 +428,7 @@ function DrawnBar({
   return (
     <div
       aria-label={label}
-      className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border px-4 py-2 text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
+      className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
       onFocus={(event) => {
         focused.current = event.target;

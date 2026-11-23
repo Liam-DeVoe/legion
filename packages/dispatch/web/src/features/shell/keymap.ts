@@ -316,8 +316,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (target instanceof HTMLInputElement) {
     return false;
   }
-  // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
-  // Inbox's `h` hands it focus on purpose. A list's trigger is read as one.
+  // A `<select>` stays editable: its own keys type-ahead and step through the options. A list's
+  // trigger is read as one, and the Inbox's `h` hands a Snooze list's trigger focus on purpose.
   return target.tagName === "SELECT" || target.matches(LIST_TRIGGER);
 }
 

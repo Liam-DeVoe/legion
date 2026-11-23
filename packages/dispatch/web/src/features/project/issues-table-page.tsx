@@ -309,7 +309,8 @@ export function IssueTableToolbar({
  * than disabled - each `StepButton`, and the Move to epic list through its `ariaDisabled` - so
  * the press that makes a control inert keeps the focus on it, and a confirm or a name dialog
  * hands the focus back to an opener that can take it. A held Move to epic opens no list and
- * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it.
+ * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it. The bar
+ * and its steps take the List's compact size, as its control row does.
  */
 export function IssueTableSelection({
   returnFocus,
@@ -342,9 +343,18 @@ export function IssueTableSelection({
   const epicTitles = new Map(epics.map((option) => [option.key, option.title]));
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
-    <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
+    <SelectionBar
+      count={selectedKeys.length}
+      label="Selected issues"
+      returnFocus={returnFocus}
+      size="compact"
+    >
       {selectedKeys.length < leafCount ? (
-        <StepButton ariaDisabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+        <StepButton
+          ariaDisabled={busy}
+          onClick={() => table.toggleAllRowsSelected(true)}
+          size="compact"
+        >
           Select all {leafCount} matching
         </StepButton>
       ) : null}
@@ -355,6 +365,7 @@ export function IssueTableSelection({
         onClick={() =>
           startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
         }
+        size="compact"
       >
         Start next
       </StepButton>
@@ -385,21 +396,27 @@ export function IssueTableSelection({
           setEpic("");
           void moveTo(selectedKeys, into);
         }}
+        size="compact"
       >
         Move
       </StepButton>
-      <StepButton ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
+      <StepButton
+        ariaDisabled={busy}
+        onClick={() => void moveTo(selectedKeys, null)}
+        size="compact"
+      >
         Take out of epic
       </StepButton>
       {newEpic === undefined ? null : (
         <StepButton
           ariaDisabled={busy || unansweredEpic !== undefined}
           onClick={() => void newEpic(selectedKeys)}
+          size="compact"
         >
           New epic from these
         </StepButton>
       )}
-      <StepButton ariaDisabled={busy} onClick={() => setSelection({})}>
+      <StepButton ariaDisabled={busy} onClick={() => setSelection({})} size="compact">
         Clear selection
       </StepButton>
     </SelectionBar>

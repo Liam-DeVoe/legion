@@ -623,6 +623,7 @@ export function IssuesTable({
               />
             )}
             scrollTestId="issues-table-scroll"
+            size="compact"
             stackColumn="title"
             trailingWidth={ACTION_WIDTH}
           />

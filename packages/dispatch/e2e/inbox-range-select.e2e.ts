@@ -1,6 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
-import { openDisplayMenu, openFilterPanel } from "./filters";
+import { listTrigger, openDisplayMenu, openFilterPanel, pickFromList } from "./filters";
 import { drawer } from "./inbox-drawer";
 import { inboxList, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
 import {
@@ -261,9 +261,7 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     await mark(page, band[3] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, band.length);
     expect(await markedIds(page)).toEqual(band);
-    await bar(page)
-      .getByRole("combobox", { name: "Snooze selected asks" })
-      .selectOption({ label: "Tomorrow" });
+    await pickFromList(listTrigger(bar(page), "Snooze selected asks"), "Tomorrow");
     // The asks move into the folded Later band once their writes land, and the thread, which
     // no snooze took, stays marked.
     for (const ask of asks) await expect(row(page, ask)).toHaveCount(0);
@@ -502,7 +500,7 @@ test("one Dismiss over a range of 300 rows is one request", async ({ browser }) 
     // The ask's snooze is held for the rest of the test, so it stays in flight.
     await page.route("**/api/v1/me/asks/*/snooze", () => undefined);
     await selectRow(page, ask);
-    await page.locator("[data-inbox-snooze]").first().selectOption({ label: "Tomorrow" });
+    await pickFromList(page.locator("[data-inbox-snooze]").first(), "Tomorrow");
     await inboxList(page)
       .getByRole("button", { name: /^P2 \(/ })
       .click();

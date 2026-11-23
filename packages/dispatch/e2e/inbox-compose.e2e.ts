@@ -17,7 +17,7 @@ import {
   queuedEnvelopesOf,
   replyToMessageDelivery,
 } from "./api";
-import { controlRow } from "./filters";
+import { controlRow, listTrigger } from "./filters";
 import { inboxList, inboxPane } from "./inbox-pane";
 import { agentRowId, seedAgentThread } from "./inbox-threads";
 import { keyedWrite } from "./keyed-writes";
@@ -468,7 +468,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
       "Not running: the message is stored and reaches it when it runs again"
     );
     // Three recipients: the broadcast composer's fields, and no Issue picker.
-    await expect(dialog.getByRole("combobox", { name: "Delivery mode" })).toBeVisible();
+    await expect(listTrigger(dialog, "Delivery mode")).toBeVisible();
     const broadcastBox = dialog.getByRole("textbox", { name: "Broadcast message" });
     await expect(broadcastBox).toBeVisible();
     await expect(dialog.getByRole("button", { name: /^Choose issue/ })).toHaveCount(0);
