@@ -6,8 +6,8 @@
 // and booted once more, and every run, claim, session, session-name reservation, slot, cleanup
 // reservation and production check the release before left reads as it did, or as R22 says it
 // becomes. scripts/e2e/tree-cutover.sh builds this driver with `-tags e2e` from this checkout and
-// the release before's driver (tree_release_before_live_test.go laid over the tree of `git
-// merge-base HEAD origin/main`) from that commit, whose test binary it names in
+// the release before's driver (tree_release_before_live_test.go laid over the tree of the release
+// before, which scripts/e2e/lib/tree-proof.sh finds) from that commit, whose test binary it names in
 // LEGION_E2E_BEFORE_DRIVER; it owns the nats-server (LEGION_E2E_NATS_URL) and makes the oldest
 // plugin contract's root (LEGION_E2E_OLD_TOOL_ROOT); the PostgreSQL is LEGION_TEST_PG_DSN's.
 //
@@ -50,7 +50,7 @@ import (
 )
 
 // treeBeforeDriverEnv names the release before's driver binary, which the script builds from the
-// merge base's tree with tree_release_before_live_test.go laid over it.
+// release before's tree with tree_release_before_live_test.go laid over it.
 const treeBeforeDriverEnv = "LEGION_E2E_BEFORE_DRIVER"
 
 // treeRig is the rig of a proof of the cut-over or the rollback: the broker, the checkout, the

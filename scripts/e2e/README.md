@@ -272,12 +272,20 @@ Each item below names a script, then what it proves.
   It keeps every other value of a text flag byte for byte.
   Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
 
+- `member-becomes-root.sh`
+
+  a member whose own architect runs, and that becomes a root by a change of parent, has that architect relaunched in its session under its own gate root, and both this checkout's `legion` tool and the oldest plugin contract's in the fleet then register its own gate (dispatch://INFRA-4730's k32), driven against the real Dispatch server this checkout builds, on a database of its own with its events on a `nats-server` of the run's own, and the daemon in the driver's process reading them, over a PostgreSQL the caller names, through `packages/pi-legion`'s tool under bun in this checkout and in that contract's root:
+  while the member's architect runs under its parent's gate root, each tool refuses to register the member's gate, naming the parent, with no request sent to the daemon;
+  once the person takes the member out from under its parent, the daemon relaunches that architect in its session under its own gate root, and each tool's `register_gate` of the member's own spec is taken.
+  It has no CI job of its own: [`tree-cutover.sh`](#tree-cutoversh) runs it first.
+  No GitHub, no cluster
+
 - `tree-cutover.sh`
 
   the first boot of the release that stores no tree converts what the release before left (dispatch://INFRA-4730's k31), driven through both releases' whole daemons on one PostgreSQL the caller names, a `nats-server` of the run's own and a scratch Dispatch whose parent-status rule is off, as it is while production's cut-over runs:
-  the release before (the merge base with `origin/main`, its driver built from that tree) leaves live phases, a held issue, a lingering tree with its cleanup reserved and two hand-overs, one landed, an operator's hold, an open production check, a kept decision and a root under a parent at work, and stops;
+  the release before (the merge base with `origin/main`, or, once `main` carries this release, `main` before it, its driver built from that tree) leaves live phases, a held issue, a lingering tree with its cleanup reserved and two hand-overs, one landed, an operator's hold, an open production check, a kept decision and a root under a parent at work, and stops;
   this release, stopped after each step of its conversion and booted again, keeps every run, claim, session, session-name reservation, slot and production check, makes the linger deadline each covered issue's retention deadline, finishes the landed hand-over and reads its later event as its own write, places each issue in Legion's work in one list, tells the root under a parent at work once, names the kept decision in the next catch-up, answers each operation of the oldest plugin contract in the fleet, shows each issue on Dispatch's Legion board under its gate root, and changes nothing at a last boot.
-  It first runs `member-becomes-root.sh`
+  It first runs [`member-becomes-root.sh`](#member-becomes-rootsh)
 
 - `tree-rollback.sh`
 
@@ -937,7 +945,7 @@ It writes a temporary file in the same directory and renames it over the old one
 The script stands up a scratch Postgres, NATS, Envoy listener, native Dispatch server, and a subscribe-only production-Envoy GitHub bridge in one temporary directory.
 It installs this checkout's two plugins in an isolated OMP profile and runs the Go daemon with a separate state directory, private tmux server, ports the kernel chose and [`lib/held-port.py`](#libheld-portpy) holds until each service serves on its own (the daemon's and Dispatch's by a keeper for the whole run, since both restart on the port every pane names, so every poll of either carries a timeout), a root-only Dispatch project whose `production_check` is written out as `tester` (the word the key takes, so the run proves the setting is read where Stage 4b's rig names no key and proves the default), `admission_cap: 2`, `review_round_cap: 3`, `production_check_hours: 0.5` (the production check's bound, 14 days by default, brought inside the run:
 30 minutes, after the look the first look's own `wake_at` starts, since a look open at the bound defers it by the look's own two-hour bound, and two looks took up to 10 minutes each from the task to the report in acceptance runs;
-the linger keeps its default 72 h, the tree's close being Stage 4b's proof), and the root design gate armed.
+the script sets no `linger_hours`, since no tree lingers and an issue's close closes its own claims at once), and the root design gate armed.
 Its host-side helpers are [`lib/rig.sh`](#librigsh), and the workflow's vocabulary (Dispatch, the daemon's state, the agents, the proof human, the handoff checks) is [`lib/workflow.sh`](#libworkflowsh);
 the script defines only its runtime's reads, its scratch services, its production guards, and its checks.
 
@@ -971,7 +979,7 @@ Each round names one concrete correction the spec permits (a distinct line appen
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing, and the pushed commit carrying the handoff that every planner, implementer, tester, and reviewer completion reported is authored and committed by that role's own App, read from the issue's workspace).
 It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
-the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
+the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, the close retires the architect's claim with its session kept, and the journal has the root's wait, the gate's changes request, one slot release (the close), one slot take (its admission) and the close (`issue left Legion's work`, naming `done`)), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
 — authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and which holds `config.yml` and `hosts.yml` alone;
 the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in that tool call's result, holds that owner's directory and nothing but other owners' directories and `renames.txt`, and as the host holds it, holds that owner's directory and the bundle's `renames.txt`, and beside them only other owners' directories, since a bundle holds one directory per owner account the App is installed on, which GitHub decides and the run does not, and no directory for a repository (INFRA-2543 R2);
@@ -988,8 +996,8 @@ no worker starts (the implementer's claim holds no retro task, `claim_pending_ph
 `retro-handoff` prompts the architect to accept: its `sign_off` moves the issue to `retro` (the daemon log's `workflow: phase changed …
 from=accepting to=retro trigger=sign_off`, `phase_change_logged`), the board to `retro`, and starts the implementer's retro.
 `merger-merge` sees the merger's own merge close the issue: the daemon's read of the merged pull request writes `done` (`… from=merging to=done
-trigger=pull_request_merged`, the board `done` within 60 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`), and the root's close lingers the tree:
-`legion claims list --json` shows the architect, planner, implementer, reviewer and merger `suspended` and the tester alone live (`claim_states_are`, which takes the spared role, the one the project's `production_check` names), handed the first look in its pane.
+trigger=pull_request_merged`, the board `done` within 60 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`), and the close closes the issue's own claims, since no tree lingers (R20 of dispatch://INFRA-3320):
+the architect's claim is `retired` with its session kept (`await_architect_closed`), and `legion claims list --json` shows the planner, implementer, reviewer and merger `retired` beside it and the tester alone live (`claim_states_are`, which takes the spared role, the one the project's `production_check` names), handed the first look in its pane.
 The proof sends the tester nothing at a look,
 so the fixture's instructions say a check task waits for no message and acts on the daemon's task as written
 — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending`, with a `wake_at` three minutes on, the fixture's instruction for a first look:
@@ -999,9 +1007,9 @@ nothing else wakes a check, so without the report's own `wake_at` only the bound
 That look asks for an hour, which falls at or past the bound and names no look of its own, so the bound starts the last one (`last_look_started`: a look open, `lastWake.kind: bound`, `last: true`, or the check already closed by a tester that reported it first, within 1800 s of the checkpoint's start, which is what remains of the 30 minutes;
 a bound deferred by a look still open when it came due fails here by name), and the run sees the tester, whose task names the last look, write that the check did not run within the bound and report `pending`, and the check close as `not_run` (`check_closed`:
 the state omits `check`, the issue `done`;
-`last_look_logged` and `check_closed_as` hold the daemon log to a look started on the bound as `last`, and the `not_run` close) and the tester's claim `retired` beside the five `suspended`.
-Each wait for a tree's architect to be suspended once its tree lingers (`await_tree_suspended`) is bounded by `phase_seconds`, the proof's budget for an agent's turn:
-the daemon holds that suspension until the architect's turn ends and names it no deadline, and a timeout prints the architect's claim from `legion claims list` (its state and whether its suspension is held).
+`last_look_logged` and `check_closed_as` hold the daemon log to a look started on the bound as `last`, and the `not_run` close) and the tester's claim `retired` beside the five other `retired` claims.
+Each wait for a closed root's architect claim to be retired with its session kept (`await_architect_closed`) is bounded by `phase_seconds`, the proof's budget for an agent's turn:
+the daemon holds that stop until the architect's turn ends and names it no deadline, and a timeout prints the architect's claim from `legion claims list` (its state and whether a stop is held for it).
 After the first look's report, `smoke-main-clean` first holds that the merged pull request carried no handoff:
 no commit of it changes only `.legion/` (`pull_request_legion_only_commits`) and no file it merged is under `.legion/`, since every role's handoff is a record on the Dispatch issue, which each phase's `assert_handoff_record` read back as written by that role's claim session.
 The proof human then removes every `.legion/` file and `docs/solutions/` learning from the smoke `main` through one merged fixture pull request, and the run checks that `main` carries none:
@@ -2252,8 +2260,8 @@ while its planner holds, the driver files two children under it, each in an issu
 Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has moved both to the backlog, one at a time; it then comes back to `testing`, whose round runs on its head merged with the base's tip and asks no role to merge the base forward, and the merge closes it.
 Its `legion.yaml` names `runtime.kubernetes.plugins` with the latest published `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`, resolved at run time:
 the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `legion config check`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.
-It sets `linger_hours: 0.5` (tree 1's linger runs from the close its merge brought on, and holds its production check's first look and suspension, the smoke main's cleanup and the check's bound;
-`close` then waits for the expiry) and `production_check_hours: 0.25` (the check's bound, 14 days by default, brought inside the run:
+It sets no `linger_hours`, since no tree lingers (R20 of dispatch://INFRA-3320): each issue's own close stops its own claims and takes its own pod.
+It sets `production_check_hours: 0.25` (the check's bound, 14 days by default, brought inside the run:
 15 minutes, after the first look's report, since a look open at the bound defers it by the look's own two-hour bound).
 Its project names no `production_check`, so the role its checks are handed to is the default, the tester, where Stage 3's rig writes the word out.
 Its instructions tell each look to ask for its next one an hour on, which falls at or past that bound and so names no look of its own:
@@ -2399,7 +2407,7 @@ A pass proves that and no more:
 Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees, each holding a slot as "Admission and the `legion` label" in `docs/site/src/content/docs/legion/concepts.md` says:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
-  the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
+  the daemon's merge closes it, retiring each claim of the root but the tester's, which runs the production check after the close (the first look, then the bound's last look), and each issue of tree 1 keeps no Sandbox, pod or disk once its own stop has run.
   While its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own:
   the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
   Children 3 and 4, filed while the root stands in `accepting` and holds no slot of its own, move it to `awaiting_children`, where they hold its sign-off:
@@ -2416,11 +2424,11 @@ Four roots run under `admission_cap: 4`, a cap of the issues the daemon has star
 **Three checkpoints are gone with INFRA-229 and INFRA-980**, `mid-turn-carry` and `carried-child`, with the setups that left a child mid-run and mid-turn under a closing root, and `children-at-the-merge`, whose children entered tree 1 after its root had been accepted.
 Each needed a root to close, or to merge, while a child of its tree was still in the workflow.
 No merge closes a root that way any more, and since INFRA-980 no issue enters a tree beneath an ancestor already accepted either (`CHILD_UNDER_ACCEPTED_PARENT`, and a person's own move held at `admitted`), so a merged root waiting for the rest of its tree is a state no tree started on this release reaches at all.
-That wait is still the daemon's, for the states a deploy meets — a root a migration finds already in `merging` with an issue of its tree in a phase, a carried child's hand-over, and a close delivered late — and it is proven where that shape can be written down, in the daemon's own tests of the close (`packages/daemon/internal/workflow/merged_chain_close_test.go` and `merged_child_close_test.go`).
+That wait is still the daemon's, for the states a deploy meets — a root a migration finds already in `merging` with an issue of its tree in a phase, and a close delivered late — and it is proven where that shape can be written down, in the daemon's own tests of the close (`packages/daemon/internal/workflow/merged_chain_close_test.go` and `merged_child_close_test.go`).
 Stage 4b proves instead the rule that makes it unreachable, against real pods: a parent with an open child under it waits in `awaiting_children`, its sign-off refused, until its children have left the workflow (`children-first-acceptance`).
-The one close that still lingers a tree children and all is a person's own in the Dispatch dashboard, which this driver cannot make
-— every write it sends production Dispatch names a session as its author (`lib/workflow.sh`), the daemon sets a live root's status back when the session writing it holds no claim in the tree, and the operator's `legion issue status` writes only `todo`, `backlog` or `icebox`, never the `done` a hand-over needs.
-A finished root's hand-over of a child keeps its cover in the daemon's own tests (`packages/daemon/internal/admit/finished_root_test.go`).
+The one close that would still make it here is a person's own in the Dispatch dashboard, which this driver cannot make
+— every write it sends production Dispatch names a session as its author (`lib/workflow.sh`), the daemon sets a live root's status back when the session writing it holds no claim in the tree, and the operator's `legion issue status` writes only `todo`, `backlog` or `icebox`, none of them `done`.
+No tree lingers and no issue is handed over (R20 of dispatch://INFRA-3320): each issue's own close stops its own claims and takes its own pod.
 
 **One run at a time per identity.**
 `LEGION_E2E_PROJECT` (default `LEGSMOKE`, a Dispatch project key:
@@ -2460,7 +2468,7 @@ Run concurrent lanes from separate checkouts (`jj workspace add`, or separate cl
 tree 1's root and its two children beside tree 2's root).
 Two lanes starting close together can each read room enough for itself alone
 — the read is not a reservation — so a true shortfall surfaces only once both are actually scheduling.
-That is never silent: every pod-placement wait is wrapped (`on_tree`/`on_issue`), so a wait stalled on the pool's own limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
+That is never silent: every pod-placement wait is wrapped (`on_issue`), so a wait stalled on the pool's own limits while its subject pod is still Pending, or after its claim has given up, ends its checkpoint `BLOCKED: capacity: …`, naming the pod the scheduler could not place
 — the same outcome a single lane gets today when the pool is simply full.
 A pod that starves and is placed before its own claim's launch budget runs out, with the wait still timing out for some other reason, reads FAIL:
 neither path has evidence of a starvation that never reached either threshold.
@@ -2651,7 +2659,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `child-reentered`
 
   resume by rule, live: child 2's planner, parked by `child-release`, is `suspended` with `suspendedBy: daemon`;
-  the proof human sets child 2 `todo` again, its planning start resumes that planner on the session it kept with no `suspendedBy`, the daemon logs `supervise: resuming by rule` for it exactly once naming the daemon's suspension, and the planner's session then holds two planning tasks, the first run's and the re-entered run's.
+  the proof human sets child 2 `todo` again, which returns it to work in the same run at a new entry of its phase, and that entry's planning start resumes that planner on the session it kept with no `suspendedBy`, the daemon logs `supervise: resuming by rule` for it exactly once naming the daemon's suspension, and the planner's session then holds two planning tasks, the first entry's and the return's.
   The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
   `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
@@ -3007,7 +3015,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   **The merge closes tree 1 at once**, since children 3 and 4 left the workflow at `children-first-acceptance` and nothing of its tree is left in the workflow:
   `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`), with no `workflow: a merged issue's close waits for the issues beneath it` line for tree 1 and no `pr-merged` notice on its architect;
   Dispatch reads `done` within 120 s, the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
-  `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
+  `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod and retires the five other claims of the root (the tester live and the five `retired` within 300 s, `claim_states_are`).
   No issue of tree 1 holds an admission slot at the close: the root's row went when it last reached `accepting`, its children's at their moves to the backlog, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
@@ -3015,8 +3023,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   That report's `wake_at` is an hour on, at or past the check's bound, so the daemon names no look of its own (`check_wake_past_bound`, the log's `workflow: production check names no wake …` for look 1) and the bound's last look is next: nothing else wakes a check.
   The pending report suspends the tester's claim, its session kept in the session database, and deletes the root's Sandbox as any stop of an issue does:
   within 600 s the root has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<tree 1>` lists nothing, and the disk that pod owned answers none, read in the same wait);
-  `legion claims list --json` then shows all six claims `suspended` (`claim_states_are`).
-  The close suspends every role of tree 1, architect to merger, within 1800 s, since the daemon's suspension of a role in a turn waits for that turn to end, and a wait that runs out names each role still unsuspended with whether its suspension is held for a turn;
+  `legion claims list --json` then shows the tester's claim `suspended` beside the five `retired` (`claim_states_are`);
   tree 1's events carry its architect's `issue.claimed`, and done leaves its root issue unclaimed.
 
   - Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
@@ -3031,32 +3038,29 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   Its task names the last look and its rule, which keeps that look's `pending` only for an issue with no requirement that only the deploy can show, as here, and makes a requirement still unobserved at the last look a `fail` whether or not production carries the merge (the proof sends the closed issue nothing), so it writes on the pull request why the check did not run within the bound and reports `pending`:
   the check closes as `not_run` within 600 s (`check_closed`:
   the state omits `check`, the issue `done`;
-  `last_look_logged` finds `workflow: production check look started` with `cause: bound`, `last: true` and `check_closed_as` finds `workflow: production check closed` with `outcome: not_run` in the daemon log), the tester's claim is `retired` beside the five `suspended` claims (`claim_states_are`), and within 600 s the root again has no Sandbox, no pod and no disk, the disk read inside the same wait.
-  It runs before `node-release`, which needs tree 1's pods gone for good, and before the tree's close at its linger expiry, which waits while a member's check is open
+  `last_look_logged` finds `workflow: production check look started` with `cause: bound`, `last: true` and `check_closed_as` finds `workflow: production check closed` with `outcome: not_run` in the daemon log), the tester's claim is `retired` beside the five other `retired` claims (`claim_states_are`), and within 600 s the root again has no Sandbox, no pod and no disk, the disk read inside the same wait.
+  It runs before `node-release`, which needs tree 1's pods gone for good
 
 - `node-release`
 
-  tree 1 lingers (`linger_hours: 0.5`, from the close its merge brought on):
+  no issue of tree 1 keeps a Sandbox or a pod, since no tree lingers:
   the root and its parked children 2, 3 and 4 each have no Sandbox and no disk, and so no pod, read first
-  — each stop deleted the member's Sandbox once its pod was gone, the children's at their parks and the root's at its production check's close;
+  — each issue's own stop deleted its Sandbox once its pod was gone, the children's at their parks and the root's at its close and again at its production check's close;
   then every node any pod of tree 1 ran on (read from the pod watch:
   the root's, the children's, the replacements the fence and the stream move made, the pod the production check's last look brought back) is released
   — the node is gone after the pool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
   a pod of another project (a production daemon running beside the run), the run's repository cache (`legion.dev/cache=true`, no tree's, alive as long as the daemon), or a pod of another tree of the run;
   a pod of tree 1, or of the run with no tree label other than the cache, holds the wait, one that has Succeeded or Failed counts for nothing, and a pod with no project label is no Legion pod (`node_pods_judged`, lib's `node-released.test.ts`).
   The note says which it saw where, and a timeout lists what the node still held with each pod's project and tree label.
-  The linger's expiry is read from the daemon's `workflow: tree lingers … until` line for tree 1:
-  while it still runs after the waits, the four are read again with no Sandbox and no disk;
-  once it has passed, what is left of tree 1 is the close's to judge (`close`), and the note says so
+  After the waits, the four are read again with no Sandbox and no disk
 
 - `close`
 
-  at linger expiry (30 minutes from the close its merge brought on;
-  the close waits while a member's production check is open, which `production-check-bound` saw closed) no Sandbox or pod carries tree 1's label any more, and none of the pods of the root and children 2, 3 and 4 has a disk.
-  The cleanup finds little left to delete:
-  each member's own stop already took its Sandbox, and the disk its pod owned went with that pod
-  — child 1's at its `done`, child 2's at its parks, those of children 3 and 4 at the parks that let the sign-off land, the root's at the linger's suspension and again when its production check closed.
-  Every member of the tree left the workflow before the close, so none is handed over
+  within 600 s no Sandbox or pod carries the issue label of the root or of children 1 to 4 (`issues_gone`, read by each issue's label, since a pod keeps the tree label of its creation), and none of the pods of the root and children 2, 3 and 4 has a disk.
+  No tree lingers (R20 of dispatch://INFRA-3320), so the tree has no close of its own to clean up:
+  each issue's own stop took its Sandbox, and the disk its pod owned went with that pod
+  — child 1's at its `done`, child 2's at its parks, those of children 3 and 4 at the parks that let the sign-off land, the root's at its close and again when its production check closed.
+  Every issue of the tree left Legion's work, so none is handed over
 
 - `re-admission`
 
@@ -3070,7 +3074,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `legion claims close` on the Sandbox runtime:
   the close of re-admitted tree 1's live root is refused 409, and its claims, Sandboxes, pods and those pods' disks are unchanged;
   `legion issue status … backlog` then takes tree 1 out;
-  an operator-spawned tree closes with its worker live, the root and the worker are retired, and the tree's Sandboxes, pods and the disk of each of those pods are gone
+  an operator-spawned tree closes with its worker live, the root and the worker are retired, and the tree's Sandboxes, pods and the disk of each of those pods, read by the issue labels of the root and of the worker, are gone
 
 - `pod-shape`
 
@@ -4360,6 +4364,35 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 ```
 
+## member-becomes-root.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/member-becomes-root.sh     # → "member becomes root e2e: PASS in <n>s", exit 0
+```
+
+dispatch://INFRA-4730's k32 (decision 13; R22 of dispatch://INFRA-3320): a member whose own architect runs, and that becomes a root by a change of parent, has that architect relaunched in its session under its own gate root, and both this checkout's `legion` tool and the tool of the oldest plugin contract in the fleet then register the member's own gate.
+It has no CI job of its own: [`tree-cutover.sh`](#tree-cutoversh) runs it first, in its job, which is its CI home, so `.github/e2e-scripts.json` lists it under `elsewhere`.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `bun` (after `bun install` at the checkout's root), `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on, as for [`register-gate-basis.sh`](#register-gate-basissh), whose rig this driver shares.
+The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
+Before the four checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), the script refuses a host with no `bun` or no `node_modules` at the checkout's root (`require_dispatch_cli`), fetches the history of a shallow checkout, CI's (`fetch_history`), and makes the root of the oldest plugin contract in the fleet with [`lib/old-plugin-root.sh`](#libold-plugin-rootsh), with this checkout's `packages/pi-legion/test/gate-holder-driver.ts` copied in.
+`MEMBER_BECOMES_ROOT_CONTRACT` (default 144, the lowest plugin contract the fleet's daemons served on 2026-11-20) names that contract.
+
+The driver (`internal/daemon/member_root_live_test.go`, `-tags e2e`) runs two tests on the person-handover rig (`internal/daemon/person_handover_scratch_dispatch_test.go`): the real Dispatch server this checkout builds, on a database of its own with its events on the broker, and the daemon in the driver's process reading them.
+Each tool is `packages/pi-legion`'s, run under bun by `packages/pi-legion/test/gate-holder-driver.ts`, holding the claim as the plugin's registration answered it.
+
+- `TestAMemberThatBecomesARootIsRelaunchedAndRegisters`: P, a labelled root, is admitted and its architect registered;
+  M, filed under P, is released by P's architect, and its first phase start launches M's own architect with `LEGION_TREE=P`, which its registration answers too;
+  each tool refuses to register M's gate, naming P, with no request sent to the daemon.
+  The person then takes M out from under P: the daemon relaunches M's architect in its session with `LEGION_TREE=M`, its registration answers M, and each tool's `register_gate` of M's own spec is taken, the daemon recording the gate.
+
+- `TestAGateHolderUnderAParentRegistersItsOwnGate`: M, a root its own architect runs, which holds its own design gate, is set by a person under P, a root at work.
+  M keeps its own gate, so its gate root is itself and its pod and `LEGION_TREE` stay;
+  relaunched in its session, its registration names M as its tree, and each tool registers M's own gate at the spec's new version, which the daemon takes.
+
+`MEMBER_BECOMES_ROOT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's, Dispatch's and the driver's output.
+
 ## tree-cutover.sh
 
 ```sh
@@ -4372,9 +4405,10 @@ Runs on any Linux host with `go`, `git`, `tar`, `jj` 0.38 or later (the daemon's
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL both daemons migrate and run on;
 the driver also creates Dispatch's database and the daemon's there, so its role must be allowed to create and drop databases on a server that offers `pgvector`.
 The broker is the run's own, as for [`sub-architect.sh`](#sub-architectsh).
-It first runs `member-becomes-root.sh`, whose two drivers have this proof's CI lane as their home, and fails when it fails;
+It first finds the release before ([`lib/tree-proof.sh`](#libtree-proofsh)'s `tree_release_before`), so a checkout that has none is refused before anything slow runs.
+It then runs [`member-becomes-root.sh`](#member-becomes-rootsh), whose two drivers have this proof's CI lane as their home, and fails when it fails;
 that run's evidence stays in `member-becomes-root/` under this one's.
-Then [`lib/tree-proof.sh`](#libtree-proofsh) finds the release before, makes the oldest plugin contract's root and builds the release before's driver, and the four checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) build and run `TestTheTreeCutoverLive` (`internal/daemon/tree_cutover_live_test.go`, `-tags e2e`).
+Then [`lib/tree-proof.sh`](#libtree-proofsh) builds the release before's driver and makes the oldest plugin contract's root, and the four checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) build and run `TestTheTreeCutoverLive` (`internal/daemon/tree_cutover_live_test.go`, `-tags e2e`).
 
 The driver starts the real Dispatch server this checkout builds, on a database of its own, with its events on the run's broker and its parent-status rule off, since production's cut-over runs before `DISPATCH_PARENT_STATUS_RULE` is turned on (k33) and the release before's lingering trees hand over children of a closed root, which the rule refuses.
 It makes the daemon's one database and the project, and runs the release before's driver as a child process (`TestTreeCutoverReleaseBefore`, `internal/daemon/tree_release_before_live_test.go`), which boots that release's daemon over the same rig and leaves:
@@ -4405,7 +4439,7 @@ Then this release boots in the driver's own process, on a fake runtime of its ow
 | `the last boot changes nothing` | every table the conversion writes, read before and after one more boot, is equal, and the conversion's end is unchanged |
 
 Dispatch's metrics have no route: they place an issue in a tree by the board's one rule (`internal/dispatch/legion`'s `TreeRoot`), so the board's cards stand for both.
-`TREE_CUTOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, both daemons' logs in `daemon.log`, Dispatch's in `dispatch.log`, the build of the release before's driver, the driver's output and `member-becomes-root.sh`'s evidence.
+`TREE_CUTOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, both daemons' logs in `daemon.log`, Dispatch's in `dispatch.log`, the build of the release before's driver, the driver's output and [`member-becomes-root.sh`](#member-becomes-rootsh)'s evidence.
 
 ## tree-rollback.sh
 
@@ -7411,7 +7445,7 @@ production check names no wake: it falls at or past the check's bound` for look 
 production check closed` for the issue with `recorded`, `defect` or `not_run`) are each a predicate a wait polls or an assertion reads.
 Beside them, `claims_list` reads `legion claims list --json` over the operator bearer, `issue_claim_states ISSUE` prints each claim's role and state, `claim_pending_phase ISSUE
 ROLE` the phase of the task the claim holds (how `accepting` is shown to start no worker:
-the implementer holds no retro task), `claim_states_are ISSUE ROLE STATES OTHERS` holds the issue's six claims to `ROLE` in one of the states `STATES` names and every other claim in one of `OTHERS` (at a root's close, which lingers its tree: the checking role live at a look, `suspended` between looks, `retired` once the check closed, beside five `suspended`; an empty `ROLE` spares none, which is how an `off` project's close of a root leaves the six, and a child's close retires them), and `phase_change_logged ISSUE FROM TO TRIGGER` finds the daemon log's `workflow: phase
+the implementer holds no retro task), `claim_states_are ISSUE ROLE STATES OTHERS` holds the issue's six claims to `ROLE` in one of the states `STATES` names and every other claim in one of `OTHERS` (at an issue's close: the checking role live at a look, `suspended` between looks, `retired` once the check closed, beside five `retired`; an empty `ROLE` spares none, which is how the close of an issue of an `off` project leaves the six), and `phase_change_logged ISSUE FROM TO TRIGGER` finds the daemon log's `workflow: phase
 changed` line for a move (`sign_off`, `pull_request_merged`).
 
 ## lib/github-apps.sh
@@ -7776,7 +7810,10 @@ Every entry script that sources this file differs from the others only in what i
 live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER]]    # the script's last command, or a subshell's, as above
 ```
 
-An entry script whose driver runs this checkout's `dispatch` CLI (`handoff-records.sh`, `step-records.sh`, `plan-ratings.sh`) calls `require_dispatch_cli` between the two lines above: it refuses a host with no `bun` on PATH or no `node_modules` at the checkout's root with `FAIL prerequisites: …` and exit 1, before the run builds or starts anything, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+An entry script whose driver runs this checkout's `dispatch` CLI (`handoff-records.sh`, `step-records.sh`, `plan-ratings.sh`) or a `legion` tool's driver ([`member-becomes-root.sh`](#member-becomes-rootsh), and [`lib/tree-proof.sh`](#libtree-proofsh) for its two proofs) calls `require_dispatch_cli` between the two lines above: it refuses a host with no `bun` on PATH or no `node_modules` at the checkout's root with `FAIL prerequisites: …` and exit 1, before the run builds or starts anything, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs those out of.
+
+`fetch_history WHAT` fetches the whole history of a shallow checkout, CI's, from its own remote, the public repository, for an entry script that reads an older commit of it ([`member-becomes-root.sh`](#member-becomes-rootsh) and [`lib/tree-proof.sh`](#libtree-proofsh)), and notes `WHAT`, the commit it looks for.
+A checkout that is not shallow fetches nothing, and a fetch that fails ends the run with `FAIL prerequisites: …` and exit 1, as `require_dispatch_cli` does.
 
 `build_daemon_driver OUT` builds every proof's driver, the daemon package's `-tags e2e` test binary, from `root`'s `packages/daemon` into `OUT` (`go test -c -tags e2e ./internal/daemon`).
 The `driver` check builds with it, and so does a caller that builds the driver before the run and hands it over as `DRIVER`.
@@ -7800,10 +7837,10 @@ A run that ended before its last check with status 0 says so on the line before,
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `tree cutover`, `tree rollback` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `member becomes root`, `tree cutover`, `tree rollback` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
-| `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `TREE_CUTOVER_EVIDENCE_DIR`, `TREE_ROLLBACK_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `TEST` | the test the driver runs, or several separated by `\|` (`-test.run '^(TEST)$'`); `proof` fails unless the driver reports `--- PASS: <name>` for each of them, so a driver that skipped, or a pattern that matched nothing, is no pass |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MEMBER_BECOMES_ROOT_EVIDENCE_DIR`, `TREE_CUTOVER_EVIDENCE_DIR`, `TREE_ROLLBACK_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 
@@ -7828,20 +7865,46 @@ The run [`tree-cutover.sh`](#tree-cutoversh) and [`tree-rollback.sh`](#tree-roll
 
 ```sh
 . "$root/scripts/e2e/lib/tree-proof.sh"            # sourced, never run; it sources lib/live-daemon-proof.sh
+tree_release_before                                # tree-cutover.sh's first call, before its slow run; tree_proof makes it otherwise
 tree_proof LABEL SLUG TEST EVIDENCE                # the script's last command
 ```
 
-Before [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run of `TEST`, with `EVIDENCE` as its evidence directory (empty: a fresh one), it makes two checks of its own, each printing `== <check>`, what it observed and `ok <check> (<s>s)`:
+`tree_release_before` refuses a host with no `bun` or no `node_modules` at the checkout's root (`require_dispatch_cli`, which exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and reads `docs/kubernetes.md` from) and fetches the history of a shallow checkout (`fetch_history`).
+It then makes a check of its own, `the release before`, which builds nothing, so [`tree-cutover.sh`](#tree-cutoversh) makes it before its run of [`member-becomes-root.sh`](#member-becomes-rootsh), and a checkout with no release before is refused before anything slow runs.
+A checkout with no `origin/main` fetches it from its own remote first.
+The release before is a fixed commit, so the proof runs alike on this release's pull request, on `main` once this release is there, and on every later branch:
 
-- `the release before` finds the release before, `git merge-base HEAD origin/main`, read at run time, so a branch that merged `main` forward compares itself with that `main`.
-  A shallow checkout fetches its history and `origin/main` from its own remote first.
-  A merge base that already carries this release's conversion (`20261122154645_issue_facts.up.sql`) is no release before to convert from, and the run is refused with exit 2.
-  It takes that tree with `git archive` into a directory of the run's own under `TMPDIR`, removed on any exit, lays this checkout's `internal/daemon/tree_release_before_live_test.go` over it, as `busy-relaunch-delivery.sh --base-commit` lays its driver, builds that tree's daemon package's `-tags e2e` test binary, and prints its sha256 and this checkout's source ([`lib/built-from.sh`](#libbuilt-fromsh));
+- `git merge-base HEAD origin/main`, read at run time, while that commit does not carry this release's conversion (`20261122154645_issue_facts.up.sql`), so a branch that merged `main` forward compares itself with that `main`;
 
-- `the oldest contract` makes the root of the oldest plugin contract in the fleet (`lib/old-plugin-root.sh`, `TREE_PROOF_CONTRACT`, default 144), with this checkout's `packages/pi-legion/test/daemon-client-driver.ts` and `gate-holder-driver.ts` copied in.
+- once it does, `main` as it stood before this release: the parent of the first-parent commit of `origin/main` that added that file.
+  A merge base that carries the file while `origin/main`'s first-parent history adds it nowhere has no release before, and the run is refused with exit 2.
 
-It exports `LEGION_E2E_REPO_ROOT` (the checkout, which the driver builds Dispatch from and reads `docs/kubernetes.md` from), `LEGION_E2E_OLD_TOOL_ROOT` and `LEGION_E2E_BEFORE_DRIVER` (the release before's binary, which the driver runs as a child process), and makes the live run in a subshell, so that run's exit trap is the subshell's and this file's still removes the release before's tree.
-The run's last line is `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or its FAIL line.
+`tree_proof` makes that check itself when the caller has not, then two checks of its own before [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run of `TEST`, with `EVIDENCE` as its evidence directory (empty: a fresh one), each printing `== <check>`, what it observed and `ok <check> (<s>s)`:
+
+- `the release before's driver` takes `go.work`, `go.work.sum`, `packages/daemon` and `packages/envoy` of the release before, the modules its `go.work` names, with `git archive` into `legion-e2e-SLUG-before-<its sha12>` under `TMPDIR`, removed first and on any exit.
+  The name is fixed so Go's build cache serves a later run of the same commit, and two runs of one proof on one host at once would share it, so run them one at a time.
+  It lays this checkout's `internal/daemon/tree_release_before_live_test.go` over that tree, as `busy-relaunch-delivery.sh --base-commit` lays its driver, builds that tree's daemon package's `-tags e2e` test binary (`build_daemon_driver`), and prints its sha256 and this checkout's source ([`lib/built-from.sh`](#libbuilt-fromsh));
+
+- `the oldest contract` makes the root of the oldest plugin contract in the fleet ([`lib/old-plugin-root.sh`](#libold-plugin-rootsh), `TREE_PROOF_CONTRACT`, default 144), with this checkout's `packages/pi-legion/test/daemon-client-driver.ts` and `gate-holder-driver.ts` copied in.
+
+It exports `LEGION_E2E_OLD_TOOL_ROOT` and `LEGION_E2E_BEFORE_DRIVER` (the release before's binary, which the driver runs as a child process), and makes the live run in a subshell, so that run's exit trap is the subshell's and this file's still removes the release before's tree.
+Once the live run starts, the run's last line is its `LABEL e2e: PASS in <n>s (evidence: <dir>)` or its `LABEL e2e: FAIL at <check> …` line.
+A refusal of the host, or a failure of either of this file's own checks, ends the run on its own `FAIL …` line, with no verdict line after it, and a signal before the live run ends it with none.
+
+## lib/old-plugin-root.sh
+
+The plugin root of an older daemon API contract, for a live proof that drives the `legion` tool a deployed plugin of that contract carries (decision 22 of dispatch://INFRA-4730: the oldest contract in the fleet, 144 on 2026-11-20).
+
+```sh
+bash scripts/e2e/lib/old-plugin-root.sh <checkout> <contract> [<driver>...]    # the root's path on stdout, everything else on stderr
+```
+
+The root is the last commit of `<checkout>` whose `packages/daemon/internal/api/version.go` declares `<contract>`: the newest commit that adds or removes that declaration moved the contract on, so its parent is the last to declare it, unless that commit introduced the contract and it is still current.
+A checkout whose history holds no such commit, a shallow one among them, is refused with exit 1, naming the fetch it needs (`fetch_history` in [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) makes it for its callers).
+It unpacks a `git archive` of that commit under the cache directory, `OLD_PLUGIN_ROOT_CACHE` (default `legion-old-plugin-roots` under `TMPDIR`, or under `/tmp` when it is unset), and runs `bun install --frozen-lockfile` there under a name of its own, moved into place once the install succeeds, so a run that stopped midway leaves nothing a later run takes for an installed root;
+a later run of the same commit reuses the root.
+Each `<driver>` is a path relative to the checkout, copied into the root at the same path on every call, so the old tool runs under this checkout's driver, which the old commit never had.
+[`member-becomes-root.sh`](#member-becomes-rootsh) and [`lib/tree-proof.sh`](#libtree-proofsh) call it.
 
 ## lib/secret-leaks.ts
 

@@ -601,16 +601,16 @@ assert_held_snapshot() {
 # prints the claim as `legion claims list` shows it: working with a stop held is a turn still
 # running; idle and held, a stop the runtime keeps refusing; neither retired nor held, no stop held
 # for it (a start dropped the hold, or a daemon restart forgot it before the outbox asked again).
-suspension_issue=
+closed_issue=
 await_architect_closed() {
-  suspension_issue=$1
-  timeout_hook=report_architect_suspension
+  closed_issue=$1
+  timeout_hook=report_architect_close
   until_true "$phase_seconds" "$2" architect_closed "$1"
   timeout_hook=
 }
-report_architect_suspension() {
-  note "the architect of $suspension_issue in legion claims list: $("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" |
-    jq -c --arg issue "$suspension_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
+report_architect_close() {
+  note "the architect of $closed_issue in legion claims list: $("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" |
+    jq -c --arg issue "$closed_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
       | {state, suspensionHeld: (.suspensionHeld // false), suspendedBy: (.suspendedBy // null), pending: (.pending.id // null)}]')"
 }
 
@@ -1076,7 +1076,7 @@ primary_issue() {
   # nothing of its own, so without it only the bound would look again.
   check_wake_named "$root_issue" 1 ||
     fail "the daemon log records no wake named at the first look of $root_issue's production check: $(jq -R -c 'fromjson? | select(.msg | startswith("workflow: production check"))' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
-  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close suspended the architect, planner, implementer, reviewer and merger and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
+  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close retired the architect, planner, implementer, reviewer and merger, their sessions kept, and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
   pass
 
   begin smoke-main-clean

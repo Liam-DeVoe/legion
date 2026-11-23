@@ -1605,7 +1605,7 @@ The claim must have no live process: suspend it first, or use a queued, failed, 
 The daemon clears and persists only `session` and `session_file`, logs the forgotten session and file, and returns them in the answer.
 It does not read or change the session database, so the old session row remains there.
 
-Retrying a failed architect then spawns a fresh agent, the daemon's controller keeper does the same for its failed controller claim, and a retired claim starts fresh at its next workflow start or re-admission.
+Retrying a failed architect then spawns a fresh agent, the daemon's controller keeper does the same for its failed controller claim, and a retired claim starts fresh at its next workflow start, such as its issue's return to work or a new run of it.
 Resuming a suspended claim starts a fresh session with its pending task.
 
 ### Copying file sessions before turning it on
@@ -3065,7 +3065,7 @@ An earlier daemon reads this much of the release:
 
 - **`issues.tree` and `claims.tree`** need no statement beyond the hand-over roots above: this release wrote each once and never changed it, so an issue whose Dispatch parent changed since its record stands in its old tree again.
 
-**Run the step with the daemon of the project stopped, before the earlier image is pinned.**
+**Run the step with every daemon of the database stopped, before the earlier image is pinned.**
 Replace `<PROJECT>` with the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
 The SQL runs first:
 
@@ -3127,7 +3127,7 @@ insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 update issues set held_session_writes = '[]'::jsonb where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb;
 -- The crossing times of the claims of one project, which the release before does not keep.
 update claims set published_since = null, unpublished_since = null
-  where split_part(issue, '-', 1) = '<PROJECT>' and (published_since is not null or unpublished_since is not null);
+  where project = lower('<PROJECT>') and (published_since is not null or unpublished_since is not null);
 -- The record of the conversion of one project.
 delete from tree_conversions where project = '<PROJECT>';
 -- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.
@@ -8669,7 +8669,7 @@ each issue's pod (every role of it alike) and the image probe's.
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  a backward move into its phase, the issue's coming back into Legion's work (a return to work at a new phase entry, or a new run), or a production check's look after the issue's merge;
   the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 

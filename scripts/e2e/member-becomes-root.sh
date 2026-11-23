@@ -18,8 +18,11 @@
 #     architect in its session with LEGION_TREE=M, its registration answers M, and each tool's
 #     register_gate of M's own spec is taken, the daemon recording the gate.
 #
-# Run it from a checkout on a Linux host with go, git, bun (after `bun install` at the checkout's
-# root), awk and python3, as
+# It has no CI job of its own: tree-cutover.sh runs it first, in its job, which is its CI home
+# (dispatch://INFRA-4730's t7), so .github/e2e-scripts.json lists it under `elsewhere`.
+#
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without it), bun (after `bun install` at the checkout's root), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/member-becomes-root.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on, as
@@ -33,38 +36,23 @@
 # unset, kept and printed) keeps the transcript, the nats-server's log, the daemon's, Dispatch's and
 # the driver's output. Nothing reaches github.com or a deployed Dispatch; `bun install` of the old
 # root reaches the package registry the checkout's lockfile names, once per commit. The run around
-# the driver is lib/live-daemon-proof.sh's.
+# the driver is lib/live-daemon-proof.sh's, after its refusal of a host without bun or the
+# checkout's node_modules (require_dispatch_cli) and the history fetch (fetch_history).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-command -v bun >/dev/null || {
-  echo "FAIL prerequisites: bun is not on PATH; the legion tools the proof drives run under it" >&2
-  exit 1
-}
-[ -d "$root/node_modules" ] || {
-  echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
-  exit 1
-}
-# CI's checkout is shallow, and the oldest contract's commit is found in the history: a shallow
-# checkout fetches it from its own remote, the public repository, which needs no credential.
-if [ "$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-  echo "member becomes root: the checkout is shallow; fetching its history to find the oldest contract's commit" >&2
-  git -C "$root" fetch --unshallow --quiet || {
-    echo "FAIL prerequisites: the shallow checkout at $root could not fetch its history (git fetch --unshallow)" >&2
-    exit 1
-  }
-fi
+# shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
+. "$root/scripts/e2e/lib/live-daemon-proof.sh"
+require_dispatch_cli
+fetch_history "the oldest contract's commit"
 old_root=$(bash "$root/scripts/e2e/lib/old-plugin-root.sh" "$root" "${MEMBER_BECOMES_ROOT_CONTRACT:-144}" \
   packages/pi-legion/test/gate-holder-driver.ts) || {
   echo "FAIL prerequisites: the oldest contract's plugin root could not be made (scripts/e2e/lib/old-plugin-root.sh)" >&2
   exit 1
 }
-# The driver binary runs from this directory, not the package's, so it is told the checkout it
-# builds Dispatch from and the old tool's root.
-export LEGION_E2E_REPO_ROOT="$root"
+# The driver binary runs from this directory, not the package's, so it is told the old tool's root,
+# as require_dispatch_cli told it the checkout it builds Dispatch from.
 export LEGION_E2E_OLD_TOOL_ROOT="$old_root"
-# shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
-. "$root/scripts/e2e/lib/live-daemon-proof.sh"
 live_daemon_proof 'member becomes root' member-becomes-root \
   'TestAMemberThatBecomesARootIsRelaunchedAndRegisters|TestAGateHolderUnderAParentRegistersItsOwnGate' \
   "${MEMBER_BECOMES_ROOT_EVIDENCE_DIR:-}"

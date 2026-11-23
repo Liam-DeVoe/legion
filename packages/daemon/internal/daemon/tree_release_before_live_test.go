@@ -2,10 +2,12 @@
 
 // The release before's side of the two live proofs of dispatch://INFRA-4730's cut-over and
 // rollback (k31 and k44 of its Verification; R21 and R22 of dispatch://INFRA-3320).
-// scripts/e2e/tree-cutover.sh and scripts/e2e/tree-rollback.sh take the tree of `git merge-base
-// HEAD origin/main` with `git archive`, lay this one file over it, and build the daemon package's
-// `-tags e2e` test binary there, as busy-relaunch-delivery.sh's negative control does, so every
-// test here runs the daemon of that commit: the release before this one. The proof's own driver
+// scripts/e2e/tree-cutover.sh and scripts/e2e/tree-rollback.sh take the tree of the release before
+// (scripts/e2e/lib/tree-proof.sh: `git merge-base HEAD origin/main` while that commit does not
+// carry this release's conversion, and main before the commit that added it once it does) with
+// `git archive`, lay this one file over it, and build the daemon package's `-tags e2e` test binary
+// there, as busy-relaunch-delivery.sh's negative control does, so every test here runs the daemon
+// of that commit: the release before this one. The proof's own driver
 // (tree_cutover_live_test.go or tree_rollback_live_test.go), built from this checkout, holds
 // Dispatch, the broker's address and the database, and runs this binary as a child process for
 // each part the release before plays, handing it the rig and reading back what it made through

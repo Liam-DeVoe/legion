@@ -1325,7 +1325,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    and its claims stay suspended until the issue is back in work.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
-   suspended reads `unknown`. The next phase start, re-admission and the controller keeper
+   suspended reads `unknown`. The next phase start, a return to work and the controller keeper
    resume those as before. The boot's own sweep does not, but a start already queued before the
    upgrade still resumes one at the first boot, as the earlier release would have. To keep a
    claim you drained before the upgrade held against every trigger, run `legion claims suspend`
@@ -1546,7 +1546,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   asks nothing of first; `catch-up`, the notice a start writes to an
   architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
   legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
-  Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
+  Nothing waits outside a restart, a return to work or a stale-plugin wave, which is why an
   ordinary read has no such line.
   It is what says whether a wave is still going out, and the last `due` on it is when
   the last of that wave goes.

@@ -6,7 +6,8 @@
 // docs/kubernetes.md gives for a rollback runs; and the release before boots on the database as it
 // then is and runs. scripts/e2e/tree-rollback.sh builds this driver with `-tags e2e` from this
 // checkout and the release before's driver (tree_release_before_live_test.go laid over the tree of
-// `git merge-base HEAD origin/main`) from that commit, whose test binary it names in
+// the release before, which scripts/e2e/lib/tree-proof.sh finds) from that commit, whose test
+// binary it names in
 // LEGION_E2E_BEFORE_DRIVER; it owns the nats-server (LEGION_E2E_NATS_URL) and makes the oldest plugin
 // contract's root (LEGION_E2E_OLD_TOOL_ROOT); the PostgreSQL is LEGION_TEST_PG_DSN's.
 //

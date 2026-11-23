@@ -40,8 +40,8 @@ if declares "$newest"; then
   commit=$newest
 else
   commit=$(git -C "$checkout" rev-parse "$newest^")
+  declares "$commit" || refuse "commit $commit, the parent of $newest, does not declare daemon API contract $contract in $version"
 fi
-declares "$commit" || refuse "commit $commit, the parent of $newest, does not declare daemon API contract $contract in $version"
 
 cache=${OLD_PLUGIN_ROOT_CACHE:-${TMPDIR:-/tmp}/legion-old-plugin-roots}
 root=$cache/$commit

@@ -4,8 +4,9 @@ body: |-
   `child_of` links: who acts on an issue (the architect the Dispatch chain names, nearest first),
   whether the issue may start and where it waits in the admission line, whether a parent may
   finish, and what a stop or a close does. A change of parent in Dispatch moves an issue's notices
-  and calls to the architect the new chain names, and that architect, and the old one, get one
-  `reparented` notice. An issue keeps its own run, phase, sessions, slot, design gate and pull
+  and calls to the architect the new chain names, and the issue's own architect, the one above it
+  before and the one above it now each get one `reparented` notice, an architect that is two of
+  them only one. An issue keeps its own run, phase, sessions, slot, design gate and pull
   request across a change of parent. Where the copy does not hold an issue's chain up to its top,
   the chain is unknown: the daemon starts nothing new on it, refuses an architect's call on it with
   `CHAIN_UNKNOWN`, lists the issue held `chain_unknown` when it has not started, and reads the

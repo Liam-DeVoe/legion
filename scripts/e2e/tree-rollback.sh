@@ -10,11 +10,12 @@
 # production's cut-over and its rollback run before DISPATCH_PARENT_STATUS_RULE is turned on (k33),
 # and its DISPATCH_LEGION_STATUS_SCOPE unset, so a session's status write of a Legion issue lands;
 # makes the daemon's one database; and runs the release before's driver
-# (tree_release_before_live_test.go, built from the merge base's tree, lib/tree-proof.sh) as a child
-# process twice. First that driver boots the release before and leaves live phases, a held issue, a
-# tree that lingers with a hand-over row whose write landed and one whose write did not, an open
-# production check, and K, a labelled child of Q, an issue nobody hands to Legion at in_progress,
-# whose row is in its copy of Dispatch's issues when it stops. Then this release boots, converts,
+# (tree_release_before_live_test.go, built from the release before's tree, lib/tree-proof.sh) as a
+# child process twice. First that driver boots the release before and leaves live phases, a held
+# issue, a tree that lingers with a hand-over row whose write landed and one whose write did not,
+# an open production check, and K, a labelled child of Q, an issue nobody hands to Legion at
+# in_progress, whose row is in its copy of Dispatch's issues when it stops. Then this release boots,
+# converts,
 # and, through a wrapper of its Dispatch client (overrides.wrapDispatch), answers every read of Q
 # with a 503 and leaves Q out of every listing once its consumer has caught up, when the driver
 # deletes Q's row from the copy; it moves an issue at work under another parent and releases it
@@ -42,11 +43,14 @@
 # after the conversion is held by that release's ancestry hold; the landed hand-over stands as a
 # root of its own; and a root's close cleans up no tree that labels the pod of an issue at work. Each
 # step prints `== <name>`, what it observed and `ok <name> (<s>s)`; the first that fails ends the
-# run non-zero, naming it. Its last line is the driver's `tree rollback: PASS` and then the run's.
+# run non-zero, naming it. Its last line is the driver's `tree rollback: PASS` and then the run's; a
+# refusal before the run's checks, or a failure of a check of lib/tree-proof.sh's own, ends it on
+# that FAIL line instead.
 # What it cannot show: the `kubectl` relabel itself, which needs a cluster.
 #
-# Run it from a checkout on a Linux host with go, git, tar, psql, bun (after `bun install` at the
-# checkout's root), awk and python3, as
+# Run it from a checkout on a Linux host with go, git, tar, psql, jj 0.38 or later (the daemon's
+# boot refuses to start without it), bun (after `bun install` at the checkout's root), awk and
+# python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/tree-rollback.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL both daemons migrate and run on; the
@@ -54,8 +58,12 @@
 # allowed to create and drop databases, and the server must offer the pgvector extension, which
 # Dispatch's migrations create) and drops them on exit. That server must be this machine's:
 # lib/live-daemon-proof.sh refuses a host that is not 127.0.0.1, localhost or ::1 with exit 2. The
-# release before is `git merge-base HEAD origin/main`, read at run time (lib/tree-proof.sh): a
-# shallow checkout, CI's, fetches its history first, and the oldest contract's commit with it. The
+# release before, read at run time (lib/tree-proof.sh), is `git merge-base HEAD origin/main` while
+# that commit does not carry this release's conversion
+# (packages/daemon/internal/store/migrations/20261122154645_issue_facts.up.sql), and once it does,
+# the parent of the first-parent commit of origin/main that added that file, so the proof runs alike
+# before and after this release reaches main: a shallow checkout, CI's, fetches its history first,
+# and the oldest contract's commit with it. The
 # broker is the run's own, a nats-server from LEGION_E2E_NATS_BIN or the pinned one installed with
 # `go install`. TREE_ROLLBACK_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it
 # is unset, kept and printed) keeps the transcript, the nats-server's log, both daemons' logs

@@ -1022,7 +1022,7 @@ architect that an operator suspended waits for the operator's resume (`legion cl
 it).
 Any other claim an operator suspended is listed even when a workflow start is queued for it: that
 start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
-start is queued for it, since the next phase start or re-admission resumes it as before.
+start is queued for it, since the next phase start or a return to work resumes it as before.
 
 ## A worker that stopped taking turns
 

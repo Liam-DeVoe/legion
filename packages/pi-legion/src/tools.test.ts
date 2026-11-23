@@ -379,10 +379,10 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
-const toolFor = (active: LegionToolSession) =>
+const toolFor = (active: LegionToolSession, daemon = recordingDaemon({}).daemon) =>
   createLegionTool({
     pi,
-    daemon: recordingDaemon({}).daemon,
+    daemon,
     controllerGrant: noControllerGrant,
     onPhaseCompleted: () => undefined,
     onUpdateAnswered: () => undefined,
@@ -832,17 +832,7 @@ test("retry_or_escalate takes a reason", async () => {
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
 test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
-  const tool = createLegionTool({
-    pi,
-    daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("architect"),
-  });
+  const tool = toolFor(claimSession("architect"), daemon);
   const refusals = [
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
@@ -2471,17 +2461,7 @@ test("set_status parent", async () => {
 test("rerun_child parent", async () => {
   const queued = { queued: [{ issue: "LEGION-209", status: "todo", row: 42 }] };
   const { calls, daemon } = recordingDaemon({ answers: { childRerun: queued } });
-  const tool = createLegionTool({
-    pi,
-    daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("architect"),
-  });
+  const tool = toolFor(claimSession("architect"), daemon);
   const run = (parameters: Record<string, unknown>) =>
     tool.execute("", parameters, undefined, undefined, context());
 
