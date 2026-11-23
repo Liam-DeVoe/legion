@@ -1395,10 +1395,10 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	err := r.sandboxClient().Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy, Preconditions: &fence})
 	switch {
 	case err == nil:
-		r.forgetLauncherCredentials(name)
+		r.launcherAuth.forgetSandbox(name)
 		r.log.Info(msg, append([]any{"sandbox", name, "uid", uid}, attrs...)...)
 	case apierrors.IsNotFound(err):
-		r.forgetLauncherCredentials(name)
+		r.launcherAuth.forgetSandbox(name)
 	case apierrors.IsConflict(err):
 		r.log.Info("sandbox runtime: kept a sandbox written since its delete was decided; the orphan sweep decides it again",
 			append([]any{"sandbox", name, "uid", uid, "error", err}, attrs...)...)

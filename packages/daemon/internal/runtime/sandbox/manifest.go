@@ -302,14 +302,22 @@ func legionVolumeNames(roles []claim.Role, exchange bool) []string {
 // directory where the pod enrolls with the secrets broker.
 var slotVolumePrefixes = []string{"launcher", "private", stateVolume, ghVolume, agentSecretsKeyVolume}
 
+// isSlotName reports whether name can be the name of a slot of a pod: a role's, the controller's,
+// or an agent's of an issue's plan, so any name of the agent grammar. It is the one rule that reads
+// a slot back out of the name of what Legion gives a slot: a volume (slotVolumeForm) or a Secret
+// (launcherCredentials.forgetSandbox).
+func isSlotName(name claim.Role) bool {
+	return claim.IsRole(name) || name == claim.RoleController
+}
+
 // slotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<slot>` for a
-// slot of any name of the agent grammar, and that slot; "" and "" where it has none. A slot is a
-// role's or an agent's of an issue's plan, whose name no check at the daemon's boot can know, so an
+// slot of any name (isSlotName), and that slot; "" and "" where it has none. A slot is a role's or
+// an agent's of an issue's plan, whose name no check at the daemon's boot can know, so an
 // operator's volume of that form could take the name of a slot's volume at a pod's build
 // (PodVolumeWarnings).
 func slotVolumeForm(name string) (string, claim.Role) {
 	for _, prefix := range slotVolumePrefixes {
-		if slot, ok := strings.CutPrefix(name, prefix+"-"); ok && (claim.IsRole(claim.Role(slot)) || claim.Role(slot) == claim.RoleController) {
+		if slot, ok := strings.CutPrefix(name, prefix+"-"); ok && isSlotName(claim.Role(slot)) {
 			return prefix, claim.Role(slot)
 		}
 	}

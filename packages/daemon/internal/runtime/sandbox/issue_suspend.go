@@ -142,9 +142,9 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 // runtime had when the pod was built, a role of the deployment among them, and each agent of the
 // issue's plan whose name no role has, as the stored template binds them), each one already gone
 // counted as deleted, and then forgets what is held of the slot Secrets
-// (forgetLauncherCredentials). Its caller holds the pod's launch turn, so no launch writes one of
-// them, or another template, in between. It is the delete a writeSecret already sends, so it needs
-// no new permission.
+// (launcherCredentials.forgetSandbox). Its caller holds the pod's launch turn, so no launch writes
+// one of them, or another template, in between. It is the delete a writeSecret already sends, so it
+// needs no new permission.
 func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	remove := func(secret string) error {
@@ -161,6 +161,6 @@ func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 			return err
 		}
 	}
-	r.forgetLauncherCredentials(s.Name)
+	r.launcherAuth.forgetSandbox(s.Name)
 	return nil
 }

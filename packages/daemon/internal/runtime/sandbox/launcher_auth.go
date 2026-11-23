@@ -265,9 +265,10 @@ func (c *launcherCredentials) fail(name string, uid types.UID, at time.Time) {
 }
 
 // forgetSandbox drops whatever is held of each slot Secret of the Sandbox named sandbox, for every
-// Sandbox: each name of roleSecretName's form for it, `<sandbox>-<slot>-boot`, whatever the slot,
-// a role's or the name of an agent of the issue's plan. No other Sandbox's slot Secret has a name
-// of that form, since a slot's name begins with a letter and no other Sandbox's name is sandbox, a
+// Sandbox, once that Sandbox is deleted or its Secrets are: each name of roleSecretName's form for
+// it, `<sandbox>-<slot>-boot`, whatever the slot (isSlotName), a role's, the deployment's among
+// them, or the name of an agent of the issue's plan. No other Sandbox's slot Secret has a name of
+// that form, since a slot's name begins with a letter and no other Sandbox's name is sandbox, a
 // dash and a letter: an issue's part ends in its number or in a hash at the name's full length. A
 // read that lands afterwards for a Sandbox since deleted writes only that Sandbox's entry, which
 // nothing looks up again, until the name's next bind or forget drops it.
@@ -277,7 +278,7 @@ func (c *launcherCredentials) forgetSandbox(sandbox string) {
 	for name := range c.secrets {
 		rest, ours := strings.CutPrefix(name, sandbox+"-")
 		slot, secret := strings.CutSuffix(rest, "-boot")
-		if ours && secret && (claim.IsRole(claim.Role(slot)) || claim.Role(slot) == claim.RoleController) {
+		if ours && secret && isSlotName(claim.Role(slot)) {
 			delete(c.secrets, name)
 		}
 	}
@@ -298,11 +299,4 @@ func (c *launcherCredentials) put(name string, uid types.UID, secret launcherSec
 // Sandbox s.
 func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 	r.launcherAuth.bind(secret.Name, s.UID, credentialFromSecret(secret))
-}
-
-// forgetLauncherCredentials drops what is held of every slot's Secret of the Sandbox named name
-// (forgetSandbox: a role's, the deployment's among them, or an agent's of the issue's plan), once
-// that Sandbox is deleted: whichever slots its pod ran, no other Sandbox's Secret has a name of its.
-func (r *Runtime) forgetLauncherCredentials(name string) {
-	r.launcherAuth.forgetSandbox(name)
 }

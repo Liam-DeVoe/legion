@@ -198,7 +198,7 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); !held {
 		t.Fatalf("the checker's credential was not cached")
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); held {
 		t.Errorf("the checker's launcher credential is still held after its Sandbox %s was forgotten", name)
 	}

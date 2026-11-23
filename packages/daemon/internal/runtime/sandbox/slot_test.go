@@ -185,7 +185,7 @@ func TestTheLauncherCredentialOfAPlanSlotIsForgottenWithItsSandbox(t *testing.T)
 	for sandbox, secret := range held {
 		r.cacheLauncherCredential(sandbox, secret)
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	if _, kept, _ := r.launcherAuth.lookup(held[s].Name, s.UID); kept {
 		t.Errorf("the implementer-2 launcher credential is still held after its Sandbox %s was forgotten", name)
 	}
