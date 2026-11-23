@@ -399,6 +399,8 @@ func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string)
 type scratchDispatchOptions struct {
 	// natsURL is the NATS server the server publishes its events on; empty runs it with NATS off.
 	natsURL string
+	// github is the GitHub the server's App calls. Not built yet: the server is given no App.
+	github string
 	// root is the checkout whose packages/envoy the server runs in and whose
 	// packages/dispatch/web/dist it serves; empty is this one, four directories above the
 	// package's. The binary is not built from it: testbuild.EnvoyBinary builds the checkout
@@ -594,6 +596,10 @@ func (d *scratchDispatch) stop() {
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
 	}
 }
+
+// writeDeliverySettings writes the server's delivery settings, deploying from repo. Not built yet:
+// it writes nothing.
+func (d *scratchDispatch) writeDeliverySettings(repo string) {}
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
