@@ -184,9 +184,10 @@
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
 # <rev> in its place, with no search for the base (news_base): `git archive <rev> | tar -x` into a
-# scratch tree under TMPDIR, this checkout's part-one driver copied into it, and part one built and
-# run there, daemon and Dispatch both of that commit; nothing of this checkout is written. Either
-# runs part one alone, since the control is part one's. The run must fail at
+# scratch tree under TMPDIR, this checkout's part-one driver copied into it, with a file of the
+# control's own for each symbol the driver calls that the base lacks (control_compat), and part
+# one built and run there, daemon and Dispatch both of that commit; nothing of this checkout is
+# written. Either runs part one alone, since the control is part one's. The run must fail at
 # a2-the-reviewer-is-told-the-changed-sections, past that step's setup checks, on the one-approval
 # check after them, in that check's own words (control_failure below): the script reports the
 # control as biting then. It reports no control for a pass, a failure in an earlier check or step,
@@ -436,6 +437,75 @@ news_base() {
   base_sha=$(git -C "$root" rev-parse --verify --quiet "$first^1^{commit}") ||
     refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: $remedy"
   note "the base: $base_sha, the parent of $first, the first commit that adds a news mark"
+}
+
+# control_compat TREE writes into TREE, the scratch copy of the base that part one's control
+# builds, each of the two symbols this checkout's part-one drivers call that an older base lacks,
+# in a file of the control's own under //go:build e2e, so that the driver's e2e build alone
+# carries it. store.Transact, which the seed writes through (#4533 added it after the news marks),
+# is written where TREE's internal/store defines no Transact: it runs the write in one transaction
+# on the base's Pool, and runs no commit hook, since the base registers none. recordTaskAt, which
+# the seed calls to keep a member's plan task where its recorded phase stands (this change adds it
+# beside the basis tests), is written where TREE's package daemon defines none: it does nothing,
+# since the base records no task place, so a record the seed writes in a phase needs no move
+# there. The transcript names each file written and each symbol TREE already defines. No line of
+# the Go it writes holds `}` alone, since such a line ends this shell function for
+# lib/script-functions.ts, which the script's bun tests read it with.
+control_compat() {
+  local tree=$1 store_dir daemon_dir file
+  store_dir=$tree/packages/daemon/internal/store
+  daemon_dir=$tree/packages/daemon/internal/daemon
+  if grep -q -E '^func Transact\(' "$store_dir"/*.go 2>/dev/null; then
+    note "the base's internal/store defines Transact, so the control writes no file for it"
+  else
+    file=$store_dir/approved_version_news_control_compat.go
+    cat >"$file" <<'EOF' || fail "could not write $file"
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose internal/store defines no Transact, which the
+// head's part-one seed writes through. It runs write in one transaction on the base's Pool. The
+// base registers no commit hook, so it runs none.
+package store
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func Transact(ctx context.Context, pool *Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return write(ctx, tx) })
+} // Transact
+EOF
+    note "wrote $file: the base's internal/store defines no Transact, which $seed_file calls"
+  fi
+  if grep -q -E '^func recordTaskAt\(' "$daemon_dir"/*.go 2>/dev/null; then
+    note "the base's package daemon defines recordTaskAt, so the control writes no file for it"
+  else
+    file=$daemon_dir/approved_version_news_control_compat_live_test.go
+    cat >"$file" <<'EOF' || fail "could not write $file"
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no recordTaskAt, which the
+// head's part-one seed calls to keep a member's plan task where its recorded phase stands. The
+// base records no task place, so a record the seed writes in a phase needs no move, and this
+// recordTaskAt does nothing.
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+func recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }
+EOF
+    note "wrote $file: the base's package daemon defines no recordTaskAt, which $seed_file calls"
+  fi
 }
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload
@@ -935,6 +1005,7 @@ if [ -n "$control" ]; then
   done
   build_tree=$base_tree
   note "$base_sha extracted into $base_tree, with this checkout's $driver_file, $steps_file and $seed_file"
+  control_compat "$base_tree"
   pass
 fi
 

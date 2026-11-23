@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   temporaryDirectories,
@@ -527,6 +527,90 @@ describe("the arguments check's jj", () => {
     const run = checkJJ(null);
     expect(run.code).toBe(1);
     expect(run.err).toContain("FAIL arguments: jj --version failed");
+  });
+});
+
+const storeCompat = "packages/daemon/internal/store/approved_version_news_control_compat.go";
+const daemonCompat =
+  "packages/daemon/internal/daemon/approved_version_news_control_compat_live_test.go";
+
+/** Runs control_compat over a scratch base tree whose internal/store and package daemon hold one
+ * Go file each, the first defining Transact where STORE says so and the second defining
+ * recordTaskAt where DAEMON says so, and answers the tree, the run's output and its exit. */
+function controlCompat(store: boolean, daemon: boolean) {
+  const tree = scratch();
+  const storeDir = join(tree, "packages/daemon/internal/store");
+  const daemonDir = join(tree, "packages/daemon/internal/daemon");
+  mkdirSync(storeDir, { recursive: true });
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(
+    join(storeDir, "store.go"),
+    `package store\n\n${store ? "func Transact(ctx context.Context) error { return nil }\n" : "func (s *Store) Tx() {}\n"}`
+  );
+  writeFileSync(
+    join(daemonDir, "seed_test.go"),
+    `package daemon\n\n${daemon ? "func recordTaskAt() error { return nil }\n" : "func startRoles() {}\n"}`
+  );
+  const result = Bun.spawnSync([
+    Bun.which("bash") ?? "bash",
+    "-c",
+    `set -euo pipefail
+${helperGuard}
+check=base-tree seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
+${note}
+${fail}
+${fn("control_compat")}
+control_compat ${JSON.stringify(tree)}`,
+  ]);
+  const out = result.stdout.toString();
+  const err = result.stderr.toString();
+  expectNoMissingHelpers(out, err);
+  return { tree, out, err, code: result.exitCode };
+}
+
+// Part one's control builds this checkout's part-one driver in a scratch copy of the base, and
+// the driver calls two symbols an older base lacks: store.Transact and recordTaskAt. The control
+// writes a file of its own for each, under //go:build e2e so that only the driver's build carries
+// it, where the base tree defines no such symbol, and no file where it does; its transcript names
+// each file it writes and each symbol the base already defines.
+describe("the control's compat files", () => {
+  test("are written where the base defines neither symbol", () => {
+    const run = controlCompat(false, false);
+    expect(run.code).toBe(0);
+    expect(run.err).toBe("");
+    const store = readFileSync(join(run.tree, storeCompat), "utf8");
+    expect(store.startsWith("//go:build e2e\n")).toBe(true);
+    expect(store).toContain("\npackage store\n");
+    expect(store).toContain("\nfunc Transact(ctx context.Context, pool *Pool, write ");
+    const daemon = readFileSync(join(run.tree, daemonCompat), "utf8");
+    expect(daemon.startsWith("//go:build e2e\n")).toBe(true);
+    expect(daemon).toContain("\npackage daemon\n");
+    expect(daemon).toContain(
+      "\nfunc recordTaskAt(context.Context, pgx.Tx, record.Store, record.Issue) error { return nil }\n"
+    );
+    expect(run.out).toBe(
+      `   wrote ${join(run.tree, storeCompat)}: the base's internal/store defines no Transact, which packages/daemon/internal/daemon/approved_version_news_seed_live_test.go calls\n` +
+        `   wrote ${join(run.tree, daemonCompat)}: the base's package daemon defines no recordTaskAt, which packages/daemon/internal/daemon/approved_version_news_seed_live_test.go calls\n`
+    );
+  });
+
+  test("are not written where the base defines both symbols", () => {
+    const run = controlCompat(true, true);
+    expect(run.code).toBe(0);
+    expect(run.err).toBe("");
+    expect(existsSync(join(run.tree, storeCompat))).toBe(false);
+    expect(existsSync(join(run.tree, daemonCompat))).toBe(false);
+    expect(run.out).toBe(
+      "   the base's internal/store defines Transact, so the control writes no file for it\n" +
+        "   the base's package daemon defines recordTaskAt, so the control writes no file for it\n"
+    );
+  });
+
+  test("are written for the one symbol the base lacks", () => {
+    const run = controlCompat(true, false);
+    expect(run.code).toBe(0);
+    expect(existsSync(join(run.tree, storeCompat))).toBe(false);
+    expect(existsSync(join(run.tree, daemonCompat))).toBe(true);
   });
 });
 
