@@ -112,13 +112,14 @@ func seedTasksOfBases(t *testing.T, h *harness, key string) {
 	}
 }
 
-// An implementer's completion of a task of a plan of several tasks is held to the base the plan
-// gives that task's pull request (record.StoredPlan.BaseOf): c needs b, and with GitHub's open pull
-// request on c's branch against the default branch, c's implementer's completion is refused 409
-// HANDOFF_PULL_REQUEST_BASE, naming b's branch and the command that sets it, and nothing is
-// applied. The same completion with that pull request against b's branch is applied, as a
-// completion of task c. An issue whose plan holds one task reads no base: its implementer's
-// completion on a pull request against any base is applied as before.
+// An implementer's completion of a task of a plan is held to the base the plan gives that task's
+// pull request (record.StoredPlan.BaseOf), for a plan of any count of tasks: c needs b, and with
+// GitHub's open pull request on c's branch against the default branch, c's implementer's completion
+// is refused 409 HANDOFF_PULL_REQUEST_BASE, naming b's branch and the command that sets it, and
+// nothing is applied. The same completion with that pull request against b's branch is applied, as
+// a completion of task c. The one task of a plan of one is the task that merges, whose base is the
+// default branch: its implementer's completion on a pull request against another base is refused
+// the same way, and taken, as a completion of that task, against the default branch.
 //
 // The fault it catches is a task's work in a pull request against a base the plan does not give,
 // which a later merge would land there (its control: the read without the base check, under which
@@ -164,9 +165,20 @@ func TestACompletionOnAPullRequestAgainstAnotherBaseIsRefused(t *testing.T) {
 
 		implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
 		written := implementer.writeHandoff("implement", 1)
-		completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
-		if fact := lastCompletion(t, facts); fact.Role != claim.RoleImplementer || fact.Task != "" {
-			t.Fatalf("the completion applied %+v, want the implementer's completion of the issue's one task", fact)
+		complete := func() *httptest.ResponseRecorder {
+			t.Helper()
+			return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1})
+		}
+		refusedSaying(t, complete(), http.StatusConflict, "HANDOFF_PULL_REQUEST_BASE",
+			"pull request #8 on legion/LEGION-213 is against release, and the base of task a is main: set it with gh pr edit 8 --base main, then complete again.")
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("the refused completion applied %#v, want nothing", got)
+		}
+
+		github.opens("legion/LEGION-213", openPull{number: 8, base: "main"})
+		completion(t, complete())
+		if fact := lastCompletion(t, facts); fact.Role != claim.RoleImplementer || fact.Task != "a" {
+			t.Fatalf("the completion applied %+v, want the implementer's completion of the issue's one task, a", fact)
 		}
 	})
 }

@@ -292,7 +292,7 @@ type workflowRuntime struct {
 	// handedOff is each read of a task's pull request an agent's handoff the API recorded asked
 	// for (handoffCompleted) that readHandedOff has not made yet, which is what makes a second
 	// completion of the same task, while the first is still queued, one read rather than two.
-	handedOff *wakeSet[handedOffRead]
+	handedOff *wakeSet[taskRead]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
 	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
