@@ -26,11 +26,14 @@ const (
 	heldPortFD = "CMDTEST_LISTEN_FD"
 )
 
+// TestMain runs the package's tests through Main, which makes the directory that the binaries of
+// TestSourceIsTheFileThatTheBuildReads and TestBuildCommandNamesTheBuildThatFailed go into, or
+// serves as the held-port child.
 func TestMain(m *testing.M) {
 	if os.Getenv(heldPortChildEnv) == "1" {
 		os.Exit(heldPortChild())
 	}
-	os.Exit(m.Run())
+	os.Exit(Main(m))
 }
 
 // heldPortChild is the process TestHeldPortStaysHeldUntilItsProcessServes starts. It waits for a
@@ -348,10 +351,11 @@ func (s *stopTB) Fatalf(format string, args ...any) {
 	panic(stopped{})
 }
 
-// BuildCommand fails the test naming the build that failed. A command whose code does not compile is
-// built twice in one test: the first call runs the build, which fails, and reports the build's error
-// and then that the build of this call failed; the second is handed the build that failed, runs none,
-// and reports that an earlier build of it in this test failed.
+// BuildCommand fails the test naming the build that failed, with the build's error. A command whose
+// code does not compile is built twice in one test process: the first call runs the build, which
+// fails, and reports that the build of this call failed; the second is handed the build that failed,
+// runs none, and reports that an earlier build of it in this test process failed. Each reports the
+// build's error, and neither reports another line.
 func TestBuildCommandNamesTheBuildThatFailed(t *testing.T) {
 	dir := t.TempDir()
 	for name, text := range map[string]string{
@@ -365,8 +369,8 @@ func TestBuildCommandNamesTheBuildThatFailed(t *testing.T) {
 	c := Command{Name: "brokenprobe", Dir: dir}
 	s := &stopTB{TB: t}
 	for _, call := range []struct{ what, fatal string }{
-		{"the call that runs the build", "build brokenprobe: the build of it in this call failed"},
-		{"the call that asks for it again", "build brokenprobe: an earlier build of it in this test failed"},
+		{"the call that runs the build", "build brokenprobe: the build of it in this call failed: exit status "},
+		{"the call that asks for it again", "build brokenprobe: an earlier build of it in this test process failed: exit status "},
 	} {
 		s.fatal = ""
 		path := func() (path string) {
@@ -377,11 +381,11 @@ func TestBuildCommandNamesTheBuildThatFailed(t *testing.T) {
 			}()
 			return BuildCommand(s, c)
 		}()
-		if path != "" || s.fatal != call.fatal {
-			t.Errorf("%s: BuildCommand returns %q and fails the test with %q, want no path and %q", call.what, path, s.fatal, call.fatal)
+		if path != "" || !strings.HasPrefix(s.fatal, call.fatal) || !strings.Contains(s.fatal, "notDeclared") {
+			t.Errorf("%s: BuildCommand returns %q and fails the test with %q, want no path and %q with the build's error", call.what, path, s.fatal, call.fatal)
 		}
-		if len(s.errors) != 1 || !strings.HasPrefix(s.errors[0], "build brokenprobe: exit status ") || !strings.Contains(s.errors[0], "notDeclared") {
-			t.Errorf("%s: the lines BuildCommand reported before it: %q, want the one line of the build's error", call.what, s.errors)
+		if len(s.errors) != 0 {
+			t.Errorf("%s: the lines BuildCommand reported before it: %q, want none", call.what, s.errors)
 		}
 	}
 }

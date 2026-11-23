@@ -40,13 +40,16 @@ import (
 // built and started outside the test process would close that.
 type sweepReader struct{ binary string }
 
-// newSweepReader builds the reader's binary once for the top-level test t (cmdtest.BuildCommand of
-// sweepReaderCommand), which passes ENVOY_TEST_GO_OVERLAY to go build -overlay, so a probe that lays a
-// fault in the reader's code by that overlay builds the binary with it: the binary is the code under
-// test. The build reads that variable, the rest of the test process's environment and the files on
-// disk when t calls it, after each init of the test binary has run, so test code chooses that code
-// too; and the binary is a file in t's temporary folder, which each process that start starts runs, so
-// test code that writes over it after the build chooses the code of those processes (sweepReader).
+// newSweepReader gives the top-level test t the reader's binary (cmdtest.BuildCommand of
+// sweepReaderCommand), which passes ENVOY_TEST_GO_OVERLAY to go build as its overlay, so a probe that
+// lays a fault in the reader's code by that overlay builds the binary with it: the binary is the code
+// under test. BuildCommand builds it once for the test process and hands each test that asks for the
+// same build (the same environment and overlay) that binary, in the folder of the process's binaries
+// that cmdtest.Main makes (TestMain). The build reads that variable, the rest of the test process's
+// environment and the files on disk when the first test that asks for it calls it, after each init of
+// the test binary has run, so test code chooses that code too; and the binary is a file in that
+// folder, which each process that start starts runs, so test code that writes over it after the build
+// chooses the code of the processes of each test that shares it (sweepReader).
 func newSweepReader(t *testing.T) sweepReader {
 	t.Helper()
 	return sweepReader{cmdtest.BuildCommand(t, sweepReaderCommand())}

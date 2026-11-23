@@ -106,6 +106,12 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # on a large pack fills an issue pod again.
 ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
 ARG GH_TOOL=gh@2.98.0
+# github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
+# pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
+# The image installs it at /opt/legion/gh-extensions/gh-stack, and the shim links it into gh's
+# extension directory under each role's data home (podsafety.EnsureGhExtensions), where gh reads
+# extensions and nowhere else; ARG GH_STACK_SHA256 below holds its binary's digest.
+ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
 # checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
 # archive of the Oh My Pi release .omp-pin names (omp-v<version>-linux-x64.tar.gz), the x86_64
@@ -125,6 +131,13 @@ ARG GH_TOOL=gh@2.98.0
 ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
+# The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
+# ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API
+# gives that release asset, equal to the sha256 of the binary downloaded from the address the tools
+# stage reads, and `gh attestation verify linux-amd64 --repo github/gh-stack` verified that binary
+# against github/gh-stack's release.yml workflow at refs/tags/v0.3.0. A bump repeats those reads
+# and moves this digest in the same commit, or the tools stage's check fails the build.
+ARG GH_STACK_SHA256=957e822cfa7e435cd84a297cd96c419b58e51e3ac58be249762c24bd9e45099b
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
@@ -133,13 +146,15 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
-# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# newest, read with
+# `gh api --paginate repos/example-org/deployment/git/matching-refs/tags/leak-check-v` at
+# 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
+# LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v31
+ARG LEAK_CHECK_TAG=leak-check-v33
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -255,10 +270,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
-# node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -277,7 +290,18 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# --ignore-scripts skips the lifecycle script of every package installed here, so the install
+# fetches what bun.lock pins and nothing else. better-sqlite3 is the reason for it:
+# packages/proof-editor reaches that package through proof-sdk, and under Bun its install script
+# ends in `bunx node-gyp@latest` compiling it from source (oven-sh/bun#4290). That fetches
+# node-gyp's newest release from npm and then the Node headers from nodejs.org, two downloads no pin
+# or digest holds, so the image build passed or failed on them: worker-image run 44089746339 failed
+# there once, and passed on its next attempt. Nothing of that build reaches the image, since no
+# later stage copies /repo/node_modules, and nothing in this stage runs esbuild, the one other
+# package here with an install script (Bun's bundler builds the plugins). Bun still applies the
+# patches the root package.json names. packages/envoy/docker/Dockerfile installs the same
+# workspace with the same flag.
+RUN bun install --frozen-lockfile --ignore-scripts
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
 # linker, so playwright-core is not hoisted at /repo/node_modules, and
@@ -390,6 +414,7 @@ ARG MISE_VERSION
 ARG MISE_SHA256
 ARG JJ_TOOL
 ARG GH_TOOL
+ARG GH_STACK_TOOL
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
@@ -404,29 +429,33 @@ RUN set -eu; \
     mise --version; \
     rm -rf "$t"
 COPY .omp-pin /omp-pin
-# The Oh My Pi build, jj and gh are each one archive of the release its pin names, fetched from the
-# address GitHub serves a release asset at, https://github.com/<owner>/<repo>/releases/download/<tag>/<name>,
-# and checked against its ARG *_SHA256 before it is unpacked. That address makes no GitHub API call.
+# The Oh My Pi build, jj and gh are each one archive of the release its pin names, and gh-stack one
+# binary of its release, fetched from the address GitHub serves a release asset at,
+# https://github.com/<owner>/<repo>/releases/download/<tag>/<name>, and checked against its ARG
+# *_SHA256 before it is unpacked or installed. That address makes no GitHub API call.
 # Until 2026-11-21 mise resolved the three through the API (the release by its tag, cli/cli's release
 # list, the artifact attestations) with the run's GITHUB_TOKEN, whose hourly budget of 15,000 calls
 # every job of this repository's CI shares. That day the budget ran out before its hour reset at
 # 17:24:15Z (mise: `github rate limit: 0/15000 (core)`), mise skipped the install it could not
 # resolve, and `mise x <pin> -- omp --version` failed every pull request's build in that hour with
 # `"omp" couldn't exec process: No such file or directory` (runs 44928923080, 44929049036 and
-# 44929265240). The pins are `github:<owner>/<repo>@<version>` (.omp-pin, ARG JJ_TOOL) and
-# `gh@<version>` (ARG GH_TOOL), each release's tag is `v` and that version, as the notices stage
+# 44929265240). The pins are `github:<owner>/<repo>@<version>` (.omp-pin, ARG JJ_TOOL, ARG
+# GH_STACK_TOOL) and `gh@<version>` (ARG GH_TOOL), each release's tag is `v` and that version, as the notices stage
 # reads them too. Each part of a pin — owner, repository, version — is one or more of
 # [A-Za-z0-9._-] and holds no `..`, so no part can be a path of its own or climb out of the one
 # it stands in; a pin of any other shape fails here by its name rather than fetch an address it
 # does not name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
 # it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
 # no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
-# whose sha256 is not the pinned one, so the log says which of the three failed and why, though
-# BuildKit marks every line of this RUN. The three digests are declared here, after the layers
-# above, so a bump of one rebuilds this layer alone.
+# whose sha256 is not the pinned one, so the log says which of the four failed and why, though
+# BuildKit marks every line of this RUN. The four digests are declared here, after the layers
+# above, so a bump of one rebuilds this layer alone. gh-stack is installed as gh lays out an
+# extension it installs, a directory gh-stack holding the executable gh-stack, and must print the
+# version its pin names.
 ARG OMP_SHA256
 ARG JJ_SHA256
 ARG GH_SHA256
+ARG GH_STACK_SHA256
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; \
     part() { case "$1" in "" | *[!A-Za-z0-9._-]* | *..*) return 1 ;; esac; }; \
@@ -438,10 +467,12 @@ RUN set -eu; \
     }; \
     pinned .omp-pin "$omp_pin"; \
     pinned "ARG JJ_TOOL" "$JJ_TOOL"; \
+    pinned "ARG GH_STACK_TOOL" "$GH_STACK_TOOL"; \
     part "${GH_TOOL#gh@}" && [ "${GH_TOOL#gh@}" != "$GH_TOOL" ] || { echo "tools: ARG GH_TOOL is '$GH_TOOL', which is no gh@<version> pin of [A-Za-z0-9._-] without '..'" >&2; exit 1; }; \
     omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
     gh_version="${GH_TOOL#gh@}"; \
+    stack_repo="${GH_STACK_TOOL#github:}"; stack_repo="${stack_repo%@*}"; stack_version="${GH_STACK_TOOL##*@}"; \
     fetch() { \
       tool=$1; arg=$2; want=$3; url=$4; file=$5; \
       printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
@@ -455,13 +486,17 @@ RUN set -eu; \
     fetch omp OMP_SHA256 "$OMP_SHA256" "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")" "$t/omp.tar.gz"; \
     fetch jj JJ_SHA256 "$JJ_SHA256" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
     fetch gh GH_SHA256 "$GH_SHA256" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
+    fetch gh-stack GH_STACK_SHA256 "$GH_STACK_SHA256" "$(asset "$stack_repo" "v${stack_version}" linux-amd64)" "$t/gh-stack"; \
     tar -xzf "$t/omp.tar.gz" -C /opt/omp --strip-components=1 --no-same-owner; \
     tar -xzf "$t/jj.tar.gz" -C "$t" --no-same-owner ./jj; \
     tar -xzf "$t/gh.tar.gz" -C "$t" --no-same-owner "gh_${gh_version}_linux_amd64/bin/gh"; \
     install -m 0755 "$t/jj" /opt/tools/jj; \
     install -m 0755 "$t/gh_${gh_version}_linux_amd64/bin/gh" /opt/tools/gh; \
+    install -D -m 0755 "$t/gh-stack" /opt/tools/gh-extensions/gh-stack/gh-stack; \
     rm -rf "$t"; \
-    /opt/omp/bin/omp --version && /opt/tools/jj --version && /opt/tools/gh --version
+    /opt/omp/bin/omp --version; /opt/tools/jj --version; /opt/tools/gh --version; \
+    stack="$(/opt/tools/gh-extensions/gh-stack/gh-stack --version)"; echo "tools: gh-stack: $stack"; \
+    [ "$stack" = "gh stack version ${stack_version}" ] || { echo "tools: gh-stack: the binary says '$stack', and ARG GH_STACK_TOOL pins ${stack_version}" >&2; exit 1; }
 
 # ------------------------------------------------------------------------------------------------
 # go: the Go coordinator's `legion`, built as the repository builds it — `go build ./cmd/legion` in
@@ -981,7 +1016,7 @@ RUN dpkg-query -W -f '${db:Status-Status} ${Package}\n' > /tmp/dpkg-packages \
 # the same way. The k8s.io modules that go.mod replaces with ./staging/src, kubectl itself among them,
 # are that release's own source, each with its license file under staging/src/k8s.io at the release's
 # tag; the repository keeps the license text of every other module it links under LICENSES/vendor
-# there. yq's section names its own go.mod the same way. The language servers' own LICENSE files come
+# there. yq's and gh-stack's sections name their own go.mod the same way. The language servers' own LICENSE files come
 # from their installed trees in the toolchain stage; TypeScript's ThirdPartyNoticeText.txt and the
 # typeshed LICENSE pyright bundles come with them. azure-cli's Python distributions carry their own
 # license files in their *.dist-info directories under /opt/azure-cli/env, where a wheel ships one,
@@ -999,6 +1034,7 @@ ARG BUN_VERSION
 ARG MISE_VERSION
 ARG JJ_TOOL
 ARG GH_TOOL
+ARG GH_STACK_TOOL
 ARG UV_VERSION
 ARG AWS_CLI_VERSION
 ARG KUBECTL_VERSION
@@ -1008,7 +1044,7 @@ ARG GOPLS_VERSION
 COPY --from=plugin /out/codegraph-node-version /in/codegraph-node-version
 COPY packages/daemon/docker/language-servers/package.json /in/language-servers/package.json
 COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
-# The twenty-two reads below (sixteen LICENSE/NOTICE fetches, six HEAD checks) are independent
+# The twenty-four reads below (seventeen LICENSE/NOTICE fetches, seven HEAD checks) are independent
 # of each other and left sequential rather than backgrounded: this whole RUN is the cached layer
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
@@ -1018,13 +1054,14 @@ RUN set -eu; \
     omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
     gh_tag="v${GH_TOOL#gh@}"; \
+    stack_repo="${GH_STACK_TOOL#github:}"; stack_repo="${stack_repo%@*}"; stack_tag="v${GH_STACK_TOOL##*@}"; \
     codegraph_node_tag="$(cat /in/codegraph-node-version)"; \
     pin() { sed -n "s|^ *\"$2\": \"\([^\"]*\)\".*|\1|p" "/in/$1/package.json"; }; \
     typescript_version=$(pin language-servers typescript); tsls_version=$(pin language-servers typescript-language-server); pyright_version=$(pin language-servers pyright); \
     codegraph_version=$(pin codegraph @colbymchenry/codegraph); \
     : "${typescript_version:?typescript pin not read from /in/language-servers/package.json}"; : "${tsls_version:?typescript-language-server pin not read from /in/language-servers/package.json}"; : "${pyright_version:?pyright pin not read from /in/language-servers/package.json}"; : "${codegraph_version:?@colbymchenry/codegraph pin not read from /in/codegraph/package.json}"; \
-    printf 'omp_repo=%s\nomp_tag=%s\njj_repo=%s\njj_tag=%s\ngh_tag=%s\ncodegraph_node_tag=%s\ncodegraph_version=%s\ntypescript_version=%s\ntsls_version=%s\npyright_version=%s\n' \
-      "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
+    printf 'omp_repo=%s\nomp_tag=%s\njj_repo=%s\njj_tag=%s\ngh_tag=%s\nstack_repo=%s\nstack_tag=%s\ncodegraph_node_tag=%s\ncodegraph_version=%s\ntypescript_version=%s\ntsls_version=%s\npyright_version=%s\n' \
+      "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$stack_repo" "$stack_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
     fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
@@ -1034,6 +1071,7 @@ RUN set -eu; \
     fetch "$omp_repo" "$omp_tag" packages/natives/THIRD-PARTY-NOTICES.txt omp-natives-THIRD-PARTY-NOTICES.txt; \
     fetch "$jj_repo" "$jj_tag" LICENSE jj-LICENSE; \
     fetch cli/cli "$gh_tag" LICENSE gh-LICENSE; \
+    fetch "$stack_repo" "$stack_tag" LICENSE gh-stack-LICENSE; \
     fetch jdx/mise "${MISE_VERSION}" LICENSE mise-LICENSE; \
     fetch astral-sh/uv "$UV_VERSION" LICENSE-APACHE uv-LICENSE-APACHE; \
     fetch astral-sh/uv "$UV_VERSION" LICENSE-MIT uv-LICENSE-MIT; \
@@ -1056,12 +1094,14 @@ RUN set -eu; \
     curl -fsSIo /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
     curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
-    printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules
+    printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules; \
+    curl -fsSIo /dev/null "$(gh_raw_url "$stack_repo" "$stack_tag" go.mod)"; \
+    printf 'gh-stack links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/%s/blob/%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$stack_repo" "$stack_tag" > /in/gh-stack-modules
 # GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
 # read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared
 # before a RUN into that RUN's environment, and so into its cache key, and a COPY before a RUN
 # changes the layer it runs on, so above the fetches a gcloud or CPython bump or a new lock would
-# rerun the twenty-two reads.
+# rerun the twenty-four reads.
 ARG GCLOUD_VERSION
 ARG AZURE_CLI_PYTHON_VERSION
 COPY packages/daemon/docker/azure-cli/requirements.in packages/daemon/docker/azure-cli/requirements.txt /in/azure-cli/
@@ -1102,6 +1142,8 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
       "jj, /usr/local/bin/jj: LICENSE of github.com/${jj_repo} at ${jj_tag}" /in/jj-LICENSE \
       "jj: the Rust crates it links" /in/jj-crates \
       "GitHub CLI, /usr/local/bin/gh: LICENSE of github.com/cli/cli at ${gh_tag}" /in/gh-LICENSE \
+      "gh-stack, the gh stack extension, /opt/legion/gh-extensions/gh-stack: LICENSE of github.com/${stack_repo} at ${stack_tag}" /in/gh-stack-LICENSE \
+      "gh-stack: the Go modules it links" /in/gh-stack-modules \
       "mise ${MISE_VERSION}, /usr/local/bin/mise: LICENSE of github.com/jdx/mise at ${MISE_VERSION}" /in/mise-LICENSE \
       "mise: the Rust crates it links" /in/mise-crates \
       "uv and uvx, /usr/local/bin/uv and uvx: LICENSE-APACHE of github.com/astral-sh/uv at ${UV_VERSION} (uv is offered under Apache-2.0 or MIT)" /in/uv-LICENSE-APACHE \
@@ -1187,6 +1229,11 @@ RUN --mount=type=bind,from=webkit-check,source=/out,target=/tmp/webkit-check \
 COPY --from=tools /opt/omp /opt/omp
 COPY --from=tools /opt/tools/jj /usr/local/bin/jj
 COPY --from=tools /opt/tools/gh /usr/local/bin/gh
+# gh's extensions, root's like the rest of /opt/legion, so no role changes the copy its siblings
+# run: gh-stack, the `gh stack` extension ARG GH_STACK_TOOL pins. gh reads an extension only from
+# its own data directory, which in a pod is under the issue's scratch, so the shim links each one
+# there before Oh My Pi starts (podsafety.EnsureGhExtensions, from podsafety.GhExtensionsDir).
+COPY --from=tools /opt/tools/gh-extensions /opt/legion/gh-extensions
 # mise, the binary the tools stage installed and checked against MISE_SHA256, so there is no pin of
 # its own here, for the two scripts a role runs that resolve the Oh My Pi pin with `mise where` and
 # `mise x`: scripts/e2e/lib/install-plugin-profile.sh and the skill-scenario rig
@@ -1537,11 +1584,12 @@ COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/
 # that publishes it. The daemon reads it at this tag and pushes it to each pod's launcher.
 ARG LEAK_CHECK_TAG
 ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
+ARG GH_STACK_TOOL
 # The final step: /opt/legion, /opt/legion/bin and /opt/legion/githooks are root's with mode 0755,
 # so the runtime user can neither rename nor replace what they hold; everything under
 # /opt/legion/pi-envoy,
-# /opt/legion/pi-legion and /opt/legion/claude-envoy is root's and writable by no one else, so no
-# role changes the image's copy
+# /opt/legion/pi-legion, /opt/legion/claude-envoy and /opt/legion/gh-extensions is root's and
+# writable by no one else, so no role changes the image's copy
 # of the plugin code (a launch that installs the plugins loads them instead from the role's state
 # home on the issue volume, which every role of the issue can write); the role mount points under
 # /var/run/legion are root's, mode 0755 and empty, and the mount point of the pod's test server
@@ -1555,7 +1603,11 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
 # commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
-# and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. So the three
+# and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. The real gh runs
+# `gh stack` from a data directory laid out as the shim lays a role's out (a link to
+# /opt/legion/gh-extensions/gh-stack under gh/extensions), and it must print the version ARG
+# GH_STACK_TOOL pins, so an image whose extension gh cannot find or whose binary is another
+# release fails here. So the three
 # absolute paths stay as fixed as they were when git and jj were reached by their own names, and
 # a pod environment can name all three; what has moved is that a push now passes through the git
 # wrapper's hook and a commit through `legion git`. One commit through the PATH's git, in a scratch
@@ -1678,8 +1730,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     done; \
     testpg_log="$(stat -c '%u:%g %a %s' /var/run/legion/testpg.log)"; echo "/var/run/legion/testpg.log: $testpg_log"; \
     test "$testpg_log" = "0:0 444 0"; \
-    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
-    echo "plugin files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
+    plugins="$(find /opt/legion/pi-envoy /opt/legion/pi-legion /opt/legion/claude-envoy /opt/legion/gh-extensions \( ! -user 0 -o ! -group 0 -o -perm /022 \) -print)"; \
+    echo "plugin and gh extension files not root's alone: ${plugins:-none}"; test -z "$plugins"; \
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
     git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
@@ -1703,6 +1755,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     printf '%s\n' "$message" | grep -qx 'Legion-Role: tester'; \
     rm -rf "$probe"; \
     gh="$(command -v gh)"; echo "gh: $gh"; test "$gh" = /opt/legion/bin/gh; /usr/local/bin/gh --version; \
+    ghdata="$(mktemp -d)"; mkdir -p "$ghdata/gh/extensions"; ln -s /opt/legion/gh-extensions/gh-stack "$ghdata/gh/extensions/gh-stack"; \
+    stack="$(XDG_DATA_HOME="$ghdata" XDG_CONFIG_HOME="$ghdata/config" XDG_STATE_HOME="$ghdata/state" XDG_CACHE_HOME="$ghdata/cache" \
+      GH_CONFIG_DIR="$ghdata/gh-config" GH_NO_UPDATE_NOTIFIER=1 GH_STACK_NO_UPDATE_NOTIFIER=1 GH_TELEMETRY=0 /usr/local/bin/gh stack --version)"; \
+    rm -rf "$ghdata"; echo "gh stack: $stack"; test "$stack" = "gh stack version ${GH_STACK_TOOL##*@}"; \
     npm="$(command -v npm)"; echo "npm: $npm"; test "$npm" = /usr/local/bin/npm; \
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-check HOME=/tmp \
       /opt/legion/pi-envoy/bin/dispatch --help > /tmp/dispatch-help; \
