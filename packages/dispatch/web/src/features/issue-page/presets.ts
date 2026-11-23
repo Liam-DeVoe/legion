@@ -288,13 +288,15 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
   return found.size;
 }
 
-/** The decisions of the view that restate a person's answer: the sections of `decisions.md`
- *  the tree hangs under the answered question they name. The Decisions filter draws that
- *  answer as the decision and the section as no entry (R2, R9, `decisions-filter/
- *  decisions-parts.ts`), so its count leaves them out. */
-function restatedAnswers(root: TreeNode): number {
+/** The nodes of the Decisions view that its filter draws as no entry, so its count leaves them
+ *  out (`decisions-filter/decisions-parts.ts`): the sections of `decisions.md` the tree hangs
+ *  under the answered question they name, which restate a person's answer, where the filter
+ *  draws that answer as the decision (R2, R9), and the decision blocks the reviewer holds, which
+ *  are no entry until they post (`TreeNode.heldForReview`). */
+function unlistedDecisions(root: TreeNode): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
+    if (node.type === "ask" && node.heldForReview === true) found.add(node.id);
     for (const child of node.children) {
       if (node.type === "ask" && node.answer !== undefined && child.type === "decision") {
         found.add(child.id);
@@ -322,13 +324,9 @@ export function filterSignals(
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
-  // A decision block the reviewer holds is no entry of the Decisions view until it posts
-  // (`TreeNode.heldForReview`, `decisions-filter/decisions-parts.ts`), so the count leaves it
-  // out with the list.
-  const held = countOf(decisions.root, "ask", (node) => node.heldForReview === true);
   return {
     decisions: {
-      count: decisions.matches - restatedAnswers(decisions.root) - held,
+      count: decisions.matches - unlistedDecisions(decisions.root),
       ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
     },
     plan: { count: view("plan").matches, unit: "steps" },

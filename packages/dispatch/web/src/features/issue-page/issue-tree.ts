@@ -222,12 +222,12 @@ export interface TreeNode {
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
-  /** Whether this ask is a decision block the reviewer holds (`Ask.held_for_review`), which waits
-   *  on nobody until it posts: the outline draws it as the open question it is (`question`), and
-   *  nothing that lists or counts what waits on people holds it - it waits on no reader
-   *  (`waiting`), the next-question key passes over it (`nextQuestion`), and the Decisions view
-   *  lists it in no part and counts it nowhere (`decisionsParts`, `filterSignals`), as the
-   *  server's `open_asks` and every Inbox leave it out. Absent on every other node. */
+  /** Whether this ask is a decision block the reviewer holds (`Ask.held_for_review`), which
+   *  reaches no reader until it posts: no list, count or focus of what waits on people holds it -
+   *  it waits on no reader (`waiting`), the next-question key passes over it (`nextQuestion`),
+   *  and the Decisions view lists it in no part and counts it nowhere (`decisionsParts`,
+   *  `filterSignals`), as the server's `open_asks` and every Inbox leave it out. The outline
+   *  still draws it as the open question it is (`question`). Absent on every other node. */
   readonly heldForReview?: true;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;

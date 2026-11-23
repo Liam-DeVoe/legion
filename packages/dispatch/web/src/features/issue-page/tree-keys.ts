@@ -39,11 +39,10 @@ export function nodesInOrder(root: TreeNode): TreeNode[] {
  * open-decisions navigator walks to none: the tree shows it without putting the focus on it.
  */
 export function nextQuestion(root: TreeNode, from: string | undefined): TreeNode | undefined {
+  const stop = (node: TreeNode): boolean => node.question && node.heldForReview !== true;
   const order = nodesInOrder(root);
-  const at = order.findIndex(
-    (node) => node.id === from && node.question && node.heldForReview !== true
-  );
-  return order.slice(at + 1).find((node) => node.question && node.heldForReview !== true);
+  const at = order.findIndex((node) => node.id === from && stop(node));
+  return order.slice(at + 1).find(stop);
 }
 
 /** A reference with the version it pins taken off, so a decision's link to a block and that

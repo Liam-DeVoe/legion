@@ -258,12 +258,13 @@ func TestASevenARunRecordsItsBundle(t *testing.T) {
 	}
 }
 
-// A second `harness local` on the --out a first start holds is refused at once, even before the
-// first instance is up; and a start removes, when it ends, only the local.json it made, not a
-// file another start wrote there since.
-func TestASecondLocalStartOnOneOutIsRefused(t *testing.T) {
-	bin, out := t.TempDir(), t.TempDir()
-	pids := filepath.Join(t.TempDir(), "pids")
+// stubBun puts first on PATH a `bun` that writes its pid in the file it answers and sleeps, so a
+// `harness local` start runs an instance that never comes up; as the test ends it kills the
+// process group of each stub that wrote its pid there (the start runs bun in a group of its own).
+func stubBun(t *testing.T) (pids string) {
+	t.Helper()
+	bin := t.TempDir()
+	pids = filepath.Join(t.TempDir(), "pids")
 	script := "#!/bin/sh\necho $$ >> \"$HARNESS_TEST_BUN_PID\"\nexec sleep 300\n"
 	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -278,6 +279,15 @@ func TestASecondLocalStartOnOneOutIsRefused(t *testing.T) {
 			}
 		}
 	})
+	return pids
+}
+
+// A second `harness local` on the --out a first start holds is refused at once, even before the
+// first instance is up; and a start removes, when it ends, only the local.json it made, not a
+// file another start wrote there since.
+func TestASecondLocalStartOnOneOutIsRefused(t *testing.T) {
+	out := t.TempDir()
+	pids := stubBun(t)
 	args := []string{"local", "--out", out, "--pg-dsn", "postgres://harness@127.0.0.1:1/postgres", "--database", "dispatch_harness_1", "--repo", t.TempDir()}
 	first, stopFirst := context.WithCancel(context.Background())
 	defer stopFirst()
@@ -315,22 +325,8 @@ func TestASecondLocalStartOnOneOutIsRefused(t *testing.T) {
 // A `harness local` start stopped (Ctrl-C) before its instance is up fails: it started no
 // instance, as it was asked to. A stop once the instance is up is how it ends.
 func TestALocalStartStoppedBeforeItsInstanceIsUpFails(t *testing.T) {
-	bin, out := t.TempDir(), t.TempDir()
-	pids := filepath.Join(t.TempDir(), "pids")
-	script := "#!/bin/sh\necho $$ >> \"$HARNESS_TEST_BUN_PID\"\nexec sleep 300\n"
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("HARNESS_TEST_BUN_PID", pids)
-	t.Cleanup(func() {
-		data, _ := os.ReadFile(pids)
-		for _, line := range strings.Fields(string(data)) {
-			if pid, err := strconv.Atoi(line); err == nil {
-				syscall.Kill(-pid, syscall.SIGKILL)
-			}
-		}
-	})
+	out := t.TempDir()
+	pids := stubBun(t)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	done := make(chan int, 1)
@@ -607,22 +603,7 @@ func TestEveryHarnessCommandMakesTheOutItWrites(t *testing.T) {
 // start makes no x/local.
 func TestALocalStartMakesTheOutItWrites(t *testing.T) {
 	work, x := linkedDirs(t)
-	bin := t.TempDir()
-	pids := filepath.Join(t.TempDir(), "pids")
-	script := "#!/bin/sh\necho $$ >> \"$HARNESS_TEST_BUN_PID\"\nexec sleep 300\n"
-	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("HARNESS_TEST_BUN_PID", pids)
-	t.Cleanup(func() {
-		data, _ := os.ReadFile(pids)
-		for _, line := range strings.Fields(string(data)) {
-			if pid, err := strconv.Atoi(line); err == nil {
-				syscall.Kill(-pid, syscall.SIGKILL)
-			}
-		}
-	})
+	pids := stubBun(t)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	// Written out, as linkedDirs says.

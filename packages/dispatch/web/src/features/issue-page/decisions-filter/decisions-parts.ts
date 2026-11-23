@@ -281,15 +281,15 @@ export function decisionsParts({
     isReader(by, reader) ? yours : others;
   for (const { node, parent } of placed.values()) {
     if (kept !== undefined && !kept.has(node.id)) continue;
+    // A decision block the reviewer holds is in no part until it posts, open or closed: the
+    // server's Decisions view and every Inbox leave it out (`TreeNode.heldForReview`).
+    if (node.heldForReview === true) continue;
     const base = {
       node,
       ...(parent === undefined ? {} : { parent }),
       ...pathOf(node),
     };
     if (node.type === "ask") {
-      // A decision block the reviewer holds is in no part until it posts, open or closed: the
-      // server's Decisions view and every Inbox leave it out (`TreeNode.heldForReview`).
-      if (node.heldForReview === true) continue;
       const askId = askIdOf(node) ?? "";
       const shapes = [...(shapedByAsk.get(askId)?.values() ?? [])];
       const closing = closings.get(askId);
