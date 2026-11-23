@@ -12,30 +12,45 @@ import { isPartyRoute, linkOf } from "./party-references";
 import type { DispatchReferenceRoute } from "./routes";
 import type { TextReference } from "./text-references";
 
+/** The shared Markdown engine as a component reads it (`useLoadedEngine`). */
+export interface LoadedEngine {
+  /** The engine once it has loaded; undefined while it loads, and where its load failed. */
+  readonly engine: MarkdownEngine | undefined;
+  /** Whether the load failed. The page keeps a failed load (`markdown-engine.ts`'s
+   *  `loadEngine`), so the engine never comes after it, and a component that waits for it to
+   *  draw a text draws that text without it instead. */
+  readonly failed: boolean;
+}
+
 /**
- * The shared Markdown engine once it has loaded, and undefined until then. A component that
+ * The shared Markdown engine, once it has loaded, and whether its load failed. A component that
  * reads a text's words through the parse, rather than draws the text, asks for the load when it
- * mounts and draws again when the load lands; an engine that cannot load leaves it undefined,
- * which is the load state the component shows (`markdown-engine.ts` reports the cause).
+ * mounts and draws again when the load lands or fails; while it loads the engine is undefined,
+ * which is the load state the component shows (`markdown-engine.ts` reports a failure's cause).
  */
-export function useLoadedEngine(): MarkdownEngine | undefined {
-  const [engine, setEngine] = useState(loadedEngine);
+export function useLoadedEngine(): LoadedEngine {
+  const [loaded, setLoaded] = useState<LoadedEngine>(() => ({
+    engine: loadedEngine(),
+    failed: false,
+  }));
   useEffect(() => {
-    if (engine !== undefined) {
+    if (loaded.engine !== undefined || loaded.failed) {
       return;
     }
     let live = true;
     warmMarkdownRenderer().then(
       () => {
-        if (live) setEngine(loadedEngine());
+        if (live) setLoaded({ engine: loadedEngine(), failed: false });
       },
-      () => undefined
+      () => {
+        if (live) setLoaded({ engine: undefined, failed: true });
+      }
     );
     return () => {
       live = false;
     };
-  }, [engine]);
-  return engine;
+  }, [loaded]);
+  return loaded;
 }
 
 /**

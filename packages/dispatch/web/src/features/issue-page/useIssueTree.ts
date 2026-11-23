@@ -14,6 +14,7 @@ import type { IssueDetails, ReferenceTarget } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import {
   buildIssueTree,
   type DocumentBlocks,
@@ -127,20 +128,33 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
  * Every `dispatch://` address the tree holds: each node's own, so a block's words can be read,
  * each chip's, so a chip can name its target, and each one a node's words or its answer cite, so
  * a row links what its words name from this read and makes none per mention
- * (`row-references.ts`). This is what the batched reference read is given, which is why the
- * page draws every chip and every link in one request rather than one per node (R21); a block
- * whose words come from that read's own answer cites what nothing else cites, which one more
- * read names (`useIssueTree`). It is here, beside the reads it is the key of, and not beside
- * the model, which makes no read; what a text cites is read by `citedReferences`
+ * (`row-references.ts`). This is what the batched reference read is given, which is why the page
+ * draws every chip and every link in one request rather than one per node (R21); a block whose
+ * words come from that read's own answer cites what nothing else cites, which one more read
+ * names (`useIssueTree`). It is here, beside the reads it is the key of, and not beside the
+ * model, which makes no read; what a text cites is read by `citedReferences`
  * (`row-references.ts`), over the one reader of a text's citations (`text-references.ts`).
+ *
+ * Beside an issue's whole spec goes the issue's own address. A link titles the spec by the
+ * issue's title (`issueOrDocumentTitle`), which the read answers only under that address, so
+ * without it a plain line the page feeds would name another issue's spec by the page's word for
+ * a document, where a link and a line's own read name it by that title (`tree-drafts.ts`'s
+ * `treeContext`).
  */
 function treeReferences(root: TreeNode): string[] {
   const refs = new Set<string>();
+  const add = (reference: string): void => {
+    refs.add(reference);
+    const route = parseNodeReference(reference);
+    if (route?.kind === "spec" && route.block === undefined) {
+      refs.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+    }
+  };
   const walk = (node: TreeNode): void => {
-    if (node.reference !== undefined) refs.add(node.reference);
-    for (const chip of [...node.chips, ...node.alsoUnder]) refs.add(chip.ref);
-    for (const reference of citedReferences(nodeWords(node))) refs.add(reference);
-    for (const reference of citedReferences(node.answer?.text ?? "")) refs.add(reference);
+    if (node.reference !== undefined) add(node.reference);
+    for (const chip of [...node.chips, ...node.alsoUnder]) add(chip.ref);
+    for (const reference of citedReferences(nodeWords(node))) add(reference);
+    for (const reference of citedReferences(node.answer?.text ?? "")) add(reference);
     for (const child of node.children) walk(child);
   };
   walk(root);

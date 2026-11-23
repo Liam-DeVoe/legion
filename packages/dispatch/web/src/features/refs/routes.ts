@@ -886,6 +886,23 @@ export function referencedArtifact(route: DispatchReferenceRoute): ReferencedArt
   }
 }
 
+/** The title a link gives the issue or the whole document `route` names, from what the reads
+ *  hold of them (R8, `reference-target.ts`'s `useReferenceTarget`): a document by its own name,
+ *  which is its file name, and an issue and its spec by the issue's title. A reference that
+ *  names a document is titled by that document alone: one its issue does not hold has no title,
+ *  never its issue's, which would name a node the reference does not name. The issue page
+ *  publishes a whole document's name by this rule (`issue-page/tree-drafts.ts`'s
+ *  `treeContext`), so a line its batched read feeds names the document as a link to it does. */
+export function issueOrDocumentTitle(
+  route: DispatchReferenceRoute | undefined,
+  issue: { readonly title: string } | undefined,
+  document: { readonly name: string } | undefined
+): string | undefined {
+  return route !== undefined && referencedArtifact(route) !== undefined
+    ? document?.name
+    : issue?.title;
+}
+
 /** What a picture whose source is a Dispatch reference names: the source as written, the route it
  *  parses to, the artifact that route names (`referencedArtifact`, undefined for an ask, a comment
  *  or an issue) and the caption to draw it with. */

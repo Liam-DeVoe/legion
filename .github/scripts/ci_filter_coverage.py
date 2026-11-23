@@ -1238,7 +1238,12 @@ ENV_ALLOWED = frozenset({
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
-    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
+    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL",
+    # Read at run time by storetest's xid window rig (XidRequireGapsEnv): it turns a run that
+    # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
+    # the same tests with it set as without.
+    "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
     # around_job reads the env of every step of the job that runs go-release-notices.sh, so
@@ -1246,6 +1251,10 @@ ENV_ALLOWED = frozenset({
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
     "GOPROXY",
+    # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
+    # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
+    # run go commands among them, and around_job reads a job's env. go reads it nowhere.
+    "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:

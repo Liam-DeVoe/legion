@@ -1,7 +1,14 @@
-import type { Actor, Decision, IssueDecisions } from "../../../api/types";
+import type {
+  Actor,
+  CommentWithTrees,
+  Decision,
+  DisplayTree,
+  IssueDecisions,
+} from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
+import type { TextSource } from "../../refs/text-references";
 import { type ChangeComment, inReviewList } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
@@ -130,6 +137,10 @@ export interface DecisionChange {
   readonly id: string;
   /** The comment's address in the conversation. */
   readonly path: string;
+  /** The record `body` is: the comment, on this issue. */
+  readonly source: TextSource;
+  /** The server's reading of `body`, where the comments read sent one. */
+  readonly tree?: DisplayTree;
 }
 
 /** One decision of the filter. */
@@ -204,8 +215,9 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
  * (`presetView`), whose nodes are the ones the filter by words kept and the one the address
  * names. `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
  * a tie resolves to the node it names however its address is written. `changes` is the change
- * a person asked of each decision, by the decision's address (`decisionChanges`), and `reader`
- * who is reading, which is what tells their own decisions from other people's.
+ * a person asked of each decision, by the decision's address (`decisionChanges`), with the
+ * server's reading of its body where the comments read sent one, and `reader` who is reading,
+ * which is what tells their own decisions from other people's.
  */
 export function decisionsParts({
   asks,
@@ -219,7 +231,7 @@ export function decisionsParts({
 }: {
   /** The issue's asks, for how each closed one was closed. */
   readonly asks: readonly DecisionsAsk[] | undefined;
-  readonly changes?: ReadonlyMap<string, ChangeComment>;
+  readonly changes?: ReadonlyMap<string, ChangeComment & Pick<CommentWithTrees, "body_tree">>;
   readonly decisions: IssueDecisions | undefined;
   /** The issue's key, which a change's address in the conversation is built with. */
   readonly issueKey: string;
@@ -327,6 +339,8 @@ export function decisionsParts({
               by: asked.author,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
+              source: { id: asked.id, issue: issueKey, kind: "comment" },
+              ...(asked.body_tree === undefined ? {} : { tree: asked.body_tree }),
             },
           }),
       ...(keptBy === undefined ? {} : { keptBy }),

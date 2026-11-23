@@ -38,9 +38,10 @@ import { firstWordedBlock } from "./tree-fragment";
  * The store holds each name as a link to the target reads it (R8, `RefLink`): a target a link
  * titles by its own text - an ask, a comment, a message, a block's whole text - in the link's
  * first characters and an ellipsis, cut where the link cuts it (`linkTitleMax`), and any other by
- * its whole title. A chip names a block by its first block that holds words instead, which the
- * store projects beside its name (`KnownReferences.lines`), and a chip cuts what it draws to its
- * own room where it draws it.
+ * its whole title. A chip names a block by its first block that holds words instead, and a whole
+ * document by the page's word for it (`ReferenceNameReading.chipWord`), which the store projects
+ * beside its name (`KnownReferences.lines`), and a chip cuts what it draws to its own room where
+ * it draws it.
  *
  * The store sits above the router, beside the margin's slot (`issue-page/margin-slot.tsx`),
  * because the margin is mounted beside the router and its cards draw the same references as the
@@ -61,10 +62,13 @@ import { firstWordedBlock } from "./tree-fragment";
  *  reading of the name's words - a block's own, or a title's as one text run, which nothing
  *  parses - with the page's own word for the target, which names it where those words project
  *  to none (`fallback`); or words that are no writer's text - the page's own word for a target -
- *  drawn as they stand. */
-export type ReferenceNameReading =
+ *  drawn as they stand. A whole document's reading carries the page's word for it as well
+ *  (`chipWord`), which a chip draws in place of the name, since a chip never draws a document's
+ *  name (decision 39). */
+export type ReferenceNameReading = (
   | { readonly tree: DisplayTree; readonly fallback?: string }
-  | { readonly words: string };
+  | { readonly words: string }
+) & { readonly chipWord?: string };
 
 /** What a page publishes from its one batched read, as one value per publisher, so its parts
  *  always come from one read and change together. */
@@ -91,17 +95,22 @@ export interface PublishedReferences {
 }
 
 /** What readers see: the published references, the name each reading projected to, and for a
- *  block the line a chip names it by. A reference whose reading has not projected yet - the
- *  reader's engine has not answered - has no name yet, and one whose reading projected to no
- *  words is among `unnamed`. */
+ *  block and a whole document the line a chip names it by. A reference whose reading has not
+ *  projected yet - the reader's engine has not answered - has no name yet, and one whose reading
+ *  projected to no words is among `unnamed`. */
 export interface KnownReferences {
   readonly ambiguous: ReadonlySet<string>;
   readonly asked: ReadonlySet<string>;
   readonly gone: ReadonlySet<string>;
-  /** The line a chip names each block by, by its reference (`blockLineReading`): the first
-   *  block of its words that holds any, whole, which a chip cuts to its room where it draws it -
-   *  a tie's (`issue-page/NodeRow.tsx`'s `Chip`) and one drawn in place in a node's words
-   *  (`issue-page/row-references.ts`). None for a target that is no block. */
+  /** The line a chip names a target by where it names it otherwise than a link does, by its
+   *  reference (`chipLineReading`): a block by the first block of its words that holds any,
+   *  whole, and a whole document by the page's word for it (`ReferenceNameReading.chipWord`).
+   *  A chip cuts it to its room where it draws it: one drawn in place in a node's words
+   *  (`issue-page/row-references.ts`), a tie's naming a block (`issue-page/NodeRow.tsx`'s
+   *  `Chip`), the Plan chart's needs and serves (`issue-page/plan-filter/PlanFilterBody.tsx`'s
+   *  `chipLine`), and a check's "Also under" line in the Verification view
+   *  (`issue-page/verification-filter/VerificationFilterBody.tsx`'s `AlsoUnder`). None for any
+   *  other target. */
   readonly lines: ReadonlyMap<string, string>;
   readonly names: ReadonlyMap<string, string>;
   readonly statuses: ReadonlyMap<string, string>;
@@ -271,8 +280,8 @@ const NAME_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
 /**
  * The name `reading` projects to, by the one reader every surface reads a stored text with
  * (`useMarkdownHeadline`), as a title over one record, so a name inside it resolves nothing
- * (`NAME_NAMING`), and cut to `max` characters: a published name, and a block's line beside it
- * (`blockLineReading`). Words that are no writer's text are the name as they stand. `undefined`
+ * (`NAME_NAMING`), and cut to `max` characters: a published name, and a chip's line beside it
+ * (`chipLineReading`). Words that are no writer's text are the name as they stand. `undefined`
  * for no reading and until the engine has answered, and `""` for a reading that projects to no
  * words and names no `fallback`.
  */
@@ -294,7 +303,7 @@ function useReadingName(
 /**
  * Whether a chip names the target `route` by a block's line (INFRA-1196 decisions 66 and 88):
  * `route` names a block, and the reading the page published for it is the block's whole text,
- * whose first block that holds words the store projects beside its name (`blockLineReading`,
+ * whose first block that holds words the store projects beside its name (`chipLineReading`,
  * `KnownReferences.lines`). A tie's chip (`issue-page/NodeRow.tsx`'s `Chip`) waits on that line
  * where this holds, and reads its address otherwise.
  */
@@ -311,17 +320,20 @@ export function namesBlockByLine(
 }
 
 /**
- * The reading a chip names a block by (`namesBlockByLine`), from the reading the page published
- * for it (`reading`), which is the block's whole text: its first block that holds any words
- * (`firstWordedBlock`), so a decision is named by its own heading, with the page's word for the
- * block's kind (`fallback`). The page publishes a block's whole text only where a block of it
- * holds words (`issue-page/tree-drafts.ts`'s `treeContext`). A link to the block, and so a plain
- * line, names it by its whole text. Undefined for every target a chip names by other words.
+ * The reading a chip names a target by where it names it otherwise than a link does, from the
+ * reading the page published for it (`reading`): a whole document by the page's word for it
+ * (`ReferenceNameReading.chipWord`); and a block (`namesBlockByLine`), whose reading is its whole
+ * text, by its first block that holds any words (`firstWordedBlock`), so a decision is named by
+ * its own heading, with the page's word for the block's kind (`fallback`). The page publishes a
+ * block's whole text only where a block of it holds words (`issue-page/tree-drafts.ts`'s
+ * `treeContext`). A link to the target, and so a plain line, names it by the name instead.
+ * Undefined for every target a chip names by that name.
  */
-function blockLineReading(
+function chipLineReading(
   reference: string,
   reading: ReferenceNameReading
 ): ReferenceNameReading | undefined {
+  if (reading.chipWord !== undefined) return { words: reading.chipWord };
   if (!("tree" in reading) || !namesBlockByLine(parseNodeReference(reference), reading)) {
     return undefined;
   }
@@ -330,8 +342,9 @@ function blockLineReading(
 }
 
 /** What one target's projection reported: its name, `""` for a reading that projected to no
- *  words, and for a block the line a chip names it by (`blockLineReading`), each `undefined`
- *  while its projection has not answered or where the reader's schema refuses its reading. */
+ *  words, and for a block or a whole document the line a chip names it by (`chipLineReading`),
+ *  each `undefined` while its projection has not answered or where the reader's schema refuses
+ *  its reading. */
 interface Named {
   readonly line: string | undefined;
   readonly name: string | undefined;
@@ -342,8 +355,9 @@ interface Named {
 type NameReport = (reference: string, named: Named | undefined) => void;
 
 /** One target's name, projected from the reading the page published for it as a link to the
- *  target reads it: the whole of it, cut as the link cuts its title (`linkTitleMax`). For a block,
- *  the line a chip names it by beside it (`blockLineReading`). It draws nothing. */
+ *  target reads it: the whole of it, cut as the link cuts its title (`linkTitleMax`). For a block
+ *  or a whole document, the line a chip names it by beside it (`chipLineReading`). It draws
+ *  nothing. */
 function NameProjection({
   onName,
   reading,
@@ -355,7 +369,7 @@ function NameProjection({
 }): ReactNode {
   const max = useMemo(() => linkTitleMax(parseNodeReference(reference)), [reference]);
   const name = useReadingName(reading, max);
-  const lineReading = useMemo(() => blockLineReading(reference, reading), [reading, reference]);
+  const lineReading = useMemo(() => chipLineReading(reference, reading), [reading, reference]);
   const line = useReadingName(lineReading, Number.POSITIVE_INFINITY);
   // In the layout phase, so a name lands in the commit its projection answered in, before the
   // page is painted with the reference still unnamed.
@@ -367,7 +381,7 @@ function NameProjection({
 }
 
 /** The names the projections reported, the references whose reading projected to no words, and
- *  the line a chip names each block by. */
+ *  the line a chip names each block and each whole document by. */
 interface Projected {
   readonly blank: ReadonlySet<string>;
   readonly lines: ReadonlyMap<string, string>;

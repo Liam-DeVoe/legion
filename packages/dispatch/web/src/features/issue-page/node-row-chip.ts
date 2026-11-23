@@ -36,14 +36,26 @@ export function chipWords(name: string): string {
 
 /**
  * The page's word for the whole document `route` names, or undefined where it names no whole
- * document (part G's R4, ruling 5): today's model holds no title for a document and its name is
- * its file name, which no chip draws, so a document is named by the page's word for one, and the
- * issue's spec by the Spec's name. A chip, a reference in a row's words and the name the page
- * publishes for a document all name it by this one word (`tree-drafts.ts`'s `treeContext`).
+ * document (part G's R4, ruling 5): a document's own name is its file name, which no chip draws
+ * (decision 39), so a chip names a document by the page's word for one, and the spec of `issue`,
+ * the issue the row belongs to, by the Spec's name. This is the rule the page's store names a
+ * document by (`tree-drafts.ts`'s `documentWord`), as far as an address and the row's issue say
+ * it: another issue's spec is a document as any other is, since another issue's document plays
+ * no part of this one, and which of the issue's own documents plays the plan's, Verification's
+ * or the decisions' part is the issue read's answer alone, so each is a document here. A tie's
+ * chip and one in place in a node's words draw this where the page gave them no word of its own
+ * yet (`refs/reference-names.tsx`'s `ReferenceNameReading.chipWord`), so another issue's spec
+ * reads one word before the page's read answers and after. The page publishes a document's name
+ * as a link to it reads it, which every plain line draws (`tree-drafts.ts`'s `treeContext`).
  */
-export function documentWord(route: DispatchReferenceRoute | undefined): string | undefined {
+export function documentWord(
+  route: DispatchReferenceRoute | undefined,
+  issue: string | undefined
+): string | undefined {
   if (route === undefined || referenceTargetKind(route) === "block") return undefined;
-  if (route.kind === "spec") return PRESET_NAMES.spec;
+  if (route.kind === "spec") {
+    return route.key === issue ? PRESET_NAMES.spec : NODE_TYPE_NAMES.document;
+  }
   return route.kind === "artifact" || route.kind === "document" || route.kind === "agent-artifact"
     ? NODE_TYPE_NAMES.document
     : undefined;
