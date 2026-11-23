@@ -1155,6 +1155,7 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 // project scope person and no read: the same identity, holding both scopes and not read-only, so
 // approve is withheld by the narrowing.
 func TestANarrowedTokenActsAsItsIdentityAndOnlyReads(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"

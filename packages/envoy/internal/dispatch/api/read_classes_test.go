@@ -15,6 +15,7 @@ import (
 // test and the refusal cannot drift, and fails once, naming each of them, so one run lists all
 // that is missing.
 func TestEveryGETRowHasOneReadEntry(t *testing.T) {
+	t.Parallel()
 	gets := 0
 	classes := map[readWrites]int{}
 	for _, route := range readOnlyTable() {

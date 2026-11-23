@@ -4081,6 +4081,7 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 // writer's read reads the very state they read, which is what lets its answer stand as the one
 // theirs must equal.
 func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
+	t.Parallel()
 	t.Run("a before_merge result at the head of a pull request no row holds", func(t *testing.T) {
 		rig, github := readOnlyResultsRig(t)
 		issue := issueInRepository(t, rig.handler, "RORP", "acme/widgets", "Opened after the record")

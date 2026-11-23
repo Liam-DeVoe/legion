@@ -41,6 +41,7 @@ import (
 // Each row starts from fresh stacks and makes, itself, every step its state names, so no row
 // reads what the row before it left and each row runs alone.
 func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -615,6 +616,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 // would read the stored rows alone, as the writer's does, and would prove nothing about those two
 // reads.
 func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -745,6 +747,7 @@ func ciCheckAtLearnedHead(t *testing.T, appKey, project string) (pair *parityPai
 // c1 from the run at that head, and stand c1's derived result and k1's result at the one pull
 // request headed there. Derived before the reader learns, each read answers c1 no_head.
 func TestACheckCIProvesIsAnsweredFromTheHeadItsFirstReadLearned(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)

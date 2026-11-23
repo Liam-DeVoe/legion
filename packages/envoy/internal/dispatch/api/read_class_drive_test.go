@@ -290,6 +290,7 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 // write. Every problem is collected first and the test fails once, naming each of them, so one
 // run lists all that is missing.
 func TestEveryGETRowHasADrive(t *testing.T) {
+	t.Parallel()
 	patterns := map[string]string{}
 	var problems []string
 	for _, route := range readOnlyTable() {
@@ -514,6 +515,7 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
+	t.Parallel()
 	rows, drives := drivenRows(t, readWritesNothing)
 	world := newDriveWorld(t)
 	world.calibrate(t)
@@ -682,6 +684,7 @@ func statementList(statements []drivenStatement) string {
 // the row's rows before it and one after. The rows run in the table's order, which is the order
 // getWriteDrives's runs need.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
+	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
 	world := newDriveRig(t)
 	world.seedWrites(t)

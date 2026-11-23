@@ -568,6 +568,7 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 // the read-only walks (read_only_token_test.go) hold the gate in front of it, which lets every
 // read-only token through to whoami, a token that carries a cut included.
 func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"

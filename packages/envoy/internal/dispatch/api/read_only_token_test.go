@@ -262,6 +262,7 @@ func (tally *readOnlyTally) count(want string) {
 // registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
 // walked none, fails.
 func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	tokens := readOnlyWalkTokens(t, rig, caller)
@@ -334,6 +335,7 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 // token at all, answers 401. A row is counted once its assertions have run, and each token's
 // count is held to the rows the registered server mounts, as the walk above is.
 func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	tokens := readOnlyWalkTokens(t, rig, caller)
@@ -403,6 +405,7 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 // The control is a personal token that writes, holding the person scope too: the same chain opens
 // the socket for it, so the refusals are the read-only mark's and not the chain's.
 func TestTheLiveSocketRefusesAReadOnlyPersonalToken(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	opened := 0
@@ -586,6 +589,7 @@ var agentTokenLookup = regexp.MustCompile(`(?is)\bfrom\s+agent_(read_)?tokens\s+
 // tracer on the server's pool: none writes, and exactly one looks the token up, so the gate
 // resolved it once and every later layer read the refusal it carried.
 func TestAnUnresolvedBearerKeepsTheAnswerItHadBeforeTheGate(t *testing.T) {
+	t.Parallel()
 	marked := &markedStatements{}
 	handler, _, _ := newTestServer(t, testServerOptions{tracer: marked})
 
