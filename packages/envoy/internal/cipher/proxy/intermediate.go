@@ -174,14 +174,16 @@ func requestedNames(hosts []string) []string {
 }
 
 // intermediateCSR is key's CSR asking to be an authority of path length 0 that signs
-// certificates, constrained to names. The three extensions are encoded by the standard library's
-// own certificate encoder, on a throwaway certificate of that shape, and copied into the request.
+// certificates, constrained to names and to no IP address (checkBounds says why), the constraints
+// critical. The three extensions are encoded by the standard library's own certificate encoder,
+// on a throwaway certificate of that shape, and copied into the request.
 func intermediateCSR(key *ecdsa.PrivateKey, names []string) ([]byte, error) {
 	shape := &x509.Certificate{
 		SerialNumber: big.NewInt(1), NotBefore: time.Unix(0, 0), NotAfter: time.Unix(1, 0),
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true,
 		KeyUsage:            x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		PermittedDNSDomains: names, PermittedDNSDomainsCritical: len(names) > 0,
+		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
+		ExcludedIPRanges: everyAddress(),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, shape, shape, &key.PublicKey, key)
 	if err != nil {

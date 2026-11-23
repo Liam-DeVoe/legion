@@ -1622,15 +1622,21 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   request, at its start, at each renewal and at each retry, each pod makes a new ECDSA P-256 key in
   its own memory, which is never written anywhere, and sends the pool a request for it
   (`projects.locations.caPools.certificates.create`) with its own Google
-  credential: an authority of path length 0, for 7 days, whose name constraints are the names of
-  the profiles file's hosts, a `*.` pattern as its domain. The pool's issuance policy fixes what the
+  credential: an authority of path length 0, for 7 days, whose name constraints, marked critical,
+  permit the names of the profiles file's hosts, a `*.` pattern as its domain, and exclude every
+  IPv4 and IPv6 address (`0.0.0.0/0` and `::/0`). The pool's issuance policy fixes what the
   answer may be, and the pod holds the answer to it too, so a leaked pod key is never more than
   that: the answer must certify the pod's key, chain to a root, be an authority of path length 0
-  whose key usage signs certificates, last 7 days and 5 minutes at most, permit exactly the names
-  of the bound hosts (no other name, and not no constraint at all), sign a leaf a client trusts for
-  every bound host, and chain to the same root as the pod's first
-  answer, since every release the pod has made names that root. The pod asks for the next
-  intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
+  whose key usage signs certificates, last 7 days and 5 minutes at most, have critical name
+  constraints that permit exactly the DNS names of the bound hosts (no other name, and not no
+  constraint at all), permit no IP range and exclude all of `0.0.0.0/0` and `::/0`, sign a leaf a
+  client trusts for every bound host, and chain to the same root as the pod's first
+  answer, since every release the pod has made names that root. A name constraint applies only to
+  names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS names alone would leave the
+  key free to sign a trusted leaf for any IP address; the exclusion closes that. URI and email
+  names are left unconstrained, since no TLS client takes either as a server's identity. The pod
+  asks for the next intermediate when the one it holds has less than 2 days left, and goes on
+  asking with a backoff
   of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.
   It logs one line for each intermediate it takes, and one for each request that failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment

@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,7 +36,8 @@ type boundsAnswer struct {
 	noConstraint bool
 }
 
-// boundsTemplate is answer's certificate, starting at notBefore.
+// boundsTemplate is answer's certificate, starting at notBefore. Its name constraints, unless
+// answer has none, are critical and exclude every IP address, as the pod's own CSR asks.
 func boundsTemplate(answer boundsAnswer, notBefore time.Time) *x509.Certificate {
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
 	template := &x509.Certificate{
@@ -50,6 +52,7 @@ func boundsTemplate(answer boundsAnswer, notBefore time.Time) *x509.Certificate 
 	}
 	if !answer.noConstraint {
 		template.PermittedDNSDomains, template.PermittedDNSDomainsCritical = answer.names, true
+		template.ExcludedIPRanges = []*net.IPNet{{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}, {IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}}
 	}
 	return template
 }

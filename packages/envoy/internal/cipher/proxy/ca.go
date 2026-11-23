@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -227,10 +228,19 @@ const intermediateLifeSlack = 5 * time.Minute
 // checkBounds refuses an intermediate past the bounds a pod holds every intermediate to, the
 // pool's answer and a mounted one alike, whatever the pool's issuance policy is: an authority
 // of path length 0 that may sign certificates, 7 days and intermediateLifeSlack at most, whose
-// name constraints permit exactly the names hosts asks for (requestedNames). The policy should
-// make each of these so, but a pod's own key signs under the intermediate, so an intermediate
-// wider than these would make a leaked pod key an authority for other authorities, for longer,
-// or for names no profile binds, under a root every command trusts.
+// name constraints are critical, permit exactly the DNS names hosts asks for (requestedNames),
+// permit no IP range, and exclude every IPv4 and every IPv6 address (0.0.0.0/0 and ::/0). The
+// policy should make each of these so, but a pod's own key signs under the intermediate, so an
+// intermediate wider than these would make a leaked pod key an authority for other authorities,
+// for longer, or for names no profile binds, under a root every command trusts.
+//
+// Name constraints apply to each kind of name on its own (RFC 5280, section 4.2.1.10): permitted
+// DNS names constrain no IP address, so without the exclusion the key would sign a trusted leaf
+// for any address. URI and email names are left unconstrained: no TLS client takes either as the
+// server's identity. Go's crypto/tls reads DNS and IP names alone, and OpenSSL, which curl uses,
+// reads the subject's common name only when the leaf has no DNS name, and holds that common name
+// to the DNS constraints. The constraints are critical because RFC 5280 says they MUST be, and
+// because a verifier that does not implement them ignores a non-critical extension.
 func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
 		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))
@@ -245,7 +255,48 @@ func checkBounds(cert *x509.Certificate, hosts []string) error {
 	if len(got) == 0 || !slices.Equal(got, want) {
 		return fmt.Errorf("its name constraints permit [%s]; want exactly the bound hosts' names [%s]", strings.Join(got, " "), strings.Join(want, " "))
 	}
+	if len(cert.PermittedIPRanges) > 0 {
+		return fmt.Errorf("its name constraints permit IP ranges %v; want none, so it signs for no address", cert.PermittedIPRanges)
+	}
+	switch v4, v6 := excludesEveryAddress(cert.ExcludedIPRanges); {
+	case !v4 && !v6:
+		return fmt.Errorf("its name constraints exclude the IP ranges %v; want them to say what a pod's CSR does, that excludes 0.0.0.0/0 and ::/0, so it signs for no address", cert.ExcludedIPRanges)
+	case !v4:
+		return errors.New("its name constraints do not exclude 0.0.0.0/0, so it could sign for any IPv4 address")
+	case !v6:
+		return errors.New("its name constraints do not exclude ::/0, so it could sign for any IPv6 address")
+	}
+	if !cert.PermittedDNSDomainsCritical {
+		return errors.New("its name constraints are not marked critical, so a verifier that does not implement them would ignore them")
+	}
 	return nil
+}
+
+// excludesEveryAddress reports whether ranges hold all of IPv4 (0.0.0.0/0) and all of IPv6 (::/0).
+// A constraint is matched only against an address of its own length, so each family needs its
+// own range.
+func excludesEveryAddress(ranges []*net.IPNet) (v4, v6 bool) {
+	for _, r := range ranges {
+		ones, bits := r.Mask.Size()
+		if ones != 0 {
+			continue
+		}
+		switch {
+		case bits == 32 && len(r.IP) == net.IPv4len:
+			v4 = true
+		case bits == 128 && len(r.IP) == net.IPv6len:
+			v6 = true
+		}
+	}
+	return v4, v6
+}
+
+// everyAddress is the exclusion a pod asks for and holds every intermediate to.
+func everyAddress() []*net.IPNet {
+	return []*net.IPNet{
+		{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)},
+		{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+	}
 }
 
 // pathLength is a certificate's path length constraint as a sentence reads it.

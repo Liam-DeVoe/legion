@@ -2,8 +2,9 @@
 // The stand-in of Certificate Authority Service, for the one call a broker pod makes of it:
 // projects.locations.caPools.certificates.create, which signs the intermediate the pod's
 // proxy signs its leaves with. It signs with a test root of its own under a policy as a pool's
-// issuance policy is one: at most 7 days, an authority of path length 0, and the policy's
-// names in place of whatever the request asked for. BROKER_PROXY_TEST_CA_URL points a broker
+// issuance policy is one: at most 7 days, an authority of path length 0, the policy's names in
+// place of whatever the request asked for, and every IPv4 and IPv6 address excluded, the
+// constraints critical. BROKER_PROXY_TEST_CA_URL points a broker
 // at it, and cmd/dev-proxy-stands serves it to the local stack as the `ca` stand.
 package proxyrulestest
 
@@ -18,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -185,8 +187,9 @@ func (c *CAStand) answerCertificate(w http.ResponseWriter, seen Request, pool st
 	})
 }
 
-// issue signs the CSR's key as an authority of path length 0 for names, from the stand's clock
-// for lifetime.
+// issue signs the CSR's key as an authority of path length 0 for names and for no IP address
+// (0.0.0.0/0 and ::/0 excluded, as a pool's baseline values are), from the stand's clock for
+// lifetime.
 func (c *CAStand) issue(csr *x509.CertificateRequest, names []string, lifetime time.Duration) (*x509.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
 	if err != nil {
@@ -204,6 +207,10 @@ func (c *CAStand) issue(csr *x509.CertificateRequest, names []string, lifetime t
 		MaxPathLenZero:              true,
 		PermittedDNSDomainsCritical: true,
 		PermittedDNSDomains:         names,
+		ExcludedIPRanges: []*net.IPNet{
+			{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)},
+			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, c.root.cert, csr.PublicKey, c.root.key)
 	if err != nil {

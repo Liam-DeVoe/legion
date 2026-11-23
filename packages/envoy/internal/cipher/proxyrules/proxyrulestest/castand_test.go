@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -148,6 +149,9 @@ func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 	}
 	if !slices.Equal(cert.PermittedDNSDomains, []string{"s.airlock.test"}) || !cert.PermittedDNSDomainsCritical {
 		t.Errorf("the certificate permits %v (critical %v); want the policy's one name, critical", cert.PermittedDNSDomains, cert.PermittedDNSDomainsCritical)
+	}
+	if got := fmt.Sprint(cert.ExcludedIPRanges); got != "[0.0.0.0/0 ::/0]" || len(cert.PermittedIPRanges) > 0 {
+		t.Errorf("the certificate excludes %s and permits %v of IP addresses; want every address excluded and none permitted", got, cert.PermittedIPRanges)
 	}
 	if !cert.NotBefore.Equal(now) || !cert.NotAfter.Equal(now.Add(caMaxLifetime)) {
 		t.Errorf("the certificate runs %v to %v; want the stand's clock and 7 days on", cert.NotBefore, cert.NotAfter)

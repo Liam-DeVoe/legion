@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -227,6 +228,7 @@ func mountedIntermediate(t *testing.T, names []string) (certFile, keyFile string
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(7*24*time.Hour - time.Hour),
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
+		ExcludedIPRanges: []*net.IPNet{{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}, {IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, root, &key.PublicKey, rootKey)
 	if err != nil {

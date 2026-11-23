@@ -1771,25 +1771,42 @@ name or owner condition, so both backends behave alike (unproved: no check runs 
 
 ## Changing the proxy's hosts
 
-Every intermediate Cipher's proxy signs with must permit exactly the names of the hosts the
-profiles file binds ([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)). A pod
-refuses an intermediate with a name more or a name less. So a change that adds a bound host to the
-profiles file, or removes one, changes the names every intermediate must carry, and it follows
-two rules.
+Every intermediate Cipher's proxy signs with carries name constraints, marked critical, of two
+parts ([the proxy's chain](/legion/broker/concepts/#the-proxys-chain)): its permitted DNS names are
+exactly the names of the hosts the profiles file binds, and it excludes every IPv4 and every IPv6
+address (`0.0.0.0/0` and `::/0`) and permits no IP range. The exclusion is there because a name
+constraint applies only to names of its own kind (RFC 5280, section 4.2.1.10): permitted DNS
+names alone constrain no IP address, so the intermediate's key would sign a trusted leaf for any
+address. URI and email names are left unconstrained, since no TLS client takes either as the
+server's identity: Go's `crypto/tls` reads a leaf's DNS and IP names alone, and OpenSSL, which
+curl uses, reads the subject's common name only when the leaf has no DNS name, and holds that
+common name to the DNS constraints. A pod refuses an intermediate with a DNS name more or a name
+less, or one without the exclusion. So a change that adds a bound host to the profiles file, or
+removes one, changes the names every intermediate must carry, and it follows these rules.
 
 - **On a pool (`BROKER_PROXY_CA_POOL`), apply the pool's issuance policy first, then roll the
-  pods.** The policy's permitted DNS names become the new hosts' names, and only then do pods start
-  with the new profiles file. A pod started on the new file while the policy still carries the old
-  names is refused its first intermediate (`its name constraints permit […]; want exactly the bound
-  hosts' names […]`) and is not ready, so the roll keeps the old pods. Apply both in one change:
-  the broker's Deployment depends on the policy, so the same apply updates the policy and then
-  rolls the pods. Between the two, an old pod that renews is refused the new names in the same way,
-  keeps signing with the intermediate it holds, and retries until the roll replaces it. So a roll
-  that stalls for longer than the 2 days a pod renews ahead leaves old pods with no intermediate.
+  pods.** The policy's name constraints become the new hosts' names, and only then do pods start
+  with the new profiles file. The policy's name constraints overwrite the request's, so they carry
+  the exclusion too (`excludedIpRanges: ["0.0.0.0/0", "::/0"]`): a policy without it gives every
+  pod an answer it refuses (`its name constraints exclude the IP ranges []; …`). A pod started on
+  the new file while the policy still carries the old names is refused its first intermediate
+  (`its name constraints permit […]; want exactly the bound hosts' names […]`) and is not ready,
+  so the roll keeps the old pods. To apply both in one change, make the broker's Deployment depend
+  on the policy, so that the same apply updates the policy and then rolls the pods; a deployment
+  has that order only where its own deployment code declares the dependency. Between the two, an
+  old pod that renews is refused the new names in the same way, keeps signing with the
+  intermediate it holds, and retries until the roll replaces it. So a roll that stalls leaves each
+  old pod signing only until that intermediate ends: between about 2 days (the time a pod renews
+  ahead) and 7 days after the policy change, and less where the pod was already retrying.
 - **On a mounted intermediate (`BROKER_AIRLOCK_CA_CERT_FILE`), issue a new intermediate for the new
-  names at every host change.** A broker started on the new profiles file with the old
-  intermediate refuses to start. Today's self-signed root is not an intermediate, carries no name
-  constraints, and is exempt from this rule.
+  names at every host change.** It carries the same constraints, the IP exclusion included. A
+  broker started on the new profiles file with the old intermediate refuses to start. Today's
+  self-signed root is not an intermediate, carries no name constraints, and is exempt from this
+  rule.
+- **A mounted intermediate is never renewed by the running broker.** Issue the next one and restart
+  the pods before it ends, at most 7 days and 5 minutes after its start, the longest life a broker
+  takes. Once it has ended, each pod answers `GET /healthz` with `503 NO_INTERMEDIATE`, signs no
+  leaf, and a restart on it refuses to start.
 
 The pod compares the names after it renders the profiles file's hosts as the certificate request
 asks for them (`requestedNames`): each host as written, with a `*.` pattern's `*.` removed, so
@@ -1849,7 +1866,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); the edge, where the deployment has one (the line below); and the metrics port. |
 | `proxy certificate authority source=pool pool=<pool> renew_before=<duration> release_roots=<n>` / `proxy certificate authority source=mounted release_roots=<n>` | At INFO, at startup, on a broker with the airlock: where the proxy's certificate authority comes from, the pool `BROKER_PROXY_CA_POOL` names or the mounted pair, how long before its intermediate's end a pod on a pool asks for the next (2 days, unless the local stack's `BROKER_PROXY_TEST_RENEWAL_MARGIN` says otherwise), and how many roots of `BROKER_PROXY_RELEASE_ROOTS_FILE` each release carries beside the chain's own. |
 | `proxy intermediate serial=<hex> names=<names> not_before=<time> not_after=<time> self_signed=<bool>` | At INFO, once for each certificate the proxy signs with: the mounted one at startup, and each intermediate a pod on a pool takes, the first and each renewal. `names` are its name constraints, the names it may sign a leaf for and the names under them, space-separated, and empty for a certificate that has none. The pool also lists each intermediate it issued, by this serial. |
-| `proxy intermediate request failed pool=<pool> error=… retry_in=<duration>` | At WARN, once for each request for an intermediate that got none: the pool did not answer or refused, or its answer is refused because it certifies another key, reaches no root, chains to another root than the pod's first intermediate, is past a bound every intermediate is held to (`its path length is …, not 0`, `its key usage does not name signing certificates`, `its life is …, past the 168h0m0s a pod asks for and 5m0s of slack`, or `its name constraints permit […]; want exactly the bound hosts' names […]`, the line a roll writes when the pool's policy does not yet name a host the profiles file added), or could sign no trusted leaf for a bound host (`it signs no leaf a command trusts for <host>`). The pod asks again after `retry_in`, which starts at 1 second and doubles to 5 minutes. A pod that has no intermediate is not ready meanwhile; one that holds one goes on signing with it until its end. |
+| `proxy intermediate request failed pool=<pool> error=… retry_in=<duration>` | At WARN, once for each request for an intermediate that got none: the pool did not answer or refused, or its answer is refused because it certifies another key, reaches no root, chains to another root than the pod's first intermediate, is past a bound every intermediate is held to (`its path length is …, not 0`, `its key usage does not name signing certificates`, `its life is …, past the 168h0m0s a pod asks for and 5m0s of slack`, `its name constraints permit […]; want exactly the bound hosts' names […]`, the line a roll writes when the pool's policy does not yet name a host the profiles file added, `its name constraints permit IP ranges …`, `its name constraints exclude the IP ranges …; want them to say what a pod's CSR does, that excludes 0.0.0.0/0 and ::/0`, `… do not exclude 0.0.0.0/0` or `… do not exclude ::/0`, the line of a policy without the exclusion, or `its name constraints are not marked critical`), or could sign no trusted leaf for a bound host (`it signs no leaf a command trusts for <host>`). The pod asks again after `retry_in`, which starts at 1 second and doubles to 5 minutes. A pod that has no intermediate is not ready meanwhile; one that holds one goes on signing with it until its end. Each refused answer is a certificate the pool issued, so alert on this line: a lasting mismatch asks again up to twelve times an hour for each pod. |
 | `broker edge listening addr=<host:port> url=<BROKER_EDGE_URL> verification_uri=<BROKER_EDGE_MACHINE_LOGIN_URL> workspace_domains=<domains>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock, on a broker with `BROKER_EDGE_LISTEN_ADDR` set: the edge is bound at this address, takes request objects and proofs naming `url`, sends a person to `verification_uri`, and refuses a login on any of `workspace_domains` ([The edge](#the-edge-device-login-from-outside-the-private-network)). A broker with no edge writes no such line. |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |

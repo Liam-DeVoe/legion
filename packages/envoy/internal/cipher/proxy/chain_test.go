@@ -14,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,6 +59,8 @@ func testIntermediate(t *testing.T, issuer testCertificate, names []string, notB
 }
 
 // shapedIntermediate is testIntermediate with shape changing its template before it is signed.
+// Its name constraints are what a pool's policy issues: the names, critical, and every IPv4 and
+// IPv6 address excluded.
 func shapedIntermediate(t *testing.T, issuer testCertificate, names []string, notBefore, notAfter time.Time, shape func(*x509.Certificate)) testCertificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -72,7 +75,8 @@ func shapedIntermediate(t *testing.T, issuer testCertificate, names []string, no
 		SerialNumber: serial, Subject: pkix.Name{CommonName: "test intermediate"},
 		NotBefore: notBefore, NotAfter: notAfter,
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
-		PermittedDNSDomains: names, PermittedDNSDomainsCritical: len(names) > 0,
+		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
+		ExcludedIPRanges: []*net.IPNet{everyIPv4(), everyIPv6()},
 	}
 	if shape != nil {
 		shape(template)
@@ -309,9 +313,10 @@ func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 // TestEachBoundNamesWhatItRefuses: the mounted form is held to the bounds the pool's answer is
 // (checkBounds), and each refusal names the bound and the value past it: an intermediate of path
 // length 1, of no path length constraint, whose key usage does not name signing certificates, of
-// 30 days, with a name no host binds, or
-// with no name constraints is refused at start, naming the bound. Control: the same intermediate
-// inside every bound starts.
+// 30 days, with a name no host binds, with no name constraints, that excludes no IP address,
+// that excludes IPv4 alone or IPv6 alone, that permits an IP range, or whose name constraints are
+// not critical is refused at start, naming the bound. Control: the same intermediate inside every
+// bound starts.
 func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 	root := testRoot(t, "root")
 	now := time.Now()
@@ -331,6 +336,13 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 		{"30 days", "its life is 720h0m0s", names, 30 * 24 * time.Hour, nil},
 		{"a name no host binds", "permit [evil.example googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},
 		{"no name constraints", "permit []", nil, week, nil},
+		{"no IP address excluded", "excludes 0.0.0.0/0 and ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = nil }},
+		{"IPv4 excluded alone", "do not exclude ::/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv4()} }},
+		{"IPv6 excluded alone", "do not exclude 0.0.0.0/0", names, week, func(c *x509.Certificate) { c.ExcludedIPRanges = []*net.IPNet{everyIPv6()} }},
+		{"an IP range permitted", "permit IP ranges [10.0.0.0/8]", names, week, func(c *x509.Certificate) {
+			c.PermittedIPRanges = []*net.IPNet{{IP: net.IPv4(10, 0, 0, 0).To4(), Mask: net.CIDRMask(8, 32)}}
+		}},
+		{"name constraints not critical", "not marked critical", names, week, func(c *x509.Certificate) { c.PermittedDNSDomainsCritical = false }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			intermediate := shapedIntermediate(t, root, row.names, now, now.Add(row.life), row.shape)
@@ -348,6 +360,9 @@ func TestEachBoundNamesWhatItRefuses(t *testing.T) {
 		})
 	}
 }
+
+func everyIPv4() *net.IPNet { return &net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)} }
+func everyIPv6() *net.IPNet { return &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)} }
 
 // steppedClock is a clock a row moves by hand, which a waiter on it notices at once: each set
 // wakes every SleepUntil, which looks at the clock again. It records each SleepUntil's target, so

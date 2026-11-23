@@ -8,12 +8,18 @@ package proxy
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -215,6 +221,117 @@ func TestAPoolAuthorityAsksForAnIntermediateAndSignsWithIt(t *testing.T) {
 		line["names"] != "googleapis.com s.airlock.test" || line["not_after"] != intermediate.NotAfter.UTC().Format(time.RFC3339) {
 		t.Errorf("the intermediate's line is %v; want INFO with its serial %x, its names and its end %s", line, intermediate.SerialNumber, intermediate.NotAfter.UTC().Format(time.RFC3339))
 	}
+}
+
+// TestNoLeafForAnAddressVerifiesUnderThePodsIntermediate: a leaked pod key signs no leaf a
+// client trusts for an IP address. The pod's CSR asks for every IPv4 and IPv6 address excluded,
+// the stand issues it as a pool's policy does, and a leaf the pod's own intermediate key signs
+// for 10.0.0.5, 169.254.169.254 or 2001:db8::5 fails verification against the root. Controls: a
+// leaf for a bound host verifies, and one for another DNS name is refused by the permitted names.
+// A URI or email name is no TLS server identity: a leaf carrying one is valid for no host.
+func TestNoLeafForAnAddressVerifiesUnderThePodsIntermediate(t *testing.T) {
+	r := newPoolRig(t, []string{"s.airlock.test"}, nil)
+	r.run(t, IntermediateRenewBefore)
+	intermediate := r.awaitIssued(t, 1)
+
+	var body struct {
+		PEMCSR string `json:"pemCsr"`
+	}
+	if err := json.Unmarshal([]byte(r.certificateRequests()[0].Body), &body); err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode([]byte(body.PEMCSR))
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := askedConstraints(t, csr)
+	if got := fmt.Sprint(asked.ExcludedIPRanges); got != "[0.0.0.0/0 ::/0]" || !asked.PermittedDNSDomainsCritical {
+		t.Errorf("the CSR asks to exclude %s (critical %v); want [0.0.0.0/0 ::/0], critical", got, asked.PermittedDNSDomainsCritical)
+	}
+
+	r.authority.mu.Lock()
+	key := r.authority.signer.key
+	r.authority.mu.Unlock()
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(r.stand.Root().Certificate())
+	intermediates.AddCert(intermediate)
+	verify := func(shape func(*x509.Certificate), host string) error {
+		t.Helper()
+		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: "probe"},
+			NotBefore: r.clock.Now().Add(-time.Minute), NotAfter: r.clock.Now().Add(time.Hour),
+			KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		shape(template)
+		der, err := x509.CreateCertificate(rand.Reader, template, intermediate, &leafKey.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: roots, Intermediates: intermediates, CurrentTime: r.clock.Now()})
+		return err
+	}
+	if err := verify(func(c *x509.Certificate) { c.DNSNames = []string{"s.airlock.test"} }, "s.airlock.test"); err != nil {
+		t.Fatalf("control: a leaf for the bound host = %v; want it trusted", err)
+	}
+	if err := verify(func(c *x509.Certificate) { c.DNSNames = []string{"evil.example"} }, "evil.example"); err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Errorf("control: a leaf for evil.example = %v; want it refused by the permitted names", err)
+	}
+	for _, address := range []string{"10.0.0.5", "169.254.169.254", "2001:db8::5"} {
+		ip := net.ParseIP(address)
+		err := verify(func(c *x509.Certificate) { c.IPAddresses = []net.IP{ip} }, address)
+		if err == nil || !strings.Contains(err.Error(), "excluded") {
+			t.Errorf("a leaf the pod's key signs for %s = %v; want it refused, the address excluded", address, err)
+		}
+	}
+	uri, err := url.Parse("spiffe://evil.example/workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, shape := range map[string]func(*x509.Certificate){
+		"a URI name":    func(c *x509.Certificate) { c.URIs = []*url.URL{uri} },
+		"an email name": func(c *x509.Certificate) { c.EmailAddresses = []string{"ops@evil.example"} },
+	} {
+		if err := verify(shape, "evil.example"); err == nil {
+			t.Errorf("a leaf with only %s is valid for evil.example; want it valid for no host", name)
+		}
+	}
+}
+
+// askedConstraints is the name constraints csr asks for, read off a throwaway certificate that
+// carries the requested extension, since the standard library reads them out of a certificate and
+// not out of a request.
+func askedConstraints(t *testing.T, csr *x509.CertificateRequest) *x509.Certificate {
+	t.Helper()
+	for _, extension := range csr.Extensions {
+		if !extension.Id.Equal(oidNameConstraints) {
+			continue
+		}
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now(), NotAfter: time.Now().Add(time.Minute), ExtraExtensions: []pkix.Extension{extension}}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cert
+	}
+	t.Fatal("the CSR asks for no name constraints")
+	return nil
 }
 
 // TestThePodRenewsWithTwoDaysLeft: the loop sleeps until 2 days before the intermediate's end;
