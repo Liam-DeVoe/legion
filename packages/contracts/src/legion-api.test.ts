@@ -337,7 +337,7 @@ function fixtureBody(name: string): Record<string, unknown> {
   return body;
 }
 
-/** A state body as a caller below the slots reading's contract (221) is served it: with no
+/** A state body as a caller below the slots reading's contract (232) is served it: with no
  * `admission.slots`, no `rank` or `rootRank` on an issue, and no `state` or `since` on a slot,
  * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. */
 function withoutSlotsReading(state: Record<string, unknown>): Record<string, unknown> {
@@ -2626,7 +2626,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's, at 202, and the slots reading's, at 221, which takes
+  // above 199: the repositories block's, at 202, and the slots reading's, at 232, which takes
   // `admission.slots`, each issue's `rank` and `rootRank`, and each slot's `state` and `since` off
   // the body (shaping.go's withoutSlotsReading and withoutRanksAndSlotStates). So the narrowing
   // changes the block and those five keys and no other key. One value strip stands above 199 as

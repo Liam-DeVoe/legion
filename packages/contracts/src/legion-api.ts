@@ -498,10 +498,10 @@ const legionGatedStepView = z.object({
 });
 
 /** `api.SlotView` — the admission slot the issue occupies and when it took it, and what the issue
- * is doing with it (contract 221): `state`, the holder state the state's `admission.slots` counts it
+ * is doing with it (contract 232): `state`, the holder state the state's `admission.slots` counts it
  * under (`working`, `stopped`, `person`, `issue` or `idle`, read as a plain string so a word a
  * later daemon adds is read rather than refused), and `since`, when it entered that state, absent
- * where the daemon's record holds no such time. A caller below 221 is served neither
+ * where the daemon's record holds no such time. A caller below 232 is served neither
  * (`withoutRanksAndSlotStates`), so both are optional. */
 const legionSlotView = z.object({
   index: z.number().int().nonnegative().optional(),
@@ -751,10 +751,10 @@ const legionIssue = z.object({
    * `unrecorded`, an operator's claim), which stands in no tree, and absent from every issue of
    * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
-  /** The issue's own Dispatch rank and its tree root's (contract 221), the two keys the waiting
+  /** The issue's own Dispatch rank and its tree root's (contract 232), the two keys the waiting
    * line orders its starting part by and `admission.slots` places a holder against the first issue
    * that waits for a slot by. Carried by the issues of the daemon's own project alone, and by no
-   * issue of the body served a caller below 221 (`withoutRanksAndSlotStates`). */
+   * issue of the body served a caller below 232 (`withoutRanksAndSlotStates`). */
   rank: z.string().optional(),
   rootRank: z.string().optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
@@ -1005,14 +1005,14 @@ const legionStateCount = z.object({
   oldest: timestamp.optional(),
 });
 
-/** `api.SlotsReading` (`record.SlotsReading`, contract 221) — what the slots in use are spent on:
+/** `api.SlotsReading` (`record.SlotsReading`, contract 232) — what the slots in use are spent on:
  * `inUse` of `cap`; the holders counted by what each is doing (`working`, `stopped`, `person`,
  * `issue`, `idle`); the two readings of started work that waits without a slot,
  * `waitOnlyForSlot` (the line's returned members holding no slot and in no row of `blocked`) and
  * `startedWithoutSlot` (every returned member holding no slot); `belowFirstWaiting`, how many
  * holders rank below the first issue that waits for a slot and that issue's key as `first`, absent
  * where none waits; and `line`, the reading as the one sentence `legion state` prints after its
- * admission count line and the tick notice carries too. A caller below 221 is served no reading
+ * admission count line and the tick notice carries too. A caller below 232 is served no reading
  * (`withoutSlotsReading`). */
 const legionSlotsReading = z.object({
   inUse: z.number().int().nonnegative().optional(),
@@ -2264,7 +2264,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].detail",
     "capabilities[].configLine",
     // The summary prints the daemon's slots line right after its admission cap line (contract
-    // 221). The line stays optional: the daemon strips the reading for a caller below that
+    // 232). The line stays optional: the daemon strips the reading for a caller below that
     // contract.
     "admission.slots.line",
     // The summary's line on the wakes the pacing holds counts them and names the earliest

@@ -291,7 +291,7 @@ func populatedState(t *testing.T) State {
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
-	// What the five slots in use are spent on (contract 221): LEGION-208's implementer is in a
+	// What the five slots in use are spent on (contract 232): LEGION-208's implementer is in a
 	// turn; LEGION-210 is held and LEGION-212's tester is stranded, the two stopped holders, the
 	// older stopped when LEGION-210's implementer failed; and the two reviewing roots are idle.
 	// No returned member of the line is without a slot, and the one issue of the starting part,
@@ -705,7 +705,7 @@ func populatedState(t *testing.T) State {
 				Slot: &SlotView{
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
-					// Its retired tester is the stranded claim that stops it (contract 221).
+					// Its retired tester is the stranded claim that stops it (contract 232).
 					State: string(record.HolderStopped),
 					Since: &testerStoppedAt,
 				},

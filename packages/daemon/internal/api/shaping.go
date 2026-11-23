@@ -1013,7 +1013,7 @@ const cachesSourceContract = 213
 //
 // It is a literal of its own and never DaemonAPIVersion: a later contract moves that constant,
 // and the contract the keys arrived at stays where it is.
-const slotsReadingContract = 221
+const slotsReadingContract = 232
 
 // withoutSlotsReading is state with no `admission.slots`, the one key of the state's own that
 // slotsReadingContract added. The admission block is the state's own value, so clearing the
