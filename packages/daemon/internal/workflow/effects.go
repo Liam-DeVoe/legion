@@ -1081,7 +1081,7 @@ const (
 	workingCopyLabel = "Working copy"
 	planTaskLabel    = "Task"
 	stepsLabel       = "Steps"
-	taskTextLabel    = "Task text"
+	taskTextLabel    = "Task body"
 	reportedLabel    = "reported"
 	handoffLabel     = "Handoff"
 	pullRequestLabel = "Pull request"
