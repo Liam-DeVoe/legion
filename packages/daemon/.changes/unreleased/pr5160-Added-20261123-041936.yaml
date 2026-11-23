@@ -5,10 +5,10 @@ body: |-
   names the role as it names any other, and the role's agent runs on Oh My Pi with that prompt and
   model. The prompt stands between two lines that name it as the issue owner's text. A later
   version of the plan that changes the role's type, model or prompt relaunches a live agent of the
-  role on its own session at its next step, with the new definition. A daemon that starts while
-  such an agent runs does not know which definition its process runs, so it relaunches the agent
-  at its next step only where the plan in force was given after the agent last came up, and its
-  line says so. `register_plan` refuses a role whose name Legion or the deployment already holds,
+  role on its own session at its next step, with the new definition. The claim keeps the
+  definition its agent was launched with, so a version given while that agent came up, or before a
+  restart of the daemon, relaunches it too, and an unchanged role relaunches nothing.
+  `register_plan` refuses a role whose name Legion or the deployment already holds,
   a model the deployment does not list, and a key whose steps name roles of two models or two
   harnesses.
 
@@ -28,8 +28,9 @@ body: |-
   notice, the move on out of that step asks again with the hold and the notice, and a move back
   into it drops the ask. The merge that agent pushes sends it no message that it landed.
 
-  One migration adds the table of the roles a plan defines, and another marks each ask to merge
-  forward that an earlier release recorded in implementing as made at that step. A rollback runs
+  One migration adds the table of the roles a plan defines, another marks each ask to merge
+  forward that an earlier release recorded in implementing as made at that step, and a third adds
+  the column in which a claim keeps the definition its agent was launched with. A rollback runs
   the way back of each, and removes `models` from `legion.yaml` first, since an earlier daemon
   refuses the key.
 time: 2026-11-23T04:19:36Z

@@ -63,9 +63,9 @@ What the task must deliver.
 - `model` is the model the role's agent starts on, one your addressing lists among the models of this deployment.
   A role with no `model` starts on the default model, and where the deployment lists no model, a role of your plan names none.
 
-- A role's prompt has no bound of its own, but a launch into an issue pod carries the whole system prompt to the pod's launcher in one message of at most 1 MiB.
-  Legion refuses a larger one: the claim fails at once, the issue is held, and a `held` and a `worker-died` notice name the prompt's size and the limit.
-  Stop the task with `stop_task`, then give a later version whose role has a shorter prompt.
+- A role's prompt has no bound of its own, but a launch into an issue pod carries the whole system prompt.
+  It goes in one message of at most 1 MiB.
+  Your role prompt says what Legion does with a larger one, and how you change the role then.
 
 ### A role under a running task
 
@@ -84,12 +84,16 @@ What the task must deliver.
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
 Fix each reason and give a new version.
-A role block is refused for a name that is not of the form `[a-z][a-z0-9-]*` with at most 32 characters, for a name Legion or the deployment defines already (`… which the deployment or Legion defines already; a role of a plan takes a name of its own.`), for a `type` that is set and is not of that form (`… Dispatch's step record takes no other.`), and for a `model` the deployment does not list (`… the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
+A role block is refused for a name that is not of the form `[a-z][a-z0-9-]*` with at most 32 characters.
+It is refused for a name Legion or the deployment defines already (`… which the deployment or Legion defines already; a role of a plan takes a name of its own.`), and for a `type` that is set and is not of that form (`… Dispatch's step record takes no other.`).
+A role block whose `model` the deployment does not list is refused at the first step of each task that names it (`step <n> of task <t> names the role <role>, whose model <m> the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
+Such a block that no step names is refused as a cause of the whole plan (`the plan defines the role <role> with the model <m>, which the deployment does not list; it lists <m1>, <m2>.`).
 A step that names a role neither the deployment nor the plan defines is refused (`step <n> of task <t> names the role <role>, which neither the deployment nor the plan defines.`).
-The steps of one key, `<role>:<key>`, are one agent, so a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses (a role of your plan runs on Oh My Pi) (`… one agent runs on one harness.`).
+The steps of one key, `<role>:<key>`, are one agent.
+So a key whose steps name roles of two models is refused (`… one agent runs on one model.`), and so is one whose steps name roles of two harnesses (`… one agent runs on one harness.`).
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
-The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
+Your role prompt gives the reasons a version gets for where its task stands.
 
 ## When to give it
 

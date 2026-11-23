@@ -208,15 +208,15 @@ func (s specs) backendPart(c supervise.Claim, backend runtime.Backend) (string, 
 }
 
 // roleDefinition is the definition of a plan's role a launch of c would run now (the fingerprint
-// of resolveClaimRole's answer, runtime.SpawnSpec.RoleDefinition), and whether the plan of c's
-// issue defines c's role: what the daemon outbox's start compares with the definition the claim's
-// running process was launched with (supervise.Machine.LaunchedDefinition).
-func (s specs) roleDefinition(ctx context.Context, c supervise.Claim) (string, bool, error) {
+// of resolveClaimRole's answer, runtime.SpawnSpec.RoleDefinition), "" for a role the plan of c's
+// issue does not define: what the daemon outbox's start compares with the definition the claim's
+// process was launched with (supervise.Claim.LaunchedDefinition).
+func (s specs) roleDefinition(ctx context.Context, c supervise.Claim) (string, error) {
 	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
 	if err != nil {
-		return "", false, fmt.Errorf("the role of %s: %w", c.Token, err)
+		return "", fmt.Errorf("the role of %s: %w", c.Token, err)
 	}
-	return resolved.fingerprint(), resolved.source == stepplan.SourcePlan, nil
+	return resolved.fingerprint(), nil
 }
 
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It resolves the

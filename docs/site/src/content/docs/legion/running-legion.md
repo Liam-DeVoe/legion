@@ -824,10 +824,11 @@ What each part is for:
   each refused by name. What the pacing is holding right now is in the state's `wakesWaiting`
   ([Observe](#observe)).
 - **`worker_backends`** (optional) runs a role on Claude Code instead of Oh My Pi:
-  `worker_backends: {implementer: claude}`. Each key is an issue role, each value `omp` (the
-  default) or `claude`. Claude Code runs the phase workers (`planner`, `implementer`, `tester`,
-  `reviewer`, `merger`) under either runtime; the loader refuses `claude` for the architect, naming
-  why, and refuses any other value. The controller always runs on Oh My Pi. A tmux daemon running a
+  `worker_backends: {implementer: claude}`. Each key is an issue role, one of Legion's or a role
+  `roles` defines, and each value is `omp` (the default) or `claude`. Claude Code runs the phase
+  workers (`planner`, `implementer`, `tester`, `reviewer`, `merger`) and the roles `roles` defines,
+  under either runtime. The loader refuses `claude` for the architect, naming why, and refuses any
+  other value. The controller always runs on Oh My Pi. A tmux daemon running a
   Claude Code role resolves `claude` from `LEGION_CLAUDE_PATH` (else `PATH`), the `bun` its MCP
   server runs on from `LEGION_BUN_PATH` (else `PATH`), and a built `packages/claude-envoy` from
   `LEGION_CLAUDE_PLUGIN_DIR`, and refuses to boot without any of them. A Kubernetes daemon

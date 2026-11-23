@@ -350,6 +350,13 @@ type Claim struct {
 	LastDeathCause   string
 	LastStartFailure string
 	LastReady        time.Time
+	// LaunchedDefinition is the definition of a plan's role that the launch of the process the
+	// claim records was built for (runtime.SpawnSpec.RoleDefinition), "" for a launch of a role no
+	// plan defines. The write that records that process writes it (launchNow), and the store keeps
+	// it, so the start of a later step compares it with the definition of the plan in force after
+	// a restart as well as before one (internal/daemon's roleDefinitionChanged). A claim a release
+	// before this one launched holds "": no such release launched a role of a plan.
+	LaunchedDefinition string
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -1354,12 +1361,11 @@ type Machine struct {
 	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
 	// the fresh agent at its first task.
 	lostCause SessionLoss
-	// launchedDefinition is the definition of a plan's role the claim's newest launch was built
-	// for (runtime.SpawnSpec.RoleDefinition), and launchedKnown whether this daemon built one:
-	// spawnSpec writes both for every launch it builds, so the process the claim runs, if any, runs
-	// that definition (LaunchedDefinition). They are memory only: a restart starts with none known.
-	launchedDefinition string
-	launchedKnown      bool
+	// builtDefinition is the definition of a plan's role the newest spec this machine built was
+	// for (runtime.SpawnSpec.RoleDefinition, spawnSpec). The write that records that launch's
+	// process copies it onto the claim (Claim.LaunchedDefinition, launchNow), so a launch that
+	// started nothing leaves the claim's definition that of the process it records.
+	builtDefinition string
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
 	// (markRollEdge), and 0 where no such refusal is outstanding. Such a process is a fresh agent
@@ -2242,18 +2248,6 @@ func (m *Machine) Claim() Claim {
 	return m.current()
 }
 
-// LaunchedDefinition is the definition of a plan's role that the claim's newest launch built in
-// this daemon was built for ("" for a role no plan defines), and whether this daemon built one
-// since it started: the process the claim runs, if any, runs that definition. A start of a later
-// step reads it to tell a process launched under an earlier version of the plan from one that runs
-// the plan in force (the daemon outbox's start), and a daemon that built no launch of the claim
-// does not know what its process runs.
-func (m *Machine) LaunchedDefinition() (string, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.launchedDefinition, m.launchedKnown
-}
-
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
 // as the decision in flight last tried to write it to the store. It never waits, where Claim waits
 // out a decision that holds the machine through its runtime call — a Sandbox relaunch waits minutes
@@ -2883,9 +2877,11 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
 			// The mark of a start that had Oh My Pi resume the session by its id, which start set
-			// (Claim.AgentResumeGeneration), reaches the store in this one write with the process
-			// it names, so a claim that records that process always records the mark with it.
+			// (Claim.AgentResumeGeneration), and the definition of a plan's role its spec was built
+			// for (Claim.LaunchedDefinition) reach the store in this one write with the process they
+			// name, so a claim that records that process always records both with it.
 			m.claim.Locator = &loc
+			m.claim.LaunchedDefinition = m.builtDefinition
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
@@ -3270,7 +3266,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
-	m.launchedDefinition, m.launchedKnown = spec.RoleDefinition, true
+	m.builtDefinition = spec.RoleDefinition
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
 	return spec, nil

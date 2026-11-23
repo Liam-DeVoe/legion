@@ -859,13 +859,16 @@ test("the plan guide says which checks retro does not send back", () => {
 
 // A plan can define a role of its own, so the plan guide gives the block a step names, the
 // refusals of a role's name and model, and what a later version does to a role a running task's
-// steps name, a role whose name the deployment took since among them.
+// steps name, a role whose name the deployment took since among them. A model the deployment does
+// not list is refused in one of two forms (plan.modelReasons). It is refused at the first step of
+// each task that names the role, or for the whole plan where no step names it.
 test("the plan guide gives a role block, its refusals and a role under a running task", () => {
   expect(
     lacks("legion-architect/references/plan.md", [
       /:::plan_role\{#prober type="testing" model="<a listed model>"\}/,
       /which the deployment or Legion defines already; a role of a plan takes a name of its own/,
-      /the deployment does not list; it lists <m1>, <m2>/,
+      /refused at the first step of each task that names it \(`step <n> of task <t> names the role <role>, whose model <m> the deployment does not list; it lists <m1>, <m2>\.`/,
+      /no step names is refused as a cause of the whole plan \(`the plan defines the role <role> with the model <m>, which the deployment does not list; it lists <m1>, <m2>\.`\)/,
       /one agent runs on one model/,
       /one agent runs on one harness/,
       /changes the type, the model or the prompt of a role block that a step of the running task names/,
