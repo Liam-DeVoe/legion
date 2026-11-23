@@ -136,14 +136,16 @@ review App otherwise, and a role the deployment defines in `roles` works as the 
 `github_app` names (`review` unless it names one). While the architect does a step of its own plan
 (a step whose key is `owner`), its slot works as the App of that step's role, the implement App at
 an implementer step, and as its own App again once the step ends. Where the step's App is not the
-architect's own (the implement App, say), the daemon writes it into the slot; a step of the review
-App, the architect's own (its acceptance, a tester or reviewer step, its retro), needs no write.
-Either way the daemon tells the architect the step only once the slot's gh files hold the step's
-App, so under Kubernetes it waits for the pod to carry a write back as well. Where the pod's
-launcher cannot say what its gh files hold (an image from before that check), a step of another
-App waits for the pod's update round, and a step of the architect's own App is told at once. The
-end of each step of its own writes the architect's own App back into the slot, unless its next
-step of another App already runs, and the next notice to the architect waits for that write.
+architect's own (the implement App, say), the daemon writes the slot, judging its App as it writes,
+so a step that has ended by then leaves the architect's own App there; a step of the review App,
+the architect's own (its acceptance, a tester or reviewer step, its retro), needs no write. Either
+way the daemon tells the architect the step only once the slot's gh files hold the step's App: the
+pane's files under tmux, and under Kubernetes the pod's, so it waits for the pod to carry a write
+back as well. Where the pod's launcher cannot say what its gh files hold (an image from before
+that check), a step of another App waits for the pod's update round, and a step of the architect's
+own App is told at once. The end of each step of its own writes the architect's own App back into
+the slot, unless its next step of another App already runs, and the next notice to the architect
+waits for that write.
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
