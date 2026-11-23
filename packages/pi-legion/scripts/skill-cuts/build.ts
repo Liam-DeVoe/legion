@@ -560,6 +560,7 @@ import {
   installationRateWait,
   json,
   lastTryError,
+  ompText,
   parse,
   parseJson,
   RATE_LIMITED,
@@ -1059,9 +1060,11 @@ async function storeRows(command: string, db: string, query: string): Promise<un
  * as the command prints it, read by psql-rows.ts's `PsqlTable`: what is held is the row being read
  * and the chunks of output it spans (common.ts's `eachChunk` lets each chunk go once it is read),
  * never the whole answer. A command that prints nothing for `quietMs` is ended and reported
- * first, naming the command and the limit; then a command that fails, with its first error line;
- * then a fault of its output; then a throw of `visit`, after which no row is given. Returns the
- * rows the table holds.
+ * first, naming the command and the limit; its exit, and its error text when it fails, are waited
+ * for under the same limit, so one that closes its output and does not exit is ended too, `quietMs`
+ * after its last output. Then a command that fails is reported, with its first error line; then a
+ * fault of its output; then a throw of `visit`, after which no row is given. Returns the rows the
+ * table holds.
  */
 async function eachStoreRow(
   command: string,
@@ -1079,11 +1082,17 @@ async function eachStoreRow(
   const limit = timeLimit(child, quietMs);
   const stderr = textOf(child.stderr, limit);
   const table = new PsqlTable(visit);
+  let code: number;
+  let first = "";
   try {
     await eachChunk(child.stdout, limit, (chunk) => {
       limit.touch();
       table.write(chunk);
     });
+    code = await child.exited;
+    if (code !== 0 && !limit.timedOut()) {
+      first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
+    }
   } finally {
     limit.clear();
   }
@@ -1092,11 +1101,7 @@ async function eachStoreRow(
       `the store command ${command} printed nothing for ${quietMs} ms on ${db}, so it was ended (STORE_QUIET_MS)`
     );
   }
-  const code = await child.exited;
-  if (code !== 0) {
-    const first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
-    throw new Error(`the store command exited ${code}: ${first.slice(0, 300)}`);
-  }
+  if (code !== 0) throw new Error(`the store command exited ${code}: ${first.slice(0, 300)}`);
   return table.end();
 }
 
@@ -2536,7 +2541,8 @@ export async function registryTarball(
 }
 
 /** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
- *  as UTF-8 text: a regular file's entry only, its name the ustar prefix and name joined. */
+ *  as Oh My Pi reads a file (common.ts's `ompText`): a regular file's entry only, its name the
+ *  ustar prefix and name joined. */
 export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
   const bytes = Bun.gunzipSync(new Uint8Array(gzipped));
   const text = (from: number, to: number) =>
@@ -2551,7 +2557,7 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
     const full = prefix === "" ? name : `${prefix}/${name}`;
     if (type === "" || type === "0") {
       const inside = full.split("/").slice(1).join("/");
-      files.set(inside, new TextDecoder().decode(bytes.subarray(at + 512, at + 512 + size)));
+      files.set(inside, ompText(bytes.subarray(at + 512, at + 512 + size)));
     }
     at += 512 + Math.ceil(size / 512) * 512;
   }
@@ -2762,8 +2768,10 @@ export class GithubReads {
     }));
   }
 
-  /** The text of the blob `sha` of `repo`, read once: a blob's id is its content, so a file that
-   *  two commits share is read for the first. */
+  /** The text of the blob `sha` of `repo`, as Oh My Pi reads a file (common.ts's `ompText`: a
+   *  leading byte order mark dropped, whether the blob comes over REST or in a GraphQL batch,
+   *  `prefetch`), read once: a blob's id is its content, so a file that two commits share is read
+   *  for the first. */
   private blob(repo: string, sha: string): Promise<string> {
     return readOnce(this.blobs, sha, () =>
       this.ok(["api", `repos/${repo}/git/blobs/${sha}`]).then((answer) => {
@@ -2771,7 +2779,7 @@ export class GithubReads {
         if (!blob.success || blob.data.encoding !== "base64") {
           throw new Error(`gh api repos/${repo}/git/blobs/${sha} gave no base64 blob`);
         }
-        return Buffer.from(blob.data.content, "base64").toString("utf8");
+        return ompText(Buffer.from(blob.data.content, "base64"));
       })
     );
   }
@@ -2797,7 +2805,7 @@ export class GithubReads {
       for (const [index, entry] of batch.entries()) {
         const blob = parsed.data.data.repository?.[`b${index}`];
         if (blob?.isBinary === false && !blob.isTruncated && blob.text !== null) {
-          this.blobs.set(entry.sha, Promise.resolve(blob.text));
+          this.blobs.set(entry.sha, Promise.resolve(ompText(blob.text)));
         }
       }
     }
@@ -5702,11 +5710,12 @@ function mustBeFile(file: string, what: string): void {
 }
 
 /** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
- *  name when it gives none) and description. Refuses a directory with no SKILL.md. */
+ *  name when it gives none) and description, the file read as Oh My Pi reads it (`ompText`).
+ *  Refuses a directory with no SKILL.md. */
 function taskSkill(dir: string): { name: string; description: string } {
   const skillFile = path.join(dir, "SKILL.md");
   mustBeFile(skillFile, "--skill's SKILL.md");
-  const fields = frontmatter(readFileSync(skillFile, "utf8")) ?? {};
+  const fields = frontmatter(ompText(readFileSync(skillFile))) ?? {};
   return {
     name:
       typeof fields.name === "string" && fields.name !== ""

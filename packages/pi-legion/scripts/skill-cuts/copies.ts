@@ -215,6 +215,7 @@ import {
   ghLimiter,
   installationRateWait,
   MAX_RATE_RETRIES,
+  ompText,
   parseJson,
   RATE_LIMITED,
   type ResetIo,
@@ -743,18 +744,20 @@ class Github {
     return this.json(["api", endpoint], schema, slot);
   }
 
-  /** The text of the blob `sha` of `repository`, read alone over REST and kept nowhere. */
+  /** The text of the blob `sha` of `repository`, read alone over REST and kept nowhere, as Oh My
+   *  Pi reads a file (common.ts's `ompText`: a leading byte order mark dropped). */
   async readBlob(repository: string, sha: string): Promise<string> {
     const blob = await this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob, repository);
     if (blob.encoding !== "base64")
       throw new Error(`the blob is encoded ${blob.encoding}, not base64`);
-    return Buffer.from(blob.content, "base64").toString("utf8");
+    return ompText(Buffer.from(blob.content, "base64"));
   }
 
-  /** Hands each of the blobs `entries` of `repository` to `each`, in their order, with its text or
-   *  the error that kept it from being read, and keeps none: a caller parses or stores each and
-   *  drops it. They are read in GraphQL batches (`graphqlArgs`), up to BLOB_BATCH blobs and
-   *  BLOB_BATCH_BYTES bytes a call and one batch at a time, so at most one batch's texts are held
+  /** Hands each of the blobs `entries` of `repository` to `each`, in their order, with its text
+   *  (as Oh My Pi reads a file, `ompText`) or the error that kept it from being read, and keeps
+   *  none: a caller parses or stores each and drops it. They are read in GraphQL batches
+   *  (`graphqlArgs`), up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call and one batch at a
+   *  time, so at most one batch's texts are held
    *  at once; a blob a batch does not give whole (binary, truncated, missing, or in a batch that
    *  fails for another reason than the rate limit or a transient failure, `withRetries`, or that
    *  GitHub answers as a batch too large when it holds more than one blob) is read alone. Entries
@@ -792,7 +795,7 @@ class Github {
         const blob = given?.[`b${index}`];
         const read =
           blob?.isBinary === false && !blob.isTruncated && blob.text !== null
-            ? { text: blob.text }
+            ? { text: ompText(blob.text) }
             : await this.readAlone(repository, entry.sha);
         for (const same of bySha.get(entry.sha) ?? []) each(same, read);
       }
@@ -845,7 +848,7 @@ class Github {
       else if (blob?.isBinary === true)
         found.set(file, { kind: "file", oid: blob.oid, text: undefined });
       else if (blob !== undefined && blob !== null && !blob.isTruncated && blob.text !== null)
-        found.set(file, { kind: "file", oid: blob.oid, text: blob.text });
+        found.set(file, { kind: "file", oid: blob.oid, text: ompText(blob.text) });
       else found.set(file, await this.fileAlone(repository, commit, file, blob?.oid));
     }
     return found;
@@ -1513,7 +1516,7 @@ function takeCached(
   const reads = repositoryReads(repo, excludePaths);
   for (const entry of [...reads.skillFiles, ...reads.manifests.map(({ entry }) => entry)]) {
     const text = cached.blobs[entry.sha];
-    if (text !== undefined) texts.set(entry.sha, text);
+    if (text !== undefined) texts.set(entry.sha, ompText(text));
   }
   if (scanned && cached.forkFilesApart !== true) {
     const writer = cache.lineWriter("fork-files", key);
@@ -1650,9 +1653,11 @@ async function readRepositoryStep(
 // ---------------------------------------------------------------------------------------------
 // frontmatter and skills
 
-/** The YAML frontmatter block of a markdown text, or undefined when it has none. */
+/** The YAML frontmatter block of a markdown text, or undefined when it has none. The text is one
+ *  read as Oh My Pi reads a file (common.ts's `ompText`, which every blob, cached text and file
+ *  read here goes through), so it starts with no byte order mark. */
 function frontmatterBlock(text: string): string | undefined {
-  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const lines = text.split(/\r?\n/);
   if (lines[0]?.trimEnd() !== "---") return undefined;
   const end = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)\s*$/.test(line));
   return end < 0 ? undefined : lines.slice(1, end).join("\n");

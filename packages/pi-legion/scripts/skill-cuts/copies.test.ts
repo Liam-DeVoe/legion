@@ -1614,6 +1614,60 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
   });
 });
 
+// Catches: a blob read with its leading byte order mark kept (a GraphQL batch's text as given, a
+// REST blob through `Buffer.toString`), where Oh My Pi drops the mark as it reads a file: a
+// package.json that starts with one was no JSON, so its package shipped nothing. A SKILL.md that
+// starts with one is read by its frontmatter (copies.ts's frontmatter parse dropped the mark
+// itself before; now the read does). The second run refuses every GraphQL blob batch, so each
+// blob is read alone over REST.
+test("a package.json and a SKILL.md that start with a byte order mark are read as Oh My Pi reads them, in a GraphQL batch and alone over REST: the package ships the skill, under its frontmatter name", async () => {
+  for (const rest of [false, true]) {
+    const w = world();
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      {
+        nameWithOwner: "acme/marked",
+        isFork: false,
+        isArchived: false,
+        defaultBranchRef: { name: "main" },
+        parent: null,
+      },
+    ]);
+    const files: MadeFile[] = [
+      {
+        path: "skills/marked-dir/SKILL.md",
+        text: "\uFEFF---\nname: marked\ndescription: Use when a marked step is due.\n---\n",
+      },
+      { path: "package.json", text: `\uFEFF${JSON.stringify({ name: "@acme/marked", pi: {} })}\n` },
+    ];
+    w.addFiles(files);
+    w.addRepository("acme/marked", treeOf("acme/marked", files));
+    const answer = w.gh;
+    if (rest) {
+      Object.assign(w, {
+        gh: async (args: readonly string[]) =>
+          args.some((arg) => arg.includes("on Blob {"))
+            ? { code: 1, stdout: "", stderr: "gh: Something went wrong (HTTP 500)\n" }
+            : answer(args),
+      });
+    }
+    const r = await run(w, ["--only", "acme/marked", "--max-search-calls", "0"], {
+      targets: [...CONFIG.targets, "acme/marked"],
+    });
+    expect(r.code).toBe(0);
+    const copy = r.table("skill-copies.tsv").find((row) => row.repository === "acme/marked");
+    expect({ rest, name: copy?.name, bytes: copy?.description_bytes }).toEqual({
+      rest,
+      name: "marked",
+      bytes: String(Buffer.byteLength("Use when a marked step is due.")),
+    });
+    expect({ rest, rows: installerRows(r, "acme/marked", "package.json") }).toEqual({
+      rest,
+      rows: ["ships package:@acme/marked marked acme/marked skills/marked-dir"],
+    });
+  }
+}, 60_000);
+
 // An omp-plugins `github:` dependency and an `ensure_vendor` clone, each read at the ref it names:
 // acme/dots, a made-up repository in the shape of a dotfiles repository (its
 // omp/plugins/package.json, skills-sources.json, omp/extensions/dotfiles-skills.ts and

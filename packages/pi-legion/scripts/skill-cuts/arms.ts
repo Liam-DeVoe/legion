@@ -140,6 +140,7 @@ import {
   URL_TARGET,
   wholeReadTarget,
 } from "./cases";
+import { ompText } from "./common";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -997,9 +998,10 @@ function skillBody(content: string): string {
 
 /** The text of Oh My Pi's autoloaded block of the SKILL.md in `skillDir`, naming `file` as its
  *  path: prompts/skills/autoload.md rendered with no arguments (`<body>`, a blank line, `---`, a
- *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. */
+ *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. The file is read as Oh My
+ *  Pi reads it (common.ts's `ompText`: a leading byte order mark dropped). */
 export function autoloadedText(skillDir: string, file: string): string {
-  const body = skillBody(readFileSync(path.join(skillDir, "SKILL.md"), "utf8"));
+  const body = skillBody(ompText(readFileSync(path.join(skillDir, "SKILL.md"))));
   return formatPrompt(`${body}\n\n---\n\nSkill: ${file}\n`).trim();
 }
 

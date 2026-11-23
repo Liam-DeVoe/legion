@@ -113,6 +113,7 @@ import {
   GhRetries,
   ghLimiter,
   installationRateWait,
+  ompText,
   parseJson,
   textOf,
   timeLimit,
@@ -498,11 +499,10 @@ export function skillTextFrontmatter(text: string): { description: string; hidde
   };
 }
 
-/** The frontmatter of the skill in `dir` (`skillTextFrontmatter`), its file decoded as Oh My Pi
- *  reads a SKILL.md (`Bun.file(…).text()`, capability/fs.ts's `readFile`), which drops a leading
- *  byte order mark, as load.ts's `sessionDescription` decodes the session's copy. */
+/** The frontmatter of the skill in `dir` (`skillTextFrontmatter`), its file read as Oh My Pi reads
+ *  a SKILL.md (common.ts's `ompText`: a leading byte order mark dropped). */
 export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
-  return skillTextFrontmatter(new TextDecoder().decode(readFileSync(path.join(dir, "SKILL.md"))));
+  return skillTextFrontmatter(ompText(readFileSync(path.join(dir, "SKILL.md"))));
 }
 
 /** What a finished command gave. */

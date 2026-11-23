@@ -2363,6 +2363,26 @@ test("a store command that prints nothing for the read's quiet limit is ended, a
   expect(performance.now() - started).toBeLessThan(3_000);
 });
 
+// Catches: a store command that prints its answer and closes its output and error output, then
+// does not exit, waited for with no limit (`child.exited` after the limit was cleared).
+test("a store command that closes its output and does not exit is ended at the read's quiet limit too", async () => {
+  const root = path.join(dir, "heads-lingers");
+  mkdirSync(root, { recursive: true });
+  const lingers = path.join(root, "lingers.sh");
+  writeFileSync(
+    lingers,
+    "#!/bin/sh\ncat >/dev/null\nprintf ' value \\n-------\\n(0 rows)\\n\\n'\nexec >&- 2>&-\nsleep 5\n",
+    { mode: 0o755 }
+  );
+  const started = performance.now();
+  await expect(
+    sessionHeads(lingers, "store_a", [pathHash("/sessions/other.jsonl")], root, 300)
+  ).rejects.toThrow(
+    `the store command ${lingers}'s read of the session heads printed nothing for 300 ms on store_a, so it was ended (STORE_QUIET_MS)`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+});
+
 // Catches: a capture made before the harness-string rule read back and replayed.
 test("a saved capture whose record holds no harness record is refused", () => {
   const root = path.join(dir, "saved-before");

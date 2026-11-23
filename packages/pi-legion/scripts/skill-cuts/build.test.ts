@@ -5383,6 +5383,24 @@ test("build-tasks --max-search-minutes ends the candidate search at the first ca
   );
 }, 60_000);
 
+// Catches: build-tasks reading --skill's SKILL.md as UTF-8 with a leading byte order mark kept, so
+// its frontmatter was not found and the skill was named after its directory, where Oh My Pi drops
+// the mark and reads the frontmatter name.
+test("build-tasks names a --skill whose SKILL.md starts with a byte order mark by its frontmatter name, as Oh My Pi reads it", async () => {
+  const marked = path.join(scratch, "marked-skill", "marked-alpha");
+  mkdirSync(marked, { recursive: true });
+  writeFileSync(
+    path.join(marked, "SKILL.md"),
+    `\uFEFF${readFileSync(path.join(old, "SKILL.md"), "utf8")}`
+  );
+  const out = path.join(scratch, "marked-skill", "tasks.jsonl");
+  await main(
+    tasksArgs(out).map((arg) => (arg === old ? marked : arg)),
+    io([])
+  );
+  expect(JSON.parse(readFileSync(`${out}.summary.json`, "utf8")).skill).toBe("alpha");
+}, 60_000);
+
 test("build-tasks with bounds, killed mid-search and run again, pulls no decided candidate again and ends with the tasks and summary of one unkilled run, the search's seconds summed over the runs", async () => {
   const bounds = [
     "--model",
@@ -8068,6 +8086,36 @@ describe("GithubReads", () => {
     expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(2);
   });
 
+  // Catches: a SKILL.md blob decoded with its leading byte order mark kept (`Buffer.toString`,
+  // and a GraphQL batch's text as given), so its frontmatter was not found: no description, and
+  // `hide: true` not seen; Oh My Pi drops the mark as it reads the file.
+  test("a SKILL.md that starts with a byte order mark is read as Oh My Pi reads it, over REST and in a GraphQL batch: its description, and its hide", async () => {
+    const marked =
+      "\uFEFF---\nname: alpha\ndescription: Use for the alpha list.\nhide: true\n---\n";
+    const rest = standIn("acme/skills", () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        content: Buffer.from(marked).toString("base64"),
+        encoding: "base64",
+      }),
+      stderr: "",
+    }));
+    const batch = { isBinary: false, isTruncated: false, text: marked };
+    const graphql = async (args: readonly string[]): Promise<GhResult> =>
+      args[1] === "graphql"
+        ? { code: 0, stdout: JSON.stringify({ data: { repository: { b0: batch } } }), stderr: "" }
+        : rest.gh(args);
+    for (const gh of [rest.gh, graphql]) {
+      const read = await new GithubReads(gh, new Map(), noWait()).at("acme/skills", COMMIT, []);
+      expect(read.copies.map((copy) => [copy.name, copy.nameFrom, copy.description])).toEqual([
+        ["alpha", "frontmatter", "Use for the alpha list."],
+      ]);
+      expect([...read.hidden]).toEqual(["skills/alpha"]);
+    }
+    // The REST read went to the blob; the GraphQL read did not.
+    expect(rest.calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(1);
+  });
+
   // Catches: a SKILL.md read GitHub refused for its secondary rate limit (an HTTP 403, no
   // transient reason) kept as a fault, so the skill is left out of the profile.
   test("a SKILL.md read refused twice for the secondary rate limit is sent again after SECONDARY_WAIT_MS, then after twice that, with no read of a limit's reset, and is read whole", async () => {
@@ -8144,6 +8192,28 @@ test("a pull whose store command prints nothing for the quiet limit is ended, na
     bytes: 0,
     calls: 1,
   });
+}, 60_000);
+
+// Catches: a store command that prints its whole answer, closes its output and does not exit,
+// waited for with no limit once its output ended (`child.exited`, then its error text). It reads
+// its query, prints an answer of no row, closes its output, and waits in a child of its own, which
+// holds its error output open.
+test("a store command that closes its output and does not exit is ended at the quiet limit, naming the command and the limit", async () => {
+  const root = path.join(scratch, "store-lingers");
+  mkdirSync(root, { recursive: true });
+  const lingers = path.join(root, "lingers.sh");
+  writeFileSync(
+    lingers,
+    "#!/bin/sh\ncat >/dev/null\nprintf ' value \\n-------\\n(0 rows)\\n\\n'\nexec >&-\nsleep 5\n",
+    { mode: 0o755 }
+  );
+  const started = performance.now();
+  await expect(
+    pullTranscript(lingers, "store_a", "/sessions/x.jsonl", path.join(root, "pull.jsonl"), 300)
+  ).rejects.toThrow(
+    `the store command ${lingers} printed nothing for 300 ms on store_a, so it was ended (STORE_QUIET_MS)`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
 }, 60_000);
 
 describe("GithubReads.tarball", () => {

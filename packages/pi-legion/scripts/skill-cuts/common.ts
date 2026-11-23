@@ -92,6 +92,15 @@ export function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }
 
+/** A file's text as Oh My Pi reads a file (capability/fs.ts's `readFile`, `Bun.file(…).text()`):
+ *  decoded as UTF-8 with a leading byte order mark dropped, so a SKILL.md that starts with one
+ *  still opens with its frontmatter's `---`. Takes the file's bytes, or a text already decoded (a
+ *  GraphQL blob's `text`, a file read as UTF-8), whose leading mark it drops the same way. Every
+ *  SKILL.md the runner parses is read through it. */
+export function ompText(raw: Uint8Array | string): string {
+  return typeof raw === "string" ? raw.replace(/^\uFEFF/, "") : new TextDecoder().decode(raw);
+}
+
 /** A rate limit, primary or secondary, as gh reports it. */
 export const RATE_LIMITED = /rate limit|HTTP 429/i;
 /** The most times one call GitHub refused for its rate limit is sent again. */

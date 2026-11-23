@@ -272,7 +272,7 @@ import {
   userTurnKey,
 } from "./capture";
 import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
-import { json, parseJson, Refused, Stopped, schemaFaults, writeWhole } from "./common";
+import { json, ompText, parseJson, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
   type AgentDefinition,
   buildContext,
@@ -951,10 +951,11 @@ async function injectedRefusal(
 }
 
 /** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
- *  (context.ts's `readFrontmatter`, which repairs a plain value that holds `: `), or the
- *  directory's own name when it gives none. */
+ *  (common.ts's `ompText`, which drops a leading byte order mark, then context.ts's
+ *  `readFrontmatter`, which repairs a plain value that holds `: `), or the directory's own name
+ *  when it gives none. */
 export function skillName(dir: string): string {
-  const name = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8")).name;
+  const name = readFrontmatter(ompText(readFileSync(path.join(dir, "SKILL.md")))).name;
   return typeof name === "string" && name.trim() !== "" ? name.trim() : path.basename(dir);
 }
 
@@ -962,12 +963,15 @@ export function skillName(dir: string): string {
  * A copy of the skill in `dir` under the name `name`, at `<scratch>/<name>`, replacing one there:
  * the same files byte for byte, but for its SKILL.md's frontmatter `name` line, which becomes
  * `name: <name>` (added at the frontmatter's top when it has none). Nothing else that names the
- * skill changes: its own text, its references, and every file outside it. Throws a refusal
+ * skill changes: its own text, its references, and every file outside it; a leading byte order
+ * mark, which Oh My Pi drops as it reads the file (`ompText`), stays where it is. Throws a refusal
  * when the SKILL.md has no frontmatter.
  */
 export function renamedSkill(dir: string, name: string, scratch: string): string {
   const file = path.join(dir, "SKILL.md");
-  const text = readFileSync(file, "utf8");
+  const raw = readFileSync(file, "utf8");
+  const text = ompText(raw);
+  const mark = raw.slice(0, raw.length - text.length);
   const open = /^---\r?\n/.exec(text)?.[0];
   const block = FRONTMATTER.exec(text)?.[1];
   if (open === undefined || block === undefined) {
@@ -982,7 +986,7 @@ export function renamedSkill(dir: string, name: string, scratch: string): string
   cpSync(dir, dest, { recursive: true, verbatimSymlinks: true });
   writeFileSync(
     path.join(dest, "SKILL.md"),
-    `${open}${named}${text.slice(open.length + block.length)}`
+    `${mark}${open}${named}${text.slice(open.length + block.length)}`
   );
   return dest;
 }
@@ -1683,7 +1687,7 @@ class LoadTest {
         if (error instanceof NoSuchFile) return undefined;
         throw error;
       }
-      return skillTextFrontmatter(new TextDecoder().decode(bytes)).description;
+      return skillTextFrontmatter(ompText(bytes)).description;
     })();
     this.sessionDescriptions.set(profile.file, read);
     return read;

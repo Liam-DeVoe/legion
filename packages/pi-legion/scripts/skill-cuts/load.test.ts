@@ -611,6 +611,18 @@ describe("--name tests the skill under another name", () => {
     );
   });
 
+  // Catches: a SKILL.md that starts with a byte order mark read as UTF-8 with the mark kept, so no
+  // frontmatter was found and the copy was refused, where Oh My Pi reads the file (dropping the
+  // mark) and its frontmatter.
+  test("a SKILL.md that starts with a byte order mark is renamed, the mark kept where it is", () => {
+    const dir = path.join(scratch, "rename", "marked");
+    writeTree(dir, { "SKILL.md": `\uFEFF${ALPHA_SKILL}` });
+    const copy = renamedSkill(dir, "omega", path.join(scratch, "rename", "copies"));
+    expect(readFileSync(path.join(copy, "SKILL.md"), "utf8")).toBe(
+      `\uFEFF${ALPHA_SKILL.replace("name: alpha", "name: omega")}`
+    );
+  });
+
   test("a recorded prompt under another name changes only the name of the skill's listing line (F1's subagent)", () => {
     const renamed = renamedListingBlocks(SUBAGENT.systemPrompt, "beta", "beta-renamed");
     const line = "- beta: Use when asked for the beta greeting of the fixture project.";
@@ -2090,6 +2102,17 @@ test("the skill's name is read as Oh My Pi reads its frontmatter: a value that h
   const unnamed = path.join(scratch, "colon", "unnamed");
   writeTree(unnamed, { "SKILL.md": "---\ndescription: Use when: you need a lookup\n---\n" });
   expect(skillName(unnamed)).toBe("unnamed");
+});
+
+// Catches: the skill's SKILL.md read as UTF-8 with a leading byte order mark kept, so no `---` was
+// found at its start and the name fell back to the directory's, where Oh My Pi drops the mark
+// (`Bun.file(…).text()`) and reads the frontmatter name.
+test("the skill's name is read from a SKILL.md that starts with a byte order mark, as Oh My Pi reads it", () => {
+  const marked = path.join(scratch, "bom", "folder");
+  writeTree(marked, {
+    "SKILL.md": "\uFEFF---\nname: lookup\ndescription: Use when a lookup is due.\n---\n",
+  });
+  expect(skillName(marked)).toBe("lookup");
 });
 
 test("a profile skill with a namespace is checked under <namespace>/<name>: it may share the tested skill's name and another skill's, and Claude Code, whose layout places skills by their bare name, refuses it naming it", () => {

@@ -955,15 +955,17 @@ export async function sessionHeads(
     stderr: "pipe",
   });
   // Ended once it prints nothing for `quietMs` (common.ts's STORE_QUIET_MS): each chunk of its
-  // answer starts the time again.
+  // answer starts the time again, and its exit is waited for under the same limit, so one that
+  // closes its output and does not exit is ended too (as build.ts's `eachStoreRow`).
   const limit = timeLimit(child, quietMs);
   const chunks: Uint8Array[] = [];
-  const [, stderr] = await Promise.all([
+  const [, stderr, code] = await Promise.all([
     eachChunk(child.stdout, limit, (chunk) => {
       limit.touch();
       chunks.push(chunk);
     }),
     textOf(child.stderr, limit),
+    child.exited,
   ]);
   limit.clear();
   if (limit.timedOut()) {
@@ -972,7 +974,6 @@ export async function sessionHeads(
     );
   }
   const stdout = Buffer.concat(chunks).toString("utf8");
-  const code = await child.exited;
   if (code !== 0) {
     const first = stderr.split("\n").find((line) => line.trim() !== "") ?? "";
     throw new Error(

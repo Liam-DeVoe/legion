@@ -12,6 +12,7 @@ import {
 import {
   type Arm,
   type ArmName,
+  autoloadedText,
   buildArm,
   type DispatchAnswer,
   dispatchOf,
@@ -1482,4 +1483,19 @@ test("a whole read by path of another skill of the profile, by count.sql's rule,
   };
   const both = buildArm(shared, "old", { old: oldDir, new: newDir }, path.join(scratch, "shared"));
   expect(otherSkillRead(both, copies, target)).toBeUndefined();
+});
+
+// Catches: the autoloaded block's body read from a SKILL.md that starts with a byte order mark
+// with the mark kept, so its frontmatter was not found and went into the block whole, where Oh
+// My Pi drops the mark as it reads the file and puts in the body alone.
+test("the autoloaded block of a SKILL.md that starts with a byte order mark holds its body alone, as Oh My Pi reads it", () => {
+  const dir = path.join(scratch, "autoload-mark");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    "\uFEFF---\nname: alpha\ndescription: Use for the alpha list.\n---\n\n# Alpha\n\nStep one.\n"
+  );
+  expect(autoloadedText(dir, "/skills/alpha/SKILL.md")).toBe(
+    "# Alpha\n\nStep one.\n\n---\n\nSkill: /skills/alpha/SKILL.md"
+  );
 });
