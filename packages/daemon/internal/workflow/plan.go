@@ -236,9 +236,9 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 }
 
 // planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
-// task (record.HoldTaskStopped), or, as a parent whose plan has no acceptance step, it waits for
-// the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
-// work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
+// task (record.HoldTaskStopped), or, as a parent whose task's last step is not an acceptance, it
+// waits for the issues beneath it in place of its retro (record.HoldForChildren). No path that
+// resumes the work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
 // root ends a task's stop (restartTask, or waitForFirstStep for a task stopped before its first
 // step), and the parent's retro starts once nothing beneath it is open (releaseHeldParents). stored says whether the
 // issue's run has plan rows: no plan holds a run that has none, so a hold of either reason on such

@@ -15,11 +15,11 @@ import (
 )
 
 // heldWork is one issue a path that resumes work is read against: a task its owner stopped, held
-// from testing (record.HoldTaskStopped), a parent whose plan has no acceptance step, held for the
-// open issue beneath it in place of its retro (record.HoldForChildren), and the twin of each, an
-// issue with no plan rows standing in the phase that hold is from, which each path resumes as
-// today. The twins are the control: a path that gave no issue work would pass the held ones
-// too.
+// from testing (record.HoldTaskStopped), a parent whose task's last step is not an acceptance,
+// held for the open issue beneath it in place of its retro (record.HoldForChildren), and the twin
+// of each, an issue with no plan rows standing in the phase that hold is from, which each path
+// resumes as today. The twins are the control: a path that gave no issue work would pass the held
+// ones too.
 type heldWork struct {
 	name   string
 	from   phase.Phase

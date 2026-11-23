@@ -2733,8 +2733,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// A parent whose plan has no acceptance step passes its last step into its retro, and while an
-	// issue beneath it is still in the workflow Legion holds it before its retro instead
+	// A parent whose task's last step is not an acceptance passes that step into its retro, and
+	// while an issue beneath it is still in the workflow Legion holds it before its retro instead
 	// (beneathRetro, holdBeforeRetro).
 	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
 	if err != nil {
