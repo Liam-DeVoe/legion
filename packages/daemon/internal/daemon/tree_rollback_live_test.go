@@ -218,7 +218,7 @@ func (r *treeDaemon) queue(effect treeEffect) int64 {
 	t := r.t
 	t.Helper()
 	var id int64
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := record.NewFencedRow(t.Context(), tx, record.NewStore(), effect.issue, effect.payload, time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC))
 		if err != nil {
 			return err

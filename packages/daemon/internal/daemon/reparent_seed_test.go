@@ -190,7 +190,7 @@ func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T)
 	if told := rig.told(); len(told) != 0 {
 		t.Fatalf("the seed's own pass published %v, want the notices still queued: the case's premise", told)
 	}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A notice of another kind, queued at the entry the notices were queued at.
 		row, err := record.NewFencedRow(ctx, tx, rig.records, reparentIssue,
 			record.Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing}, time.Now())
@@ -288,8 +288,8 @@ func TestAReparentSeedOfTheReleaseBeforeStillDecodesAndIsTold(t *testing.T) {
 	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress"}
 	rig := newReparentRig(t, client)
 	putCopyRow(t, rig.pool, reparentIssue, reparentNewParent, "in_progress")
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
-		issue, err := rig.records.Issue(context.Background(), tx, reparentIssue)
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := rig.records.Issue(ctx, tx, reparentIssue)
 		if err != nil {
 			return err
 		}

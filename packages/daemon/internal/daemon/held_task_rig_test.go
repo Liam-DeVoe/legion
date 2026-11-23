@@ -144,7 +144,7 @@ func (r *heldTaskRig) readmit() {
 // the row's id.
 func (r *heldTaskRig) enqueueStart() int64 {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
 		if err != nil {
 			return err
@@ -174,7 +174,7 @@ func (r *heldTaskRig) runRow(id int64) {
 	if err := r.runner.execute(r.ctx, row); err != nil {
 		r.t.Fatalf("run outbox row %d: %v", row.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		r.t.Fatalf("finish outbox row %d: %v", row.ID, err)

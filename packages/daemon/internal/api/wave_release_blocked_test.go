@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -63,7 +64,7 @@ func releaseHarness(t *testing.T, open bool) (*harness, *statusRecorder) {
 		approved := 1
 		gate.ApprovedVersion = &approved
 	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: releaseRoot, Index: 0,
 			AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
@@ -109,7 +110,7 @@ func deliverEcho(t *testing.T, h *harness, written dispatch.Issue) {
 func outboxRows(t *testing.T, h *harness, issue string) map[string]int {
 	t.Helper()
 	rows := map[string]int{}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		found, err := tx.Query(context.Background(), `select kind, count(*) from outbox where issue = $1 group by kind`, issue)
 		if err != nil {
 			return err
@@ -154,8 +155,8 @@ func backlogChild(key string, waits ...string) dispatch.Issue {
 func queuedTodos(t *testing.T, h *harness) []string {
 	t.Helper()
 	var writes []string
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(context.Background(), `select issue from outbox where kind = 'dispatch_status' and payload->>'status' = 'todo' order by id`)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select issue from outbox where kind = 'dispatch_status' and payload->>'status' = 'todo' order by id`)
 		if err != nil {
 			return err
 		}
@@ -191,7 +192,7 @@ func assertQueuedRows(t *testing.T, h *harness, queued []QueuedStatusWrite) {
 // mirror handler writes one from that issue's event.
 func seedMirrorRow(t *testing.T, h *harness, key, status string) {
 	t.Helper()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: 1,
 			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -23,6 +24,7 @@ import (
 // registration answers. The Sandbox half, the label the pod is made with, is runtime/sandbox's
 // test of this name and the `member` golden.
 func TestANewLaunchSetsLegionTreeToTheGateRoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -32,7 +34,7 @@ func TestANewLaunchSetsLegionTreeToTheGateRoot(t *testing.T) {
 	issue := record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: stored, Parent: &[]string{root}[0], Title: "Member", Phase: phase.Planning, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for key, parent := range map[string]string{root: "", member: root} {
 			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
 				Status: record.Carry("in_progress"), Parent: record.Carry(parent)}); err != nil {

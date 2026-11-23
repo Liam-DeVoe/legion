@@ -70,9 +70,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
 	callerProject, _ := s.callerProject(r)
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
 		writer:        writer,
@@ -303,6 +300,23 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 
 	key := call.key
+	parentKey := ""
+	if parent != nil {
+		parentKey = *parent
+	}
+	// A credential that names one project is refused a target or a parent outside it where its
+	// project is read, since this route's own address names neither (project_scope.go). It is read
+	// first here, with no lock held and before a close settles the issue's documents or the
+	// transaction begins, so a write the credential may not make settles nothing; the
+	// pre-handler check already held the issue to the credential's project, which is therefore
+	// the issue's own, and a status change holds each issue a step of it writes to that project
+	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
+	// before any lock, and writeBlockedBy or validateIssueParent under them.
+	if call.callerProject != "" && (parentKey != "" || len(blockers) > 0) {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, blockers, parentKey); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
@@ -329,13 +343,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
 	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
+	// The lock step below reads each target's project again and refuses a scoped caller one
+	// outside it before any lock is taken (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, blockers, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -421,7 +437,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		commentBody = call.comment.words(before)
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, before.Project, *parent); err != nil {
+		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -609,7 +625,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{parent: afterParent, labels: before.Labels}
+	afterRow := adviceIssueRow{project: before.Project, parent: afterParent, labels: before.Labels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status

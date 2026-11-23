@@ -78,22 +78,28 @@ func (e *Engine) writeClose(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // closeLanded is Dispatch showing done on an issue whose close the daemon queued
 // (record.PendingClose), the echo of that close or a person's own: the issue ends its run. The
 // merge's close and close_root move the record to phase done (decision 8 of
-// dispatch://INFRA-4730), and the issue leaves as every done does (leave): its claims retire, after
-// the production check a merged issue opens now, and its pod goes.
+// dispatch://INFRA-4730), and its task ends where it stands (endTaskWithLeave): done at the
+// merge's close, where its last step passed, and left at close_root, where it never did. An issue
+// held from merging, a stopped task's hold among them, closes at its merge with its task kept at
+// the merge. The issue leaves as every done does (leave): its claims retire, after the production
+// check a merged issue opens now, and its pod goes.
 func (e *Engine) closeLanded(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	kind := issue.PendingClose.Kind
 	from := issue.Phase
 	trigger := kind
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
 	if kind == closeKindMerge {
 		// The merge step ends with the close, as the merge's transition ended it (nameMoveEnd).
 		trigger = string(TriggerPullRequestMerged)
-		if err := e.nameMoveEnd(ctx, issue, TriggerPullRequestMerged, phase.Done, record.PhaseRow{}); err != nil {
+		if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, phase.Done, record.PhaseRow{}); err != nil {
 			return err
 		}
 	}
 	issue.PendingClose, issue.Status = nil, "done"
-	issue.Phase, issue.Hold, issue.Awaiting, issue.ChildrenWait = phase.Done, nil, nil, nil
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.endTaskWithLeave(ctx, tx, &issue, w, kind == closeKindMerge); err != nil {
 		return err
 	}
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {

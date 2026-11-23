@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seenEvent is one event of an issue of the daemon's own Dispatch project that the Dispatch
@@ -46,19 +47,13 @@ func recordSeen(ctx context.Context, tx pgx.Tx) error {
 }
 
 // seeDropped advances the cursor of the issue of an event no handler takes (a message, say),
-// which decodes to no fact and so has no fact transaction to do it in: a transaction of its own,
-// which takes no fact lock, since the cursor is the one thing it writes and it only moves
-// forward.
-func seeDropped(ctx context.Context, pool Pool, seen seenEvent) error {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("record that event %d of %s was seen: %w", seen.seq, seen.key, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := record.NewStore().AdvanceSeenSeq(ctx, tx, seen.key, seen.seq); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
+// which decodes to no fact and so has no fact transaction to do it in: a transaction of its own
+// (store.Transact), which takes no fact lock, since the cursor is the one thing it writes and it
+// only moves forward.
+func seeDropped(ctx context.Context, pool store.TxPool, seen seenEvent) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().AdvanceSeenSeq(ctx, tx, seen.key, seen.seq)
+	}); err != nil {
 		return fmt.Errorf("record that event %d of %s was seen: %w", seen.seq, seen.key, err)
 	}
 	return nil
@@ -74,7 +69,7 @@ func seeDropped(ctx context.Context, pool Pool, seen seenEvent) error {
 // cursor (record.Issue.SeenSeq) has not reached through: the events the consumer handled before
 // the cursor was kept, and any it dropped or terminated, are read as the consumer left them
 // (decision 11 of dispatch://INFRA-4730).
-func DispatchEventsSeen(ctx context.Context, pool Pool, key string, events []json.RawMessage, through int64) (bool, error) {
+func DispatchEventsSeen(ctx context.Context, pool store.TxPool, key string, events []json.RawMessage, through int64) (bool, error) {
 	project, _, _ := strings.Cut(key, "-")
 	var ids []string
 	for _, raw := range events {

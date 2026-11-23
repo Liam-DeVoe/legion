@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -1284,37 +1285,32 @@ func (r *ownerRig) chainOf(key string) record.Chain {
 	return chain
 }
 
-// judgeHeld has the workflow judge the session writes key holds, in a transaction of its own, as
-// admission's pass calls it (workflow's Engine.JudgeHeldStatusWrites), and fails unless the chain
-// was known to judge them on.
+// judgeHeld has the workflow judge the session writes key holds, in a transaction of its own
+// (store.Transact), as admission's pass calls it (workflow's Engine.JudgeHeldStatusWrites), and
+// fails unless the chain was known to judge them on.
 func (r *ownerRig) judgeHeld(key string) {
 	r.t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped = r.engine.OpenFact(scoped)
-	tx, err := r.pool.Begin(scoped)
-	if err != nil {
-		r.t.Fatalf("begin: %v", err)
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = r.engine.OpenFact(ctx)
+		held, err := record.NewStore().Issue(ctx, tx, key)
+		if err != nil || held == nil {
+			return fmt.Errorf("read %s: %v, %v", key, held, err)
+		}
+		chains, err := record.ReadChainsOf(ctx, tx, record.NewStore(), testProject, []string{key})
+		if err != nil {
+			return fmt.Errorf("read the chain of %s: %w", key, err)
+		}
+		known, err := r.engine.JudgeHeldStatusWrites(ctx, tx, chains, *held)
+		if err != nil || !known {
+			return fmt.Errorf("judge the writes %s holds = known %t, %v; want them judged on its known chain", key, known, err)
+		}
+		if err := r.engine.SettleFact(ctx, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
+		}
+		return nil
+	}); err != nil {
+		r.t.Fatal(err)
 	}
-	defer tx.Rollback(scoped)
-	held, err := record.NewStore().Issue(scoped, tx, key)
-	if err != nil || held == nil {
-		r.t.Fatalf("read %s: %v, %v", key, held, err)
-	}
-	chains, err := record.ReadChainsOf(scoped, tx, record.NewStore(), testProject, []string{key})
-	if err != nil {
-		r.t.Fatalf("read the chain of %s: %v", key, err)
-	}
-	known, err := r.engine.JudgeHeldStatusWrites(scoped, tx, chains, *held)
-	if err != nil || !known {
-		r.t.Fatalf("judge the writes %s holds = known %t, %v; want them judged on its known chain", key, known, err)
-	}
-	if err := r.engine.SettleFact(scoped, tx); err != nil {
-		r.t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(scoped); err != nil {
-		r.t.Fatalf("commit: %v", err)
-	}
-	committed()
 }
 
 // assertHeld holds that key's record holds want, in order, and that nothing of them was taken or

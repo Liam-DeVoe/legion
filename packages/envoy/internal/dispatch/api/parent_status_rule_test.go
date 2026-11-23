@@ -211,18 +211,8 @@ type ruleRig struct {
 func newRuleRig(t *testing.T, on bool) ruleRig {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{parentStatusRule: on})
-	createProjects(t, handler, ruleProject)
+	createTestProject(t, handler, ruleProject)
 	return ruleRig{handler: handler, database: database, deps: deps}
-}
-
-// createProjects creates each project of keys through the API, as alice.
-func createProjects(t *testing.T, handler http.Handler, keys ...string) {
-	t.Helper()
-	for _, key := range keys {
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": key}, "alice"); response.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
-		}
-	}
 }
 
 // file files an issue titled title under parent, or as a root when parent is empty, and moves it

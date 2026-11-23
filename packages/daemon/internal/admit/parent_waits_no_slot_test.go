@@ -34,8 +34,8 @@ const pnForwardMerge = "merge the default branch main into the branch, push, and
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
 // parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
 // any status in the daemon's copy. The start of a phase worker of a parent in testing ends the
-// task it composed with it (workflow's withBaseMergeRun), the phase's resume task among them;
-// neither workflow's task nor ResumePhaseTask adds it.
+// task it composed with it (workflow's withBaseMergeRun), the phase's resume task among them
+// (workflow's Engine.ResumeTask); workflow's task does not add it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
 // pnMergedChildren is the words with which the task a return starts names the children that
@@ -291,13 +291,21 @@ type pnHeldStart struct {
 	cause  string
 }
 
+// pnArchitect is the claim of the architect of spParent's tree, which the architect's own
+// requests name (intake's BackwardMove.Request and SignOff.Request read it).
+func pnArchitect(t *testing.T) claim.Token {
+	t.Helper()
+	return pwRoleToken(t, spParent, claim.RoleArchitect)
+}
+
 // pnHeldStarts is every start a parent can hold (record.OpenChildHolds): planning, implementing,
 // testing, reviewing and accepting.
-func pnHeldStarts() []pnHeldStart {
+func pnHeldStarts(t *testing.T) []pnHeldStart {
+	t.Helper()
 	const replan = "the plan missed the empty list"
 	return []pnHeldStart{
 		{start: phase.Planning, from: phase.Accepting, source: "api",
-			fact:  intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: replan},
+			fact:  intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: replan, By: pnArchitect(t)},
 			cause: "moved back to planning by the architect: " + replan},
 		{start: phase.Implementing, from: phase.Testing, source: "api",
 			fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester", Summary: "the empty list panics",
@@ -438,7 +446,7 @@ func pnParentKinds() []pnParentKind {
 // records key where the path finds it and answers the admission pass the case runs under, and move
 // makes the path's move. A return is run only for a parent that waited, which its seed makes by
 // the move into awaiting_children itself. A resume path sends the phase's resume task
-// (workflow.ResumePhaseTask) rather than a task of task's.
+// (workflow's Engine.ResumeTask) rather than a task of task's.
 type pnTestingPath struct {
 	name    string
 	key     string
@@ -455,8 +463,8 @@ type pnTestingPath struct {
 // task call of the transition; the architect's retry of a held testing; the operator's restart of
 // the tester; a todo on a root held from testing; and the return of a held testing, with its pull
 // request open and with it merged during the wait, whose task workflow's task wrote for the held
-// phase before the wait. Five send ResumePhaseTask's to a tester in testing: the catch-up of a
-// ready claim (readyWorkerTask), the silence repair, the boot's resume, the promotion of a root a
+// phase before the wait. Five send the phase's resume task to a tester in testing: the catch-up of
+// a ready claim (readyWorkerTask), the silence repair, the boot's resume, the promotion of a root a
 // hand-over of the release before carried in (StartCarriedRun, StartPromotedWorker) and the
 // admission pass's send of an entry whose row names no task (sendOwedEntry's resume task). Each is
 // driven here through the fact or the pass the daemon drives it with: the engine handles the
@@ -504,7 +512,7 @@ func pnTestingPaths() []pnTestingPath {
 			},
 			move: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 				pwApplied(t, pool, admission, "api", "back", intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect,
-					To: phase.Testing, Reason: "the checks must run again"})
+					To: phase.Testing, Reason: "the checks must run again", By: pnArchitect(t)})
 			}},
 		{name: "the architect's retry of a held testing", key: spParent, child: spChild, seed: pwHeldFromTesting,
 			move: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
@@ -736,9 +744,9 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			name string
 			fact intake.Fact
 		}{
-			{name: "sign_off", fact: intake.SignOff{Issue: spParent}},
+			{name: "sign_off", fact: intake.SignOff{Issue: spParent, By: pnArchitect(t)}},
 			{name: "request_backward_move", fact: intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Implementing,
-				Reason: "the checks must change"}},
+				Reason: "the checks must change", By: pnArchitect(t)}},
 		} {
 			result := pwApply(t, pool, admission, "api", act.name, act.fact)
 			pwRefused(t, result, "WAITING_ON_CHILDREN", act.name+" on the waiting parent")
@@ -861,7 +869,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// five starts a parent can hold, each with its pull request open and with it merged during the
 	// wait.
 	t.Run("every held start comes back where the return takes it", func(t *testing.T) {
-		held := pnHeldStarts()
+		held := pnHeldStarts(t)
 		if len(held) != 5 {
 			t.Fatalf("the held starts = %d, want the five a parent can hold", len(held))
 		}
@@ -1221,7 +1229,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	t.Run("a held planning after the architect's backward move comes back at planning, and no task of its later rounds asks for a forward merge", func(t *testing.T) {
 		const reason = "the plan missed the empty list"
 		pool, admission, wait := pnMovedParent(t, phase.Accepting, nil, "api",
-			intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: reason},
+			intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: reason, By: pnArchitect(t)},
 			phase.Planning, "moved back to planning by the architect: "+reason)
 
 		back := pnChildDone(t, pool, admission)
@@ -1499,7 +1507,10 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("the start of %s's accepting run = %+v, want it the acceptance of its own architect %s", parent, opened, architect)
 		}
 
-		pwApplied(t, pool, admission, "api", "sign-off", intake.SignOff{Issue: parent})
+		// The architect's sign_off names its claim and the run of the step it reads, as the route
+		// does (rootArchitectsRead reads that run; the claim is the child's own architect's).
+		_, generation, entry := rootArchitectsRead(t, pool, parent)
+		pwApplied(t, pool, admission, "api", "sign-off", intake.SignOff{Issue: parent, By: architect, Generation: generation, Entry: entry})
 
 		if got := issue(t, pool, parent); got.Phase != phase.Retro {
 			t.Fatalf("%s after the sign_off = %s, want retro", parent, got.Phase)
@@ -1540,7 +1551,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 				token := pwMidPhase(t, pool, spParent, phase.Reviewing, supervise.StateWorking, "")
 				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleReviewer, Claim: token, Entry: 3,
 					EntryTask: pwTask(spParent, phase.Reviewing) + reviewround.Sentences("", 3), EntryRaisedAt: fixedNow.Add(-time.Hour)})
-				return workflow.ResumePhaseTask(issue(t, pool, spParent))
+				return resumeTaskOf(t, pool, admission.engine, spParent)
 			}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {

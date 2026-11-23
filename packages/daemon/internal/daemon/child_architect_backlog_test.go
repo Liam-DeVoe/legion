@@ -37,6 +37,7 @@ func launchesSince(rt *fake.Runtime, token claim.Token, after int) []fake.Call {
 // at the run's generation. A rerun_child, which opens a new run, is not this test's
 // (basis_stays_scratch_dispatch_test.go's rerunFromAbove).
 func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsTodoReturnResumesItsSession(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
 	rig.drain()

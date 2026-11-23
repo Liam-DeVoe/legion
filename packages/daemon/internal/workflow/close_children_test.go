@@ -2,11 +2,13 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // architectOf is the architect claim token of key in the LEGION project.
@@ -62,35 +65,30 @@ func landCloseBy(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, d
 
 // closePass is the decision pass's reading of the closes the project owes (admit's dueCloses):
 // each issue that carries a close the daemon queued or awaits its merge is handed to
-// Engine.WriteDueClose with the pass's chains, in one transaction.
+// Engine.WriteDueClose with the pass's chains, in one transaction (store.Transact).
 func closePass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped = engine.OpenFact(scoped)
-	tx, err := pool.Begin(scoped)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		records := record.NewStore()
+		issues, err := records.Issues(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("list issues: %w", err)
+		}
+		chains, err := record.ReadChains(ctx, tx, records, "LEGION", nil)
+		if err != nil {
+			return fmt.Errorf("read the chains: %w", err)
+		}
+		if _, err := engine.WriteDueCloses(ctx, tx, issues, chains); err != nil {
+			return fmt.Errorf("WriteDueCloses: %w", err)
+		}
+		if err := engine.SettleFact(ctx, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	defer tx.Rollback(scoped)
-	store := record.NewStore()
-	issues, err := store.Issues(scoped, tx)
-	if err != nil {
-		t.Fatalf("list issues: %v", err)
-	}
-	chains, err := record.ReadChains(scoped, tx, store, "LEGION", nil)
-	if err != nil {
-		t.Fatalf("read the chains: %v", err)
-	}
-	if _, err := engine.WriteDueCloses(scoped, tx, issues, chains); err != nil {
-		t.Fatalf("WriteDueCloses: %v", err)
-	}
-	if err := engine.SettleFact(scoped, tx); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(scoped); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
 }
 
 // supervisedOps is the op of every supervise row queued for issue, in order.
@@ -113,7 +111,7 @@ func TestCloseRootWaitsForEveryChildDone(t *testing.T) {
 	mirrorChild(t, pool, "LEGION-3", "LEGION-1", "done", 1)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
-	closeRoot := intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}
+	closeRoot := intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", By: architectOf(t, "LEGION-1")}
 
 	message := refusedWith(t, apply("close-held", closeRoot), "CHILDREN_NOT_DONE", "LEGION-2 (icebox)")
 	if strings.Contains(message, "LEGION-3") {
@@ -159,7 +157,7 @@ func TestTheEchoOfTheDaemonsCloseLandsItWhileItsRowIsStillQueued(t *testing.T) {
 		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
-	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}); result.Refusal != nil {
+	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", By: architectOf(t, "LEGION-1")}); result.Refusal != nil {
 		t.Fatalf("close_root refused: %+v", result.Refusal)
 	}
 	if got := statusWritesOf(t, pool, "LEGION-1"); !slices.Equal(got, []string{"done"}) {
@@ -232,7 +230,7 @@ func TestARefusedCloseKeepsItsMarkAndIsQueuedAgainOnceEachChildIsDone(t *testing
 		Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
-	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", Architect: architectOf(t, "LEGION-1")}); result.Refusal != nil {
+	if result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot", By: architectOf(t, "LEGION-1")}); result.Refusal != nil {
 		t.Fatalf("close refused: %+v", result.Refusal)
 	}
 	// A child filed after the close was decided, which Dispatch's refusal names.

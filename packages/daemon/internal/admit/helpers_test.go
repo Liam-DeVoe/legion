@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -177,15 +179,16 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
 // with every task-less phase start and every step record left out. A phase worker's start is one
-// row, which carries the task and waits for the issue's admission slot (workflow.StartOrOwe); a
-// start that names a phase and carries no task is a role admission brings back beside it, which
-// asks that role nothing. These assertions are about the starts that carry work, as the workflow
-// package's own helpers are. A start that names no phase is no phase worker's — the architect
-// start promotion makes, the production check's look — and is left in. A step record is written
-// beside the rows of each start and end of a step, and the tests of those sites read it exactly
-// (workflow's step_sites_test.go and step_sites_linger_test.go, and run_end_test.go and
-// parent_waits_no_slot_test.go here, through step_records_test.go's assertStepWrites, for
-// admission's own sites), so every row of any other kind is still compared here.
+// row, which carries the task and, in a phase that keeps a slot (record.PhaseKeepsSlot), waits
+// for the issue's admission slot (workflow.StartOrOwe); a start that names a phase and carries no
+// task is a role admission brings back beside it, which asks that role nothing. These assertions
+// are about the starts that carry work, as the workflow package's own helpers are. A start that
+// names no phase is no phase worker's — the architect start promotion makes, the production
+// check's look — and is left in. A step record is written beside the rows of each start and end
+// of a step, and the tests of those sites read it exactly (workflow's step_sites_test.go and
+// step_sites_linger_test.go, and run_end_test.go and parent_waits_no_slot_test.go here, through
+// step_records_test.go's assertStepWrites, for admission's own sites), so every row of any other
+// kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has
@@ -372,6 +375,28 @@ func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 		}
 	})
 	return got
+}
+
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
 }
 
 // putIssue writes issue's record and its row of the copy of Dispatch's issues as a reading of
@@ -563,8 +588,6 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
 	// The daemon's own order (daemon's reconcileListing): the copy takes every summary before
 	// admission decides anything from it, so admission reads each listed issue's chain from the
 	// listing itself (R16 of dispatch://INFRA-3320). A listing Dispatch sends carries each issue's
@@ -577,19 +600,19 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		mirrored[i].Labels = handedOverLabels(mirrored[i].HandedOver, mirrored[i].Labels)
 	}
 	var refused []string
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := blockers.Reconcile(scoped, tx, record.NewStore(), admission.project, mirrored); err != nil {
-			t.Fatalf("mirror the listing: %v", err)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if err := blockers.Reconcile(ctx, tx, record.NewStore(), admission.project, mirrored); err != nil {
+			return fmt.Errorf("mirror the listing: %w", err)
 		}
 		var err error
-		if refused, err = admission.Reconcile(scoped, tx, listed, target, position); err != nil {
-			t.Fatalf("Reconcile: %v", err)
+		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+			return err
 		}
-		if err := settle(scoped, tx); err != nil {
-			t.Fatalf("settle the reconcile: %v", err)
-		}
-	})
-	committed()
+		return settle(ctx, tx)
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
 	return refused
 }
 

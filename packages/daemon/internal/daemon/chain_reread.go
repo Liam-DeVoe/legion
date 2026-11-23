@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // chainRereadFirst and chainRereadMost bound the backoff of the re-read of one chain the copy
@@ -181,7 +182,7 @@ func (w *workflowRuntime) applyChainReadings(ctx context.Context, key string, re
 // its own (record.ReadChainsOf).
 func (w *workflowRuntime) chainKnown(ctx context.Context, key string) (bool, error) {
 	var known bool
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(ctx, tx, w.records, w.dispatchProject, []string{key})
 		if err != nil {
 			return err

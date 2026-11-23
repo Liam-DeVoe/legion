@@ -25,7 +25,7 @@ func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, aut
 func (s *Store) openLifecycle(ctx context.Context, unit treelifecycle.Unit, project, key string, authority treelifecycle.Authority,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		opened, err := unit.Open(ctx, tx, project, key, authority)
 		if err != nil {
 			return err
@@ -63,12 +63,10 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // own (lower(project) = project, the token), as ReserveIssueCleanup and the issue's suspend read
 // it: another project's record of the same key is no record of this one's.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
-	var queued bool
-	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch, c.IssueEpoch = 0, 0
-			queued, err = s.putClaim(ctx, tx, c)
-			return err
+			return s.putClaim(ctx, tx, c)
 		}
 		epoch, err := treelifecycle.Issues.BindWork(ctx, tx, c.Project, c.Issue)
 		if err != nil {
@@ -90,13 +88,11 @@ func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Cl
 		if found {
 			c.TreeEpoch = tree.Epoch
 		}
-		queued, err = s.putClaim(ctx, tx, c)
-		return err
+		return s.putClaim(ctx, tx, c)
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)
 	}
-	s.CommittedClaim(c, queued)
 	return c, nil
 }
 
@@ -108,7 +104,7 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return nil
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Issues.CheckWork(ctx, tx, c.Project, c.Issue, c.IssueEpoch); err != nil {
 			return fmt.Errorf("launch claim %s: %w", c.Token, err)
 		}

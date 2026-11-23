@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -231,7 +232,7 @@ func (r *stopReturnRig) implementing(titles ...string) []scratchIssue {
 	if err != nil {
 		r.t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
 	}
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		for i, issue := range issues {
 			seen := r.issue(issue.Key)
@@ -302,7 +303,7 @@ func (r *stopReturnRig) closeRoot(key string, grant func() string, reason string
 func (r *stopReturnRig) fence(key string) record.Fence {
 	r.t.Helper()
 	var fence record.Fence
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		fence, err = record.ReadFence(r.t.Context(), tx, record.NewStore(), key, false)
 		return err
@@ -367,6 +368,7 @@ func (r *stopReturnRig) statusRowGone(key string) {
 // and that message's own event, which no handler takes, moves the issue's cursor
 // (record.Issue.SeenSeq), so the wait before the write ends on it and the close lands.
 func TestAQueuedClosePausedAcrossAStopWritesNothing(t *testing.T) {
+	t.Parallel()
 	r := newStopReturnRig(t)
 	// Two issues the daemon runs in implementing, whose return to work starts the implementer at a
 	// new phase entry (workflow's ReturnToWork); a close of each is queued at its entry as the
@@ -464,7 +466,7 @@ func TestAQueuedClosePausedAcrossAStopWritesNothing(t *testing.T) {
 func (r *stopReturnRig) queueClose(key string) {
 	r.t.Helper()
 	recorded := r.record(key)
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		row, err := record.NewFencedRow(r.t.Context(), tx, records, key,
 			record.CloseStatusWrite("done", "in_progress", "Closed by its architect: a close queued at this phase entry", recorded.Generation), time.Now())
@@ -487,6 +489,7 @@ func (r *stopReturnRig) queueClose(key string) {
 // is queued once the moves have landed. The completion of that entry is
 // TestACompletionPausedAcrossAStopIsRefusedAtItsCommit's, which holds it at the route's commit.
 func TestTheEntryBeforeAStopHasNoLateEffect(t *testing.T) {
+	t.Parallel()
 	r := newStopReturnRig(t)
 	running := r.implementing("Shrike late effects", "Grebe twice halted")
 	for i, secondStop := range []bool{false, true} {
@@ -565,7 +568,7 @@ func TestTheEntryBeforeAStopHasNoLateEffect(t *testing.T) {
 func (r *stopReturnRig) queueHeld(key string, payloads ...record.OutboxPayload) []int64 {
 	r.t.Helper()
 	var ids []int64
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		for _, payload := range payloads {
 			row, err := record.NewFencedRow(r.t.Context(), tx, records, key, payload, time.Now())
@@ -591,6 +594,7 @@ func (r *stopReturnRig) queueHeld(key string, payloads ...record.OutboxPayload) 
 // person filed under it (R20 of dispatch://INFRA-3320). Each of the two keeps every status a person
 // gave it, and the outbox holds no status row of either once the moves have settled.
 func TestTheDaemonWritesNoStatusForAnotherIssue(t *testing.T) {
+	t.Parallel()
 	r := newStopReturnRig(t)
 	parent := r.create(asPerson, "Cormorant umbrella", nil)
 	r.setStatus(parent.Key, "in_progress")

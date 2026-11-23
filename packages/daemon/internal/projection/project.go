@@ -116,6 +116,20 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The task of each issue that has plan rows at its generation, in one statement for the whole
+	// state (record.Store.PlanTasksOf), joined to the issue records of project as the answers
+	// above are. Such an issue counts its returns on its task (record.ReturnCounts), so its
+	// implementer's view shows the task's counts; an issue with no plan rows shows its
+	// implementer's phases row, where the counts lived before plans. A plan this release takes
+	// holds one task (plan.Supported).
+	planTasks, err := in.Store.PlanTasksOf(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	for _, task := range planTasks {
+		taskCounts[task.Issue] = task.Counts
+	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
@@ -250,13 +264,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The worker's view exists only while its claim is live, so its counts of the moves
 			// back ride with the claim exactly as `rounds` does: a role whose process has gone
-			// shows neither, and the record keeps both for the role's next claim.
+			// shows neither, and the record keeps both for the role's next claim. The counts are
+			// the implementer's row's, or its issue's task's where the issue has plan rows.
+			counts := record.ReturnCounts{Pass: item.Pass, Rounds: item.Rounds, BackwardMoves: item.BackwardMoves}
+			if planned, ok := taskCounts[issue.Key]; ok && item.Role == claim.RoleImplementer {
+				counts = planned
+			}
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
-				Pass:          item.Pass,
-				Rounds:        item.Rounds,
-				BackwardMoves: item.BackwardMoves,
+				Pass:          counts.Pass,
+				Rounds:        counts.Rounds,
+				BackwardMoves: counts.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
@@ -479,15 +498,15 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
-	// (atWorkPastReview).
+	// (atWorkInSlotlessPhase).
 	//
-	// The running gate roots are the term that says an issue past its review is at work: it
-	// holds no slot since dispatch://INFRA-2560, so no list of the three places it and the answer
-	// turns on whether its gate root runs at all (whyStates, atWorkPastReview). They are read
-	// from the records, the slot rows and the facts this pass already holds, so the reading costs
-	// no query.
+	// The running gate roots are the term that says an issue in accepting, retro or merging is at
+	// work: it holds no slot since dispatch://INFRA-2560, so no list of the three places it and the
+	// answer turns on whether its gate root runs at all (whyStates, atWorkInSlotlessPhase). They
+	// are read from the records, the slot rows and the facts this pass already holds, so the
+	// reading costs no query.
 	running := record.RunningRoots(own, slots, facts)
 	whyStates(&projected, own, running, in.Stranded, rows, facts)
 	// Every issue of this project's own records that holds its own gate carries whether it runs
@@ -511,9 +530,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. A tree is a gate
 	// root in Legion's work and the issues in work whose gate root it is (record.TreeMember), so
-	// every issue of one tree carries the same two values — an issue past its own review, which
-	// holds no slot, among them, since what has stopped is the tree and not the issue a reader
-	// happens to hold. An issue that belongs to no live tree carries neither key.
+	// every issue of one tree carries the same two values — an issue in accepting, retro or
+	// merging, which holds no slot, among them, since what has stopped is the tree and not the
+	// issue a reader happens to hold. An issue that belongs to no live tree carries neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records, the chains
 	// and the claims this pass already holds, and every member's gate root is one of its trees,

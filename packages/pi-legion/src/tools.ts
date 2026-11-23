@@ -7,6 +7,7 @@ import {
   type LegionGrant,
   type LegionIssue,
   type LegionPhase,
+  LegionPlanRegisterRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
@@ -72,6 +73,8 @@ export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSes
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
+    "register_plan",
+    "stop_task",
     "release_children",
     "request_backward_move",
     "retry_or_escalate",
@@ -110,6 +113,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
  * rerun_child its parent one (`parentRuleArguments`). */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step", "basis", "basisVersion", "reason"],
+  register_plan: ["issue", "artifactId", "version"],
+  stop_task: ["issue", "task"],
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
@@ -343,7 +348,7 @@ function stateSummary(state: LegionState): string {
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (contract 232), so a step on a basis reads its entry
+      // registered, which no person approved (contract 239), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
       // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
       // one, under the list's name (`LEGION_ANSWER_READS`).
@@ -425,7 +430,7 @@ function toolSchema(pi: PiApi): unknown {
     artifactId: z
       .string()
       .describe(
-        "register_gate's document for the step it registers: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
+        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
       )
       .optional(),
     version: z.number().optional(),
@@ -455,6 +460,12 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     issues: z.array(z.string()).optional(),
+    task: z
+      .string()
+      .describe(
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps"
+      )
+      .optional(),
     to: phaseOp.to,
     // The why of the operations that take one, a string as the phase op's own `reason` is, and
     // register_gate's reason for its basis. Agents sent it to rerun_child too, whose daemon route
@@ -471,6 +482,7 @@ function toolSchema(pi: PiApi): unknown {
     wake_at: phaseOp.wake_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
+    return_to: phaseOp.return_to,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     // The two arguments of Dispatch's parent rule, in the contract's own words
@@ -580,8 +592,9 @@ function registrationBasis(
   };
 }
 
-/** `read`'s answer, a failure named as register_gate's lookup of `reference` on `issue`. */
+/** `read`'s answer, a failure named as `operation`'s lookup of `reference` on `issue`. */
 async function lookUpDocument<T>(
+  operation: "register_gate" | "register_plan",
   issue: string,
   reference: string,
   read: () => Promise<T>
@@ -590,7 +603,7 @@ async function lookUpDocument<T>(
     return await read();
   } catch (error) {
     throw new Error(
-      `register_gate could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
+      `${operation} could not look up document "${reference}" on ${issue} in Dispatch: ${messageFor(error)}`
     );
   }
 }
@@ -670,10 +683,11 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's register_gate
-    // basis, its retry_or_escalate, its sign_off and the controller's operations: the exact text
-    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule,
-    // and the sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // basis, its retry_or_escalate, its register_plan and stop_task, its sign_off and the
+    // controller's operations: the text tools.test.ts pins, stop_task's and sign_off's by their
+    // terms and the rest exactly, so a change to the shared template cannot reach an Oh My Pi agent
+    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule, and
+    // the sentence after them is the daemon's record.StatusNotTakenYet (both in
     // packages/daemon/internal/record/project.go). These tests hold the copies together: the
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
@@ -695,17 +709,50 @@ export function createLegionTool(deps: {
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-        "other phase (SIGNOFF_OUTSIDE_ACCEPTING), on an issue in awaiting_children (WAITING_ON_CHILDREN, naming its open " +
-        "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
-        "parent goes back by itself once none is, to that start, a held test, review or acceptance as testing unless its pull " +
-        "request merged during the wait), and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once no issue beneath it is still in the workflow, " +
-        "on a head that need not carry its children's " +
-        "merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying every " +
-        "needed child's merge; send one whose pass names an older base commit, or none, back to testing with " +
-        "request_backward_move. Run each one to done; unless its pull request has merged, the next admission pass moves the " +
-        "parent to awaiting_children and it comes back by itself as testing, and otherwise you sign off again. " +
+        "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
+        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
+        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
+        "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+        "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
+        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "that started its work before Legion took plans), a version Dispatch does " +
+        "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+        "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue you do not own on its " +
+        "Dispatch chain (ISSUE_NOT_OWNED, naming the architect that does), an issue the daemon has not recorded whose Dispatch " +
+        "status is not triage, backlog, icebox or todo " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
+        "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
+        "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
+        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
+        "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop of a root that waits on a person " +
+        "before its first step (TASK_AWAITING_PERSON: change its " +
+        "task with a later version of the plan, or stop it once the person has answered) and a stop of a parent in awaiting_children " +
+        "(WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also refuses, changing nothing, a stop of " +
+        "an issue you do not own on its Dispatch chain (ISSUE_NOT_OWNED, naming the architect that does), and a stop of a run of " +
+        "the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
+        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
+        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED), one of a run of the " +
+        "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
+        "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one on an issue in awaiting_children " +
+        "(WAITING_ON_CHILDREN, naming its open Dispatch children and the start it holds: no phase of a parent starts while an open " +
+        "child stands under it, and the parent goes back by itself once none is, to that start, a held test, review or acceptance " +
+        "as the first step after the implementer's that its task runs, testing on the default steps, unless its pull request merged " +
+        "during the wait); it also refuses it while an issue beneath it is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming " +
+        "each one), since a parent is accepted only once no issue beneath it is still in the workflow, on a head that need not carry " +
+        "its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying " +
+        "every needed child's merge; send one whose pass names an older base commit, or none, back to testing (implementing " +
+        "where no tester step comes before acceptance, with a reason that tells the implementer to run those checks on the head " +
+        "merged with the base tip, in a checkout of its own, push that merge nowhere and record each result at the head with that " +
+        "base commit) with request_backward_move. " +
+        "Run each one to done; unless its pull request has merged, the next admission pass moves the parent to awaiting_children " +
+        "and it comes back by itself to the first step after the implementer's that its task runs, and otherwise you sign off again. " +
         "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
         "End a child with your own status write in Dispatch. " +
         "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
@@ -738,7 +785,7 @@ export function createLegionTool(deps: {
         "is still in the workflow, a root rests on its approval or a Dispatch child of it is open, since closing it would " +
         "stop that work mid-turn or leave it undone. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
         "rerun_child takes parent include where its todo would put the child in work under a parent that is not, which " +
         "moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming each), and its answer's queued " +
@@ -814,8 +861,9 @@ export function createLegionTool(deps: {
     defaultInactive: true,
     parameters: toolSchema(pi),
     execute: async (_id, parameters, signal, onUpdate, context) => {
-      // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
+      // The writes the daemon applies at most once however often they arrive (handoff_complete,
+      // sign_off, register_gate, register_plan, stop_task) wait out its restart until the
+      // agent's abort.
       // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
       // RPC event stream; the model sees only the final result.
       const restart: DaemonRestartRetry = {
@@ -948,7 +996,7 @@ export function createLegionTool(deps: {
                     `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
                   );
                 }
-                artifactId = await lookUpDocument(issue, reference, () =>
+                artifactId = await lookUpDocument("register_gate", issue, reference, () =>
                   resolveIssueDocumentId(board, issue, reference)
                 );
               }
@@ -962,7 +1010,7 @@ export function createLegionTool(deps: {
               // A basis opens the step with no person's review of the root's own document, so a
               // question that document still puts to a person refuses the call here, with the
               // test `dispatch request-approval` makes, and the daemon is asked nothing.
-              const own = await lookUpDocument(issue, reference, () =>
+              const own = await lookUpDocument("register_gate", issue, reference, () =>
                 resolveIssueDocument(board, issue, reference)
               );
               await refuseOpenDecisionBlocks(board, own, OPEN_BLOCKS_UNDER_A_BASIS);
@@ -972,7 +1020,7 @@ export function createLegionTool(deps: {
               const basisArtifactId =
                 "id" in ancestor
                   ? ancestor.id
-                  : await lookUpDocument(ancestor.issue, ancestor.document, () =>
+                  : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
                       resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
                     );
               basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
@@ -991,6 +1039,57 @@ export function createLegionTool(deps: {
                   ...(step === undefined ? {} : { step }),
                   ...basisFields,
                 }),
+              restart
+            );
+            return jsonSuccess({});
+          }
+          case "register_plan": {
+            // The owner gives the plan of any issue it owns on its Dispatch chain, a child the
+            // daemon has not recorded yet included; which issues those are is the daemon's to hold
+            // (ISSUE_NOT_OWNED), so the call is checked whole here and nothing more.
+            const issue = requiredString(parameters, operation, "issue");
+            const reference = requiredString(parameters, operation, "artifactId");
+            const version = parameters.version;
+            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+              throw new Error("register_plan requires a positive integer version");
+            }
+            // The document is named as register_gate's is: its id, or a reference looked up in the
+            // pane's Dispatch.
+            let artifactId = reference;
+            if (!LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success) {
+              const board = dispatch();
+              if (board === undefined) {
+                throw new Error(
+                  `register_plan cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
+                );
+              }
+              artifactId = await lookUpDocument("register_plan", issue, reference, () =>
+                resolveIssueDocumentId(board, issue, reference)
+              );
+            }
+            // The fact is keyed by the issue, its generation, the document and the version, so a
+            // repeat is the registration again, answered the same.
+            const taken = await retryWhileDaemonRestarts(
+              "register_plan",
+              async () =>
+                client.planRegister({
+                  grantId: await mintClaimGrant(client, active),
+                  issue,
+                  artifactId,
+                  version,
+                }),
+              restart
+            );
+            return jsonSuccess(taken);
+          }
+          case "stop_task": {
+            const issue = requiredString(parameters, operation, "issue");
+            const task = requiredString(parameters, operation, "task");
+            // A repeat after a stop that landed finds the task stopped and changes nothing.
+            await retryWhileDaemonRestarts(
+              "stop_task",
+              async () =>
+                client.taskStop({ grantId: await mintClaimGrant(client, active), issue, task }),
               restart
             );
             return jsonSuccess({});
@@ -1025,7 +1124,8 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
+            // step or in retro, and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",

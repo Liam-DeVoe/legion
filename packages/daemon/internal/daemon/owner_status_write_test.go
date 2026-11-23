@@ -184,7 +184,7 @@ func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 		if issue.Parent != nil {
 			copyParent = *issue.Parent
 		}
-		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project, Seq: 1,
 				Status: record.Carry(issue.Status), Parent: record.Carry(copyParent), Labels: record.Carry(labels)})
 		}); err != nil {
@@ -392,26 +392,27 @@ func (r *ownerMoveRig) restored(after int64) {
 // narrow meaning: only a status change after the set-back's write cancels it, so a worker's own
 // writes are still set back.
 func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlight(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		run  func(r *ownerMoveRig)
 	}{
 		{"row 1: a phase status row queued, then the owner's done", func(r *ownerMoveRig) {
 			// The workflow moved the child to testing and queued the write, which no lane has taken.
-			if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-				child, err := r.records.Issue(context.Background(), tx, ownerMoveChild)
+			if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				child, err := r.records.Issue(ctx, tx, ownerMoveChild)
 				if err != nil {
 					return err
 				}
 				child.Phase, child.Status = phase.Testing, "testing"
-				if err := r.records.PutIssue(context.Background(), tx, *child); err != nil {
+				if err := r.records.PutIssue(ctx, tx, *child); err != nil {
 					return err
 				}
 				queued, err := record.NewFencedRow(context.Background(), tx, r.records, ownerMoveChild, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now())
 				if err != nil {
 					return err
 				}
-				return r.records.Enqueue(context.Background(), tx, queued)
+				return r.records.Enqueue(ctx, tx, queued)
 			}); err != nil {
 				r.t.Fatalf("queue the child's move to testing: %v", err)
 			}
@@ -491,7 +492,7 @@ func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlig
 func storedIssueOf(t *testing.T, ctx context.Context, pool *store.Pool, records record.Store, key string) *record.Issue {
 	t.Helper()
 	var stored *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = records.Issue(ctx, tx, key)
 		return err

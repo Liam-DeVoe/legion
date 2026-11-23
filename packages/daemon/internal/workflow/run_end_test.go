@@ -22,7 +22,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	engine := stepEngine(nil)
 	moved := 0
 	for i, row := range Table {
-		from, _, _, runs := stepOf(row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
 		if !runs {
 			continue
 		}
@@ -87,7 +87,7 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 	engine := stepEngine(nil)
 	held := 0
 	for i, row := range Table {
-		from, _, _, runs := stepOf(row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
 		if !runs {
 			continue
 		}

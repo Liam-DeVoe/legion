@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // IssueDepthCap is the most links an issue may sit below its root: a create or reparent that
@@ -27,6 +29,11 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // server's one recursive ancestor walk: an issue event's ancestors (api's issueAncestors), a
 // reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent)
 // and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
+//
+// It binds no visibility predicate and takes no acting person, because it lists no issue to a
+// reader: every caller is a rule of a write - those three, the near-copy gate's exclusion of the
+// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
+// it may not see would let a cycle through that issue, or route an event short of its root.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -48,6 +55,39 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 	return ancestors, nil
 }
 
+// IssueDescendants is every issue below the issue key on `child_of`, at any status, read through
+// q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor walk
+// above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
+// not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
+// This is the server's one recursive descendant walk over whole subtrees that answers a reader:
+// api's coverage read is this query. IssueDescendantRows is the same walk for a rule of a write,
+// which answers no reader and so binds no visibility predicate. api's issueChildrenStatement is a
+// different read — one row per direct child, with a rollup over that child's own subtree — and
+// stays its own.
+//
+// It answers for who: an issue who may not see is not in the answer, and the walk does not pass
+// below it, so neither it nor the issues it holds are reached through it (VisibleKind).
+func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
+	descendants := []string{}
+	if key == "" {
+		return descendants, nil
+	}
+	if err := q.QueryRow(ctx, `
+		with recursive descendants as (
+			select c.key, 1 as depth from issues c where c.parent_key = $1
+			  and `+VisibleKind("issue", "c.key", "$3")+`
+			union
+			select c.key, d.depth + 1
+			from issues c join descendants d on c.parent_key = d.key
+			where d.depth < $2 and `+VisibleKind("issue", "c.key", "$3")+`
+		)
+		select coalesce(array_agg(key order by key), '{}') from descendants
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&descendants); err != nil {
+		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
+	}
+	return descendants, nil
+}
+
 // IssueDescendant is an issue below another one on `child_of`, as IssueDescendantRows reads it:
 // its key, its parent, its status, and its depth, 1 for a child of the issue the walk starts at.
 type IssueDescendant struct {
@@ -57,31 +97,19 @@ type IssueDescendant struct {
 	Depth  int
 }
 
-// IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status:
-// IssueDescendantRows' keys, in its order. An issue with no child, an issue no row has, and the
-// empty key answer []. api's coverage read is this query.
-func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
-	rows, err := IssueDescendantRows(ctx, q, key)
-	if err != nil {
-		return nil, err
-	}
-	descendants := make([]string, 0, len(rows))
-	for _, row := range rows {
-		descendants = append(descendants, row.Key)
-	}
-	return descendants, nil
-}
-
 // IssueDescendantRows is every issue below the issue key on `child_of`, at any status, read
 // through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
 // walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
 // holds the issue's parent, its status and its depth. The rows are in the order of their depth,
 // and at one depth in the order of their numbers. The key itself is not in the answer. An issue
-// with no child, an issue no row has, and the empty key answer []. This is the server's one
-// recursive descendant walk over whole subtrees: api's coverage read (IssueDescendants) and the
-// plan of a status change (api's planStatusChange) are this query. api's issueChildrenStatement is
-// a different read - one row per direct child, with a rollup over that child's own subtree - and
-// stays its own.
+// with no child, an issue no row has, and the empty key answer []. The read of a status change's
+// plan (api's readStatusChange) is this query.
+//
+// It binds no visibility predicate and takes no acting person, for the reason IssueAncestors
+// gives: it lists no issue to a reader. Every caller is a rule of a write: the plan of a status
+// change, which moves or unlinks every open issue under the parent so that the parent status
+// rule (R24) holds, and a plan that skipped an issue it may not see would leave that issue open
+// under a done parent.
 //
 // The walk carries each issue's project and number, which its order needs, from the row it reads
 // already, rather than join its keys back to issues: the planner has no estimate of a recursive
@@ -116,13 +144,16 @@ func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDes
 
 // IssueRepoTerms resolve the repository of every issue of `subjects`, the one-column term of
 // issue keys each statement that splices these defines before them (api's issueComponentsTerms
-// reads the same one): the nearest issue on its parent chain (itself first) whose own `repo` is
-// set, else the project's default repository (projects.default_repo), else null. One walk climbs
-// every subject's chain together and one join reads the defaults of every project at once, so a
-// read of many issues pays one set of joins rather than a walk and a default lookup per row. A
-// chain stops climbing at the first issue that names a repository or at IssueDepthCap links up,
-// which writes never let a chain pass (api's refuseParentTooDeep): at most IssueDepthCap+1 rows
-// per subject, at most one of them naming a repository, which is why `max` over a chain is the
+// reads the same one): the nearest issue of its own project on its parent chain (itself first)
+// whose own `repo` is set, else the project's default repository (projects.default_repo), else
+// null. The walk carries the subject's project and climbs only to a parent of that project, so
+// it ends at the first ancestor of another project as at a root: one project's deployment works
+// each issue, and a parent of another project passes on no repository. One walk climbs every
+// subject's chain together and one join reads the defaults of every project at once, so a read
+// of many issues pays one set of joins rather than a walk and a default lookup per row. A chain
+// stops climbing at the first issue that names a repository or at IssueDepthCap links up, which
+// writes never let a chain pass (api's refuseParentTooDeep): at most IssueDepthCap+1 rows per
+// subject, at most one of them naming a repository, which is why `max` over a chain is the
 // nearest repository and needs no order. A walk that reaches the cap with links still above it
 // sets `too_deep`, and the reader of these columns refuses it rather than answer with the
 // default (api's repoScan.resolve, IssueRepository below). Such a chain is a loop, or one a
@@ -138,11 +169,11 @@ func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDes
 // issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
-		select s.key as start, i.parent_key, i.repo, 0 as depth
+		select s.key as start, i.project_key, i.parent_key, i.repo, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
-		select c.start, p.parent_key, p.repo, c.depth + 1
-		from repo_chain c join issues p on p.key = c.parent_key
+		select c.start, c.project_key, p.parent_key, p.repo, c.depth + 1
+		from repo_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.repo is null and c.depth < ` + issueDepthCapSQL + `
 	), repo as (
 		select c.start as key,
@@ -187,11 +218,12 @@ var issueRepositoryQuery = `
 	where i.key = $1`
 
 // IssueRepository is the repository the issue key resolves to, read through q: its own, the
-// nearest one above it on `child_of`, or its project's default repository; nil when none resolves,
-// and nil for an issue no row has and for the empty key. It runs IssueRepoTerms for one key, the
-// terms the issue reads run for a whole page, so it answers exactly what the issue page shows; a
-// chain the walk could not finish is an error rather than the project's default, which would be
-// a wrong answer. The results route makes this read for the issue of a check.
+// nearest one above it on `child_of` in its own project, or its project's default repository;
+// nil when none resolves, and nil for an issue no row has and for the empty key. It runs
+// IssueRepoTerms for one key, the terms the issue reads run for a whole page, so it answers
+// exactly what the issue page shows; a chain the walk could not finish is an error rather than
+// the project's default, which would be a wrong answer. The results route makes this read for
+// the issue of a check.
 func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error) {
 	if key == "" {
 		return nil, nil

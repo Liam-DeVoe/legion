@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -24,6 +26,7 @@ import (
 // answeredResumePath puts it. The resume's start reaches the relaunching claim, and the first
 // prompt the architect is sent once it comes up is the resume's task, not entry 1's.
 func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -80,6 +83,7 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 // work in the same run at a new entry (workflow.Engine.ReturnToWork, R20 of
 // dispatch://INFRA-3320), whose task supersedes entry 1's.
 func TestADecisionASupersededTaskNamedIsToldToTheReturnedArchitect(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	ref := r.decide(mainPathAsk)
@@ -139,7 +143,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReturnedArchitect(t *testing.T)
 	if err := r.runner.execute(r.ctx, catchUp); err != nil {
 		t.Fatalf("run the catch-up %d: %v", catchUp.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, catchUp.ID, catchUp.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish the catch-up %d: %v", catchUp.ID, err)

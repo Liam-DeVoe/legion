@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,7 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -87,7 +90,7 @@ func (r *personHandoverRig) composeCatchUp(key string) composedCatchUp {
 	root := r.record(key)
 	launch := r.architects[key].launch.Generation
 	var composed composedCatchUp
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		if err := record.LockCatchUps(t.Context(), tx, key); err != nil {
 			return err
 		}
@@ -808,15 +811,19 @@ func (r *personHandoverRig) applyAsTheDaemon(source, id string, fact intake.Fact
 
 // moveRecord writes key's record in phase to, as close_scratch_dispatch_test.go writes a record in
 // merging, once every write the daemon queued on key has run: a phase the rig runs no agent to
-// reach.
+// reach. A run whose first step has started holds plan rows, and its task is moved to the step
+// that runs as to, as the workflow's own move does (workflow's moveTask): issues.phase and the
+// task's place are two records of where the issue stands, and every later write of the issue
+// (workflow.Engine.WriteIssue) refuses a record in which they disagree. A run with no plan rows has
+// only its phase.
 func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 	t := r.t
 	t.Helper()
 	r.dispatchRowsDone(key)
 	r.quiet(key)
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
-		issue, err := records.Issue(t.Context(), tx, key)
+		issue, err := records.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return fmt.Errorf("read the record of %s: %v", key, err)
 		}
@@ -826,7 +833,24 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 		if to != phase.AwaitingChildren {
 			issue.ChildrenWait = nil
 		}
-		return records.PutIssue(t.Context(), tx, *issue)
+		if err := records.PutIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
+		stored, err := records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		task, err := stored.Task()
+		if err != nil {
+			return err
+		}
+		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
+		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == to })
+		if at < 0 {
+			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, key, to)
+		}
+		return records.MoveTask(ctx, tx, key, issue.Generation, task.Task,
+			record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}, record.TaskRunning)
 	}); err != nil {
 		t.Fatalf("record %s in %s: %v", key, to, err)
 	}
@@ -1300,8 +1324,18 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			r.moveRecord(run.parent.Key, phase.Accepting)
 			// R is under P in Legion's work, so the sign-off is refused for R as a child still in
 			// the workflow, which acceptanceHeld reads before the roots resting on P (R8, R9 of
-			// dispatch://INFRA-3320).
-			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key})
+			// dispatch://INFRA-3320). The sign-off names P's architect, P's generation and the run
+			// of the step P stands in, as the route reads them (api's signOff).
+			var entry record.StepEntry
+			if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				entry, err = record.NewStore().OpenStep(ctx, tx, run.parent.Key)
+				return err
+			}); err != nil {
+				t.Fatalf("read the run of the step %s stands in: %v", run.parent.Key, err)
+			}
+			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key,
+				By: r.architectToken(run.parent.Key), Generation: r.record(run.parent.Key).Generation, Entry: entry})
 			if refused.Refusal == nil || refused.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" || !strings.Contains(refused.Refusal.Message, run.root.Key) {
 				t.Fatalf("the sign-off of %s while %s waits on its request = %+v, want SIGNOFF_CHILD_IN_WORKFLOW naming %s", run.parent.Key, run.root.Key, refused.Refusal, run.root.Key)
 			}
@@ -1316,7 +1350,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		{"the daemon's move of P into merging", []string{"Fountain pump controller", "Public square renewal"}, func(run pendingRun) string {
 			implementer := r.roleToken(run.parent.Key, claim.RoleImplementer)
 			r.moveRecord(run.parent.Key, phase.Retro)
-			if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+			if err := store.Transact(t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 				return record.NewStore().PutPhase(t.Context(), tx, record.PhaseRow{Issue: run.parent.Key, Role: claim.RoleImplementer, Claim: implementer})
 			}); err != nil {
 				t.Fatalf("record the implementer's retro phase of %s: %v", run.parent.Key, err)

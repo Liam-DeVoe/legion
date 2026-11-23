@@ -122,12 +122,13 @@ func LateAt(now Fence, payload OutboxPayload) bool {
 }
 
 // Stops says whether the request stops a claim of its issue's run: a suspend (a stop or an
-// interrupted run), an issue close, or an idle release's role stop. Each is fenced by its issue's
-// run, its phase entry and the pod its claim ran in (SuperviseRequest.Entry, PodUID); a start
-// keeps its own fences (its phase and its task's entry), and a pause's stop and a task's
-// retirement theirs (the pause; the run and the entry of the task it retires).
+// interrupted run), a step stop (the process of the step a stopped task ran, workflow's stopTask),
+// an issue close, or an idle release's role stop. Each is fenced by its issue's run, its phase
+// entry and the pod its claim ran in (SuperviseRequest.Entry, PodUID); a start keeps its own
+// fences (its phase and its task's entry), and a pause's stop and a task's retirement theirs (the
+// pause; the run and the entry of the task it retires).
 func (r SuperviseRequest) Stops() bool {
-	return r.Op == "suspend" || r.Op == "issue_close" || r.Op == "release"
+	return r.Op == "suspend" || r.Op == "step_stop" || r.Op == "issue_close" || r.Op == "release"
 }
 
 // FenceOf is the fence payload names, and whether its kind carries one at all: the parts of

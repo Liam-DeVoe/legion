@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -132,7 +133,7 @@ func (w *workflowRuntime) logConverted(ctx context.Context, what string, count i
 	if count == 0 {
 		return
 	}
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		w.log.Info("the first boot's conversion: "+what, "project", w.dispatchProject, "count", count)
 	})
 }
@@ -141,7 +142,7 @@ func (w *workflowRuntime) logConverted(ctx context.Context, what string, count i
 // transaction of its own.
 func (w *workflowRuntime) readConversion(ctx context.Context) (record.TreeConversion, error) {
 	var conversion record.TreeConversion
-	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		conversion, err = record.ReadTreeConversion(ctx, tx, w.dispatchProject)
 		return err
@@ -219,33 +220,35 @@ func (w *workflowRuntime) runConversionSteps(ctx context.Context, done int, step
 	return nil
 }
 
-// runConversionStep runs step in a transaction of its own, under the lock every fact applies
-// under, which records the step and settles what its writes end as a fact does
-// (intake.OpenSettlers); the last step writes when the conversion ended.
+// runConversionStep runs step in a transaction of its own (store.Transact), under the lock every
+// fact applies under, which records the step and settles what its writes end as a fact does
+// (intake.OpenSettlers); the last step writes when the conversion ended. The line that says a step
+// ran is a hook of the step's commit (store.OnCommit), as each step's own lines are
+// (logConverted).
 func (w *workflowRuntime) runConversionStep(ctx context.Context, step conversionStep) error {
 	var convertedAt *time.Time
 	if step.n == convertRecord {
 		now := w.clockNow().UTC()
 		convertedAt = &now
 	}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, w.handlers...)
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the step with every fact: %w", err)
 		}
-		if err := step.run(scoped, tx); err != nil {
+		if err := step.run(ctx, tx); err != nil {
 			return err
 		}
-		if err := record.RecordTreeConversionStep(scoped, tx, w.dispatchProject, step.n, convertedAt); err != nil {
+		if err := record.RecordTreeConversionStep(ctx, tx, w.dispatchProject, step.n, convertedAt); err != nil {
 			return err
 		}
-		return settle(scoped, tx)
+		store.OnCommit(ctx, func() {
+			w.log.Info("the first boot's conversion ran a step", "project", w.dispatchProject, "step", step.n, "what", step.name)
+		})
+		return settle(ctx, tx)
 	}); err != nil {
 		return fmt.Errorf("step %d of the first boot's conversion of %s (%s): %w", step.n, w.dispatchProject, step.name, err)
 	}
-	committed()
-	w.log.Info("the first boot's conversion ran a step", "project", w.dispatchProject, "step", step.n, "what", step.name)
 	return nil
 }
 
@@ -427,7 +430,7 @@ func (w *workflowRuntime) convertHandOvers(ctx context.Context, tx pgx.Tx, listi
 		if err := record.DeleteReleaseBeforeHandover(ctx, tx, handover.Issue); err != nil {
 			return err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			w.log.Info("the first boot's conversion decided a hand-over of the release before", "project", w.dispatchProject,
 				"issue", handover.Issue, "tree", handover.Tree, "linger", handover.Generation, "landed", landed)
 		})
@@ -474,11 +477,15 @@ func (w *workflowRuntime) handOverStands(ctx context.Context, tx pgx.Tx, issue r
 // way back writes them (R22 of dispatch://INFRA-3320).
 //
 // What carries is the release before's: an issue that ran a phase (Issue.CarriesRun) keeps that
-// phase, its pull request, moved to the new generation with its head run gone, and its old root's
-// gate rows as that release carried them (carriedGate), and its new run's plan is written; one
-// that ran none starts at admitted with nothing held, and its old generation's facts are cleared.
-// Either way it takes the tree-unit draws of the tree it leaves, its handout and its catch-up
-// cursor start again, and the record marks it moved.
+// phase, its pull request, moved to the new generation with its head run gone, its old root's
+// gate rows as that release carried them (carriedGate), and its plan, copied to the new
+// generation with each task where it stood (record.Store's CarryPlan with carried), as that
+// release's readmit of a carried orphan copies it. So a new run whose owner gave a plan walks
+// that plan, and not the default steps. The new run's plan node is written after the copy, so it
+// names the plan the run carries (workflow.Engine.WritePlan). One that ran none starts at
+// admitted with nothing held, and its old generation's facts are cleared. Either way it takes the
+// tree-unit draws of the tree it leaves, its handout and its catch-up cursor start again, and the
+// record marks it moved.
 func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue record.Issue, handover record.ReleaseBeforeHandover) error {
 	if issue.Generation == math.MaxUint64 {
 		return fmt.Errorf("finish the hand-over of %s: generation overflows", issue.Key)
@@ -498,6 +505,7 @@ func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue r
 	} else {
 		issue.Phase, issue.Hold, issue.Awaiting, issue.ChildrenWait = phase.Admitted, nil, nil, nil
 	}
+	oldGeneration := issue.Generation
 	issue.Generation++
 	issue.Status, issue.DispatchStatus, issue.HandedOver = "todo", "todo", true
 	issue.TakenBack, issue.HoldsGate = carry, true
@@ -519,6 +527,9 @@ func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue r
 	}
 	if !carry {
 		return w.records.ClearGeneration(ctx, tx, issue.Key, now)
+	}
+	if err := w.records.CarryPlan(ctx, tx, issue.Key, oldGeneration, issue.Generation, true); err != nil {
+		return fmt.Errorf("carry the plan of %s into its new generation: %w", issue.Key, err)
 	}
 	if err := w.engine.WritePlan(ctx, tx, issue); err != nil {
 		return fmt.Errorf("write the plan of %s's carried run: %w", issue.Key, err)

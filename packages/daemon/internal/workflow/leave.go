@@ -34,10 +34,12 @@ import (
 //
 // What stays is the issue's run: its phase, its hold, its wait on a person, the start it holds in
 // awaiting_children (record.Issue.ChildrenWait, R13), its generation, its sessions, its branch and
-// its pull request. A return to work resumes that phase at a new entry (ReturnToWork), and only
-// decision 8's three cases open a new run (NewRun). No other issue's status is written, a child's
-// and a parent's included, and nothing above or below it stops: an issue under it in Legion's work
-// goes on, and so does the issue above it.
+// its pull request. Its task stays standing at the step it ran, stopped as stop_task stops it
+// (stopTaskAtLeave): a person's done that is not the merge's close is such a stop too. A return to
+// work resumes that phase and that task at a new entry (ReturnToWork), and only decision 8's three
+// cases open a new run (NewRun). No other issue's status is written, a child's and a parent's
+// included, and nothing above or below it stops: an issue under it in Legion's work goes on, and
+// so does the issue above it.
 //
 // The architect above it, where an issue above it is in Legion's work, is told (child-status, or
 // child-closed at a close): the owner walk starts at the parent (record.NoticeStartsAtParent). The
@@ -83,6 +85,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	if err := e.leaveBases(ctx, tx, issue, status); err != nil {
+		return err
+	}
+	if err := e.stopTaskAtLeave(ctx, tx, issue, status); err != nil {
 		return err
 	}
 	if held, err := record.OperatorHolds(ctx, e.store, tx, issue); err != nil || held {
@@ -217,11 +222,69 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 	if err := e.store.DropStatusWrites(ctx, tx, root.Key); err != nil {
 		return err
 	}
-	root.Phase, root.Hold, root.Awaiting, root.ChildrenWait = phase.Done, nil, nil, nil
-	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+	w, err := e.walk(ctx, tx, root)
+	if err != nil {
+		return err
+	}
+	if err := e.endTaskWithLeave(ctx, tx, &root, w, false); err != nil {
 		return err
 	}
 	return e.leave(ctx, tx, root, root.Status)
+}
+
+// stopTaskAtLeave ends the running step of issue's task as stop_task ends it, as the issue leaves
+// Legion's work at status (leave), whoever wrote the status: a backlog, icebox, triage, or a done
+// that is not the merge's close (dispatch://INFRA-4730, the architect's decision of 2026-11-23).
+// The end of the step the issue stands in is named stopped (nameEnd), which the fact's settle
+// writes, and the task stays at that step, stopped, with the leave as its reason
+// (record.Store.StopTask): neither done nor left, since its run goes on. Its claims stop with the
+// leave itself (everyClaim), so no step_stop is queued, and no hold is written, since the issue is
+// out of work. A todo resumes the task at a new entry (ReturnToWork, resumeStoppedTask), and a
+// later version of the plan may change it as it may change any stopped task (versionRefusal). A
+// task that is not running keeps where and how it stands: one waiting for its first step, one its
+// owner stopped already, and one that is done or left. So does a run with no plan rows.
+func (e *Engine) stopTaskAtLeave(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored || w.State != record.TaskRunning {
+		return err
+	}
+	if step, ok := standingStep(w, issue); ok {
+		if err := e.nameEnd(ctx, issue, step, stepStopped); err != nil {
+			return err
+		}
+	}
+	return e.store.StopTask(ctx, tx, issue.Key, issue.Generation, w.Task, fmt.Sprintf("%s is %s", issue.Key, status))
+}
+
+// endedState is the state the task of w ends its run in: done where its last step passed, which
+// is the merge's close (merged), and left at every other end of its run: a close_root, a root
+// admission found with no way to run, and each new run (NewRun), whose old task did not pass and
+// whose run takes a task of its own. Either way the task keeps its place. A task that already
+// ended, done or left, keeps the state that end wrote, since nothing moves it again.
+func endedState(w Walk, merged bool) record.TaskState {
+	switch {
+	case w.State == record.TaskDone || w.State == record.TaskLeft:
+		return w.State
+	case merged:
+		return record.TaskDone
+	}
+	return record.TaskLeft
+}
+
+// endTaskWithLeave writes issue at phase done, its run ended: its task ends with the run where it
+// stands on w, the walk of its run the caller read, in the state endedState gives it (merged for
+// the merge's close), through moveTask, which writes the phase done, and its hold, its wait on a
+// person and the start it holds in awaiting_children are cleared, in the caller's transaction
+// (writeIssueOn). Every end of a run that writes phase done comes here: a close that landed
+// (closeLanded) and a root admission found with no way to run (LeaveUnslotted). A leave that keeps
+// the run (leave) stops the task instead (stopTaskAtLeave). issue is the caller's record, which it
+// writes with any field it set, and which stands as written after.
+func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.Issue, w Walk, merged bool) error {
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, endedState(w, merged)); err != nil {
+		return err
+	}
+	issue.Hold, issue.Awaiting, issue.ChildrenWait = nil, nil, nil
+	return e.writeIssueOn(ctx, tx, *issue, w)
 }
 
 // closeAwaitingMerge queues the close of merged when its own merge was waiting on its children: an
@@ -246,15 +309,15 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	return nil
 }
 
-// awaitsMerge says whether issue awaits its merge: in merging with its pull request merged, or
-// held from merging, the hold the upgrade's data move left an issue that was held in
-// production_check. The merge is what ends merging, so a merged pull request there is a close
-// still waiting on the issues beneath it rather than a merger still at work. It asks the one
-// predicate written over a hold (record.StandsIn) of the one phase, and stays a question of its own
-// rather than folding into record.Accepted: a root in retro has been accepted and does not await
-// its merge, and this is what the merge itself closes (closeMerged), what closes an issue on a
-// merge already recorded (closeAwaitingMerge) and what keeps that merge against a later pull
-// request (pullRequestOpened).
+// awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed
+// merger's claim, an escalation, a stopped task's, or the hold the upgrade's data move left an
+// issue that was held in production_check). The merge is what ends merging, so a merged pull
+// request there is a close still waiting on the issues beneath it rather than a merger still at
+// work. It asks the one predicate written over a hold (record.StandsIn) of the one phase, and
+// stays a question of its own rather than folding into record.Accepted: a root in retro has been
+// accepted and does not await its merge, and this is what closes an issue at its merge (merged,
+// closeMerged), what closes an issue on a merge already recorded (closeAwaitingMerge) and what
+// keeps that merge against a later pull request (pullRequestOpened).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
 }

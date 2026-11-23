@@ -37,6 +37,7 @@ import (
 // for it while no session holds the role, as TestANoticeWaitsOrEndsByTheClaimsState holds, and is
 // parked once the close retired it, which the first case holds.
 func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
+	t.Parallel()
 	carried := "a human approved LEGION-9's spec document at version 3, which opens the gate LEGION-1 carried; any READY it refused is released and any child waiting on it starts"
 	for _, tc := range []struct {
 		name   string
@@ -88,6 +89,7 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 // here) ends undelivered with its one line: no person decided anything, so the controller is told
 // nothing and nothing is kept for the root.
 func TestTheMachinerysNoticeToARetiredArchitectWritesNoParkedDecision(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -119,6 +121,7 @@ func TestTheMachinerysNoticeToARetiredArchitectWritesNoParkedDecision(t *testing
 // release before this one queued the notice, which then carries no ref either. The log line names
 // the notice's ref, empty for the old release's notice, which is how A5 tells the two apart.
 func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		notice record.Notice
@@ -169,6 +172,7 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 // is closed and its architect retired by the close, so nobody hears either; each row is finished
 // once its executor ends it, as the runner finishes it, so the second is not held behind the first.
 func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -186,7 +190,9 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 		if err := runner.notice(ctx, row, decision); err != nil {
 			t.Fatalf("relay the approval of %s: %v", decision.Ref, err)
 		}
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+			return records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+		}); err != nil {
 			t.Fatalf("finish the relayed approval of %s: %v", decision.Ref, err)
 		}
 	}
@@ -210,6 +216,7 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 // publishes it on the project's controller topic, as "parked-decision on <issue>", with the run and
 // the phase entry of its issue its row was queued at (record.Fence).
 func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -241,6 +248,7 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 // left behind by the hold, which names the row the start read, not the reference. The hold is the
 // claim store's own write, so this runs through the daemon's own claim store.
 func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -252,7 +260,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 		{Issue: "LEGION-1", Ref: spec, Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at},
 		{Issue: "LEGION-1", Ref: ask, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at},
 	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, kept) }); err != nil {
 			t.Fatalf("keep the decision: %v", err)
 		}
 	}
@@ -278,7 +286,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 	}
 	// A person decides again on the reference the start named, before that start is delivered.
 	newer := record.ParkedDecision{Issue: "LEGION-1", Ref: spec, Decision: record.DecisionDesignChangesRequested, Actor: "user:bob", At: at.Add(time.Hour)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, newer) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return records.AddParkedDecision(ctx, tx, newer) }); err != nil {
 		t.Fatalf("keep the newer decision: %v", err)
 	}
 	if err := runner.execute(ctx, start(2, 58)); err != nil {
@@ -316,6 +324,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 // and the start's delivery then holds them, so each is told once, at that delivery's confirmation,
 // and no catch-up names them meanwhile.
 func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -325,7 +334,7 @@ func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-1/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -377,6 +386,7 @@ func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
 // the root names it. Otherwise it waits, kept and unclaimed, for the architect's next relaunch or
 // the tree's next re-admission, while the architect works the tree without the person's decision.
 func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -388,7 +398,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-1/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -443,6 +453,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 // the forget, or a finish that did not commit): the delivered mark its forget wrote stops it, so the
 // architect is told each decision once.
 func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -450,7 +461,7 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
 	ref, at := "dispatch://LEGION-1/ask/ask-1", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep the decision: %v", err)
@@ -521,16 +532,16 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 // (Before decisions were held by the delivery, the injected failure was the start's own forget;
 // a delivered start now forgets nothing, so the row's lost finish is the failure that remains.)
 func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	store := record.NewStore()
-	records := store
+	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-1", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress"}
-	putOutboxIssue(t, pool, store, issue)
+	putOutboxIssue(t, pool, records, issue)
 	ref, at := "dispatch://LEGION-1/ask/ask-1", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return store.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue.Key, Ref: ref, Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep the decision: %v", err)
 	}
@@ -592,7 +603,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 	if got := len(conn.Prompts()) - prompts; got != 0 {
 		t.Fatalf("the retried start prompted the architect %d more times, want none", got)
 	}
-	if left := keptDecisions(t, pool, store, issue.Key); len(left) != 0 {
+	if left := keptDecisions(t, pool, records, issue.Key); len(left) != 0 {
 		t.Fatalf("kept after the retried start = %#v, want the told decision forgotten", left)
 	}
 }
@@ -600,6 +611,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 // A catch-up forgets the decisions it named when it is published to its architect, and leaves them
 // when it finishes undelivered, so the next catch-up names them again.
 func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
+	t.Parallel()
 	spec, at := "dispatch://LEGION-1/spec", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
@@ -615,7 +627,7 @@ func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: spec,
 					Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at})
 			}); err != nil {
@@ -649,6 +661,7 @@ func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 // rides beside already names, or the architect reads one person's decision as two and may act on
 // it twice.
 func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -699,7 +712,7 @@ func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *test
 	putOutboxIssue(t, pool, records, root)
 	var task string
 	var kept *record.KeptDecisions
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.AddParkedDecision(ctx, tx, answer); err != nil {
 			return err
 		}
@@ -772,7 +785,7 @@ func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root st
 	t.Helper()
 	ctx := context.Background()
 	var kept []record.ParkedDecision
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		members, err := record.KeptMembers(ctx, tx, records, root)
 		if err != nil {
 			return err

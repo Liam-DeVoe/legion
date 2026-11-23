@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -130,6 +132,7 @@ func rowsOfKind(t *testing.T, pool *store.Pool, kind record.OutboxKind) []record
 // steps that read the store, then the boot's reconcile, which fills the copy from the listing,
 // runs the steps that read it, records the conversion and makes the first admission pass.
 func TestTheFirstBootTellsEachRootUnderAParentAtWork(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const parent, told, apart, outside = "CAPTURE-300", "CAPTURE-500", "CAPTURE-650", "CAPTURE-700"
 	pool := isolatedOutboxPool(t)
@@ -212,7 +215,7 @@ func TestTheFirstBootTellsEachRootUnderAParentAtWork(t *testing.T) {
 		t.Fatalf("after a later listing and event the reparented notices tell %v, want still %v", got, want)
 	}
 	var conversion record.TreeConversion
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		conversion, err = record.ReadTreeConversion(ctx, tx, "CAPTURE")
 		return err
@@ -232,12 +235,13 @@ func TestTheFirstBootTellsEachRootUnderAParentAtWork(t *testing.T) {
 // release would queue it as it stands (record.NewOutboxRow). A kind added to the fenced kinds fails
 // here until it has a case.
 func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const key, pod = "CAPTURE-208", "pod-uid-208"
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, conversionIssue(key, key, phase.Implementing, "in_progress", 2))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Entry: 3, EntryRaisedAt: time.Now()})
 	}); err != nil {
 		t.Fatalf("raise the implementer's entry of %s: %v", key, err)
@@ -348,6 +352,7 @@ func TestTheFirstBootFencesEachRowTheReleaseBeforeQueued(t *testing.T) {
 // old root's gate; CAPTURE-20 a root whose tree lingers until a deadline ahead, CAPTURE-21 a member
 // of its tree out of Legion's work and CAPTURE-22 one in it.
 func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, _ := storeWithholding(t, "legion_carried_run", 20261122154644, 20261122154645)
 	deadline := time.Date(2031, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -385,7 +390,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 
 	records := record.NewStore()
 	issues := map[string]*record.Issue{}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, key := range []string{"CAPTURE-10", "CAPTURE-20", "CAPTURE-21", "CAPTURE-22"} {
 			issue, err := records.Issue(ctx, tx, key)
 			if err != nil {
@@ -439,7 +444,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 	}
 
 	steps := config.DesignGateRootIssues.Steps()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		start, err := workflow.ArchitectStartOf(ctx, tx, records, steps, *issues["CAPTURE-10"])
 		if err != nil {
 			return err
@@ -477,6 +482,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 // last step stamping published_since on every claim in a published state, the claims registered,
 // ready, working and idle read it set.
 func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, _ := storeWithholding(t, "legion_claim_crossings", 20261122154644, 20261122154645)
 	states := []string{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
@@ -540,6 +546,7 @@ func TestTheConversionLeavesEveryClaimsCrossingsNull(t *testing.T) {
 // CAPTURE-61's cleanup is reserved, which no row of its new run ever confirms, and admission leaves
 // it waiting for that cleanup.
 func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const root, landed, cancelled, done = "CAPTURE-60", "CAPTURE-61", "CAPTURE-62", "CAPTURE-63"
 	pool := isolatedOutboxPool(t)
@@ -633,6 +640,148 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 	}
 }
 
+// A hand-over whose write landed carries its run's plan into its new run (step 8 of the first
+// boot's conversion; main's #4611: an owner's plan picks which steps run). The release before
+// carried such a run into a root of its own at a new generation, in the phase it ran in, so that
+// run never leaves admitted, where a run's plan is written otherwise. finishHandOver copies the
+// plan of the run before to the new generation, each task where it stood (record.Store's CarryPlan
+// with carried), and then writes the new run's plan node under that run's own id: the default
+// steps where the run before walked them, and its owner's plan, with the document and the version
+// Legion took, where its owner gave one. CAPTURE-80 lingers at generation 2; CAPTURE-81, a member
+// of its tree at its acceptance, was handed over, and the listing shows that the write landed. This
+// is main's TestACarriedRootsNewRunWritesItsPlan (admit's plan_carry_test.go) on the one path of
+// this release that finishes a hand-over, the conversion.
+func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
+	t.Parallel()
+	const root, member = "CAPTURE-80", "CAPTURE-81"
+	for _, tc := range []struct {
+		name string
+		// owners says whether the run before walked its owner's plan, `implementer reviewer
+		// acceptance:owner`, standing at its acceptance, rather than the default steps.
+		owners bool
+		want   record.PlanRecord
+	}{
+		{name: "the default steps", want: record.PlanRecord{ID: workflow.PlanID(member, 2), Generation: 2, Source: record.PlanSourceDefault,
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+		{name: "the owner's plan", owners: true, want: record.PlanRecord{ID: workflow.PlanID(member, 2), Generation: 2, Source: record.PlanSourceOwner,
+			PlanDocument: &record.PlanDocument{ArtifactID: "plan-artifact", Version: 2},
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer", "acceptance:owner"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			lingering := conversionIssue(root, root, phase.Done, "done", 2)
+			deadline := time.Now().Add(48 * time.Hour).UTC()
+			lingering.LingerUntil = &deadline
+			for _, issue := range []record.Issue{lingering, conversionIssue(member, root, phase.Accepting, "needs_review", 1)} {
+				putOutboxIssue(t, pool, records, issue)
+			}
+			if _, err := pool.Exec(ctx, `insert into handovers (issue, tree, linger_generation) values ('CAPTURE-81', 'CAPTURE-80', 2)`); err != nil {
+				t.Fatalf("seed the hand-over the release before left: %v", err)
+			}
+			if tc.owners {
+				seedOwnersPlanAtAcceptance(t, pool, member, root)
+			}
+			board := &copyBoard{listing: []map[string]any{
+				conversionSummary(root, "done", 3, ""),
+				conversionSummary(member, "todo", 3, root, "legion"),
+			}}
+			w := copyRuntime(t, pool, board, 3)
+			w.projectID = "capture"
+			if err := bootConversionStoppedAt(ctx, w, convertRecord); !errors.Is(err, errStoppedAfterStep) {
+				t.Fatalf("the first boot's conversion ended with %v, want it to reach its last step", err)
+			}
+
+			var before, after *record.StoredPlan
+			var carried record.Issue
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := records.Issue(ctx, tx, member)
+				if err != nil || issue == nil {
+					return fmt.Errorf("read %s: %v (recorded %t)", member, err, issue != nil)
+				}
+				carried = *issue
+				if before, err = records.Plan(ctx, tx, member, 1); err != nil {
+					return err
+				}
+				after, err = records.Plan(ctx, tx, member, 2)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if carried.Generation != 2 || carried.Phase != phase.Accepting || !carried.TakenBack {
+				t.Fatalf("%s after the conversion stands at generation %d in %s, taken back %t; want it carrying its run into generation 2 in accepting: the case's premise",
+					member, carried.Generation, carried.Phase, carried.TakenBack)
+			}
+			if want := planAtGeneration(before, 2); !reflect.DeepEqual(after, want) {
+				t.Fatalf("the plan of %s at generation 2 = %#v, want the plan of generation 1 with each task where it stood: %#v", member, after, want)
+			}
+			var plans []record.PlanRecord
+			for _, row := range rowsOfKind(t, pool, record.OutboxKindPlanRecord) {
+				payload, err := record.DecodeOutboxPayload(row)
+				if err != nil {
+					t.Fatalf("decode the plan record row %d: %v", row.ID, err)
+				}
+				plans = append(plans, payload.(record.PlanRecord))
+			}
+			if len(plans) != 1 || !reflect.DeepEqual(plans[0], tc.want) {
+				t.Fatalf("the conversion queued the plans %+v, want the one plan of the new run %+v", plans, tc.want)
+			}
+		})
+	}
+}
+
+// seedOwnersPlanAtAcceptance writes the plan the architect of root gave for key's run at
+// generation 1: version 2 of plan-artifact, one task a whose steps are `implementer reviewer
+// acceptance:owner`, running at its acceptance, step 3, where an issue in accepting stands.
+func seedOwnersPlanAtAcceptance(t *testing.T, pool *store.Pool, key, root string) {
+	t.Helper()
+	givenBy, err := claim.NewToken("capture", root, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := record.PlanVersion{Issue: key, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: givenBy, GivenAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
+	roles := planwords.BuiltinRoles()
+	var steps []record.PlanStep
+	for i, step := range []planwords.Step{{Role: "implementer"}, {Role: "reviewer"}, {Role: "acceptance", Key: "owner"}} {
+		steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: step.Role, AgentKey: step.Key,
+			Type: roles[step.Role].Type})
+	}
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("put the owner's plan of %s at its acceptance: %v", key, err)
+	}
+}
+
+// planAtGeneration is stored, a plan of one generation as the store reads it, at generation, as
+// a carry that keeps each task where it stood writes it; nil for nil.
+func planAtGeneration(stored *record.StoredPlan, generation uint64) *record.StoredPlan {
+	if stored == nil {
+		return nil
+	}
+	carried := &record.StoredPlan{Version: stored.Version, Steps: map[string][]record.PlanStep{}}
+	carried.Version.Generation = generation
+	for _, task := range stored.Tasks {
+		task.Generation = generation
+		carried.Tasks = append(carried.Tasks, task)
+	}
+	for task, steps := range stored.Steps {
+		for _, step := range steps {
+			step.Generation = generation
+			carried.Steps[task] = append(carried.Steps[task], step)
+		}
+	}
+	return carried
+}
+
 // The first boot's conversion marks each claim whose issue holds its own gate before supervision
 // reads a claim (step 7, markClaimsOfGateHolders), and the start the first admission pass queues
 // marks the architect of a root that a landed hand-over made. CAPTURE-70 is a root of its own whose
@@ -648,6 +797,7 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 // failing this test and then reverted: with step 7 left out of the steps that read the store, the
 // operator's claim reads unmarked in the store and in its machine.
 func TestTheConversionMarksAnOperatorsRootClaimBeforeSupervisionReadsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const root, landed, operated = "CAPTURE-60", "CAPTURE-61", "CAPTURE-70"
 	pool := isolatedOutboxPool(t)
@@ -880,6 +1030,7 @@ func bootConversionStoppedAt(ctx context.Context, w *workflowRuntime, stop int) 
 // conversion writes reads as the conversion with no stop left it. A boot of a converted store runs
 // no step and changes none of them.
 func TestASecondConversionAndAnInterruptedOneChangeNothingMore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	converted := func(t *testing.T, stopFirst int) (map[string][]string, *workflowRuntime, *store.Pool) {
 		t.Helper()

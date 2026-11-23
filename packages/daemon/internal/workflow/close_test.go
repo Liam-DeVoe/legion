@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -231,7 +232,7 @@ func TestAnIssueOutOfWorkGetsNoWorkers(t *testing.T) {
 			startsBefore := len(superviseRowsOf(t, pool, "LEGION-209", "start"))
 			result := apply("worker-done", intake.HandoffComplete{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implementer", Generation: 7,
 				Commit: "head-44", HandoffRecord: "implement-1", HandoffVersion: 1, Summary: "done"})
-			if want := intake.NotCurrentPhase(claim.RoleImplementer, phase.Implementing, "LEGION-209"); result.Refusal == nil || *result.Refusal != *want {
+			if want := intake.NotCurrentPhase(claim.RoleImplementer, phase.Implementing, "LEGION-209"); result.Refusal == nil || !reflect.DeepEqual(*result.Refusal, *want) {
 				t.Fatalf("a completion of the stopped child = %+v, want the refusal %+v", result.Refusal, want)
 			}
 			if starts := superviseRowsOf(t, pool, "LEGION-209", "start"); len(starts) != startsBefore {
@@ -335,6 +336,10 @@ func TestStopActsFencesAnIssueCloseLikeASuspend(t *testing.T) {
 		{name: "a suspend of an earlier phase entry", id: 10, stop: record.SuperviseRequest{Op: "suspend", Generation: 7, Entry: 3}, lastStart: 4, at: at, want: false},
 		{name: "an issue close of an earlier run", id: 10, stop: record.SuperviseRequest{Op: "issue_close", Generation: 6, Entry: 4}, lastStart: 4, at: at, want: false},
 		{name: "a suspend that names no fence", id: 10, stop: record.SuperviseRequest{Op: "suspend"}, lastStart: 4, at: at, want: true},
+		// A stopped task's step stop is fenced as a suspend is (stopTask): a later version of the
+		// plan that starts the task again writes a start the stop must not undo.
+		{name: "a step stop no start followed", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 4, want: true},
+		{name: "a step stop a newer start superseded", id: 10, stop: record.SuperviseRequest{Op: "step_stop"}, lastStart: 11, want: false},
 		{name: "a start is not a stop", id: 10, stop: record.SuperviseRequest{Op: "start"}, lastStart: 4, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

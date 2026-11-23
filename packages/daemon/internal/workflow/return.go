@@ -77,10 +77,11 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // Dispatch shows in work again, whoever wrote the status (R20 of dispatch://INFRA-3320). It
 // resumes the phase it stood in with the same generation, its sessions and its run: its pull
 // request, branch, phase records, design gate and, in awaiting_children, the start it holds
-// (record.Issue.ChildrenWait, R13). Its record takes the observation and the status of the phase
-// it stands in, which is queued to Dispatch where it differs from what Dispatch shows (Engine.status),
-// as a move into that phase queues it; a phase with no status of its own keeps the status Dispatch
-// shows.
+// (record.Issue.ChildrenWait, R13), and its task, which the stop left stopped at its step and
+// which runs again there (resumeStoppedTask). Its record takes the observation and the status of
+// the phase it stands in, which is queued to Dispatch where it differs from what Dispatch shows
+// (Engine.status), as a move into that phase queues it; a phase with no status of its own keeps
+// the status Dispatch shows.
 //
 // The worker of the phase it stands in is started at a new phase entry (start), raised as a move
 // back raises one (enter: the return is from the phase itself), with the phase's resume task and the
@@ -104,8 +105,10 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // A held issue returns held, its architect told nothing new: a todo releases the hold as a todo
 // on any held issue in work does (releaseHeldRoot), except that the worker of the phase the hold
 // came from is started at a new phase entry, as every return's worker is, and any other status
-// leaves the hold for the architect's retry. The architect above the issue, where an issue above it
-// is in Legion's work, is told the issue is back in work.
+// leaves the hold to what ends it: the architect's retry of a failed claim, a later version of the
+// plan for a stopped task (record.HoldTaskStopped), and the last issue beneath a parent held
+// before its retro leaving the workflow (record.HoldForChildren). The architect above the issue,
+// where an issue above it is in Legion's work, is told the issue is back in work.
 func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	back := observedIssue(issue, fact)
 	back.Status = fact.Status
@@ -119,14 +122,18 @@ func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err := e.store.PutIssue(ctx, tx, back); err != nil {
 		return err
 	}
+	if err := e.resumeStoppedTask(ctx, tx, back); err != nil {
+		return err
+	}
 	e.logOnCommit(ctx, "workflow: an issue a stop left came back into Legion's work", "issue", back.Key, "phase", back.Phase,
 		"generation", back.Generation, "status", back.Status)
 	if err := e.tellAbove(ctx, tx, back, fmt.Sprintf("%s is %s again; it resumes %s at a new phase entry", back.Key, fact.Status, back.Phase)); err != nil {
 		return err
 	}
 	if back.Phase == phase.Held && back.Hold != nil {
-		// The held role's claim failed, and the architect's retry is what starts it again: every
-		// other claim comes back, and a todo releases the hold.
+		// The role of the phase the hold is from starts only when the hold ends: its claim
+		// failed, its task was stopped, or the parent waits for the issues beneath it before its
+		// retro. Every other claim comes back, and a todo releases the hold.
 		if err := e.reviveClaims(ctx, tx, back, RoleFor(back.Hold.From)); err != nil {
 			return err
 		}
@@ -142,12 +149,43 @@ func (e *Engine) ReturnToWork(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.resumeRun(ctx, tx, back)
 }
 
+// resumeStoppedTask sets running again, at the place it stood, the task its leave stopped
+// (stopTaskAtLeave), as issue comes back into Legion's work (ReturnToWork), so the return's start
+// resumes that step at a new entry. A task its owner stopped stays stopped: its issue is held for
+// it (record.HoldTaskStopped), and only a later version of the plan, or a todo on the held issue
+// (releaseHeldRoot), starts it again. A task in any other state, and a run with no plan rows, is
+// left as it stands. The place does not move, so issues.phase stays the phase it derives.
+func (e *Engine) resumeStoppedTask(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored || w.State != record.TaskStopped || record.HeldFor(issue, record.HoldTaskStopped) {
+		return err
+	}
+	return e.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, w.Place, record.TaskRunning)
+}
+
+// leaveTaskOfRun ends the task of issue's run that a new run replaces (NewRun), keeping its
+// place, in the state endedState gives it: left, since the run that ends never passed its merge,
+// unless the merge's close ended it done already (the reopen of an issue its merge closed). The
+// new run takes a task of its own at its first step (planFirstStep).
+func (e *Engine) leaveTaskOfRun(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return err
+	}
+	if state := endedState(w, false); state != w.State {
+		return e.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, w.Place, state)
+	}
+	return nil
+}
+
 // resumeRun starts the run issue stands in where its phase left it: every other claim of it that
 // has run comes back in its own session (reviveClaims), and the worker of its phase is started at
-// a new phase entry with the phase's resume task (returnTask). A phase no worker of it works
+// a new phase entry with the phase's resume task (returnToWorkTask). A phase no worker of it works
 // starts no worker (runOwner), its step starting again where it stands (StartStepRecord), and a
 // merge that landed while the issue was out of work closes it once nothing beneath it is in the
-// workflow (closeAwaitingMerge).
+// workflow (closeAwaitingMerge). The start is a move back from the phase into itself (start's
+// movedBack), which R20 of dispatch://INFRA-3320 raises as a move back raises one, so a completion
+// of the entry before the stop is refused whatever head it names (record.PhaseRow.EntryMovedBack).
 func (e *Engine) resumeRun(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	owner, err := e.runOwner(ctx, tx, issue)
 	if err != nil {
@@ -162,7 +200,11 @@ func (e *Engine) resumeRun(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 		}
 		return e.closeAwaitingMerge(ctx, tx, issue)
 	}
-	return e.start(ctx, tx, issue, owner, returnToWorkTask(issue), issue.Phase)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	return e.start(ctx, tx, issue, w, owner, func(at Standing) string { return returnToWorkTask(issue, at) }, issue.Phase, true)
 }
 
 // runOwner is the role whose worker carries on the phase issue stands in, "" where none does: a
@@ -218,12 +260,13 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 }
 
 // returnToWorkTask is what the worker of the phase an issue stands in is told when the issue comes
-// back into Legion's work after a stop (ReturnToWork): the phase's resume task (ResumePhaseTask),
-// since the phase's work is under way, with why the entry it is handed is a new one. It is the
-// work as it was composed, as every task is: the start that sends it ends a testing task of a
-// parent with the base-merge sentence (enter, withBaseMergeRun).
-func returnToWorkTask(issue record.Issue) string {
-	return continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
+// back into Legion's work after a stop (ReturnToWork): the phase's resume task where its work
+// stands (resumeText, at the standing the start reads), since the phase's work is under way, with
+// why the entry it is handed is a new one. It is the work as it was composed, as every task is: the
+// start that sends it ends a testing task of a parent with the base-merge sentence (enter,
+// withBaseMergeRun).
+func returnToWorkTask(issue record.Issue, at Standing) string {
+	return continueLine(issue) + at.lines + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key) + at.owners
 }
 
 // queuedRoot says whether issue's run starts as a root's (record.Chains.StartsAsRoot) and has still
@@ -319,7 +362,8 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // architect is told to request approval of the latest version. An open production check closes as
 // not run (markCheckClosed): the new run's generation fences a completion left by an interrupted
 // phase, and the closed check refuses an old look's report, so every claim stays live. The claims
-// come back on their sessions when the new run's starts reach them.
+// come back on their sessions when the new run's starts reach them. The task of the run that
+// ended is left where it stood (leaveTaskOfRun), unless the merge's close ended it done.
 //
 // A generation that ended takes what its architect handed back with it: the new run is a handout
 // (record.Store.StartHandout), so an ask or a hand-back of the old run, delivered late, declares
@@ -341,6 +385,9 @@ func (e *Engine) NewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact
 		}
 	}
 	if err := e.keepStaleApproval(ctx, tx, issue.Key); err != nil {
+		return err
+	}
+	if err := e.leaveTaskOfRun(ctx, tx, issue); err != nil {
 		return err
 	}
 	if err := e.store.ClearGeneration(ctx, tx, issue.Key, e.now()); err != nil {

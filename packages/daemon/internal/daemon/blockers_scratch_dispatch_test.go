@@ -72,6 +72,7 @@ import (
 //     dispatch://INFRA-4730), whose first start its links hold like any other;
 //  10. the three issues of steps 8 and 9 take their slots when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.

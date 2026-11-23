@@ -42,11 +42,15 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
-	// A root is one on the Dispatch chain this transaction reads, closed by its own architect
-	// (architectCallRefusal, R18 of dispatch://INFRA-3320): an issue under another in Legion's
-	// work is no root whatever tree its record stores.
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *root, intake.CloseCall); err != nil || refusal != nil {
-		return intake.Result{Refusal: refusal}, err
+	// A root is one on the Dispatch chain this transaction reads (R18 of dispatch://INFRA-3320): an
+	// issue under another in Legion's work is no root whatever tree its record stores. An
+	// architect's close is judged where every architect's request is (requestRefusal), and a close
+	// no architect sent is judged here, since close_root ends only a root whoever calls it
+	// (architectCallRefusal).
+	if fact.By == "" {
+		if refusal, err := e.architectCallRefusal(ctx, tx, "", *root, intake.CloseCall); err != nil || refusal != nil {
+			return intake.Result{Refusal: refusal}, err
+		}
 	}
 	if !closableAtPhase(root.Phase) || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — at admitted, whether or not it holds its slot, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
@@ -55,7 +59,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if refusal, refuses := held.refusal(actCloseRoot, root.Key); refuses {
+	if refusal, refuses := held.refusal(actCloseRoot, root.Key, ""); refuses {
 		return refusal, nil
 	}
 	open, err := e.childrenNotDoneOf(ctx, tx, *root)

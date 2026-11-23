@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -66,7 +67,7 @@ func statusHarness(t *testing.T, configure ...func(*Options)) (*harness, []intak
 		Project: testDispatchProject, Title: "the child", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
 		Rank: "B", LastDispatchSeq: 4})
 	approved := 1
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: statusRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}
@@ -240,8 +241,8 @@ func TestTheEndChildRuleGolden(t *testing.T) {
 func statusRows(t *testing.T, h *harness, issue string) map[int64]record.StatusWrite {
 	t.Helper()
 	rows := map[int64]record.StatusWrite{}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		queued, err := tx.Query(context.Background(), `select id, payload from outbox where issue = $1 and kind = 'dispatch_status' order by id`, issue)
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		queued, err := tx.Query(ctx, `select id, payload from outbox where issue = $1 and kind = 'dispatch_status' order by id`, issue)
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -43,7 +45,7 @@ func openLingeringTree(t *testing.T, store *Store) {
 func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func() error) {
 	t.Helper()
 	ctx := context.Background()
-	fact, err := store.Pool().Begin(ctx)
+	fact, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

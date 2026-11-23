@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -189,7 +191,7 @@ func heldForRetry(t *testing.T, h *harness, issue string) {
 	h.recordIssue(record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: root, Parent: &root, Project: testProject, Title: issue, Phase: phase.Held,
 		Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", Rank: "V"})
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := seedCopy(tx, root, "", "in_progress"); err != nil {
 			return err
 		}

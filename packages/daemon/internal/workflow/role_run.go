@@ -11,17 +11,18 @@ import (
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row) and at, where
 // the caller holds it, the fence the stop's issue stands at now (record.Fence). The outbox
-// executor asks it of every suspend and issue close with the fence it reads where the stop acts,
-// and actingStop of every queued stop with none, so all read one rule. A suspend — an issue's
-// stop, or an interrupted run's — a release — the idle pod's, which keeps the session and the
-// phase — and an issue close — an issue's close as done — act unless a newer start has already
-// run: that start replaced the run the stop was written for, so acting would stop the run it began
-// and retire the task with it, whatever the retry timing was. A row with no id is not older than
-// anything: the store gives every row one, and an unknown id must not silently drop a stop. Nor
-// does a stop act whose run or phase entry the issue has left (record.Fence.Outlives): a return
-// raises the entry, so a stop of the entry before it stops nothing of the run the return opened,
-// even before the return's own starts have run (R20 of dispatch://INFRA-3320). A caller that holds
-// no fence weighs the row ids alone. Any other operation is not a stop.
+// executor asks it of every suspend, step stop and issue close with the fence it reads where the
+// stop acts, and actingStop of every queued stop with none, so all read one rule. A suspend — an
+// issue's stop, or an interrupted run's — a step stop — the process of the step a stopped task ran
+// (stopTask) — a release — the idle pod's, which keeps the session and the phase — and an issue
+// close — an issue's close as done — act unless a newer start has already run: that start replaced
+// the run the stop was written for, so acting would stop the run it began and retire the task with
+// it, whatever the retry timing was. A row with no id is not older than anything: the store gives
+// every row one, and an unknown id must not silently drop a stop. Nor does a stop act whose run or
+// phase entry the issue has left (record.Fence.Outlives): a return raises the entry, so a stop of
+// the entry before it stops nothing of the run the return opened, even before the return's own
+// starts have run (R20 of dispatch://INFRA-3320). A caller that holds no fence weighs the row ids
+// alone. Any other operation is not a stop (record.SuperviseRequest.Stops).
 func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, at *record.Fence) bool {
 	if !stop.Stops() {
 		return false

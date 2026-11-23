@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -80,7 +81,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	issues[2].DispatchStatus = "todo"
 	issues[3].Awaiting = &record.Awaiting{Ask: "ask-303", Since: record.EventMark{Seq: 5, At: treeRunsNow.Add(-time.Hour)},
 		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		for _, issue := range issues {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err

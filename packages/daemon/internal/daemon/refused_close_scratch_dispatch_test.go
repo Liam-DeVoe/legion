@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -41,6 +43,7 @@ const parentRuleRefusal = "outbox status write refused by Dispatch's parent stat
 // opens one, is queued only once no child of the merged issue stands open
 // (TestAMergedIssueWaitsInMergingForEachChildNotDone).
 func TestARefusedCloseChangesNothingAndIsWrittenAgain(t *testing.T) {
+	t.Parallel()
 	r := newStopReturnRig(t)
 
 	t.Run("written again and taken at the first pass whose copy shows each child done", func(t *testing.T) {
@@ -123,7 +126,7 @@ func (r *stopReturnRig) refusedClose(t *testing.T, root scratchIssue, grant func
 		t.Fatalf("%s holds no slot after the refused close, want its slot kept\nstate %s", root.Key, body)
 	}
 	var check *record.ProductionCheck
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = record.NewStore().ProductionCheck(t.Context(), tx, root.Key)
 		return err

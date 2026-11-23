@@ -24,7 +24,7 @@ import (
 // so the upgrade applies it after them. The ten versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the design gates' publish kind
+// unmarked start of accepting, retro or merging (20261110233602), the design gates' publish kind
 // (20261110235320), the kind of the rule that wrote a release mark (20261111001612), the issue's
 // movement time (20261111010031), the declined ask (20261111021610), the tree-stalled mark
 // (20261111041503) and the claim's failure cause (20261111212544), are main's own and are
@@ -32,7 +32,8 @@ import (
 // or above it, since a migration's version is a timestamp rather than a place in a line. Above it
 // stand the phase entry's own (20261111225552, dispatch://INFRA-2800), which this branch wrote
 // after main's claim-failure cause, and each other version above it that the next paragraph
-// names.
+// names. An upgrade of a database main migrated applies all of this list in version order, and
+// the test below holds the list against the embedded set.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -107,10 +108,10 @@ import (
 // outbox_kind_check, so the basis seeds' list stays the last word of that check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit, the step records' three, the plan record's kind list
-// (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's cutover of the
-// update ask's mark (20261117200337), dispatch://INFRA-4374's 20261119003157, the design news,
-// INFRA-3320's basis seeds' list and dispatch://INFRA-4730's two: it names every kind the
-// merge-queue list names and its own.
+// (20261117023932), the plan of an issue (20261117034837), dispatch://INFRA-1997's
+// 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
+// dispatch://INFRA-4374's 20261119003157, the design news, INFRA-3320's basis seeds' list and
+// dispatch://INFRA-4730's two: it names every kind the merge-queue list names and its own.
 // The kind list with the step record (20261117000528) is named here too: it stands above the
 // role-holders publication's and the reviewer's reviewed commit, and it restates
 // 20261116165926's kinds with step_record. So is the kind list with the plan record
@@ -121,7 +122,9 @@ import (
 // four. The count of starts of each step (20261117004117) creates tables and a function of its
 // own, and its roll forward (20261117064152) changes nothing on a database no rollback touched;
 // neither touches outbox_kind_check, nor do the reviewed commit and the commit statuses, which
-// each add a column at its default.
+// each add a column at its default, nor the plan of an issue (20261117034837), which creates the
+// three tables of the plan and adds `phases.step_task` and `phases.step_place`, each at a default
+// that every row it finds reads as no plan (migration_20261117034837_test.go).
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -172,9 +175,9 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261114064234, 20261114232555, 20261115194357, 20261116144907, 20261116165926,
-	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117064152, 20261117112334,
-	20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717,
-	20261121170714, 20261122154643, 20261122154644, 20261122154645,
+	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837, 20261117064152,
+	20261117112334, 20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902,
+	20261120055717, 20261121170714, 20261122154643, 20261122154644, 20261122154645,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -188,10 +191,10 @@ var thisBranchsMigrations = []int{
 // 20261115194357, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
 // reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
-// forward (20261117064152), the kind list with the plan record (20261117023932),
-// dispatch://INFRA-3320's 20261114064234, 20261114232555 and 20261122154643,
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
+// forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
+// issue's 20261117034837, dispatch://INFRA-3320's 20261114064234, 20261114232555 and
+// 20261122154643, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and
 // dispatch://INFRA-4730's 20261122154644 and 20261122154645. That is why the loop below holds the
@@ -222,6 +225,15 @@ var mainsOutboxKinds = []string{
 	"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
 	"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
 	"hook_prompt", "design_gates_publish",
+}
+
+// queueRowOfKind writes one outbox row of kind for LEGION-208, with an empty payload, and answers
+// the write's error rather than failing the test: a caller requires either that the outbox's kind
+// check takes the row or that it refuses it.
+func queueRowOfKind(store *Store, kind string) error {
+	_, err := store.pool.Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
+	return err
 }
 
 // A daemon of this release is deployed over a database main migrated, and that database's outbox
@@ -276,13 +288,8 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 		t.Fatalf("put main's own kind constraint back: %v", err)
 	}
 
-	queue := func(kind string) error {
-		_, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
-		return err
-	}
 	for _, kind := range mainsOutboxKinds {
-		if err := queue(kind); err != nil {
+		if err := queueRowOfKind(store, kind); err != nil {
 			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
 		}
 	}
@@ -298,11 +305,11 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if pending != 1 {
 		t.Fatalf("claim-release rows after the upgrade = %d, want the pending one kept", pending)
 	}
-	if err := queue("claim_release"); err != nil {
+	if err := queueRowOfKind(store, "claim_release"); err != nil {
 		t.Fatalf("queue a claim release after the upgrade: %v", err)
 	}
 	for _, retired := range []string{"merge_queue_publish", "auto_merge_disable", "ready_merge"} {
-		if err := queue(retired); err == nil {
+		if err := queueRowOfKind(store, retired); err == nil {
 			t.Fatalf("the upgraded constraint took a %s row, want it refused: this release writes no merge-lane row", retired)
 		}
 	}
@@ -320,6 +327,74 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if ended != 0 {
 		t.Fatalf("phase_ended rows after the upgrade = %d, want 20261119003157 to have deleted the one main's daemon queued", ended)
 	}
+}
+
+// releaseDatabase is the database one release left, which this branch's daemon upgrades.
+type releaseDatabase struct {
+	name string
+	// newest is the newest version the release embeds, and lacks each version numbered below
+	// it that its database never recorded.
+	newest int
+	lacks  []int
+	// seed writes the rows the release left before the upgrade, and check reads them after it.
+	seed, check func(t *testing.T, store *Store)
+}
+
+// upgradeFrom builds the database release left from the embedded migrations numbered up to its
+// newest but those it lacks, has seed write the release's rows, runs Migrate over it, and has
+// check read the rows after it. It holds every upgrade to the same results, so a caller states
+// only its release: the upgrade applies what the database lacks and what is numbered after its
+// newest, records every embedded version once, and leaves the newest embedded the store's version.
+func upgradeFrom(t *testing.T, release releaseDatabase) {
+	t.Helper()
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, version := range release.lacks {
+		if !slices.ContainsFunc(all, func(migration migrations.Migration) bool { return migration.Version == version }) {
+			t.Fatalf("the embedded set has no migration %d, so the database %s migrated cannot lack it", version, release.name)
+		}
+	}
+	store := emptyStore(t)
+	var migrated []migrations.Migration
+	later, newest := 0, 0
+	for _, migration := range all {
+		switch {
+		case slices.Contains(release.lacks, migration.Version):
+		case migration.Version <= release.newest:
+			migrated = append(migrated, migration)
+		default:
+			later++
+		}
+		newest = max(newest, migration.Version)
+	}
+	if _, err := store.migrate(ctx, migrated); err != nil {
+		t.Fatalf("migrate the database as %s did: %v", release.name, err)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != release.newest {
+		t.Fatalf("the database %s migrated reports version %d (%v), want its newest, %d", release.name, version, err, release.newest)
+	}
+	release.seed(t, store)
+
+	applied, err := store.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("upgrade the database %s migrated: %v", release.name, err)
+	}
+	if want := len(release.lacks) + later; applied != want {
+		t.Errorf("the upgrade applied %d migrations, want %d: the %d below its newest it lacked, %v, and the %d numbered after it",
+			applied, want, len(release.lacks), release.lacks, later)
+	}
+	for _, migration := range all {
+		if recorded := timesRecorded(t, store, migration.Version); recorded != 1 {
+			t.Errorf("after the upgrade schema_version has %d rows for %s, want 1", recorded, migration.Name)
+		}
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
+		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
+	}
+	release.check(t, store)
 }
 
 // todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
@@ -349,66 +424,30 @@ const thisBranchsClaimSessions = 20261116144907
 // the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
 	ctx := context.Background()
-	store := emptyStore(t)
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	var mains []migrations.Migration
-	ours, later, newest := false, 0, 0
-	for _, migration := range all {
-		switch {
-		case migration.Version == thisBranchsClaimSessions:
-			ours = true
-		case migration.Version <= todaysMainsNewestMigration:
-			mains = append(mains, migration)
-		default:
-			later++
-		}
-		newest = max(newest, migration.Version)
-	}
-	if !ours {
-		t.Fatalf("the embedded set has no migration %d, so this test upgrades nothing", thisBranchsClaimSessions)
-	}
-	if _, err := store.migrate(ctx, mains); err != nil {
-		t.Fatalf("migrate the database as today's main did: %v", err)
-	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != todaysMainsNewestMigration {
-		t.Fatalf("the database today's main migrated reports version %d (%v), want main's newest, %d", version, err, todaysMainsNewestMigration)
-	}
 	const token, session = "legion-legion-legion-901-implementer", "ses_main"
-	if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'legion', 'LEGION-901', 'LEGION-901', 'implementer', 1, $2, '/state/sessions/2026-11-17T00-00-00-000Z_ses_main.jsonl',
-			'idle', 0, 0, 0, 0)`, token, session); err != nil {
-		t.Fatalf("seed a claim main's daemon recorded: %v", err)
-	}
-
-	applied, err := store.Migrate(ctx)
-	if err != nil {
-		t.Fatalf("upgrade the database today's main migrated: %v", err)
-	}
-	if applied != 1+later {
-		t.Errorf("the upgrade applied %d migrations, want %d: claim_sessions and the %d numbered after main's newest", applied, 1+later, later)
-	}
-	var recorded int
-	if err := store.pool.QueryRow(ctx, `select count(*) from schema_version where version = $1::bigint`, thisBranchsClaimSessions).Scan(&recorded); err != nil {
-		t.Fatalf("read whether the upgrade recorded %d: %v", thisBranchsClaimSessions, err)
-	}
-	if recorded != 1 {
-		t.Errorf("the upgrade recorded claim_sessions (%d) %d times, want once", thisBranchsClaimSessions, recorded)
-	}
-	var holder string
-	if err := store.pool.QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = 'session' and name = $1`,
-		session).Scan(&holder); err != nil {
-		t.Fatalf("read the hold of %s after the upgrade: %v", session, err)
-	}
-	if holder != token {
-		t.Errorf("%s is held for %q after the upgrade, want %s, the claim that recorded it", session, holder, token)
-	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
-		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
-	}
+	upgradeFrom(t, releaseDatabase{
+		name:   "today's main",
+		newest: todaysMainsNewestMigration,
+		lacks:  []int{thisBranchsClaimSessions},
+		seed: func(t *testing.T, store *Store) {
+			if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+				values ($1, 'legion', 'LEGION-901', 'LEGION-901', 'implementer', 1, $2, '/state/sessions/2026-11-17T00-00-00-000Z_ses_main.jsonl',
+					'idle', 0, 0, 0, 0)`, token, session); err != nil {
+				t.Fatalf("seed a claim main's daemon recorded: %v", err)
+			}
+		},
+		check: func(t *testing.T, store *Store) {
+			var holder string
+			if err := store.pool.QueryRow(ctx, `select claim from claim_sessions where project = 'legion' and kind = 'session' and name = $1`,
+				session).Scan(&holder); err != nil {
+				t.Fatalf("read the hold of %s after the upgrade: %v", session, err)
+			}
+			if holder != token {
+				t.Errorf("%s is held for %q after the upgrade, want %s, the claim that recorded it", session, holder, token)
+			}
+		},
+	})
 }
 
 // mainsAppliedSequence is main's newest migration at this branch's merge of main 77eac01e35d0: the
@@ -439,28 +478,7 @@ const mainsAppliedSequence = 20261121170714
 // too.
 func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
 	ctx := context.Background()
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	newest := 0
-	for _, migration := range all {
-		newest = max(newest, migration.Version)
-	}
-	queue := func(store *Store, kind string) error {
-		_, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
-		return err
-	}
-	for _, release := range []struct {
-		name string
-		// newest is the newest version the release embeds, and lacks each version numbered below
-		// it that its database never recorded.
-		newest int
-		lacks  []int
-		// seed writes the rows the release left before the upgrade, and check reads them after it.
-		seed, check func(t *testing.T, store *Store)
-	}{
+	for _, release := range []releaseDatabase{
 		{
 			name:   "main at 77eac01e35d0",
 			newest: mainsAppliedSequence,
@@ -476,7 +494,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 					t.Fatalf("the kind check main's database stands on names no kind: %s", check)
 				}
 				for _, kind := range kinds {
-					if err := queue(store, kind[1]); err != nil {
+					if err := queueRowOfKind(store, kind[1]); err != nil {
 						t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
 					}
 				}
@@ -484,7 +502,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			},
 			check: func(t *testing.T, store *Store) {
 				for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
-					if err := queue(store, kind); err != nil {
+					if err := queueRowOfKind(store, kind); err != nil {
 						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
 					}
 				}
@@ -531,44 +549,6 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			},
 		},
 	} {
-		t.Run(release.name, func(t *testing.T) {
-			store := emptyStore(t)
-			var migrated []migrations.Migration
-			later := 0
-			for _, migration := range all {
-				switch {
-				case slices.Contains(release.lacks, migration.Version):
-				case migration.Version <= release.newest:
-					migrated = append(migrated, migration)
-				default:
-					later++
-				}
-			}
-			if _, err := store.migrate(ctx, migrated); err != nil {
-				t.Fatalf("migrate the database as %s did: %v", release.name, err)
-			}
-			if version, err := store.SchemaVersion(ctx); err != nil || version != release.newest {
-				t.Fatalf("the database %s migrated reports version %d (%v), want its newest, %d", release.name, version, err, release.newest)
-			}
-			release.seed(t, store)
-
-			applied, err := store.Migrate(ctx)
-			if err != nil {
-				t.Fatalf("upgrade the database %s migrated: %v", release.name, err)
-			}
-			if want := len(release.lacks) + later; applied != want {
-				t.Errorf("the upgrade applied %d migrations, want %d: the %d below its newest it lacked, %v, and the %d numbered after it",
-					applied, want, len(release.lacks), release.lacks, later)
-			}
-			for _, migration := range all {
-				if recorded := timesRecorded(t, store, migration.Version); recorded != 1 {
-					t.Errorf("after the upgrade schema_version has %d rows for %s, want 1", recorded, migration.Name)
-				}
-			}
-			if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
-				t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
-			}
-			release.check(t, store)
-		})
+		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
 }

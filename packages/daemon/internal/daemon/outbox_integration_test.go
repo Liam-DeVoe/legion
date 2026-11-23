@@ -33,6 +33,7 @@ import (
 )
 
 func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -62,6 +63,7 @@ func TestOutboxLeaseLetsOnlyOneRunnerExecuteDueRow(t *testing.T) {
 }
 
 func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -89,6 +91,7 @@ func TestOutboxRetryBacksOffFailedEffect(t *testing.T) {
 // soon as the lease has lapsed; a row due later runs when its moment comes on the clock, and the
 // sweep's tick before then leaves it alone.
 func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()
@@ -137,6 +140,7 @@ func TestOutboxRestartDrainsDueThenExpiredLeaseRows(t *testing.T) {
 }
 
 func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -147,7 +151,7 @@ func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
 	if first.LeaseToken == second.LeaseToken {
 		t.Fatal("replacement lease reused the stale token")
 	}
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.FinishOutbox(context.Background(), tx, first.ID, first.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish stale lease: %v", err)
@@ -162,7 +166,7 @@ func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
 func claimDueOutboxRow(t *testing.T, pool *store.Pool, records record.Store, now time.Time) record.OutboxRow {
 	t.Helper()
 	var claimed record.OutboxRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := records.DueRows(context.Background(), tx, "LEGION", "", nil, now)
 		if err != nil {
 			return err
@@ -201,9 +205,9 @@ func mustOutboxRow(t *testing.T, issue string, payload record.OutboxPayload, now
 		return row
 	}
 	var row record.OutboxRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		row, err = record.NewFencedRow(context.Background(), tx, record.NewStore(), issue, payload, now)
+		row, err = record.NewFencedRow(ctx, tx, record.NewStore(), issue, payload, now)
 		return err
 	}); err != nil {
 		t.Fatalf("new outbox row: %v", err)
@@ -233,7 +237,7 @@ func outboxTestPool(t *testing.T) *store.Pool {
 
 func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return records.Enqueue(context.Background(), tx, row) }); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return records.Enqueue(context.Background(), tx, row) }); err != nil {
 		t.Fatalf("enqueue outbox row: %v", err)
 	}
 }
@@ -248,8 +252,8 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
-// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
+// template (testpg.ClonePool), as testDSN clones the database a test's daemons write in: each call
+// is a database of its own.
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
 	pool := store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
@@ -346,6 +350,7 @@ func (d *blockingDispatch) count() int {
 // ran while an older one backed off, found the board at a status it did not expect, took that for a
 // human's change and finished unwritten; the older row then wrote, leaving the board a phase behind.
 func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -376,6 +381,7 @@ func TestOutboxWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.T
 // ordinary rule: this one finds the board at a status neither its own nor the one it was made
 // from, takes that for someone else's move, and leaves it.
 func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
@@ -426,6 +432,7 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 // status of that issue for good, which is the one outcome this outbox exists to prevent. Each
 // case names the arm that saves it, so deleting one fails here.
 func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		refusal *dispatch.Error
@@ -539,11 +546,13 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 	return nil
 }
 
-// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
+// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies,
+// and keeps each message posted to it, in order.
 type boardDispatch struct {
 	noArtifacts
 	status   string
 	failures int
+	posted   []string
 }
 
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -572,7 +581,10 @@ func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
 	return errors.New("boardDispatch releases no claim")
 }
-func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *boardDispatch) PostMessage(_ context.Context, _ string, body string) error {
+	d.posted = append(d.posted, body)
+	return nil
+}
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -626,6 +638,7 @@ func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.Desig
 // anything, so the wake assertion would hold whether the retry applies its read or not. The cases
 // share the pool and take a key each, so one case's wake is never read for another's.
 func TestAPersonsHandoverIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing.T) {
+	t.Parallel()
 	const dropped = "outbox: a person's handover is not written; the label is gone"
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -695,6 +708,7 @@ func TestAPersonsHandoverIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing.T
 // close for a person's, lingered the tree and freed its slot. Neither happens now: the read
 // decides whether to write and nothing else.
 func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
@@ -755,6 +769,7 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 // that list and left out of the switch reaches its default and fails here rather than borrowing
 // another kind's rule at runtime.
 func TestEveryStatusRowKindHasARule(t *testing.T) {
+	t.Parallel()
 	for _, kind := range record.StatusRowKinds {
 		rule, err := ruleFor(kind)
 		if err != nil {
@@ -773,6 +788,7 @@ func TestEveryStatusRowKindHasARule(t *testing.T) {
 // added to that list and left out of the switch is asked here too; and each is asked for real,
 // against a record and a read that stand, so none may answer with that refusal.
 func TestEveryStatusRowKindHasAStillWantedRule(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	// Its Dispatch serves an empty event log: a set-back reads the events after the write it undoes
@@ -821,6 +837,7 @@ const probeStatusRowKind = record.StatusRowKind("probe")
 // list and the switch are made to disagree from this file rather than in the production list, so
 // the hole is probed without one being left open.
 func TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting(t *testing.T) {
+	// Not parallel: it writes the package variable record.StatusRowKinds, which parallel tests read.
 	listed := record.StatusRowKinds
 	record.StatusRowKinds = append(slices.Clone(listed), probeStatusRowKind)
 	t.Cleanup(func() { record.StatusRowKinds = listed })
@@ -901,6 +918,7 @@ func writesOf(client dispatch.Client) []string {
 // the kind it carries, where a row of no mark was once read as ordinary and judged by the
 // ordinary rule. Both kinds go through execute, the path every row of the outbox takes.
 func TestAStatusRowOfAnUnknownKindFailsNamingItsKind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, kind, want string
 	}{
@@ -938,6 +956,7 @@ func TestAStatusRowOfAnUnknownKindFailsNamingItsKind(t *testing.T) {
 // old shape; the migration's place in the order, at the schema before it, is held by the store's
 // TestEveryQueuedStatusRowCarriesItsKindAfter20261102003600.
 func TestAMigratedStatusRowRunsUnderItsOwnRule(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	runner := &outbox{pool: pool, records: records, log: quietLogger()}
@@ -1064,6 +1083,7 @@ func triageWakes(t *testing.T, pool *store.Pool, issue string) int {
 // lease, under which no sweep runs it, and the sweep after the lease lapses runs it again. The
 // row's effect is written once before the failed finish and once after.
 func TestOutboxRunSurvivesAFailedClaimAndAFailedFinish(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := &flakyOutboxStore{Store: record.NewStore(), claimFailures: 1, finishFailures: 1}
 	clock := microClock()
@@ -1170,6 +1190,7 @@ func (s *flakyOutboxStore) failedFinishes() int {
 // rewrite once its issue has left the phase the task was queued for. A predicate that reads
 // anything the retry rewrites answers this wrong in production and green in a test that skips it.
 func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1258,6 +1279,7 @@ func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
 // on the outbox's backoff, and its first attempt is logged as a wait (wait.ErrWaiting), never as a
 // failed row.
 func TestOutboxStartWaitingOnThePendingDeliveryIsNotAFailure(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}

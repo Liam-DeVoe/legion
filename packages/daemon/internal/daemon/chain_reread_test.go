@@ -26,6 +26,7 @@ import (
 // Every link is read each turn, the rows the copy holds included, since a stale row is a present
 // row whose value is wrong.
 func TestAnUnknownChainIsReadAgainUntilKnown(t *testing.T) {
+	t.Parallel()
 	t.Run("a missing row", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
@@ -110,6 +111,7 @@ func TestAnUnknownChainIsReadAgainUntilKnown(t *testing.T) {
 // loop; a late reading below what the re-read wrote, applied after it, changes nothing, which is
 // INFRA-4729's per-value fence (record.PutDispatchIssue).
 func TestALoopOfPresentRowsIsReadRightAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w, _ := rereadRuntime(t, pool, client)
@@ -165,7 +167,7 @@ func seedRereadIssue(t *testing.T, pool *store.Pool, key string) {
 // seedRereadRow writes the copy's row of key at seq, under parent ("" for none).
 func seedRereadRow(t *testing.T, pool *store.Pool, key, parent string, seq int64) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: seq,
 			Status: record.Carry("in_progress"), Parent: record.Carry(parent)})
 	}); err != nil {
@@ -177,7 +179,7 @@ func seedRereadRow(t *testing.T, pool *store.Pool, key, parent string, seq int64
 func rereadKnown(t *testing.T, pool *store.Pool, key string) bool {
 	t.Helper()
 	var known bool
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(context.Background(), tx, record.NewStore(), "CAPTURE", []string{key})
 		known = err == nil && chains.Chain(key).Known()
 		return err

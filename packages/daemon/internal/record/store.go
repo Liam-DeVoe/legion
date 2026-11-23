@@ -719,7 +719,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -806,8 +806,8 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		from = string(phase.EntryFrom)
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, entry_given_generation, reviewed_head)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
@@ -818,11 +818,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back, entry_from = excluded.entry_from,
 		entry_given_task = excluded.entry_given_task, entry_given_entry = excluded.entry_given_entry, entry_given_generation = excluded.entry_given_generation,
-		reviewed_head = excluded.reviewed_head`,
+		reviewed_head = excluded.reviewed_head, step_task = excluded.step_task, step_place = excluded.step_place`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
 		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, from, phase.Given.Task, phase.Given.Entry, int64(phase.Given.Generation),
-		phase.ReviewedHead,
+		phase.ReviewedHead, phase.StepTask, phase.StepPlace,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -839,7 +839,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
 		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.Given.Task, &phase.Given.Entry,
-		&givenGeneration, &phase.ReviewedHead); err != nil {
+		&givenGeneration, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
 	}
 	phase.Given.Generation = uint64(givenGeneration)
@@ -935,17 +935,11 @@ func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo stri
 	return pr, nil
 }
 
-// RowQuerier reads one row: a pool (*pgxpool.Pool), a connection or a transaction.
-type RowQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // PullRequestRecorded says whether a pull request of repo is recorded by number, as
-// PullRequestByNumber looks it up. It is one read of q: through a pool it takes no transaction and
-// no lock, so a caller with no fact lock can ask before it does any other work.
-func PullRequestRecorded(ctx context.Context, q RowQuerier, repo string, number int) (bool, error) {
+// PullRequestByNumber looks it up.
+func PullRequestRecorded(ctx context.Context, tx pgx.Tx, repo string, number int) (bool, error) {
 	var recorded bool
-	if err := q.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
+	if err := tx.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
 		return false, fmt.Errorf("read whether %s#%d is recorded: %w", repo, number, err)
 	}
 	return recorded, nil
@@ -1393,15 +1387,17 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// review of the old entry from moving the reviewer's commit after that start: its footer
 		// names a number the row has left (PhaseRow.ReviewedHead), and until that start the row
 		// holds no entry's task. The mark that the task is sent as written goes with the task it
-		// was about. The time the entry was raised stays with the number it belongs to, and so
-		// does the move that raised it (entry_moved_back), which that same start writes again. The
-		// counts go with the rounds: the new generation counts its moves back from nothing, and the
-		// cap mark goes with them, so the architect is told again at the new generation's own
-		// first crossing of the cap. The commit the daemon recorded for the reviewer's own review
-		// goes with the decision: the new generation's first review reads the whole change.
+		// was about, and so does the step the row ran (step_task, step_place), a step of the last
+		// generation's plan, whose task ids the new generation's plan need not share. The time the
+		// entry was raised stays with the number it belongs to, and so does the move that raised it
+		// (entry_moved_back), which that same start writes again. The counts go with the rounds:
+		// the new generation counts its moves back from nothing, and the cap mark goes with them,
+		// so the architect is told again at the new generation's own first crossing of the cap.
+		// The commit the daemon recorded for the reviewer's own review goes with the decision: the
+		// new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0 where " + where,
+			"entry_task = '', entry_verbatim = false, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0, step_task = '', step_place = 0 where " + where,
 		// What each holder took of the approved design goes with the gate it was taken from: the
 		// next generation registers its gate again, and its work starts from what that gate
 		// approves, which its first working phase takes as its baseline (workflow's Engine.enter),
@@ -2786,7 +2782,7 @@ func (s *Postgres) IssuePodUID(ctx context.Context, tx pgx.Tx, issue string) (st
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
 // refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
-// since a start of a phase past its review carries none (PhaseKeepsSlot).
+// since a start of accepting, retro or merging carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
@@ -2812,7 +2808,7 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // at its own generation and at one entry, which is the pair the held phase's retry writes
 // (workflow's restart sends the entry its row already names, marked ResendEntry) while the
 // first start is still queued. While every start of a phase worker was marked for the slot, the
-// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// mark could stand for the row's shape; a start of accepting, retro or merging carries none, so the
 // shape is read from the row itself, and a retro's or a merger's retry is written over the
 // queued row as an implementer's is.
 //

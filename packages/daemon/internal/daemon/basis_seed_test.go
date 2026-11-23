@@ -130,7 +130,7 @@ func (r *basisSeedRig) pendingOnBasis(key, document string) {
 func (r *basisSeedRig) gate() record.DesignGate {
 	r.t.Helper()
 	var gate *record.DesignGate
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		gates, err := r.records.GatesOf(context.Background(), tx, basisSeedRoot)
 		gate = record.SpecGate(gates)
 		return err
@@ -419,7 +419,7 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 		t.Fatalf("the spec step after the boot's seed = %#v, want it open on version 4 of the ancestor's document", gate)
 	}
 	var stood *record.DesignGate
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(_ context.Context, tx pgx.Tx) error {
 		gates, err := rig.records.GatesOf(context.Background(), tx, open)
 		stood = record.SpecGate(gates)
 		return err

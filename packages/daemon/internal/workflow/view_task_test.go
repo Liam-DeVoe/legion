@@ -98,10 +98,12 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 			if tc.view {
 				want += " " + viewTaskSentence
 			}
-			if planner != want {
-				t.Fatalf("the planner's task = %q, want %q", planner, want)
+			// The view sentence comes right after the opening, before the step's standing (its
+			// working copy, its task and its place on the walk), which every step's task carries.
+			if !strings.HasPrefix(planner, want+" Working copy: ") {
+				t.Fatalf("the planner's task = %q, want it to open with %q and then the step's working copy", planner, want)
 			}
-			if got := ResumePhaseTask(recordedRoot(t, pool)); !strings.HasPrefix(got, want+" ") {
+			if got := phaseResumeTask(t, pool, engine, gatedRoot); !strings.HasPrefix(got, want+" ") {
 				t.Fatalf("the resume task of the planning phase = %q, want it to open with %q", got, want)
 			}
 

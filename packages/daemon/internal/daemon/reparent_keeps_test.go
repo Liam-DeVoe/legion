@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -22,6 +23,7 @@ import (
 // its pull request are as they were. The daemon's whole path of the move runs: the event through
 // the mirror and the engine, and the outbox until nothing is due.
 func TestAReparentKeepsTheRunSessionPodSlotGateAndPullRequest(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client := &reparentDispatch{}
 	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress"}
@@ -40,7 +42,7 @@ func TestAReparentKeepsTheRunSessionPodSlotGateAndPullRequest(t *testing.T) {
 		t.Fatalf("create the implementer's claim: %v", err)
 	}
 	opened := 3
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutSlot(ctx, tx, record.Slot{Issue: reparentIssue, Index: 0, AdmittedAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}
@@ -77,7 +79,7 @@ func reparentKept(t *testing.T, rig *reparentRig, token claim.Token) string {
 	}
 	c := machine.Claim()
 	kept := fmt.Sprintf("claim %s gen %d session %s pod %s launch tree %s", c.State, c.Generation, c.Session, c.Locator.Sandbox.PodUID, c.LaunchTree)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := rig.records.Issue(ctx, tx, reparentIssue)
 		if err != nil {
 			return err

@@ -49,6 +49,7 @@ func (issueProvisionTokens) Token(context.Context, ghrepo.Repository) (string, e
 // lifecycle stays live while a claim of it has not retired, and once the last one has, the close's
 // cleanup confirms it, finding the issue's Sandbox already gone (R17 of dispatch://INFRA-3320).
 func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
@@ -230,6 +231,7 @@ func (r *sandboxTeardowns) ReleaseIssue(ctx context.Context, issue, podUID strin
 // close takes the issue out of the workflow, and its row (record.IssueSuspend) deletes the kept
 // volume's Sandbox in the foreground too.
 func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overSandbox is the idle rig whose issue's Sandbox the test API holds, Running, owning a kept
 	// volume where kept is true and no volume otherwise, with the issue's teardowns made by the
@@ -348,6 +350,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
 // neither the session id nor the resume path.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
+	t.Parallel()
 	// Two children under the running root: the one closed as done, whose planner is stopped with
 	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
 	// works the phase the root stands in, so admission's pass starts no worker of the root's while
@@ -554,7 +557,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		putOutboxIssue(t, pool, records, child)
 	}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -679,7 +682,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		t.Helper()
 		row := mustOutboxRow(t, issue, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: role, Generation: 1}, due)
 		var id int64
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			id, err = records.EnqueueID(ctx, tx, row)
 			return err
@@ -707,6 +710,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 // itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
 // out of the workflow declines the start while a status the workflow runs in still starts it.
 func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	t.Parallel()
 	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
 	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
@@ -837,6 +841,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // entry. The rig is the real Sandbox runtime's, because what the return must show is the pod built
 // again behind the issue that came back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// The rig is newFenceRig's, the one TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads
 	// the fence in, cut to the single park this case needs: a running root holding its admission
 	// slot, the one child under it standing mid-run in implementing with its implementer stopped
@@ -945,6 +950,7 @@ func startRequestsOf(t *testing.T, pool *store.Pool, issue string) []record.Supe
 // row as its newest start, and the issue is still done when the look is running: a look runs
 // behind the close rather than reopening the issue.
 func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

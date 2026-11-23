@@ -23,6 +23,7 @@ import (
 // fact applied on the same pool under the same held lock: it waits on the lock, and applies once
 // the lock is free.
 func TestARefusedRowFinishesWhileAFactHoldsTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -81,7 +82,7 @@ func TestARefusedRowFinishesWhileAFactHoldsTheFactLock(t *testing.T) {
 // long fact holds it, and rolls that transaction back when the test ends.
 func holdFactLock(t *testing.T, pool *store.Pool) pgx.Tx {
 	t.Helper()
-	fact, err := pool.Begin(context.Background())
+	fact, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the fact's transaction: %v", err)
 	}

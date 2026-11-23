@@ -599,12 +599,39 @@ func TestEveryAcceptanceHoldRefusesBothActs(t *testing.T) {
 	}
 	unnamed := acceptanceHold{code: "SIGNOFF_A_HOLD_NOT_IN_THE_TABLE", names: "LEGION-9"}
 	for _, act := range acts {
-		result, refuses := unnamed.refusal(act, "LEGION-8")
+		result, refuses := unnamed.refusal(act, "LEGION-8", "")
 		if !refuses || result.Refusal == nil || result.Refusal.Code != unnamed.code || !strings.Contains(result.Refusal.Message, "LEGION-9") {
 			t.Errorf("%s under a hold the table does not name = %t, %+v; want it refused with %s, naming LEGION-9", act, refuses, result.Refusal, unnamed.code)
 		}
 	}
-	if result, refuses := (acceptanceHold{}).refusal(actSignOff, "LEGION-8"); refuses || result.Refusal != nil {
+	if result, refuses := (acceptanceHold{}).refusal(actSignOff, "LEGION-8", ""); refuses || result.Refusal != nil {
 		t.Errorf("the sign-off under no hold = %t, %+v; want it not refused", refuses, result.Refusal)
+	}
+}
+
+// A sign-off's refusal over children says where a held acceptance goes back once no child is open:
+// the first step of the issue's walk after the implementer's (heldAcceptanceBack,
+// record.ReturnStep). Today's line keeps its words, testing; a walk of an implementer, a reviewer
+// and the owner's acceptance goes back to reviewing, and one of an implementer and the owner's
+// acceptance alone to accepting, the start it held, with no step named.
+func TestASignOffRefusalNamesTheStepAHeldAcceptanceGoesBackTo(t *testing.T) {
+	held := acceptanceHold{code: signOffChildOpen, names: "LEGION-209 (todo)"}
+	for _, tc := range []struct {
+		name string
+		w    Walk
+		says string
+	}{
+		{name: "today's line", w: todaysWalk(), says: "goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again."},
+		{name: "implementer reviewer acceptance", w: Walk{Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}},
+			says: "goes back by itself to the start it held, a held acceptance as reviewing; otherwise sign off again."},
+		{name: "implementer acceptance", w: Walk{Line: []phase.Phase{phase.Implementing, phase.Accepting, phase.Retro, phase.Merging}},
+			says: "goes back by itself to the start it held; otherwise sign off again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, refuses := held.refusal(actSignOff, "LEGION-208", heldAcceptanceBack(tc.w))
+			if !refuses || result.Refusal == nil || !strings.Contains(result.Refusal.Message, tc.says) {
+				t.Fatalf("the sign-off's refusal = %t, %+v; want it to say %q", refuses, result.Refusal, tc.says)
+			}
+		})
 	}
 }

@@ -264,6 +264,7 @@ func (o *optionRow) wantKeys(reads int, attempts ...int) {
 // key-rule fake fails the test should any attempt send a changed body under a key it used. Each
 // answer the fake gives is one captured from a real Dispatch (capturedAnswer).
 func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
+	t.Parallel()
 	badGateway := &dispatch.Error{Status: http.StatusBadGateway, Message: "Bad Gateway"}
 	t.Run("the router's 404 waits, and the attempt goes again once the route answers", func(t *testing.T) {
 		row := newOptionRow(t, "LEGION-41", keyAnswer{file: "status_change_no_route.http"}, keyAnswer{file: "status_change_include_children.http"})
@@ -503,7 +504,7 @@ func (r *stopReturnRig) queueOptionRow(key string) int64 {
 	r.read.arm(func(row record.OutboxRow) bool {
 		return row.Issue == key && row.Kind == record.OutboxKindDispatchStatus
 	})
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		row, err := record.NewFencedRow(r.t.Context(), tx, records, key, write, time.Now())
 		if err != nil {
@@ -567,6 +568,7 @@ func (r *stopReturnRig) allAt(status string, keys ...string) {
 // refused with ROLE_HOLDER_FORBIDDEN queuing no notice, "role holders forbidden twice" fails on its
 // notice count.
 func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
+	t.Parallel()
 	scope := &dispatch.Error{Status: http.StatusForbidden, Code: statusScopeCode, Message: "this token lacks the legion-status scope"}
 	for _, tc := range []struct {
 		name       string
@@ -760,7 +762,7 @@ func seedRecord(t *testing.T, pool *store.Pool, issue record.Issue) {
 	t.Helper()
 	issue.Repo, issue.DefaultBranch, issue.GitHubRepo = "acme/widgets", "main", "acme/widgets"
 	issue.Tree, issue.Project, issue.Title, issue.Phase, issue.Generation, issue.HandedOver, issue.Rank = issue.Key, "LEGION", issue.Key, phase.Planning, 1, true, "U"
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, issue)
 	}); err != nil {
 		t.Fatalf("record %s: %v", issue.Key, err)

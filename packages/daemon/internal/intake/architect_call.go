@@ -36,6 +36,8 @@ var (
 	SignOffCall  = ArchitectCall{op: "sign_off", kind: actsOn}
 	BackwardCall = ArchitectCall{op: "request_backward_move", kind: actsOn}
 	RetryCall    = ArchitectCall{op: "retry_or_escalate", kind: actsOn}
+	PlanCall     = ArchitectCall{op: "register_plan", kind: actsOn}
+	StopCall     = ArchitectCall{op: "stop_task", kind: actsOn}
 	RerunCall    = ArchitectCall{op: "rerun_child", kind: under}
 	ReleaseCall  = ArchitectCall{op: "release_children", kind: under}
 	CloseCall    = ArchitectCall{op: "close_root", kind: root}

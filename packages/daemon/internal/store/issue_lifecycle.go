@@ -54,7 +54,7 @@ func (s *Store) ReserveIssueCleanup(ctx context.Context, project, issue string, 
 	inLegionsWork func(at phase.Phase, status string) bool) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	var reserved bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func (s *Store) ReserveIssueCleanup(ctx context.Context, project, issue string, 
 // retry answers as the finished close it is.
 func (s *Store) ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		reserved, err := treelifecycle.Issues.ReserveCleanup(ctx, tx, project, issue, treelifecycle.AuthorityOperator)
 		if err != nil {
 			return err
@@ -161,7 +161,7 @@ type IssueReleaser interface {
 // goes first, since it takes treelifecycle.Serialize, which every writer of a pod hold takes before
 // the issue's lock (LockIssueForPause).
 func (s *Store) CleanupReservedIssue(ctx context.Context, project, issue string, epoch uint64, releaser IssueReleaser) error {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Issues.CheckReservation(ctx, tx, project, issue, epoch); err != nil {
 			return err
 		}
@@ -180,7 +180,7 @@ func (s *Store) CleanupReservedIssue(ctx context.Context, project, issue string,
 	if err := releaser.CleanupIssue(ctx, issue); err != nil {
 		return fmt.Errorf("release the resources of issue %s: %w", issue, err)
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Issues.ConfirmCleanup(ctx, tx, project, issue, epoch); err != nil {
 			return err
 		}
@@ -191,11 +191,12 @@ func (s *Store) CleanupReservedIssue(ctx context.Context, project, issue string,
 // IssueLive is whether issue has a lifecycle whose cleanup is not confirmed: open, or reserved and
 // releasing. Such an issue's resources are its own cleanup's to delete, and no orphan sweep's.
 func (s *Store) IssueLive(ctx context.Context, project, issue string) (bool, error) {
-	var live bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from issue_lifecycles
-		where project = $1 and issue = $2 and cleanup_confirmed_at is null)`, project, issue).Scan(&live)
-	if err != nil {
-		return false, fmt.Errorf("read the lifecycle of issue %s: %w", issue, err)
-	}
-	return live, nil
+	return ReadOnly(ctx, s.pool, fmt.Sprintf("read the lifecycle of issue %s", issue), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		var live bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from issue_lifecycles
+			where project = $1 and issue = $2 and cleanup_confirmed_at is null)`, project, issue).Scan(&live); err != nil {
+			return false, fmt.Errorf("read the lifecycle of issue %s: %w", issue, err)
+		}
+		return live, nil
+	})
 }

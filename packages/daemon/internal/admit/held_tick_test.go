@@ -99,8 +99,8 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 
 	// A tree whose design gate stands shut: its root holds a slot and no step of its gate is
 	// registered, so its child waits for the gate. No subject stands for `at_work`, which an
-	// issue past its review reads where it is not held (record.HeldAtWork); this fixture builds
-	// none.
+	// issue in accepting, retro or merging reads where it is not held (record.HeldAtWork); this
+	// fixture builds none.
 	seedSlotted(t, pool, gated, "B")
 	parent := gated
 	putIssue(t, pool, record.Issue{Key: gatedChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

@@ -120,7 +120,7 @@ func (e *Engine) recordViewOf(ctx context.Context, tx pgx.Tx, root *record.Issue
 		return nil
 	}
 	root.ViewOf = viewOf
-	return e.store.PutIssue(ctx, tx, *root)
+	return e.WriteIssue(ctx, tx, *root)
 }
 
 // sameBasis says whether a and b rest a step on one ancestor's approval: the same document of the
@@ -936,7 +936,7 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told by its resume of the act on its own document that ended its step's wait", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
 		root.Awaiting.AnsweredDetail += basisEndedAfter + what
-		return e.store.PutIssue(ctx, tx, *root)
+		return e.WriteIssue(ctx, tx, *root)
 	}
 	return e.notice(ctx, tx, key, record.Notice{Kind: "basis-ended", Role: claim.RoleArchitect, Version: basis.Version, Actor: actor,
 		Ref: stepRef(basis.Issue, step), Reason: what})

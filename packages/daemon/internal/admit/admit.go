@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -53,10 +54,11 @@ type Admission struct {
 	// names none (config.Config.StalledTreeNotice).
 	stalledTreeNotice time.Duration
 
-	// mu guards pending, target, catchingUp and unknownChains, the only Admission state a caller outside its own
-	// transactions touches: the daemon's boot-owned poll calls Held on every tick, outside any
-	// transaction and the database's own advisory fact lock, concurrently with whatever release
-	// call currently holds both while it clears them.
+	// mu guards pending, stamps, target, catchingUp and unknownChains, the only Admission state a
+	// caller outside its own transactions touches: the daemon's boot-owned poll calls Held on every
+	// tick, outside any transaction and the database's own advisory fact lock, concurrently with
+	// whatever release call currently holds both while it clears them, and a release's hook that
+	// runs late clears them on the commit watcher's goroutine (clearReleased).
 	mu sync.Mutex
 	// pending holds, for every key Reconcile found the Dispatch consumer still needs to catch up
 	// before an admission decision on it is safe, the boot listing's own summary of that key —
@@ -67,7 +69,10 @@ type Admission struct {
 	// distinguishes one held key's own catching-up from another's. release applies every key's
 	// own summary — exactly as Reconcile's own immediate path would — before it clears them, so a
 	// key the stream never gets around to explaining still lands on what the listing already knew.
-	pending map[string]intake.DispatchIssue
+	pending map[string]heldSummary
+	// stamps counts the writes into pending, so each held summary carries the write that put it
+	// there (heldSummary.stamp), and a release clears only the holds it applied (clearReleased).
+	stamps uint64
 	// target is the notification stream's own last sequence Reconcile captured when it found the
 	// first record behind: every key in pending releases once the Dispatch consumer's position
 	// has Reached it. Zero means nothing is held.
@@ -171,7 +176,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		source: experiment.CryptoSource, pending: make(map[string]intake.DispatchIssue),
+		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
 		unclassifiedLogged: make(map[string]uint64), unknownChains: make(map[string]struct{}),
 		keeper: record.NewTreeKeeper(log)}
 }
@@ -362,9 +367,9 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		return released, err
 	}
 	a.mu.Lock()
-	summary, held := a.pending[observation.Key]
+	hold, held := a.pending[observation.Key]
 	a.mu.Unlock()
-	if held && observation.Seq <= summary.Seq {
+	if held && observation.Seq <= hold.summary.Seq {
 		// Reconcile already holds this key on the listing's own summary because it found it
 		// behind the stream: an unrecorded key has no record to fence a live event against, so
 		// a replay at or behind that summary's own sequence — a nak's redelivery, the outbox's
@@ -393,7 +398,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 // (UnknownChains), once the fact that found it commits: a fact rolled back found nothing. The
 // daemon's re-read is woken then (OnUnknownChain).
 func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		a.mu.Lock()
 		a.unknownChains[key] = struct{}{}
 		wake := a.unknownWake
@@ -582,7 +587,7 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	if err := a.enqueue(ctx, tx, key, record.PersonHandoverStatusWrite("todo", observedStatus), a.now()); err != nil {
 		return err
 	}
-	intake.OnCommit(ctx, func() { a.log.Info("admission: queued a person's handover", "issue", key, "source", source) })
+	store.OnCommit(ctx, func() { a.log.Info("admission: queued a person's handover", "issue", key, "source", source) })
 	return nil
 }
 
@@ -689,7 +694,7 @@ type phaseWorker struct {
 // the record shows under way under a gate root in Legion's work (record.Chains.GateRoot). project
 // is the project's claim token (claim.ProjectToken), and byKey is the project's live records by
 // key, which the gate roots are read from and which the slot repair walks its slots and its
-// issues past review through.
+// issues in accepting, retro or merging through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -928,15 +933,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	}
 
 	if len(deferred) > 0 {
-		a.mu.Lock()
-		for key, summary := range deferred {
-			a.pending[key] = summary
-		}
-		a.holds++
-		if target > a.target {
-			a.target = target
-		}
-		a.mu.Unlock()
+		a.holdDeferred(deferred, target)
 		a.log.Info("admission reconcile: holding roots for the Dispatch consumer to reach a stream position",
 			"count", len(deferred), "target", target, "ack_floor", position.AckFloorStream)
 	}
@@ -1013,7 +1010,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 			return fmt.Errorf("say why %s is not admitted: %w", observation.Key, err)
 		}
 		if noted {
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				a.log.Info("admission: not admitted; GitHub does not answer for its repository as one Legion's Apps reach", "issue", observation.Key,
 					"resolved", observation.ResolvedRepo, "reason", resolution.Refusal)
 			})
@@ -1038,7 +1035,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		GitHubRepo:      resolution.GitHubRepo,
 		HoldsGate:       true,
 	}
-	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
 	a.engine.HearRepository(ctx, issue.GitHubRepo)
@@ -1212,9 +1209,9 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue is out
 	// of Legion's work: an issue in it keeps what the record says, because its own record is the
 	// thing that says the work is under way, and the row it holds, or does not hold, says nothing
-	// about it: it keeps that row through every phase up to its review, worked or not
-	// (record.KeepsSlot), holds none past it, and gives it back while it waits on another issue
-	// before then (releaseSlotsForWaits).
+	// about it: it keeps that row through every phase that keeps one, worked or not
+	// (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while it
+	// waits on another issue (releaseSlotsForWaits).
 	if summary.Status == "todo" && stored.Status == "in_progress" && record.InLegionsWork(*stored) {
 		return nil
 	}
@@ -1294,7 +1291,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.DispatchStatus = o.Shown
 	stored.HandedOver = o.HandedOver
 	stored.LastDispatchSeq = o.Seq
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record observation of %s: %w", stored.Key, err)
 	}
 	return nil
@@ -1304,15 +1301,15 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
 // whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
 // order. Each release is logged once the fact commits. An issue Dispatch shows out of Legion's
-// work, an issue whose work passes its review and an issue reaching its done all read the same
-// predicate, so one rule says when an issue stops needing a slot where it stands, and it reads
-// the issue's own status alone (R20 of dispatch://INFRA-3320): an issue above it leaving work
-// frees nothing of it. The daemon makes one other release, releaseSlotsForWaits, judged by
+// work, an issue moving into accepting, retro or merging and an issue reaching its done all read
+// the same predicate, so one rule says when an issue stops needing a slot where it stands, and it
+// reads the issue's own status alone (R20 of dispatch://INFRA-3320): an issue above it leaving
+// work frees nothing of it. The daemon makes one other release, releaseSlotsForWaits, judged by
 // blockers.waitsOf rather than by record.NeedsSlot, which frees the row of an issue that goes on
 // working and waits on another issue; the two are apart because they free rows for opposite
 // reasons — this one because the issue's phase holds no row, that one because the work is held —
 // and only that one leaves a mark, since only its issue stands in the line for the row again. An
-// issue past its review is never one it frees (blockers.waitsOf says why).
+// issue in accepting, retro or merging is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1496,7 +1493,14 @@ func (a *Admission) dueCloses(ctx context.Context, tx pgx.Tx, issues []record.Is
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
 // holds after the change, and the cap.
 func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int) {
-	intake.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
+	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
+}
+
+// logOnCommit writes one Info line once the transaction commits (store.OnCommit), for a line that
+// says what the transaction wrote: a pass rolled back writes none, and one retried after a failed
+// commit writes it once.
+func (a *Admission) logOnCommit(ctx context.Context, msg string, args ...any) {
+	store.OnCommit(ctx, func() { a.log.Info(msg, args...) })
 }
 
 // promote gives each issue of the waiting line what its promotion needs — a slot, a tree opened,
@@ -1831,7 +1835,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// the row is claimable the moment it commits, and the grant wakes the issue's
 				// lifecycle lane (the daemon's projectRecords.PutSlot), so the task is delivered
 				// in the same second rather than at the next sweep.
-				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
+				a.logOnCommit(ctx, "admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
 			case record.LineWaitingOnIssue:
 				// The wait is over — a candidate still waiting never reaches here, the skip
 				// above passes over it — and the row granted above is the whole of this
@@ -1839,7 +1843,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// start again. What its phase needs next, a first phase at admitted among it,
 				// the line offers from the record this grant leaves, the mark cleared, which is
 				// why this round is read again below (record.Waiting).
-				a.log.Info("admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
+				a.logOnCommit(ctx, "admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
 				resumed = true
 			case record.LineAnswered:
 				awaiting := issue.Awaiting
@@ -1851,7 +1855,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if writeInProgress {
 					issue.Status = "in_progress"
 				}
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				if writeInProgress {
@@ -1875,7 +1879,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// write that starts it (decision 15 of dispatch://INFRA-4730). No decision of this
 				// release reads it.
 				issue.HandedOverFrom = ""
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				// The promotion opens the tree's lifecycle, writes the root in_progress and
@@ -2060,20 +2064,23 @@ func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) ([]record.Issue, []
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses the three phases past an
-// issue's review — accepting, retro and merging — a phase of done and a Dispatch status out of
-// the workflow, and no promotion moves an issue into or out of any of them. A first phase
-// starts at phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase it ran in the tree it left.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
+// merging (in the default steps, the phases after the review), a phase of done and a Dispatch
+// status out of the workflow, and no promotion moves an issue into or out of any of them. A first
+// phase starts at the phase of the task's first step from a record standing at admitted —
+// planning or implementing, since every tester, reviewer and acceptance step stands after the
+// implementer — an answered root goes from awaiting_person back to admitted, a returning issue
+// keeps the worker phase it stands in, and a root whose tree is opened keeps the phase it ran in
+// the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
-// and is intended: the work of such a root is its sign-off, its retro and its merge, which
-// write no more of the change, and the cap counts the issues whose change is still to write.
-// The tree opens, the phase's own worker starts on a row the outbox holds for no slot
-// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
-// back to a phase that keeps one.
+// and is intended: the work of such a root in those phases is its sign-off, its retro and its
+// merge, which write no more of the change, and the cap counts the issues whose change is still
+// to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
+// (workflow.StartOrOwe), and the root takes a row again only where its work moves to a phase
+// that keeps one: its architect sends the work back, or a step after its acceptance whose phase
+// keeps a slot starts, and it waits for that row in the line.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -2091,7 +2098,7 @@ func slotFor(entry record.LineEntry) bool {
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
-// said the cap held a queued root past its review that the promotion of the same pass started,
+// said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
 func capLets(entry record.LineEntry, held, cap int) bool {
 	if cap <= 0 {
@@ -2190,8 +2197,9 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 		if err := a.enqueue(ctx, tx, key, workflow.ChildrenFirstNotice(facts.ChildWaits[key]), now); err != nil {
 			return err
 		}
-		a.log.Info("admission: an issue waits for the Dispatch children under it", "issue", key,
-			"generation", parent.Generation, "children", len(facts.ChildWaits[key].Open))
+		children := len(facts.ChildWaits[key].Open)
+		a.logOnCommit(ctx, "admission: an issue waits for the Dispatch children under it", "issue", key,
+			"generation", parent.Generation, "children", children)
 	}
 	return nil
 }
@@ -2242,7 +2250,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
 			return released, err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: released a root waiting on a person that may not resume", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation)
 		})
 		released = true
@@ -2280,6 +2288,29 @@ func (a *Admission) Holds() uint64 {
 	return a.holds
 }
 
+// heldSummary is the summary pending holds for a key, with the write into pending that put it there
+// (Admission.stamps), so a release clears the key only while pending still holds the write the
+// release applied (clearReleased).
+type heldSummary struct {
+	summary intake.DispatchIssue
+	stamp   uint64
+}
+
+// holdDeferred holds each key of deferred on its summary until the Dispatch consumer reaches
+// target, and counts the deferral (Holds).
+func (a *Admission) holdDeferred(deferred map[string]intake.DispatchIssue, target int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, summary := range deferred {
+		a.stamps++
+		a.pending[key] = heldSummary{summary: summary, stamp: a.stamps}
+	}
+	a.holds++
+	if target > a.target {
+		a.target = target
+	}
+}
+
 // refreshHeldSummary keeps a held, unrecorded key's own pending summary — the one release
 // eventually applies — current with a live event that is newer than it but creates no record: an
 // event moving the key out of todo, or taking its label off, teaches nothing to the record (there
@@ -2290,15 +2321,16 @@ func (a *Admission) Holds() uint64 {
 func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	summary, held := a.pending[observation.Key]
-	if !held || observation.Seq <= summary.Seq {
+	hold, held := a.pending[observation.Key]
+	if !held || observation.Seq <= hold.summary.Seq {
 		return
 	}
-	a.pending[observation.Key] = intake.DispatchIssue{
+	a.stamps++
+	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
 		Parent: observation.Parent, Rank: observation.Rank, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo,
-	}
+	}, stamp: a.stamps}
 }
 
 // release applies the Dispatch consumer's current position: once it has Reached target, every key
@@ -2306,21 +2338,18 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 // case the stream never delivers the event that would otherwise have caught it up — before
 // promote decides anything, so a held key is never admitted, or left admitted, on stale
 // information. The in-memory pending set only clears once this call's own transaction has
-// actually committed (intake.OnCommit): clearing it any earlier would say a hold is
+// actually committed (store.OnCommit): clearing it any earlier would say a hold is
 // resolved while a failed commit leaves nothing of this release durable, so the next
 // promote-triggering call would trust an unreleased hold's authority.
 func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.DispatchConsumerPosition) ([]string, error) {
-	a.mu.Lock()
-	caughtUp := len(a.pending) > 0 && position.Reached(a.target)
-	var releasing map[string]intake.DispatchIssue
+	releasing := a.releasable(position)
+	caughtUp := releasing != nil
 	if caughtUp {
-		releasing = maps.Clone(a.pending)
-	}
-	a.mu.Unlock()
-
-	var released []string
-	if caughtUp {
-		held := slices.SortedFunc(maps.Values(releasing), func(x, y intake.DispatchIssue) int { return cmp.Compare(x.Key, y.Key) })
+		held := make([]intake.DispatchIssue, 0, len(releasing))
+		for _, hold := range releasing {
+			held = append(held, hold.summary)
+		}
+		slices.SortFunc(held, func(x, y intake.DispatchIssue) int { return cmp.Compare(x.Key, y.Key) })
 		for _, summary := range parentsFirst(held) {
 			// A held summary older than a fact the daemon applied records nothing, and that fact,
 			// applied after Reconcile deferred the summary, refreshed it or left a trace of its own
@@ -2332,12 +2361,22 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 			}
 			if outcome == summaryStale {
 				key, listed := summary.Key, summary.Seq
-				intake.OnCommit(ctx, func() {
+				store.OnCommit(ctx, func() {
 					a.log.Info("admission: a held summary is older than an issue fact of the issue the daemon applied after it was held, so its release records nothing; that fact decided the issue",
 						"issue", key, "listed", listed)
 				})
 			}
 		}
+	}
+	// The release's line says what this transaction does with the held roots, so it is a hook of
+	// its commit, registered before the pass's own so it still comes before the slots the pass
+	// takes, and it names the count the pass admitted, which the hook reads once the pass is done.
+	var admitted int
+	if caughtUp {
+		store.OnCommit(ctx, func() {
+			a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
+				"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
+		})
 	}
 	admitted, returned, err := a.promoteHolds(ctx, tx, !caughtUp)
 	if err != nil {
@@ -2346,16 +2385,34 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 	if !caughtUp {
 		return returned, nil
 	}
-	a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
-		"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
-	intake.OnCommit(ctx, func() {
-		a.mu.Lock()
-		for key := range releasing {
+	store.OnCommit(ctx, func() { a.clearReleased(releasing) })
+	return returned, nil
+}
+
+// releasable is every key pending holds, with the write that holds it, once position has reached
+// the target Reconcile captured; nil while nothing is held or the consumer is behind it.
+func (a *Admission) releasable(position intake.DispatchConsumerPosition) map[string]heldSummary {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pending) == 0 || !position.Reached(a.target) {
+		return nil
+	}
+	return maps.Clone(a.pending)
+}
+
+// clearReleased clears each key of releasing that pending still holds on the write the release
+// applied. A release's hook can run after a later refresh or a later hold of the same key, on the
+// commit watcher's goroutine when the store could say only later that the release committed
+// (store.OnCommit), and it must not clear what it did not apply: such a key stays held for a
+// release of its own.
+func (a *Admission) clearReleased(releasing map[string]heldSummary) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, applied := range releasing {
+		if a.pending[key].stamp == applied.stamp {
 			delete(a.pending, key)
 		}
-		a.mu.Unlock()
-	})
-	return append(released, returned...), nil
+	}
 }
 
 // ownSlots is the slots of issues, this project's. The slots table is shared by every project's
@@ -2471,7 +2528,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // among them.
 //
 // Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// past their review (record.PastReview, the complement of the phases that keep a row), by key
+// in accepting, retro or merging (record.InSlotlessPhase, the complement of the phases that keep a row), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
@@ -2481,7 +2538,8 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in Legion's
-// work and a phase of it that keeps a row (record.KeepsSlot), while an issue past its review is in
+// work and a phase of it that keeps a row (record.KeepsSlot), while an issue in accepting, retro or
+// merging is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
@@ -2494,7 +2552,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
 // built once for the call: the set costs a walk of every record of the project and a map the
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
-// past its review, of which a healthy project has a handful.
+// in accepting, retro or merging, of which a healthy project has a handful.
 //
 // Only the role of each candidate's current phase is read (workflow.OpenPhaseRole, in the
 // selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
@@ -2515,7 +2573,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // answers false for a root at admitted once its design gate has opened, where the architect is
 // still the only role at work on the root itself, and a relaunched architect of exactly such a
 // root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
-// is weighed here, slotted, past its review or released for a wait, and the reach that decides
+// is weighed here, slotted, in accepting, retro or merging, or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its
@@ -2529,7 +2587,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // architects this names are exactly those the pass sends a start to, and the sweep's gate opens
 // for no root the pass would send nothing.
 //
-// The slots are walked here, in the order the store answered, then the issues past their review
+// The slots are walked here, in the order the store answered, then the issues in accepting, retro or merging
 // in the order the pass holds them, and the candidates those two halves make are what the
 // selection is given: it is the tick's silent list that walks the project's live issues
 // (silentWorkers). The roots released for a wait come last and give that selection nothing,
@@ -2558,9 +2616,9 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 // review or a root released for a wait: the issue, its tree's root, the role and its claim token,
 // in the shape both selections answer (phaseWorker: phaseWorkerOf and rootArchitectOf), and when
 // the issue was admitted (record.Slot.AdmittedAt), which the gate arm of the stall reading weighs
-// its bound from (architectStalls). An issue past its review and a root released for a wait hold
+// its bound from (architectStalls). An issue in accepting, retro or merging and a root released for a wait hold
 // no slot and carry the zero time, and that arm reads a root at admitted with no step of its
-// design gate registered alone, which no issue past its review is, and no released root either:
+// design gate registered alone, which no issue in accepting, retro or merging is, and no released root either:
 // a root at admitted is released only once its design gate has opened (blockers.waitsOf).
 type slotHolder struct {
 	phaseWorker
@@ -2582,9 +2640,9 @@ type slotReading struct {
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
-// project, then each issue of the project past its review under a gate root that has started
-// (record.TreeStarted), then the architect of each root of the project released for a wait in a tree
-// that runs (record.TreeRuns). Only the role of each
+// project, then each issue of the project in accepting, retro or merging under a gate root that
+// has started (record.TreeStarted), then the architect of each root of the project released for a
+// wait in a tree that runs (record.TreeRuns). Only the role of each
 // candidate's current phase is held, and a root's own architect.
 //
 // Which role of a candidate the rule reaches is two questions, because two roles can stand on
@@ -2605,7 +2663,7 @@ type slotReading struct {
 // a row (releaseSlots clears it), and the loop asks the same two terms the past-review half asks,
 // so a parked root, or one whose tree left the workflow, is weighed by nothing here.
 //
-// It reads over at most the cap's worth of slotted issues, the handful past their review and the
+// It reads over at most the cap's worth of slotted issues, the handful in accepting, retro or merging and the
 // roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
 // read rather than a read per candidate, and one batched read
 // of the phase entry each holder's row names with the moment it was raised
@@ -2653,7 +2711,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	for _, issue := range issues {
-		if !record.PastReview(issue) || !record.InWorkflow(issue) {
+		if !record.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
 			continue
 		}
 		root, rooted := byKey[facts.Chains.GateRoot(issue.Key)]
@@ -2802,9 +2860,9 @@ func architectReached(root record.Issue, entry record.PhaseEntry, run record.Rol
 // sub-architect claim outside the rule, since its start, which the child's first phase start
 // queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
-// read, or stands past its review under a gate root that has started (record.TreeStarted), or was
-// released for a wait in a tree that runs (record.TreeRuns), neither of which a queued root is, and
-// so waits for none. And the root must be
+// read, or stands in accepting, retro or merging under a gate root that has started
+// (record.TreeStarted), or was released for a wait in a tree that runs (record.TreeRuns), neither
+// of which a queued root is, and so waits for none. And the root must be
 // inside the reach (workflow.ArchitectAtWork): a root standing at admitted, whatever its design
 // gate, a root a hand-over carried in while it stands in the run that hand-over carried it into,
 // and a root past admitted under its own power, waiting on no person, only while the entry its
@@ -2824,7 +2882,7 @@ func architectServed(root record.Issue, entry record.PhaseEntry, run record.Role
 // entry (workflow's SendOwedEntry). A root's own architect is sent its start instead, which
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
-// its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
+// its row, holds none in accepting, retro or merging (record.KeepsSlot) or gave it back for a wait
 // (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
 // record rather than taken off the row, while a task the resume of a person's answer wrote is
 // sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
@@ -2904,7 +2962,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 				return fmt.Errorf("raise the phase entry of the architect of slotted root %s: %w", role.Issue.Key, err)
 			}
 			startedArchitect(role.Issue.Key)
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				a.log.Warn("admission: a root architect's phases row named no entry, so the pass raised one and sent its work",
 					"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "given", role.Given)
 			})
@@ -2913,12 +2971,12 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 				return fmt.Errorf("start the architect of slotted root %s again: %w", role.Issue.Key, err)
 			}
 			startedArchitect(role.Issue.Key)
-			intake.OnCommit(ctx, behind)
+			store.OnCommit(ctx, behind)
 		case sendPhaseEntry:
 			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
 				return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 			}
-			intake.OnCommit(ctx, behind)
+			store.OnCommit(ctx, behind)
 		}
 	}
 	stalls, err := a.architectStalls(ctx, tx, read, facts, floor, sent)
@@ -3014,7 +3072,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return finished, fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
 		}
 		finished = true
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
@@ -3035,7 +3093,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return finished, fmt.Errorf("finish the start %s owed a stopped worker: %w", owed.Issue, err)
 		}
 		finished = true
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start owed a stopped worker", "issue", owed.Issue,
 				"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})

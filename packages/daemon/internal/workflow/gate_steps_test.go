@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The documents of the steps these tests gate. gateDoc is the root's primary document, which the
@@ -144,11 +146,9 @@ func awaitingNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 // (Admission.promoteHolds).
 func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []string {
 	t.Helper()
-	store := record.NewStore()
 	entered := []string{}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		scoped, _ := intake.WithCommitHooks(context.Background())
-		issues, err := store.Issues(scoped, tx)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := record.NewStore().Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -156,13 +156,15 @@ func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []strin
 		for i, issue := range issues {
 			keys[i] = issue.Key
 		}
-		chains, err := record.ReadChains(scoped, tx, store, "LEGION", keys)
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), "LEGION", keys)
 		if err != nil {
 			return err
 		}
-		entered, _, err = engine.ReconcileAwaiting(scoped, tx, "LEGION", chains, issues, nil)
+		entered, _, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", chains, issues, nil)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("reconcile the roots that wait: %v", err)
+	}
 	return entered
 }
 
@@ -197,91 +199,86 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // with its cap.
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped = engine.OpenFact(scoped)
-	tx, err := pool.Begin(scoped)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(scoped)
-	store := record.NewStore()
-	read := func() ([]record.Issue, []record.Slot, record.LineFacts) {
-		issues, err := store.Issues(scoped, tx)
+	if err := store.Transact(context.Background(), pool, func(scoped context.Context, tx pgx.Tx) error {
+		scoped = engine.OpenFact(scoped)
+		store := record.NewStore()
+		read := func() ([]record.Issue, []record.Slot, record.LineFacts) {
+			issues, err := store.Issues(scoped, tx)
+			if err != nil {
+				t.Fatalf("list issues: %v", err)
+			}
+			facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
+			if err != nil {
+				t.Fatalf("read the line facts: %v", err)
+			}
+			slots, err := store.Slots(scoped, tx)
+			if err != nil {
+				t.Fatalf("list slots: %v", err)
+			}
+			return issues, slots, facts
+		}
+		issues, slots, facts := read()
+		// Every issue that no longer needs its slot gives it back before the line is read, as the
+		// real pass does (admit's releaseSlots): an issue out of Legion's work, or past a phase that
+		// keeps a slot, and the line offers a slot to no issue already holding one.
+		byKey := make(map[string]record.Issue, len(issues))
+		for _, issue := range issues {
+			byKey[issue.Key] = issue
+		}
+		for _, slot := range slots {
+			if issue, recorded := byKey[slot.Issue]; recorded && record.NeedsSlot(issue) {
+				continue
+			}
+			if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
+				t.Fatalf("release the slot of %s: %v", slot.Issue, err)
+			}
+		}
+		issues, slots, facts = read()
+		mirrored, err := store.DispatchIssues(scoped, tx, "LEGION")
 		if err != nil {
-			t.Fatalf("list issues: %v", err)
+			t.Fatalf("list the mirror: %v", err)
 		}
-		facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
+		rows := blockers.Rows(mirrored)
+		// Every started issue that waits on another issue gives its row back, as the real pass does
+		// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
+		// state that release leaves.
+		rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 		if err != nil {
-			t.Fatalf("read the line facts: %v", err)
+			t.Fatalf("judge the line: %v", err)
 		}
-		slots, err := store.Slots(scoped, tx)
+		for _, slot := range slots {
+			if _, waits := facts.Waits[slot.Issue]; !waits {
+				continue
+			}
+			if err := store.ReleaseSlotForWait(scoped, tx, slot.Issue, time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatalf("release the slot of %s for what it waits on: %v", slot.Issue, err)
+			}
+		}
+		issues, slots, facts = read()
+		rows, facts, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 		if err != nil {
-			t.Fatalf("list slots: %v", err)
+			t.Fatalf("judge the line again: %v", err)
 		}
-		return issues, slots, facts
-	}
-	issues, slots, facts := read()
-	// Every issue that no longer needs its slot gives it back before the line is read, as the
-	// real pass does (admit's releaseSlots): an issue out of Legion's work, or past a phase that
-	// keeps a slot, and the line offers a slot to no issue already holding one.
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	for _, slot := range slots {
-		if issue, recorded := byKey[slot.Issue]; recorded && record.NeedsSlot(issue) {
-			continue
+		for _, entry := range line {
+			// The real pass stops at the first candidate a hold holds, because the cap counts
+			// issues and everything behind it competes for the same slots.
+			if held != nil && held(entry.Issue.Key) {
+				break
+			}
+			if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
+				continue
+			}
+			if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains, rows[entry.Issue.Key].Blockers); err != nil {
+				t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
+			}
 		}
-		if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
-			t.Fatalf("release the slot of %s: %v", slot.Issue, err)
+		if err := engine.SettleFact(scoped, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
 		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	issues, slots, facts = read()
-	mirrored, err := store.DispatchIssues(scoped, tx, "LEGION")
-	if err != nil {
-		t.Fatalf("list the mirror: %v", err)
-	}
-	rows := blockers.Rows(mirrored)
-	// Every started issue that waits on another issue gives its row back, as the real pass does
-	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
-	// state that release leaves.
-	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
-	if err != nil {
-		t.Fatalf("judge the line: %v", err)
-	}
-	for _, slot := range slots {
-		if _, waits := facts.Waits[slot.Issue]; !waits {
-			continue
-		}
-		if err := store.ReleaseSlotForWait(scoped, tx, slot.Issue, time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)); err != nil {
-			t.Fatalf("release the slot of %s for what it waits on: %v", slot.Issue, err)
-		}
-	}
-	issues, slots, facts = read()
-	rows, facts, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
-	if err != nil {
-		t.Fatalf("judge the line again: %v", err)
-	}
-	for _, entry := range line {
-		// The real pass stops at the first candidate a hold holds, because the cap counts
-		// issues and everything behind it competes for the same slots.
-		if held != nil && held(entry.Issue.Key) {
-			break
-		}
-		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
-			continue
-		}
-		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains, rows[entry.Issue.Key].Blockers); err != nil {
-			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
-		}
-	}
-	if err := engine.SettleFact(scoped, tx); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(scoped); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
 }
 
 // Under two gated steps every one of them holds the tree's work. With the Verification document

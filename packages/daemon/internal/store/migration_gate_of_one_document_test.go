@@ -53,7 +53,7 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 	records := record.NewStore()
 	// The daemon reads the tree on the Dispatch chain, its copy of Dispatch's issues, which the
 	// first boot fills from Dispatch: the root, and the member under it.
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for key, parent := range map[string]string{root: "", member: root} {
 			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
 				Status: record.Carry("in_progress"), Parent: record.Carry(parent)}); err != nil {
@@ -65,7 +65,7 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
 	}
 	var facts record.NewsFacts
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		facts, _, err = record.ReadTreeNewsFacts(ctx, records, tx, steps, "LEGION", root)
 		return err
@@ -96,7 +96,7 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 	}
 
 	// The negative control: a new version of the spec closes the gate.
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		closed := classify.ApplyDesignGateEvent(gates[record.DesignStepSpec], classify.DesignGateVersion, 4, record.EventMark{})
 		if err := records.PutGate(ctx, tx, closed); err != nil {
 			return err

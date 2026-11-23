@@ -47,13 +47,13 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // on is open the registration advances the admitted tree. What register_gate read of Dispatch's
 // approval travels with the registration, so a person's review given before the architect
 // registered is applied here: an approval of the latest version (ApprovedVersion) records the gate
-// open, and the root starts planning, keeping its slot unless it waits on another issue
-// (blockers.waitsOf), since the gate has now opened; a changes request on it
-// (ChangesRequestedVersion) records it closed with the architect told, unless the gate already
-// records that same review as told, and the root keeps its slot at admitted to revise. The
-// architect is told the version the gate opened at, which an approval carried to a later version
-// makes the later one, and is not told it again when the gate of that document was already open at
-// that version.
+// open, and the root starts the first step of its plan (gateOpened; planning on today's default
+// steps), keeping its slot unless it waits on another issue (blockers.waitsOf), since the gate has
+// now opened; a changes request on it (ChangesRequestedVersion) records it closed with the
+// architect told, unless the gate already records that same review as told, and the root keeps its
+// slot at admitted to revise. The architect is told the version the gate opened at, which an
+// approval carried to a later version makes the later one, and is not told it again when the gate
+// of that document was already open at that version.
 //
 // The approval request the registration's read found open is mirrored as the read found it
 // (mirrorRegisteredRequest), before anything decides whether the registration changes the gate:
@@ -105,11 +105,6 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
-	}
-	// An architect's registration is held to the chain this transaction reads: the gate is taken
-	// from the architect of an issue that holds its own gate, on that issue (architectCallRefusal).
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, intake.GateCall); err != nil || refusal != nil {
-		return intake.Result{Refusal: refusal}, err
 	}
 	if fact.Basis != nil && record.Stopped(*issue) {
 		e.logOnCommit(ctx, "workflow: a registration on a basis of a root out of the workflow takes no basis", "issue", issue.Key,
@@ -441,7 +436,7 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 		e.logOnCommit(ctx, "workflow: a version the person is still asked to review moves the wait to it and answers nothing", "issue", issue.Key,
 			"version", fact.Version, "version_seq", fact.Mark.Seq, "since_seq", waiting.Since.Seq)
 		waiting.GateVersion = fact.Version
-		return false, e.store.PutIssue(ctx, tx, *issue)
+		return false, e.WriteIssue(ctx, tx, *issue)
 	case fact.Kind == intake.DispatchArtifactVersion:
 		waiting.GateVersion, by = fact.Version, record.AnsweredByVersion
 	case fact.Version < waiting.GateVersion:
@@ -497,7 +492,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 		e.logOnCommit(ctx, "workflow: a registration of another document moves the wait to it", "issue", issue.Key,
 			"artifact", fact.ArtifactID, "was", waiting.Artifact, "version", gate.LatestVersion)
 		waiting.Artifact, waiting.GateVersion = fact.ArtifactID, gate.LatestVersion
-		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+		if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 			return false, err
 		}
 	}
@@ -528,7 +523,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 			e.logOnCommit(ctx, "workflow: a registration of a version the person is asked to review moves the wait to it", "issue", issue.Key,
 				"version", gate.LatestVersion, "waited", waiting.GateVersion)
 			waiting.GateVersion = gate.LatestVersion
-			return false, e.store.PutIssue(ctx, tx, *issue)
+			return false, e.WriteIssue(ctx, tx, *issue)
 		}
 		return false, nil
 	}

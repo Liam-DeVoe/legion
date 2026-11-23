@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
@@ -221,16 +222,13 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	if s.pool == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	recorded, err := s.records.Issue(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return recorded, tx.Commit(ctx)
+	var recorded *record.Issue
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		recorded, err = s.records.Issue(ctx, tx, issue)
+		return err
+	})
+	return recorded, err
 }
 
 // ownsOnChain authorizes an architect's call on issue, a recorded issue, by the ownership rule
@@ -250,10 +248,9 @@ func (s *server) ownsOnChain(w http.ResponseWriter, r *http.Request, grantID, is
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue's record and chain")
 		return credential.Grant{}, record.Issue{}, false
 	}
-	ctx := r.Context()
 	var recorded *record.Issue
 	var refusal *intake.Refusal
-	if err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil {
 			return err
@@ -277,7 +274,7 @@ func (s *server) ownsOnChain(w http.ResponseWriter, r *http.Request, grantID, is
 		return credential.Grant{}, record.Issue{}, false
 	}
 	if s.callJudged != nil {
-		s.callJudged(ctx, call.Op(), []string{issue})
+		s.callJudged(r.Context(), call.Op(), []string{issue})
 	}
 	return grant, *recorded, true
 }
@@ -288,7 +285,16 @@ func requestFactID(route string) string {
 	return "api:" + route + ":" + rand.Text()
 }
 
+// applyFact applies one fact of a fact route and answers the empty object every fact route
+// answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
+	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, response)
+}
+
+// applyFactAnswering is applyFact for a route whose answer is not the empty object: response is
+// written as the answer id names (register_plan's AnswerPlanRegister), so the route's body is
+// shaped and recorded as that answer and not as the empty object.
+func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, response any) {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
@@ -299,10 +305,10 @@ func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID strin
 		return
 	}
 	if result.Refusal != nil {
-		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	s.writeAnswer(w, r, AnswerEmptyObject, http.StatusOK, response)
+	s.writeAnswer(w, r, id, http.StatusOK, response)
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
@@ -331,8 +337,9 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	artifactID := strings.ToLower(req.ArtifactID)
 	// The gate is taken from the architect of an issue that holds its own gate, on that issue, on
-	// the Dispatch chain (intake.GateCall): a child working under another issue's gate cannot
-	// stand its document in for that gate holder's review.
+	// the Dispatch chain (intake.GateCall): its opening lets each issue under it start its task's
+	// first step, so a child working under another issue's gate cannot stand its document in for
+	// that gate holder's review.
 	grant, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.GateCall)
 	if !ok {
 		return
@@ -349,7 +356,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := root.LastSeq
-	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue)
+	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue, "register_gate")
 	if !ok {
 		return
 	}
@@ -380,7 +387,8 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ApprovedVersion: approval.ApprovedLatest(),
 		ChangesRequestedVersion: changes, ChangesReason: reason, ReviewedBy: approval.LatestReviewer(),
 		DispatchVersion: approval.LatestVersion, Since: record.EventMark{Seq: since},
-		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent", Architect: grant.Claim}
+		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
+		By: grant.Claim, Generation: recorded.Generation}
 	review := record.EventMark{Seq: approval.Seq, At: approval.At}
 	if changes != 0 {
 		fact.ChangesRequestedMark = review
@@ -453,8 +461,8 @@ func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue st
 		return 0, false
 	}
 	var moves int
-	if err := pgx.BeginTxFunc(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		gates, err := s.records.GatesOf(r.Context(), tx, issue)
+	if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		gates, err := s.records.GatesOf(ctx, tx, issue)
 		moves = gates[step].BasisMoves
 		return err
 	}); err != nil {
@@ -542,10 +550,11 @@ func (s *server) gateIssue(w http.ResponseWriter, r *http.Request, issue string)
 	return current, true
 }
 
-// documentOfIssue refuses a gate document the issue does not carry, as the shipped daemon does: an
-// already-approved document of any other issue would otherwise open this gate. A failed read
-// records nothing, so the architect's register_gate retries. It returns the approval it read.
-func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifactID, issue string) (dispatch.Approval, bool) {
+// documentOfIssue refuses a document the issue does not carry, as the shipped daemon does: an
+// already-approved document of any other issue would otherwise open this gate, or give this issue
+// another issue's plan. A failed read records nothing, so the architect's operation, which the
+// refusal names, retries. It returns the approval it read.
+func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifactID, issue, operation string) (dispatch.Approval, bool) {
 	if s.dispatch == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return dispatch.Approval{}, false
@@ -556,7 +565,7 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return dispatch.Approval{}, false
 	case err != nil:
-		s.refuseFailedRead(w, r, &readFailure{what: artifactID, err: err})
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry %s", artifactID, operation))
 		return dispatch.Approval{}, false
 	}
 	return approval, true
@@ -725,25 +734,23 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 		return true
 	}
 	// The notice is its own transaction, so it owns the commit hook its write registers (the
-	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		row, err := record.NewFencedRow(scoped, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
+	// daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := record.NewFencedRow(ctx, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		return s.records.Enqueue(scoped, tx, row)
+		return s.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
-	committed()
 	return true
 }
 
 func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, issue string) bool {
-	if err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
-		return s.records.DeleteReleaseRetry(r.Context(), tx, issue)
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return s.records.DeleteReleaseRetry(ctx, tx, issue)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
 		return false
@@ -764,10 +771,9 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	var retry record.ReleaseRetry
 	var exhausted, told, backoff bool
 	// The retry is its own transaction, so it owns the commit hook the stalled notice's write
-	// registers (the daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		current, err := s.records.ReleaseRetry(scoped, tx, child.Key)
+	// registers (the daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		current, err := s.records.ReleaseRetry(ctx, tx, child.Key)
 		if err != nil {
 			return err
 		}
@@ -787,22 +793,21 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		retry.NextAt = now.Add(childReleaseBackoff << (retry.Attempts - 1))
 		retry.Exhausted = retry.Attempts >= maxChildReleaseAttempts
 		if retry.Exhausted {
-			row, err := record.NewFencedRow(scoped, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
+			row, err := record.NewFencedRow(ctx, tx, s.records, grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
 				Reason: fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d releases; inspect the tree before trying again", child.Key, parent, retry.Attempts)}, now)
 			if err != nil {
 				return err
 			}
-			if err := s.records.Enqueue(scoped, tx, row); err != nil {
+			if err := s.records.Enqueue(ctx, tx, row); err != nil {
 				return err
 			}
 			exhausted, told = true, true
 		}
-		return s.records.PutReleaseRetry(scoped, tx, retry)
+		return s.records.PutReleaseRetry(ctx, tx, retry)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RETRY_UNAVAILABLE", fmt.Sprintf("could not record the release retry of %s", child.Key))
 		return false
 	}
-	committed()
 	if exhausted {
 		notified := "a child-release-stalled notice was queued when the attempts ran out"
 		if told {
@@ -1178,17 +1183,15 @@ func (s *server) readReleasedBefore(ctx context.Context, children []releasedChil
 	if s.pool == nil {
 		return errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for i := range children {
-		if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
-			return err
+	return store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		for i := range children {
+			var err error
+			if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit(ctx)
+		return nil
+	})
 }
 
 // releaseOrder is the wave in the request's order, except that each child comes after every child
@@ -1242,11 +1245,6 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	if s.pool == nil {
 		return nil, nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var waitedOn []string
 	for _, child := range children {
 		waitedOn = append(waitedOn, child.view.BlockedBy...)
@@ -1254,28 +1252,31 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	// The mirror's rows are keyed by the Dispatch project key the issues are filed under, never
 	// by the claim project token: a read with the token finds nothing wherever the two differ,
 	// which in a deployment is always (Options.Project, Options.DispatchProject).
-	rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
-	if err != nil {
-		return nil, nil, err
-	}
 	started, held := []string{}, []HeldChild{}
-	for _, child := range children {
-		after, err := s.records.Issue(ctx, tx, child.view.Key)
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		switch {
-		case startedByRelease(child.before, after):
-			started = append(started, child.view.Key)
-		case runsPhase(after):
-		default:
-			// The mirror's rows are keyed as the store keeps the keys (storetext.Strings).
-			if unfinished := blockers.UnfinishedOf(rows, storetext.Strings(child.view.BlockedBy)); len(unfinished) > 0 {
-				held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+		for _, child := range children {
+			after, err := s.records.Issue(ctx, tx, child.view.Key)
+			if err != nil {
+				return err
+			}
+			switch {
+			case startedByRelease(child.before, after):
+				started = append(started, child.view.Key)
+			case runsPhase(after):
+			default:
+				// The mirror's rows are keyed as the store keeps the keys (storetext.Strings).
+				if unfinished := blockers.UnfinishedOf(rows, storetext.Strings(child.view.BlockedBy)); len(unfinished) > 0 {
+					held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+				}
 			}
 		}
-	}
-	return started, held, tx.Commit(ctx)
+		return nil
+	})
+	return started, held, err
 }
 
 // startedByRelease says whether the release started a child's first phase: its record after the
@@ -1327,12 +1328,17 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		if !s.requireFailureFields(w, r, field{"issue", req.Issue}) {
 			return
 		}
-		architect, _, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.BackwardCall)
+		architect, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.BackwardCall)
+		if !ok {
+			return
+		}
+		entry, ok := s.openStep(w, r, req.Issue)
 		if !ok {
 			return
 		}
 		s.applyFact(w, r, requestFactID("phase/backward"),
-			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason, Architect: architect.Claim}, PhaseBackwardResponse{})
+			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason,
+				By: architect.Claim, Generation: recorded.Generation, Entry: entry}, PhaseBackwardResponse{})
 		return
 	}
 	grant, ok = s.phaseWorkerGrant(w, r, req.GrantID)
@@ -1364,12 +1370,12 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_DECISION", "decision must be retry or escalate")
 		return
 	}
-	grant, _, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.RetryCall)
+	grant, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.RetryCall)
 	if !ok {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/retry"),
-		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, Architect: grant.Claim}, PhaseRetryResponse{})
+		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation}, PhaseRetryResponse{})
 }
 
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
@@ -1381,11 +1387,15 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
-	grant, _, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.SignOffCall)
+	grant, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.SignOffCall)
 	if !ok {
 		return
 	}
-	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, Architect: grant.Claim}, SignOffResponse{})
+	entry, ok := s.openStep(w, r, req.Issue)
+	if !ok {
+		return
+	}
+	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry}, SignOffResponse{})
 }
 
 // closeRoot ends a root while it has started no phase — admitted, or waiting on a person
@@ -1425,12 +1435,36 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("the reason makes a message Dispatch refuses: %s; shorten it", over))
 		return
 	}
-	grant, _, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.CloseCall)
+	grant, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.CloseCall)
 	if !ok {
 		return
 	}
-	fact.Architect = grant.Claim
+	fact.By, fact.Generation = grant.Claim, recorded.Generation
 	s.applyFact(w, r, requestFactID("roots-close"), fact, EmptyResponse{})
+}
+
+// openStep is the run of the step issue stands in (record.Store.OpenStep), read in one read-only
+// transaction: what a request about accepting, sign_off and request_backward_move, names on its
+// fact, so the workflow refuses it where another run of accepting stands under the fact lock. A
+// failed read is answered 500 RECORD_UNAVAILABLE.
+func (s *server) openStep(w http.ResponseWriter, r *http.Request, issue string) (record.StepEntry, bool) {
+	entry, err := func() (record.StepEntry, error) {
+		if s.pool == nil || s.records == nil {
+			return record.StepEntry{}, errors.New("record dependencies are unavailable")
+		}
+		var entry record.StepEntry
+		err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			entry, err = s.records.OpenStep(ctx, tx, issue)
+			return err
+		})
+		return entry, err
+	}()
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the step the issue stands in")
+		return record.StepEntry{}, false
+	}
+	return entry, true
 }
 
 // removedChildRoute answers an older plugin's call of a child route that this daemon no longer
@@ -1459,7 +1493,8 @@ func (s *server) removedChildRoute(w http.ResponseWriter, r *http.Request) {
 // not in work to in_progress with it (PARENT_ARGUMENT_REQUIRED, R24 of dispatch://INFRA-3320). The
 // todo is queued as a status row on the child's lane and counted on its record before Dispatch
 // echoes it (R16): a child Dispatch shows in backlog or icebox, whoever wrote that status, opens a
-// new run (R20), and any other returns to work as a person's todo would.
+// new run (R20), whose slot starts the first step of its plan, the newest plan its owner gave or
+// the project's default steps, and any other returns to work as a person's todo would.
 func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	var req RerunChildRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {

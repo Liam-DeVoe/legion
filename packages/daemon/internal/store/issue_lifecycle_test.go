@@ -170,7 +170,7 @@ func TestAnIssueReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	openIssueLifecycle(t, store, childIssue)
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

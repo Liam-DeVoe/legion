@@ -33,7 +33,7 @@ import (
 // record, which keeps a slot and so stands among the issues at work. Three have left the
 // workflow: LEGION-502, which is done, LEGION-503, which a person left on the backlog, and
 // LEGION-710, the parked root itself, whose park took its own record out of Legion's work. The
-// other four stand past their own review, where an issue holds no slot at all since
+// other four stand in accepting, retro or merging, where an issue holds no slot at all since
 // dispatch://INFRA-2560 and so is named by none of the three lists, only by `admission.held`
 // under at_work: LEGION-700, whose architect is reading the head its worker built, LEGION-701,
 // whose retro implementer is at work, LEGION-702, whose merger rests between its turns, and
@@ -91,10 +91,11 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			lineIssue("LEGION-501", "LEGION-500", "in_progress", phase.Held, "K"),
 			lineIssue("LEGION-502", "LEGION-502", "done", phase.Done, "L"),
 			lineIssue("LEGION-503", "LEGION-503", "backlog", phase.Admitted, "M"),
-			// The tree that runs, every member of which stands past its own review and so
-			// holds none of the cap's slots, which the assertion over `admission.active`
-			// below is what proves: each of them reaches the last arm of the pass placed by
-			// no list, and what tells them apart there is the work rather than the phase.
+			// The tree that runs, every member of which stands in accepting, retro or merging, or
+			// is held from retro, and so holds none of the cap's slots, which the assertion over
+			// `admission.active` below is what proves: each of them reaches the last arm of the
+			// pass placed by no list, and what tells them apart there is the work rather than the
+			// phase.
 			// Three are at work — the architect reading the head LEGION-700's worker built,
 			// the retro of LEGION-701 and the merge of LEGION-702 — and are served no answer,
 			// because `unlisted` would serve a reader of `why` a sentence of the held list about
@@ -173,13 +174,14 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		{Token: token("LEGION-101", claim.RoleImplementer), Project: "legion", Tree: "LEGION-100", Issue: "LEGION-101",
 			Role: claim.RoleImplementer, State: supervise.StateFailed},
 	}
-	// The workers of the issues past their review, and the one the park suspended. The three
-	// of the running tree are a claim at work, a second at work and a third resting between
-	// its turns (supervise.StateIdle, one of the four states record's measure counts as no
-	// work under way), which is the pair of shapes the last arm must answer alike: the daemon
-	// will prompt an idle worker, and the set above is where a claim nothing will wake is
-	// named. The suspended worker of LEGION-711 is in no stranded set either: the park
-	// suspended it, and the issue's own record says it runs, so its answer is the last arm's.
+	// The workers of the issues in accepting, retro and merging, and the one the park
+	// suspended. The three of the running tree are a claim at work, a second at work and a
+	// third resting between its turns (supervise.StateIdle, one of the four states record's
+	// measure counts as no work under way), which is the pair of shapes the last arm must
+	// answer alike: the daemon will prompt an idle worker, and the set above is where a claim
+	// nothing will wake is named. The suspended worker of LEGION-711 is in no stranded set
+	// either: the park suspended it, and the issue's own record says it runs, so its answer is
+	// the last arm's.
 	claims := append([]supervise.Claim{
 		{Token: token("LEGION-500", claim.RoleImplementer), Project: "legion", Tree: "LEGION-500", Issue: "LEGION-500",
 			Role: claim.RoleImplementer, State: supervise.StateWorking, Session: "ses_implementer_500"},

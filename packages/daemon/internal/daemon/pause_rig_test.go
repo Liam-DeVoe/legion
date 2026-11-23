@@ -845,7 +845,7 @@ func (r *pauseDaemonRig) count(sql string, args ...any) int {
 func (r *pauseDaemonRig) enqueue(issue string, payload record.OutboxPayload) int64 {
 	r.t.Helper()
 	var id int64
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := record.NewFencedRow(r.ctx, tx, r.records, issue, payload, r.dueNow())
 		if err != nil {
 			return err
@@ -885,7 +885,7 @@ func (r *pauseDaemonRig) outboxRows(issue string) map[int64]string {
 func (r *pauseDaemonRig) recordOf(key string) *record.Issue {
 	r.t.Helper()
 	var recorded *record.Issue
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		recorded, err = r.records.Issue(r.ctx, tx, key)
 		return err

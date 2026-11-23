@@ -8,8 +8,8 @@
     "convertedAt": "2026-09-18T14:04:11Z"
   },
   "contract": {
-    "daemon": 233,
-    "caller": 233
+    "daemon": 240,
+    "caller": 240
   },
   "admission": {
     "cap": 5,
@@ -1097,6 +1097,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1106,6 +1113,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },

@@ -93,21 +93,21 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 // putBackARetakenConfirmation's, which runs before the write of the delivery this holds for and
 // only where that write takes this claim's own confirmation back. A delivery that names nothing
 // holds nothing.
-func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delivery string, kept []byte) error {
+func holdKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte) error {
 	if len(kept) == 0 {
 		return nil
 	}
-	if _, err := db.Exec(ctx, `update parked_decisions set held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update parked_decisions set held_by_delivery = $2
 		where held_by_claim = $1 and held_by_delivery is not null and held_by_delivery <> $2`,
 		string(token), delivery); err != nil {
 		return fmt.Errorf("move what the task of %s held to delivery %s: %w", token, delivery, err)
 	}
-	if _, err := db.Exec(ctx, `update readmitted_approvals set held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update readmitted_approvals set held_by_delivery = $2
 		where held_by_claim = $1 and held_by_delivery is not null and held_by_delivery <> $2`,
 		string(token), delivery); err != nil {
 		return fmt.Errorf("move the approval the task of %s held to delivery %s: %w", token, delivery, err)
 	}
-	if _, err := db.Exec(ctx, `update parked_decisions set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update parked_decisions set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
 		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb)) as named (ref text, at timestamptz),
 			claims holder
 		where holder.token = $1
@@ -117,7 +117,7 @@ func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delive
 		string(token), delivery, kept); err != nil {
 		return fmt.Errorf("hold what the task queued on %s as delivery %s names: %w", token, delivery, err)
 	}
-	if _, err := db.Exec(ctx, `update readmitted_approvals set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update readmitted_approvals set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
 		from claims holder, (select ($3::jsonb ->> 'approved')::int as approved, ($3::jsonb ->> 'latest')::int as latest) as named
 		where holder.token = $1 and readmitted_approvals.issue = holder.issue
 		and readmitted_approvals.approved_version = named.approved and readmitted_approvals.latest_version = named.latest
@@ -133,9 +133,9 @@ func holdKeptDecisions(ctx context.Context, db execer, token claim.Token, delive
 // so every row it holds has been told and is deleted. What it holds is what its task names after
 // the last send's narrowing, which released every row the Dispatch chain no longer shows owed to
 // the claim's issue (the daemon's rootTask), so nothing it holds is another architect's.
-func tellKeptDecisions(ctx context.Context, db execer, token claim.Token, delivery string) error {
+func tellKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) error {
 	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
-		if _, err := db.Exec(ctx, `delete from `+table+` where held_by_claim = $1 and held_by_delivery = $2`,
+		if _, err := tx.Exec(ctx, `delete from `+table+` where held_by_claim = $1 and held_by_delivery = $2`,
 			string(token), delivery); err != nil {
 			return fmt.Errorf("tell what the delivery %s on %s held: %w", delivery, token, err)
 		}
@@ -147,9 +147,9 @@ func tellKeptDecisions(ctx context.Context, db execer, token claim.Token, delive
 // delivery leaves behind: the row is KEPT, for the next start or catch-up of the gate root its
 // issue is owed to to name. It clears the hold alone: a row is claimed or held, never both, and a
 // claim is settled by the start or catch-up that owns it, never by a delivery's release.
-func releaseKeptDecisions(ctx context.Context, db execer, token claim.Token, delivery string) error {
+func releaseKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) error {
 	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
-		if _, err := db.Exec(ctx, `update `+table+` set held_by_claim = null, held_by_delivery = null
+		if _, err := tx.Exec(ctx, `update `+table+` set held_by_claim = null, held_by_delivery = null
 			where held_by_claim = $1 and held_by_delivery = $2`, string(token), delivery); err != nil {
 			return fmt.Errorf("leave what the delivery %s on %s held kept: %w", delivery, token, err)
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
@@ -49,7 +50,7 @@ func TestTheTreeOfAnIssueIsItsGateRoot(t *testing.T) {
 		{finishedTop, unrecordedParent, "done", phase.Done, false, finishedTop},
 		{finished, member, "done", phase.Done, false, member},
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range rows {
 			issue := record.Issue{Key: row.key, Tree: "LEGION-999", Project: treeRunsProject, Title: row.key, Phase: row.at, Generation: 1,
 				Status: row.status, DispatchStatus: row.status, Rank: row.key, LastDispatchSeq: 1, HoldsGate: row.holdsGate,

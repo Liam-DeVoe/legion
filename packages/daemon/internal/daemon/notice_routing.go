@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -76,7 +77,7 @@ type noticeSnapshot struct {
 func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (record.Issue, noticeSnapshot, error) {
 	var issue record.Issue
 	var snapshot noticeSnapshot
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		leased, err := r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
 		if err != nil {
 			return err

@@ -525,7 +525,7 @@ func valueStripCases() map[string]valueStripCase {
 				Detail: "a cache ran out of room", Source: undeclaredValue,
 			}}},
 		},
-		// The three strips of gateBasisContract's values read a mixed pod recording 178 and
+		// The two strips of gateBasisContract's values read a mixed pod recording 178 and
 		// gateBasisContract, and no pod reading counts the gateBasisContract claim: podContracts
 		// leaves out a claim at shapedAnswersContract or above, since every build from there states
 		// its contract in the header. So the pod is served as its 178 process alone, on both sides,
@@ -605,45 +605,80 @@ func valueStripCases() map[string]valueStripCase {
 			undeclaredIssue: Issue{Key: "LEGION-215", Phase: phase.Phase(undeclaredValue), HeldFrom: undeclaredValue,
 				Architect: &ClaimView{Session: "ses_architect_215", PendingTask: &PendingTaskView{Phase: phase.Phase(undeclaredValue), QueuedAt: answeredAt}}},
 		},
-		// A held row of `awaiting_children`, which a reader from 98 up to the contract below
-		// gateBasisContract refuses the whole body for: the pod is served it as `children_first`,
-		// a row of `chain_unknown` or `awaiting_todo`, which chainContract added, as
-		// `unclassified`, and every other row as it is.
-		droppedHeldReason: {
-			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: gateBasisContract,
+		// A pod recording the contract before shapedAnswersContract is served every issue held for
+		// `task-stopped` or `children` without its `holdReason`: the two arrived at
+		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
+		// The hold's `heldFrom` stays, and so does every escalated hold. No pod's reckoning holds
+		// a claim at or above shapedAnswersContract, since a build from that contract on states
+		// its own (podContracts), so the pod's claim at OwnerPlanContract moves neither half and
+		// the pod alone at it is served this daemon's own body, as production serves it. The
+		// field is older than the floor, so the case names no value that arrived with it.
+		droppedHoldReason: {
+			state: heldIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
 			carries: func(t *testing.T, body []byte) bool {
-				_, reasons := phasesAndHeldWords(t, body)
-				for _, reason := range reasons {
-					if reason == string(record.HeldAwaitingChildren) {
+				for _, hold := range holdsServed(t, body) {
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
 						return true
 					}
 				}
 				return false
 			},
 			stays: func(t *testing.T, whole, mixed []byte) {
-				_, wanted := phasesAndHeldWords(t, whole)
-				_, served := phasesAndHeldWords(t, mixed)
-				for issue, reason := range wanted {
-					switch reason {
-					case string(record.HeldAwaitingChildren):
-						reason = string(record.HeldChildrenFirst)
-					case string(record.HeldChainUnknown), string(record.HeldAwaitingTodo):
-						reason = string(record.HeldUnclassified)
+				served := holdsServed(t, mixed)
+				for key, hold := range holdsServed(t, whole) {
+					want := hold
+					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
+						want[0] = ""
 					}
-					if served[issue] != reason {
-						t.Errorf("the {%d, %d} pod is served %s's held row under %q, want %q",
-							pauseContract, gateBasisContract, issue, served[issue], reason)
+					if served[key] != want {
+						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
 					}
-				}
-				if len(served) != len(wanted) {
-					t.Errorf("the {%d, %d} pod is served %d held rows, want the %d the body at %d serves: the strip keeps every row",
-						pauseContract, gateBasisContract, len(served), len(wanted), DaemonAPIVersion)
 				}
 			},
-			// A held row whose reason is a word no row declares.
-			undeclaredState: State{Admission: Admission{Held: []HeldIssue{
-				{Issue: "LEGION-216", Reason: record.HeldReason(undeclaredValue)},
-			}}},
+			// A held issue whose reason is a word no row declares.
+			undeclaredIssue: Issue{Key: "SHAPES-3", Phase: "held", HoldReason: undeclaredValue, HeldFrom: "testing"},
+		},
+		// A pod recording the contract before shapedAnswersContract is served each row of
+		// `admission.held` under `children_before_retro` or `task_stopped` as `unclassified` with
+		// no `heldBy`: the two arrived at OwnerPlanContract, after the field, and the pod's process
+		// reads `reason` with a `z.enum` of the eleven words before them, and a row of the
+		// `awaiting_children` gateBasisContract added as `children_first`, the word that wait took
+		// over, with its `heldBy`, which names what that word names (heldReasonStandIn). Every
+		// other row stays as it stands. The pod's claim at OwnerPlanContract moves neither half,
+		// as above. The eleven words arrived with the field at heldContract and ride its band,
+		// which follows the pod's highest contract; no pod whose highest reads the new words is a
+		// pod at all, so that half is read on a pod recording the floor and the contract before
+		// shapedAnswersContract (TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified) rather than
+		// here.
+		droppedHeldWord: {
+			state: heldWordAndWaitIssues, low: shapedAnswersContract - 1, high: OwnerPlanContract,
+			carries: func(t *testing.T, body []byte) bool {
+				for _, row := range heldRowsServed(t, body) {
+					if heldReasonArrivals.heldBack(row["reason"].(string), shapedAnswersContract-1) {
+						return true
+					}
+				}
+				return false
+			},
+			stays: func(t *testing.T, whole, mixed []byte) {
+				served := heldRowsServed(t, mixed)
+				for key, row := range heldRowsServed(t, whole) {
+					want := row
+					switch {
+					case row["reason"] == string(record.HeldAwaitingChildren):
+						want = map[string]any{"issue": key, "reason": string(record.HeldChildrenFirst), "heldBy": row["heldBy"]}
+					case heldReasonArrivals.heldBack(row["reason"].(string), shapedAnswersContract-1):
+						want = map[string]any{"issue": key, "reason": string(record.HeldUnclassified)}
+					}
+					if !reflect.DeepEqual(served[key], want) {
+						t.Errorf("the {%d, %d} pod is served %s's held row as %v, want %v: the strip rewrites the word the pod's %d process refuses and nothing else",
+							shapedAnswersContract-1, OwnerPlanContract, key, served[key], want, shapedAnswersContract-1)
+					}
+				}
+			},
+			// A row of the held list whose word no row of the table declares.
+			undeclaredState: State{Admission: Admission{Held: []HeldIssue{{Issue: "SHAPES-4", Reason: record.HeldReason(undeclaredValue)}}}},
 		},
 	}
 }

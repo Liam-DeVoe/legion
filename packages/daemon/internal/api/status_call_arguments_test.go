@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // onlyStatusRow is the one status row of issue the outbox holds, failing the test where it holds
@@ -42,7 +43,7 @@ func TestSetStatusTakesAChildrenArgument(t *testing.T) {
 		for _, children := range []string{"", intake.IncludeArgument, intake.UnlinkArgument} {
 			t.Run(status+" children="+children, func(t *testing.T) {
 				h, _, statuses := statusHarness(t)
-				if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					if err := seedCopy(tx, statusRoot, "", "in_progress"); err != nil {
 						return err
 					}
@@ -87,7 +88,7 @@ func TestSetStatusTakesAChildrenArgument(t *testing.T) {
 func TestSetStatusNamesAChildInWorkTheDaemonDoesNotRecord(t *testing.T) {
 	const unrecorded = "LEGION-210"
 	h, _, statuses := statusHarness(t)
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := seedCopy(tx, statusRoot, "", "in_progress"); err != nil {
 			return err
 		}

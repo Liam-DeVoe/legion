@@ -40,13 +40,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // treeBeforeDriverEnv names the release before's driver binary, which the script builds from the
@@ -539,6 +543,117 @@ func TestTheTreeCutoverLive(t *testing.T) {
 		if told != 2 {
 			t.Fatalf("the daemon queued %d reparented notices of %s, want one to its own architect and one to %s's", told, b, a)
 		}
+	})
+
+	// A2 is the shape the release before left INFRA-533 in: a child of A at work whose parent the
+	// person took off, which that release kept in A's tree, under A's sign-off, with no gate of its
+	// own (dispatch://INFRA-4730's k49 reads INFRA-533 after the deploy).
+	step("an issue the release before kept in another tree with no Dispatch parent is a root of its own", func() {
+		// It reads as a root: its gate root on the Dispatch chain is itself (record.Chains.StateTree).
+		state, body = r.state()
+		if got := state.Issues[a2].Tree; got != a2 || !slices.Contains(state.Admission.Trees, a2) {
+			t.Fatalf("the state's tree of %s is %s and admission.trees is %v, want %s a root of its own\nstate %s", a2, got, state.Admission.Trees, a2, body)
+		}
+		treeNote("%s's tree is %s, admission.trees names it, and it stands in %v in %s", a2, a2, placed(state, a2), state.Issues[a2].Phase)
+
+		// Its architect, which the release before launched under A, is relaunched in its own
+		// session under A2 (supervision.relaunchUnderGateRoots, supervise.GateRootMoved), and its
+		// registration answers A2 as its tree, which its plugin holds its register_gate to.
+		architect := world.token(t, a2, claim.RoleArchitect)
+		held, ok := world.Claims[architect]
+		if !ok {
+			t.Fatalf("the release before registered no architect of %s, which its first phase start launches", a2)
+		}
+		var session, sessionFile string
+		if err := r.pool.QueryRow(t.Context(), `select session, session_file from claims where token = $1`, string(architect)).
+			Scan(&session, &sessionFile); err != nil || session != held.Session {
+			t.Fatalf("the claim %s holds the session %q (%v), want %q, the one the release before registered", architect, session, err, held.Session)
+		}
+		var relaunch runtime.SpawnSpec
+		testwait.Eventually(t, "the daemon to relaunch "+string(architect)+" in its session under "+a2, func() bool {
+			for _, call := range r.rt.Calls() {
+				if call.Method == "Resume" && call.Spec.Claim == architect && call.Spec.Tree == a2 {
+					relaunch = call.Spec
+					return true
+				}
+			}
+			return false
+		})
+		if relaunch.ResumeSessionFile != sessionFile && relaunch.ResumeSession != session {
+			t.Fatalf("the relaunch of %s resumes the session %q (file %q), want its own, %q (file %q)", architect, relaunch.ResumeSession,
+				relaunch.ResumeSessionFile, session, sessionFile)
+		}
+		registered := r.register(relaunch)
+		if registered.Tree != a2 {
+			t.Fatalf("the relaunched architect of %s registered under the tree %s, want %s", a2, registered.Tree, a2)
+		}
+		treeNote("%s, launched under %s by the release before, resumed its session %s with LEGION_TREE %s and registered under the tree %s",
+			architect, held.Tree, session, relaunch.Tree, registered.Tree)
+
+		// The gate the merger's hold reads is A2's own, and the state shows no approved version of
+		// it. The hold (the outbox's designGateClosed) reads the gate root on the Dispatch chain, as
+		// the state's tree does, and holds a merger on a registered step that no approval opened
+		// (classify.StandingGate).
+		if gate := state.Issues[a2].DesignGate; gate != nil && gate.ApprovedVersion != nil {
+			t.Fatalf("the state shows the design gate of %s approved at version %d, want no approved version: nobody designed %s as a root\nstate %s",
+				a2, *gate.ApprovedVersion, a2, body)
+		}
+		issue, err := store.ReadOnly(t.Context(), pool, "read "+a2, func(ctx context.Context, tx pgx.Tx) (*record.Issue, error) {
+			return record.NewStore().Issue(ctx, tx, a2)
+		})
+		if err != nil || issue == nil {
+			t.Fatalf("read %s: %v (recorded %t)", a2, err, issue != nil)
+		}
+		hold := &outbox{pool: pool, records: record.NewStore(), gatedSteps: r.cfg.Gates.Steps()}
+		gateRoot, closed, err := hold.designGateClosed(t.Context(), *issue)
+		if err != nil || gateRoot != a2 {
+			t.Fatalf("the merger's hold of %s reads the design gate of %q (%v), want the gate of %s itself, not of %s", a2, gateRoot, err, a2, a)
+		}
+		treeNote("the state shows no approved version of %s's own gate, and the merger's hold reads the gate of %s (closed %t)", a2, gateRoot, closed)
+		treeNote("gates.design is off on this rig. It gates no step, so that hold holds no merger here")
+		treeNote("%s holds no step, and a step with no row holds no merger. Under root-issues, its merger waits once its architect's register_gate writes a step that is not approved", a2)
+
+		// A's sign-off and close wait on nothing of A2's: none of the three readers of the hold on
+		// them (workflow.Engine.acceptanceHeld) names it.
+		type acceptanceReading struct {
+			beneath []string
+			resting []workflow.RestingRoot
+			open    []record.OpenChild
+		}
+		reading, err := store.ReadOnly(t.Context(), pool, "read what holds the acceptance of "+a, func(ctx context.Context, tx pgx.Tx) (acceptanceReading, error) {
+			records := record.NewStore()
+			root, err := records.Issue(ctx, tx, a)
+			if err != nil {
+				return acceptanceReading{}, err
+			}
+			if root == nil {
+				return acceptanceReading{}, fmt.Errorf("the daemon records no %s", a)
+			}
+			chains, err := record.ReadChains(ctx, tx, records, root.Project, []string{a})
+			if err != nil {
+				return acceptanceReading{}, err
+			}
+			resting, err := workflow.RestingRoots(ctx, tx, records, a)
+			if err != nil {
+				return acceptanceReading{}, err
+			}
+			waits, err := record.OpenChildWaits(ctx, tx, records, world.Project, []record.Issue{*root})
+			return acceptanceReading{beneath: record.OpenBeneath(chains, a), resting: resting, open: waits[a].Open}, err
+		})
+		if err != nil {
+			t.Fatalf("read what holds the acceptance of %s: %v", a, err)
+		}
+		var resting, open []string
+		for _, root := range reading.resting {
+			resting = append(resting, root.Key)
+		}
+		for _, child := range reading.open {
+			open = append(open, child.Key)
+		}
+		if slices.Contains(reading.beneath, a2) || slices.Contains(resting, a2) || slices.Contains(open, a2) {
+			t.Fatalf("the hold on the acceptance of %s names %s: beneath %v, resting roots %v, open children %v; want nothing of it", a, a2, reading.beneath, resting, open)
+		}
+		treeNote("the acceptance of %s waits on beneath %v, resting roots %v and open children %v: nothing of %s", a, reading.beneath, resting, open, a2)
 	})
 
 	step("the undelivered decision is named by the next catch-up", func() {

@@ -33,12 +33,15 @@
 # its retention_end row; the reserved cleanup and the operator's hold on each issue they covered;
 # the landed hand-over a root of its own carrying its run, and that write's later event read as the
 # daemon's own; each issue in Legion's work in one list of the state; R18's notice of the root under
-# a parent at work told to its own architect and the one above it, once; the kept decision named by
-# the next catch-up; the oldest contract's registration, ready, activity, exit, credential, handoff
-# and phase completion answered; Dispatch's Legion board grouping each issue by its gate root
-# (Dispatch's metrics have no route, and place an issue in a tree by the board's one rule);
-# daemon.convertedAt set by the first finished conversion and unchanged by the later boots; and the
-# last boot changing nothing (each table the conversion writes, read before and after it, equal). Its
+# a parent at work told to its own architect and the one above it, once; the child whose parent the
+# person took off a root of its own, its architect relaunched in its session under its own key, the
+# gate its merger's hold reads its own and with no approved version, and nothing of it holding the
+# old root's acceptance; the kept decision named by the next catch-up; the oldest contract's
+# registration, ready, activity, exit, credential, handoff and phase completion answered; Dispatch's
+# Legion board grouping each issue by its gate root (Dispatch's metrics have no route, and place an
+# issue in a tree by the board's one rule); daemon.convertedAt set by the first finished conversion
+# and unchanged by the later boots; and the last boot changing nothing (each table the conversion
+# writes, read before and after it, equal). Its
 # last line is the driver's `tree cutover: PASS` and then the run's; a refusal before the run's
 # checks, a failure of member-becomes-root.sh (`FAIL member-becomes-root.sh: …`) or of a check of
 # lib/tree-proof.sh's own ends it on that FAIL line instead.

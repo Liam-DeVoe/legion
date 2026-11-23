@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
@@ -36,6 +37,7 @@ import (
 //     person's todo, which opens a new run;
 //   - an unrecorded issue moved to in_progress starts nothing.
 func TestEachKindOfIssueReadsTheFixAsR25Says(t *testing.T) {
+	t.Parallel()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection.
 	board := scratchDispatchOptions{natsURL: testnats.URL(t), env: []string{parentStatusRule + "=off"}}
@@ -116,7 +118,7 @@ func TestEachKindOfIssueReadsTheFixAsR25Says(t *testing.T) {
 		}
 		return recorded
 	}
-	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		for _, issue := range []record.Issue{
 			recordOf(implementing, phase.Implementing, 1, "in_progress", working.Key),
@@ -265,7 +267,7 @@ func inLine(s api.State, key string) bool {
 func (r *personHandoverRig) recorded(key string) *record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = record.NewStore().Issue(r.t.Context(), tx, key)
 		return err

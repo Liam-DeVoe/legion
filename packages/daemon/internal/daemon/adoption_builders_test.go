@@ -248,7 +248,7 @@ func (r *adoptionRig) run() {
 		if err := r.runner.execute(r.ctx, row); err != nil {
 			r.t.Fatalf("run the start row %d of %s: %v", row.ID, row.Issue, err)
 		}
-		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			return r.records.FinishOutbox(r.ctx, tx, row.ID, row.LeaseToken)
 		}); err != nil {
 			r.t.Fatalf("finish the start row %d: %v", row.ID, err)
@@ -371,6 +371,7 @@ func (r *adoptionRig) heldTask(issue string, role claim.Role) supervise.Delivery
 // phase tasks are adopted once each by the phase owner alone, and a phase task waits, unadopted,
 // while another role of the issue is in a turn.
 func TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		run  func(r *adoptionRig)
@@ -508,7 +509,7 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 		r.t.Fatalf("the tester's death relaunched its session %d times, want once", resumed)
 	}
 	start := theOneStartRow(r.t, r.pool, issue.Key)
-	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != workflow.ResumePhaseTask(issue) {
+	if start.role != claim.RoleTester || start.stands != phase.Testing || start.task != resumeTaskOf(r.t, r.pool, r.engine, issue.Key) {
 		r.t.Fatalf("the ready wrote the start %+v, want the tester's testing resume task", start)
 	}
 	r.run()
@@ -534,7 +535,7 @@ func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 		Status: "in_progress", Rank: "U", HandedOver: true}
 	planner := r.token(issue.Key, claim.RolePlanner)
 	seedWorkflowTree(r.t, r.dsn(), "legion", issue, r.live(issue.Key, issue.Key, claim.RolePlanner))
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: planner})
 	}); err != nil {
 		r.t.Fatalf("record the planner's phases row: %v", err)

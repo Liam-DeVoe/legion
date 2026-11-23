@@ -8,12 +8,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A root a hand-over of the release before carried in, in a phase short of its review, stands in
-// the waiting line by its own facts (record.CarriedIn: its carried generation is the one it stands
-// at), and its promotion takes a row, writes it in progress and starts the worker of the phase it
-// carries at a new entry (workflow.Engine.StartCarriedRun). A person's todo on it afterwards
-// queues nothing: it holds its row, and a root holding a row is never a queued root
-// (record.AwaitsPromotion).
+// A root a hand-over of the release before carried in, in a phase that keeps a slot
+// (record.KeepsSlot), stands in the waiting line by its own facts (record.CarriedIn: its carried
+// generation is the one it stands at), and its promotion takes a row, writes it in progress and
+// starts the worker of the phase it carries at a new entry (workflow.Engine.StartCarriedRun). A
+// person's todo on it afterwards queues nothing: it holds its row, and a root holding a row is
+// never a queued root (record.AwaitsPromotion).
 func TestACarriedRootIsStartedInItsPhaseAndATodoAfterwardsQueuesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -52,10 +52,10 @@ func TestACarriedRootIsStartedInItsPhaseAndATodoAfterwardsQueuesNothing(t *testi
 	}
 }
 
-// A root a hand-over of the release before carried in, in a phase past its review, holds no row:
-// no pass grants one in a phase that keeps none (record.KeepsSlot). It is a queued root by its own
-// facts (record.CarriedIn), and its promotion starts it whatever the cap says, which is the whole of
-// what the rule costs such a root.
+// A root a hand-over of the release before carried in, in accepting, retro or merging, holds no
+// row: those phases keep none, and no pass grants one in them (record.KeepsSlot). It is a queued
+// root by its own facts (record.CarriedIn), and its promotion starts it whatever the cap says,
+// which is the whole of what the rule costs such a root.
 func TestACarriedRootPastItsReviewHoldsNoRowAndStillOpensItsTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
@@ -70,7 +70,7 @@ func TestACarriedRootPastItsReviewHoldsNoRowAndStillOpensItsTree(t *testing.T) {
 	tick(t, pool, admission, "tick")
 
 	if !issueOpen(t, pool, carried) {
-		t.Fatalf("the tree of the carried root %s is closed after the pass: a candidate standing past its review takes no row, "+
+		t.Fatalf("the tree of the carried root %s is closed after the pass: a candidate standing in accepting takes no row, "+
 			"so the cap holds it back for nothing", carried)
 	}
 	if got := issue(t, pool, carried); got.Status != "in_progress" {

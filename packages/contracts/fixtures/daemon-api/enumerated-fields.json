@@ -13,7 +13,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -369,11 +369,11 @@
       },
       {
         "value": "open_on_basis",
-        "since": 232
+        "since": 239
       },
       {
         "value": "pending_on_basis",
-        "since": 232
+        "since": 239
       },
       {
         "value": "unregistered",
@@ -717,7 +717,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -911,7 +911,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -969,7 +969,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -1111,15 +1111,19 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_todo",
-        "since": 233
+        "since": 240
       },
       {
         "value": "chain_unknown",
-        "since": 233
+        "since": 240
+      },
+      {
+        "value": "children_before_retro",
+        "since": 219
       },
       {
         "value": "children_first",
@@ -1142,6 +1146,10 @@
         "since": 98
       },
       {
+        "value": "task_stopped",
+        "since": 219
+      },
+      {
         "value": "tree_closed",
         "since": 98
       },
@@ -1152,6 +1160,24 @@
       {
         "value": "unclassified",
         "since": 98
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 219
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 219
       }
     ]
   },
@@ -1169,7 +1195,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -1525,11 +1551,11 @@
       },
       {
         "value": "open_on_basis",
-        "since": 232
+        "since": 239
       },
       {
         "value": "pending_on_basis",
-        "since": 232
+        "since": 239
       },
       {
         "value": "unregistered",
@@ -1629,7 +1655,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -1823,7 +1849,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -1881,7 +1907,7 @@
       },
       {
         "value": "awaiting_children",
-        "since": 232
+        "since": 239
       },
       {
         "value": "awaiting_person",
@@ -2002,6 +2028,24 @@
       {
         "value": "took-nothing",
         "since": 146
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 219
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 219
       }
     ]
   },

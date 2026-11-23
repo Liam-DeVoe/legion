@@ -81,7 +81,8 @@ type outbox struct {
 	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
 	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
 	// connection while its transaction holds one is refused at that call
-	// (store.ErrNestedAcquire).
+	// (store.ErrNestedAcquire). A transaction whose body calls a transaction-owning trees method
+	// opens on trees.Pool(), so that method joins it even in a rig whose tree store is separate.
 	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
@@ -230,6 +231,7 @@ type outbox struct {
 // wake and the open resume that refuses one, a project pause's stop of a role and which pause
 // stopped a role, and the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
+	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	ReserveIssueCleanup(ctx context.Context, project, issue string, generation uint64,
 		inLegionsWork func(at phase.Phase, status string) bool) (treelifecycle.Lifecycle, bool, error)
@@ -489,7 +491,7 @@ func (r *outbox) noteLimit(row record.OutboxRow, err error) {
 }
 
 func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
@@ -514,11 +516,11 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // that owns the issue (noticeArchitect) what was not posted and Dispatch's own refusal
 // (messagePostRefused), since nothing else would: the message is the daemon's only word on the
 // issue for what it carries. Each of those notice rows is written in the finish's own
-// transaction, which owns the commit hook that write registers (projectRecords, intake.OnCommit),
+// transaction, which owns the commit hook that write registers (projectRecords, store.OnCommit),
 // so the notice's lane is woken as the finish commits and the notice is published without a
 // sweep. No refused row's finish writes anything a fact reads, so it runs in a plain transaction
-// (committing) and waits behind no fact. Each line says the refusal as the row and the notice keep
-// it (storetext.FarSideError); settle logged it whole.
+// (store.Transact) and waits behind no fact. Each line says the refusal as the row and the notice
+// keep it (storetext.FarSideError); settle logged it whole.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
@@ -526,7 +528,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	}
 	kept := storetext.FarSideError(cause.Error())
 	// follow is what the transaction does beside the finish, handed the transaction's ctx, and told
-	// the line logged once it commits.
+	// the line logged once it commits, as its hook.
 	var follow func(context.Context, pgx.Tx) error
 	var told func()
 	switch value := payload.(type) {
@@ -596,19 +598,21 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// on without it, and the line is what says Dispatch does not hold it.
 		told = r.recordDropped(row, "plan", value.ID, cause)
 	}
-	scoped, finished := r.committing(ctx)
-	if err := finished(func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if follow != nil {
-			if err := follow(scoped, tx); err != nil {
+			if err := follow(ctx, tx); err != nil {
 				return err
 			}
 		}
-		return r.records.FinishLeasedOutbox(scoped, tx, row.ID, row.LeaseToken)
+		if err := r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
+			return err
+		}
+		if told != nil {
+			store.OnCommit(ctx, told)
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
-	}
-	if told != nil {
-		told()
 	}
 	return nil
 }
@@ -761,7 +765,7 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 // another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
 // the error its cause wraps is the limited row's own, which that row's settle logged.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
@@ -1293,7 +1297,7 @@ func (r *outbox) seenInTheLog(ctx context.Context, row record.OutboxRow, seen, s
 		return wait.Errorf("outbox status row %d of %s read Dispatch at sequence %d and the record has applied its events only to %d: the write waits until it has",
 			row.ID, row.Issue, seq, seen)
 	}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.AdvanceSeenSeq(ctx, tx, row.Issue, seq)
 	}); err != nil {
 		return fmt.Errorf("record that the events of %s up to %d were seen: %w", row.Issue, seq, err)
@@ -1309,7 +1313,7 @@ func (r *outbox) awaitAfter(ctx context.Context, row record.OutboxRow, payload r
 		return nil
 	}
 	var queued bool
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		queued, err = r.records.OutboxQueued(ctx, tx, payload.After)
 		return err
@@ -1410,9 +1414,8 @@ func (r *outbox) tellStatusScopeOnce(ctx context.Context, row record.OutboxRow, 
 		r.scopeTold.Store(false)
 		return fmt.Errorf("outbox row %d: no store to queue the controller's status-scope notice in", row.ID)
 	}
-	scoped, run := r.committing(ctx)
-	if err := run(func(tx pgx.Tx) error {
-		return record.EnqueueFenced(scoped, tx, r.records, row.Issue,
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.EnqueueFenced(ctx, tx, r.records, row.Issue,
 			record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: reason}, r.now().UTC())
 	}); err != nil {
 		r.scopeTold.Store(false)
@@ -1573,7 +1576,7 @@ func (r *outbox) attemptOf(ctx context.Context, row record.OutboxRow) (record.Ou
 		return record.OutboxAttempt{}, nil
 	}
 	var attempt record.OutboxAttempt
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		attempt, _, err = r.records.OutboxAttempt(ctx, tx, row.ID)
 		return err
@@ -1589,7 +1592,7 @@ func (r *outbox) putAttempt(ctx context.Context, row record.OutboxRow, attempt r
 	if r.pool == nil {
 		return nil
 	}
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutOutboxAttempt(ctx, tx, row.ID, row.LeaseToken, attempt)
 	}); err != nil {
 		return fmt.Errorf("record the attempt of outbox row %d: %w", row.ID, err)
@@ -2039,7 +2042,7 @@ func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, p
 		return errors.New("role holders executor has no Dispatch client")
 	}
 	var live []record.RoleHolder
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
 		return err
@@ -2114,9 +2117,13 @@ func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
 }
 
 // publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's
-// issue and the plan's own id. Dispatch sets each field once, so a write that runs again after a
-// lost answer changes nothing. A Dispatch that has not got the route yet answers its router's 404,
-// which execute makes a wait; every other answer is decided by recordRefused, as a step record's is.
+// issue and the plan's own id, one for each run. The source, the document, the version and the
+// tasks are one fact, which each write carries whole: Dispatch replaces all four for a version
+// above the one it holds and changes nothing for one at or below it, a version left out (the
+// source default) counting as 0, so a write that runs again after a lost answer, or arrives after a
+// later version's, changes nothing. A Dispatch that has not got the route yet answers its router's
+// 404, which execute makes a wait; every other answer is decided by recordRefused, as a step
+// record's is.
 func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, payload record.PlanRecord) error {
 	if r.dispatch == nil {
 		return errors.New("plan record executor has no Dispatch client")
@@ -2162,20 +2169,6 @@ func recordRefused(err error) bool {
 		return refusal.Code == steprecord.CodeOtherIssue || refusal.Code == steprecord.CodePlanOtherIssue
 	}
 	return false
-}
-
-// committing is how a write of the outbox that changes no input of the end of a step's run runs:
-// ctx carrying the commit hooks its writes register, and the runner of the write's one
-// transaction, which takes no fact lock and runs the commit hooks once the transaction commits.
-func (r *outbox) committing(ctx context.Context) (context.Context, func(write func(pgx.Tx) error) error) {
-	scoped, committed := intake.WithCommitHooks(ctx)
-	return scoped, func(write func(pgx.Tx) error) error {
-		if err := pgx.BeginFunc(scoped, r.pool, write); err != nil {
-			return err
-		}
-		committed()
-		return nil
-	}
 }
 
 // message posts a message row once: a retried row that finds its own marker on the issue posts
@@ -2407,6 +2400,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
+	}
+	// The architect whose stop_task stopped the task is answered by its own call, so a
+	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
+	// told only when that is another claim (record.Notice.StoppedBy). Published keeps the field,
+	// so a re-held copy is judged the same way.
+	if payload.StoppedBy == architect {
+		r.log.Info("outbox notice finished without publishing: its architect stopped the task itself",
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect)
+		return nil
 	}
 	notice, key := payload.Published(row.ID)
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
@@ -3076,6 +3078,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "role", payload.Role)
 			return nil
 		}
+		// The role of a stopped task's step starts again only when its task does
+		// (workflow.StoppedStepRole): the start that a later version of the plan, or a person's
+		// todo on a stopped root, queues for it comes with the hold cleared. Every other start of
+		// that role while the hold stands, a wake's among them, finishes here, the one place every
+		// start row of a role runs, above StartedBy, so it records no start and the claim stays
+		// where the stop left it.
+		if payload.CheckLook == 0 && workflow.StoppedStepRole(issue) == payload.Role {
+			r.log.Info("outbox start of the role of a stopped task's step; finished without acting", "row", row.ID,
+				"issue", issue.Key, "role", payload.Role, "from", issue.Hold.From)
+			return nil
+		}
 		news, finished, err := r.startNewsOf(ctx, row, issue, payload, machine, found, token)
 		if err != nil || finished {
 			return err
@@ -3340,29 +3353,37 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		}
 		return nil
-	case "suspend":
+	case "suspend", "step_stop":
+		// A step stop is a suspend of the process of the step a stopped task ran (workflow's
+		// stopTask): the same fence, the same source (the daemon), so the session stays, the
+		// step's pending task retires with it (supervise's RetiresPhaseTask), the stranded report
+		// passes over it and an idle release cannot take it over. It is an op of its own only so
+		// the open-issue invariant can tell it from the stop of an issue the workflow takes out.
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
-		case supervise.StateFailed, supervise.StateRetired:
+		held, stoppable := claimToStop(machine)
+		if !stoppable {
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
 		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too,
-		// with the fence its issue stands at and the pod its claim runs in (stopActs).
-		if acts, err := r.stopActs(ctx, row, payload, machine.Claim()); err != nil || !acts {
+		// with the fence its issue stands at and the pod its claim runs in (stopActs), on the claim
+		// claimToStop answered. Its LastStartRow is the newest start's even where that is the
+		// published view: the start rows that write it (supervise.Machine.StartedBy) run on this
+		// row's lane one row at a time, so none is in flight while this row runs.
+		if acts, err := r.stopActs(ctx, row, payload, held); err != nil || !acts {
 			return err
 		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
-		// A stop suspends a claim through this one row, as a close retires one through issue_close, and
-		// each takes a released claim over: the machine re-stamps the suspension's source and
-		// this drops the backstop the release left that role, so no later backstop acts on a
-		// claim this suspension now owns. Another role's backstop stays (decision 17 of
-		// dispatch://INFRA-3759): a worker waiting on a deploy has nothing else to bring it back.
-		// The bundle stays: the issue comes back.
+		// A stop and the stop of a stopped task's step suspend a claim through this one body, as a
+		// close retires one through issue_close, and each takes a released claim over: the machine
+		// re-stamps the suspension's source and this drops the backstop the release left that role,
+		// so no later backstop acts on a claim this suspension now owns. Another role's backstop
+		// stays (decision 17 of dispatch://INFRA-3759): a worker waiting on a deploy has nothing
+		// else to bring it back. The bundle stays: the issue comes back.
 		r.takeOverRelease(ctx, row.Issue, payload.Role)
 		return nil
 	case "release":
@@ -3401,8 +3422,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
-		case supervise.StateFailed, supervise.StateRetired:
+		if _, stoppable := claimToStop(machine); !stoppable {
 			// The claim runs nothing, so there is nothing to release.
 			return nil
 		}
@@ -3424,7 +3444,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		if acts, err := r.stopActs(ctx, row, payload, machine.Claim()); err != nil || !acts {
+		if acts, err := r.stopActs(ctx, row, payload, machine.View().Claim); err != nil || !acts {
 			return err
 		}
 		if err := machine.Handle(ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
@@ -3461,6 +3481,25 @@ func (r *outbox) stopActs(ctx context.Context, row record.OutboxRow, payload rec
 		return false, nil
 	}
 	return true, nil
+}
+
+// claimToStop is machine's claim as a row that stops it reads it first, and whether the claim runs
+// anything to stop, which a failed or retired claim does not. It reads the published view
+// (supervise.Machine.View) first, which never waits, and reads a claim the view shows failed or
+// retired once more through supervise.Machine.Claim before it gives up on it: giving up decides
+// whether to stop the claim at all, and supervise.Machine.Claim says why such a read must see a
+// decision in flight. The view of a failed claim reads failed until its retry's launch is first
+// written, and a row that gave up on that read would leave the retry to launch the claim the row
+// was to stop. The caller's stop decides on the claim answered.
+func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
+	runsNothing := func(c supervise.Claim) bool {
+		return c.State == supervise.StateFailed || c.State == supervise.StateRetired
+	}
+	held := machine.View().Claim
+	if runsNothing(held) {
+		held = machine.Claim()
+	}
+	return held, !runsNothing(held)
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
@@ -3929,29 +3968,44 @@ func (r *outbox) issueSandboxName(issue string) string {
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
 // idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
 // (workflow.OpenPhaseRole).
+//
+// The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
+// which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other
+// hold record: a record written after the commit, late, would end the streak a newer pass opened.
+// A hold that cannot be recorded fails the cancel, and the row's lane runs it again. The line is
+// the commit's hook, so a cancel whose reply is lost and that the store says committed still says
+// so.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
-	if err != nil {
-		return err
-	}
-	// A release that suspended no role resumes nothing, so the empty set of resumed roles is the
-	// whole story rather than a release whose claims another path took over, and the line must
-	// not say that the issue's roles go on in the pod, since no role of this issue is running
-	// anywhere.
-	switch {
-	case cancelled.SuspendsNoRole:
-		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
-			"issue", issue, "hold", hold.String(), "reason", why)
-	case cancelled.Pause != 0:
-		r.log.Info("outbox: the idle release of an issue's pod did not finish while its project is paused; its roles stay stopped by the pause in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "pause", cancelled.Pause, "stopped", cancelled.Stopped)
-	default:
-		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "resumed", cancelled.Resumed)
-	}
-	r.recordPodHold(ctx, issue, hold)
-	return nil
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		if err != nil {
+			return err
+		}
+		// The teardown reads a hold and not the view behind it, so its holds carry no detail.
+		if err := store.RecordPodHoldTx(ctx, tx, store.PodHold{Project: r.project, Issue: issue,
+			Reason: hold.String(), At: r.now().UTC()}); err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			// A release that suspended no role resumes nothing, so the empty set of resumed roles
+			// is the whole story rather than a release whose claims another path took over, and
+			// the line must not say that the issue's roles go on in the pod, since no role of this
+			// issue is running anywhere.
+			switch {
+			case cancelled.SuspendsNoRole:
+				r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
+					"issue", issue, "hold", hold.String(), "reason", why)
+			case cancelled.Pause != 0:
+				r.log.Info("outbox: the idle release of an issue's pod did not finish while its project is paused; its roles stay stopped by the pause in the same pod",
+					"issue", issue, "hold", hold.String(), "reason", why, "pause", cancelled.Pause, "stopped", cancelled.Stopped)
+			default:
+				r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
+					"issue", issue, "hold", hold.String(), "reason", why, "resumed", cancelled.Resumed)
+			}
+		})
+		return nil
+	})
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
@@ -4172,7 +4226,7 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 func (r *outbox) seedGateBasis(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
 	step := payload.Step.OrSpec()
 	var gate *record.DesignGate
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		gates, err := r.records.GatesOf(ctx, tx, row.Issue)
 		if held, ok := gates[step]; ok {
 			gate = &held
@@ -4371,7 +4425,7 @@ type issueLaunch struct {
 // start acts, as every fence of a row is.
 func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch, error) {
 	var launch issueLaunch
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
@@ -4398,7 +4452,7 @@ func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch,
 // the wait's words.
 func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (root string, closed bool, err error) {
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
@@ -4597,16 +4651,16 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 // registered — from no earlier than now, since its ready is still ahead. A look that began after
 // the latest pause ended, or in a project no pause has ended, keeps the bound its row was due at.
 // The pause is read as admit's readStallFloor reads it (store.OpenOrLastPauseTx), with the role's
-// claim, in one transaction. While the project is paused the row is held and does not run, so a
-// pause read open here began after the row was claimed, and the row ends the look as it would
-// have.
+// claim, in one read-only transaction. While the project is paused the row is held and does not
+// run, so a pause read open here began after the row was claimed, and the row ends the look as it
+// would have.
 func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, look int, check record.ProductionCheck) error {
 	if !check.LookOpen || check.Looks != look || check.LookWakeAt == nil {
 		return nil
 	}
 	var latest store.Pause
 	var held *record.RoleClaim
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var found bool
 		var err error
 		latest, found, err = store.OpenOrLastPauseTx(ctx, tx, r.dispatchProject)
@@ -4679,7 +4733,7 @@ func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 // its own just before the executor acts on a row.
 func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.ProductionCheck, error) {
 	var check *record.ProductionCheck
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = r.records.ProductionCheck(ctx, tx, issue)
 		return err
@@ -4696,7 +4750,7 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 // reading a number above its own is reading a later entry of the same phase.
 func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
 	var entry int64
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := r.records.Phases(ctx, tx, issue)
 		if err != nil {
 			return err
@@ -4756,7 +4810,7 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 // transaction shape and one failure message for it.
 func (r *outbox) recordedIssue(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, key)
 		return err
@@ -4784,7 +4838,7 @@ func (r *outbox) issue(ctx context.Context, key string) (record.Issue, error) {
 // commits.
 func (r *outbox) fenceOf(ctx context.Context, issue string, withPod bool) (record.Fence, error) {
 	var fence record.Fence
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		fence, err = record.ReadFence(ctx, tx, r.records, issue, withPod)
 		return err

@@ -774,7 +774,7 @@ func wrongTrees(t *testing.T, pool *store.Pool) {
 	if trees < 2 {
 		t.Fatalf("the store holds %d stored trees, and setting each to another issue's needs two or more", trees)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 create temporary table wrong_tree on commit drop as
 	with trees as (select distinct tree from issues where tree <> ''),
@@ -895,7 +895,7 @@ func (d *chainDaemon) seed(token string) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	if err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		slots := 0
 		for _, row := range d.rows {
 			seedCopyRow(t, tx, row.key, row.parent, row.status, chainSeq, row.blockedBy...)
@@ -1276,6 +1276,7 @@ func (row chainRow) describe() string {
 // answer. chainRows holds the fixture and the answers, each row commented with its clause; a
 // failure names the row, the tree its record is stored in and the decision.
 func TestDecisionsFollowTheDispatchChain(t *testing.T) {
+	t.Parallel()
 	got := decideOverTheFixture(t, false)
 	for _, row := range chainRows {
 		want := row.want()
@@ -1297,6 +1298,7 @@ func TestDecisionsFollowTheDispatchChain(t *testing.T) {
 // issue's tree (wrongTrees), and both runs must give the table's answers. A decision whose answer
 // the stored trees change is named first, with both answers.
 func TestEveryDecisionIsTheSameWithEveryStoredTreeWrong(t *testing.T) {
+	t.Parallel()
 	right := decideOverTheFixture(t, false)
 	wrong := decideOverTheFixture(t, true)
 	for _, row := range chainRows {

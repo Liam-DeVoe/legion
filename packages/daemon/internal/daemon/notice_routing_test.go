@@ -144,9 +144,9 @@ func putChainIssue(t *testing.T, pool *store.Pool, records record.Store, issue r
 // before (seedCopyRow).
 func putCopyRow(t *testing.T, pool *store.Pool, key, parent, status string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var seq int64
-		if err := tx.QueryRow(context.Background(), `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`, key).Scan(&seq); err != nil {
+		if err := tx.QueryRow(ctx, `select coalesce(max(greatest(status_seq, parent_seq)), 0) from dispatch_issues where key = $1`, key).Scan(&seq); err != nil {
 			return err
 		}
 		seedCopyRow(t, tx, key, parent, status, seq+1)
@@ -231,9 +231,9 @@ func routingChains(t *testing.T, issues []record.Issue, copied map[string]string
 	}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, project: "legion"}
 	var route noticeRoute
-	if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		route, err = runner.readNoticeRoute(context.Background(), tx, "LEGION", keys)
+		route, err = runner.readNoticeRoute(ctx, tx, "LEGION", keys)
 		return err
 	}); err != nil {
 		t.Fatalf("read the route: %v", err)
@@ -318,6 +318,7 @@ func routingFixture(t *testing.T) noticeRoute {
 // show to its top waits, unless the issue's own architect hears it. A catch-up goes to its own
 // issue's architect alone, and a reparented notice to the architect it names.
 func TestANoticeGoesToTheIssuesOwnArchitectFirst(t *testing.T) {
+	t.Parallel()
 	route := routingFixture(t)
 	phaseFinished := record.Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing}
 	for _, tc := range []struct {
@@ -366,6 +367,7 @@ func TestANoticeGoesToTheIssuesOwnArchitectFirst(t *testing.T) {
 // the chain, not the stored tree, past a parent on the backlog, and waits on a chain the copy
 // cannot show to its top.
 func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
+	t.Parallel()
 	route := routingFixture(t)
 	childStatus := record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: "started"}
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "done"}
@@ -402,6 +404,7 @@ func TestAChildStatusNoticeStartsAtTheParent(t *testing.T) {
 // since every issue topic is a subject that issue's phase workers subscribe to, and no worker's role
 // topic.
 func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -440,6 +443,7 @@ func TestANoticeGoesToTheOwningArchitectsRoleTopicAlone(t *testing.T) {
 // the launch either (review round 13 of #4220); its control, the gate reading the hold under the
 // machine's lock, fails here with "the notice waited on its architect's launch in the runtime".
 func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -481,6 +485,7 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 // the suspension, so it reads the stop in flight from the machine's View
 // (supervise.ClaimView.Stopping) (LEGION-650).
 func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -531,6 +536,7 @@ func TestANoticeIsNotRoutedToASubArchitectBeingSuspended(t *testing.T) {
 // so once the architect holds its role again every held notice arrives, in the order it was
 // written.
 func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -593,6 +599,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 // The order held is each architect's own: a notice held for the root architect while it relaunches
 // does not hold a later notice for a sub-architect that is running, which is delivered at once.
 func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -621,6 +628,7 @@ func TestANoticeHeldForOneArchitectHoldsNoOtherArchitectsNotice(t *testing.T) {
 // which starts at the parent; neither waits on the suspended claim, and neither holds up the
 // tree's later notices.
 func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -657,6 +665,7 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 // and the ancestor's next catch-up names the root instead (workflow's
 // TestRestingRootsHoldTheAncestorSignOff).
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
+	t.Parallel()
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
 	restingRoot := record.Notice{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-1/spec",
 		Reason: "An ancestor's approval opened the spec step of LEGION-208. A person approved version 3 of the primary document of LEGION-1. " +
@@ -704,11 +713,60 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 	}
 }
 
+// A task-stopped notice of an owner's stop_task names the architect that made the call
+// (record.Notice.StoppedBy), and that architect is answered by its own call: the executor
+// finishes the row without publishing when the architect the notice's issue reaches is the one
+// that stopped the task, with one log line, and publishes it to that architect when it is
+// another claim. The route takes the stop from the issue's own architect or one above it on the
+// Dispatch chain, so the two differ in both directions: the root's architect stopping a child
+// whose sub-architect runs, and the child's own sub-architect stopping it.
+func TestATaskStoppedNoticeReachesNoArchitectThatStoppedTheTask(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, issue, stoppedBy string
+		want                   []string
+	}{
+		{name: "a root's task stopped by the root's architect", issue: "LEGION-1", stoppedBy: "LEGION-1"},
+		{name: "a child's task stopped by the root's architect, its sub-architect running", issue: "LEGION-2", stoppedBy: "LEGION-1",
+			want: []string{"task-stopped to LEGION-2"}},
+		{name: "a child's task stopped by its own sub-architect", issue: "LEGION-2", stoppedBy: "LEGION-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+			architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
+			by := mustClaimToken(t, tc.stoppedBy, claim.RoleArchitect)
+			why := "task a of " + tc.issue + " was stopped by its owner"
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, tc.issue, record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
+				StoppedBy: by, Reason: why + ", the architect " + string(by)}, time.Now()))
+			var logged bytes.Buffer
+			publisher := &holderPublisher{}
+			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
+				project: "legion", now: time.Now}
+
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("run the notice: %v", err)
+			}
+			_, delivered := publisher.snapshot()
+			if got := deliveredKinds(t, delivered); !slices.Equal(got, tc.want) || outboxRows(t, pool) != 0 {
+				t.Fatalf("delivered %v with %d rows left, want %v and the row finished", got, outboxRows(t, pool), tc.want)
+			}
+			if tc.want == nil && !strings.Contains(logged.String(), "its architect stopped the task itself") {
+				t.Fatalf("log %q, want the line that the row finished because its architect stopped the task itself", logged.String())
+			}
+		})
+	}
+}
+
 // A root architect the operator suspended outside a linger comes back when the operator resumes it
 // (`legion claims resume` or `deliver`), so its notices are held for it, not finished: the row waits,
 // logged once, and is delivered once the architect holds its role again. The fence is per
 // architect, so the held rows hold no other architect's notices.
 func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -745,6 +803,7 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 // though the closed child has a running sub-architect of its own, and when the root returns the
 // close arrives first, though the later notice falls due before the held close does.
 func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -798,6 +857,7 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 // reads its run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320). Its
 // delivery wakes only a claim an idle release suspended, which keeps its phase and task.
 func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
+	t.Parallel()
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
 	for _, tc := range []struct {
 		name  string
@@ -910,7 +970,7 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 		architect.Issue, architect.Role = "LEGION-1", claim.RoleArchitect
 		architect.Entry++
 		var now record.Fence
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			if err := records.PutPhase(ctx, tx, architect); err != nil {
 				return err
 			}
@@ -971,6 +1031,7 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 // claim token) holds back no later notice of its tree, and finishes undelivered on its own attempt
 // with one log line: retrying cannot change the record, and the outbox has no dead-letter path.
 func TestAnUnroutableNoticeHoldsNothingBackAndFinishesOnItsOwnAttempt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -1006,6 +1067,7 @@ func TestAnUnroutableNoticeHoldsNothingBackAndFinishesOnItsOwnAttempt(t *testing
 // undelivered on its first attempt, with one error line, instead of waiting on a record nothing
 // will write.
 func TestANoticeOfAnIssueTheDaemonDoesNotRecordFinishesUndelivered(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
@@ -1031,6 +1093,7 @@ func TestANoticeOfAnIssueTheDaemonDoesNotRecordFinishesUndelivered(t *testing.T)
 // publishes nothing when the row is gone: the architect is told the fresh catch-up alone, not the
 // dropped one first.
 func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -1044,7 +1107,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	clock := time.Now()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", catchUp(1), clock))
 	var leased record.OutboxRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := records.DueRows(ctx, tx, "LEGION", "LEGION-1", nil, clock)
 		if err != nil {
 			return err
@@ -1061,7 +1124,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
 			return err
 		}

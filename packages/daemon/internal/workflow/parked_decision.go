@@ -319,8 +319,8 @@ func architectHearsOn(ctx context.Context, tx pgx.Tx, store record.Store, chains
 // (holdsGate), which reads nothing: record.WaitsForSlot answers false for such a root, so what is
 // left is the rest of that one reading. Admission asks it of the roots its selection holds
 // (admit's readSlotHolders, through architectServed), over its pass's own chains: each holds a
-// slot, stands past its review in a tree that runs, or was released for a wait in a tree that runs,
-// and no queued root is one of those.
+// slot, stands in accepting, retro or merging in a tree that runs, or was released for a wait in
+// a tree that runs, and no queued root is one of those.
 func ArchitectHearsSlotted(root record.Issue, holdsGate bool) bool {
 	return holdsGate && record.InLegionsWork(root)
 }

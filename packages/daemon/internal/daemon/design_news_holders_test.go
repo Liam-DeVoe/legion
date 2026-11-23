@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -20,6 +22,7 @@ import (
 // which the owning architect holds, is named through newsClaims.holderOf and not here; a phase no
 // role works names none. A member in reviewing names its reviewer's claim.
 func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		phase phase.Phase
 		role  claim.Role
@@ -48,6 +51,7 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 // issue, in no phase, which names no holder and reads as told at its next start. A key the reading
 // holds no record of is an error, never a member told at its next start.
 func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Testing)
@@ -73,12 +77,12 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 	}
 
 	const unknown = "LEGION-699"
-	err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		chains, err := record.ReadChains(r.ctx, tx, r.records, "LEGION", []string{reconcileRoot})
+	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		chains, err := record.ReadChains(ctx, tx, r.records, "LEGION", []string{reconcileRoot})
 		if err != nil {
 			return err
 		}
-		_, err = readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, chains),
+		_, err = readOwedHolders(ctx, tx, r.records, newNewsClaims(root, chains),
 			[]toldKey{{unknown, record.AudienceHolder}})
 		return err
 	})
@@ -92,6 +96,7 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 // whose parent's own architect holds its role is held by that architect, never by the root's,
 // whether the reading started from the gate root or from the member itself.
 func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOver(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Implementing)
@@ -121,6 +126,7 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 // answers its news itself: the root architect's summary says so (workflow.NewsYouAnswer), and never
 // that a task tells it or that its next start carries it.
 func TestTheRootArchitectsSummarySaysItAnswersAMemberInAcceptingItOwns(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Accepting)

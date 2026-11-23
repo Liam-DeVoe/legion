@@ -150,7 +150,7 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 	}
 
 	var issue *record.Issue
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = record.NewStore().Issue(ctx, tx, "LEGION-209")
 		return err

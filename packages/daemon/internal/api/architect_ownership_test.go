@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // chainRow is one issue a test records and gives a row of the copy of Dispatch's issues: its key,
@@ -29,7 +30,7 @@ type chainRow struct {
 func seedChain(t *testing.T, h *harness, rows ...chainRow) {
 	t.Helper()
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range rows {
 			issue := record.Issue{Key: row.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rows[0].key,
 				Project: testDispatchProject, Title: row.key, Phase: row.at, Generation: 1, Status: row.status, DispatchStatus: row.status, LastDispatchSeq: 1}
@@ -37,7 +38,7 @@ func seedChain(t *testing.T, h *harness, rows ...chainRow) {
 				parent := row.parent
 				issue.Parent = &parent
 			}
-			if err := records.PutIssue(context.Background(), tx, issue); err != nil {
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
 			if err := seedCopy(tx, row.key, row.parent, row.status); err != nil {
@@ -264,7 +265,7 @@ func TestAnArchitectCallCommittedAfterAReparentIsRefused(t *testing.T) {
 			statuses.issues[other] = dispatch.Issue{Key: other, ResolvedRepo: "acme/widgets", Title: other, Status: "in_progress", LastSeq: 3}
 			statuses.issues[closed] = dispatch.Issue{Key: closed, ResolvedRepo: "acme/widgets", Title: closed, Status: "done", Parent: &root, LastSeq: 5}
 			statuses.issues[triaged] = dispatch.Issue{Key: triaged, ResolvedRepo: "acme/widgets", Title: triaged, Status: "triage", Parent: &root, LastSeq: 5}
-			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+			if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 				for _, row := range []struct{ key, parent, status string }{
 					{statusRoot, "", "in_progress"}, {statusChild, statusRoot, "in_progress"}, {other, "", "in_progress"},
 					{closed, statusRoot, "done"}, {triaged, statusRoot, "triage"},

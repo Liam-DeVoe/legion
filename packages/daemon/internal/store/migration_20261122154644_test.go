@@ -49,7 +49,7 @@ func TestTheHoldsGateMigrationMarksEveryRootOfTheReleaseBefore(t *testing.T) {
 		t.Fatalf("record an issue after the migration, naming the column nowhere as the release before does: %v", err)
 	}
 	var recorded []record.Issue
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		recorded, err = record.NewStore().IssuesByKey(ctx, tx, []string{"LEGION-208", "LEGION-209", "LEGION-300", "LEGION-301", "LEGION-400"})
 		return err

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -19,7 +20,7 @@ import (
 func testerRow(t *testing.T, h *harness, issue string) record.PhaseRow {
 	t.Helper()
 	var rows []record.PhaseRow
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(context.Background(), tx, issue)
 		return err
@@ -124,7 +125,7 @@ func TestACompletionPausedAcrossAStopIsRefusedAtItsCommit(t *testing.T) {
 		h, handlers, statuses := statusHarness(t, func(opts *Options) { opts.CallJudged = paused })
 		h.handoffs = statuses
 		setIssue(t, h, statusRoot, func(issue *record.Issue) { issue.Phase = phase.Testing })
-		if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if err := seedCopy(tx, statusRoot, "", "in_progress"); err != nil {
 				return err
 			}
