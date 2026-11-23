@@ -683,7 +683,6 @@ export function createLegionTool(deps: {
           if (active.kind !== "controller" && OPERATIONS[active.kind].includes(operation)) {
             throw new Error(`${operation} is not available to the ${active.role}'s session`);
           }
-          // "an architect", "a phase-worker", "a controller": the article the kind's first sound takes.
           const article = /^[aeiou]/.test(active.kind) ? "an" : "a";
           throw new Error(`${operation} is not available to ${article} ${active.kind} session`);
         }

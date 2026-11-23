@@ -320,8 +320,6 @@ export type PhaseOpField = Exclude<KeysOf<z.input<typeof PhaseOpArguments>>, "op
  */
 export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType> {
   const api = zodSchemaApi(zod);
-  // Each op's declaration of each field, unwrapped of its optional, with the description it gives
-  // on either side of that optional, in the order the ops take them.
   const declarations = new Map<string, { field: z.ZodType; description: string | undefined }[]>();
   for (const option of PhaseOpArguments.options) {
     for (const [name, declared] of Object.entries(option.shape)) {
