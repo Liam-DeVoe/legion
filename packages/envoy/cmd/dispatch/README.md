@@ -4993,6 +4993,7 @@ select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'h
 
 The same lines name a failed store or broker call by `error_kind`, never by its error, whose text quotes the address (`errkind.Of`):
 `canceled`, `deadline exceeded`, `database connection`, `database SQLSTATE <code>`, `broker HTTP <status>`, `broker account token`, `network timeout`, `network`, or else the Go type of the innermost error (the last, where an error wraps several).
+The sign-in pool's revoke of a plain refresh token and the issuer's refresh of a lapsed membership keep `error`: its text is the issuer's address, the HTTP status and the error the issuer answered, never a login Dispatch put in it.
 
 ## Routes
 

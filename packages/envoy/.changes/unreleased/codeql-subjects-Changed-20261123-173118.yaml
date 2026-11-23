@@ -19,11 +19,12 @@ body: |-
   refusal's or an end's `reason` gives the refusal's words, never its text, and names the address a
   refreshed sign-in carried by its hash. Each failed store or broker call on those lines is named
   by `error_kind` (`database SQLSTATE <code>`, `broker HTTP <status>`, `deadline exceeded` and
-  others) in place of `error`, whose text quoted the address. The Dispatch server README's section
-  "A person in the access log and the sign-in lines" gives the command that hashes an address and
-  the statement that reads the address a value stands for from the people table. A document
-  socket's answer before its upgrade is now sent as `text/plain` with
-  `X-Content-Type-Options: nosniff` whatever wrote it; ygo's own answers, which already were,
+  others) in place of `error`, whose text quoted the address; the sign-in pool's revoke and the
+  issuer's refresh keep `error`, the issuer's own answer, which carries no login Dispatch put in it.
+  The Dispatch server README's section "A person in the access log and the sign-in lines" gives
+  the command that hashes an address and the statement that reads the address a value stands for
+  from the people table. A document socket's answer before its upgrade is now sent as `text/plain`
+  with `X-Content-Type-Options: nosniff` whatever wrote it; ygo's own answers, which already were,
   reach the peer unchanged. CodeQL's `go/clear-text-logging` and `go/reflected-xss` queries
   reported these lines and that writer.
 time: 2026-11-23T17:31:18Z
